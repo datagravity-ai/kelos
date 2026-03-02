@@ -162,6 +162,27 @@ Creates GitHub issues for actionable insights.
 kubectl apply -f self-development/kelos-fake-strategist.yaml
 ```
 
+### kelos-config-update.yaml
+
+Runs daily to update agent configuration based on patterns found in PR reviews.
+
+| | |
+|---|---|
+| **Trigger** | Cron `0 18 * * *` (daily at 18:00 UTC) |
+| **Model** | Opus |
+| **Concurrency** | 1 |
+
+Reviews recent PRs and their review comments to identify recurring feedback patterns, then updates agent configuration accordingly:
+- **Project-level changes** — updates `AGENTS.md`, `CLAUDE.md`, or `self-development/agentconfig.yaml` for conventions that apply to all agents
+- **Task-specific changes** — updates TaskSpawner prompts in `self-development/*.yaml` or creates/updates AgentConfig for specific agents
+
+Creates PRs with changes for maintainer review. Skips uncertain or contradictory feedback.
+
+**Deploy:**
+```bash
+kubectl apply -f self-development/kelos-config-update.yaml
+```
+
 ### kelos-self-update.yaml
 
 Runs daily to review and update the self-development workflow files themselves.

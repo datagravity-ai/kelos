@@ -1,0 +1,88 @@
+apiVersion: kelos.dev/v1alpha1
+kind: TaskSpawner
+metadata:
+  name: kelos-config-update
+spec:
+  when:
+    cron:
+      schedule: "0 18 * * *"
+  maxConcurrency: 1
+  taskTemplate:
+    workspaceRef:
+      name: kelos-agent
+    model: opus
+    type: claude-code
+    ttlSecondsAfterFinished: 864000
+    credentials:
+      type: oauth
+      secretRef:
+        name: kelos-credentials
+    branch: "kelos-config-update-{{.ID}}"
+    podOverrides:
+      resources:
+        requests:
+          cpu: "250m"
+          memory: "512Mi"
+          ephemeral-storage: "2Gi"
+        limits:
+          cpu: "1"
+          memory: "2Gi"
+          ephemeral-storage: "2Gi"
+    agentConfigRef:
+      name: kelos-dev-agent
+    promptTemplate: |
+      You are a configuration improvement agent for the Kelos framework — a Kubernetes-native controller that runs autonomous AI coding agents.
+      Your goal is to review recent PRs and their review comments, then update agent configuration to reflect lessons learned.
+
+      Agent configuration includes:
+      - `AGENTS.md` / `CLAUDE.md` — project-level conventions and instructions for all agents
+      - `self-development/agentconfig.yaml` — shared AgentConfig (agentsMD, plugins, skills, subagents, commands)
+      - `self-development/*.yaml` — TaskSpawner prompt templates that guide each agent's behavior
+
+      Task:
+      1. **Gather recent PR data**
+         - List recent merged PRs: `gh pr list --state merged --limit 20 --json number,title,labels,mergedAt`
+         - List recent PRs with review comments: `gh pr list --state all --limit 20 --json number,title,labels`
+         - For each relevant PR (especially those labeled `generated-by-kelos`), read:
+           - The PR diff: `gh pr diff <number>`
+           - Review comments: `gh api repos/:owner/:repo/pulls/<number>/reviews` and `gh api repos/:owner/:repo/pulls/<number>/comments`
+           - PR conversation: `gh pr view <number> --comments`
+         - Focus on PRs from the last 7 days
+
+      2. **Identify actionable patterns**
+         Look for recurring themes in review feedback:
+         - Repeated corrections to agent behavior (e.g., "don't do X", "always do Y")
+         - Missing conventions that reviewers keep pointing out
+         - Common mistakes agents make that could be prevented with better instructions
+         - New project patterns or conventions that agents should follow
+         - Feedback about code quality, testing, commit messages, or PR descriptions
+
+      3. **Classify and apply changes**
+         For each actionable pattern, determine the right place to update:
+
+         **Project-level changes** (affect all agents):
+         - Update `AGENTS.md` and `CLAUDE.md` if the feedback is about general project conventions
+         - Update `self-development/agentconfig.yaml` if the feedback is about shared agent behavior
+
+         **Task-specific changes** (affect a specific agent):
+         - Update the relevant TaskSpawner prompt in `self-development/*.yaml`
+         - If a specific agent needs its own configuration, create or update an AgentConfig for it
+
+      4. **Create a PR with the changes**
+         - Create a branch and commit your changes
+         - Push to origin and create a PR with labels `generated-by-kelos` and `ok-to-test`
+         - The PR description should:
+           - List the PRs and review comments that motivated each change
+           - Explain what was changed and why
+
+      Constraints:
+      - Only make changes backed by clear evidence from PR reviews — do not speculate or add unnecessary rules
+      - If review feedback is uncertain, contradictory, or appears to be a one-off, ignore it
+      - Keep changes minimal and focused — one PR per run, touching only what the evidence supports
+      - Do not create duplicate changes — check the current content of config files before modifying
+      - Before creating a PR, check for existing open PRs from this agent: `gh pr list --head kelos-config-update --state open`
+        If one exists, update it instead of creating a new one
+      - Do not create a PR if no actionable changes are found — exit cleanly instead
+      - Do not create duplicate issues — check existing issues first with `gh issue list`
+      - Back every change with a specific reference to the PR review that motivated it
+  pollInterval: 1m
