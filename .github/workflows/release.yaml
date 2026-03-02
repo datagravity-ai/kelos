@@ -13,6 +13,8 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-go@v5
         with:
@@ -56,13 +58,20 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: make release-binaries VERSION="$VERSION"
 
+      - name: Generate release notes
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: go run ./hack/release-notes "$VERSION" > /tmp/release-notes.md
+
       - name: Upload CLI binaries to GitHub release
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          gh release create "$VERSION" --verify-tag --generate-notes || true
+          gh release create "$VERSION" --verify-tag --notes-file /tmp/release-notes.md || true
           gh release upload "$VERSION" --clobber \
             bin/kelos-* \
             bin/checksums.txt
