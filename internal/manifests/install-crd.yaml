@@ -156,6 +156,30 @@ spec:
                   - name
                   type: object
                 type: array
+              skills:
+                description: |-
+                  Skills defines skills.sh packages to install into the plugin volume.
+                  Each entry references a package in owner/repo format from the skills.sh
+                  ecosystem, installed via "npx skills add" in an init container.
+                  Only applicable to claude-code type agents; other agents ignore this.
+                items:
+                  description: SkillsShSpec defines a skills.sh package reference.
+                  properties:
+                    skill:
+                      description: |-
+                        Skill selects a specific skill by name from the package.
+                        If empty, all skills in the package are installed.
+                      type: string
+                    source:
+                      description: |-
+                        Source is the skills.sh package in owner/repo format
+                        (e.g., "vercel-labs/agent-skills").
+                      minLength: 1
+                      type: string
+                  required:
+                  - source
+                  type: object
+                type: array
             type: object
         type: object
     served: true

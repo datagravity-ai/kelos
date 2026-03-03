@@ -509,6 +509,106 @@ func TestCreateAgentConfigCommand_DryRun_FileReference(t *testing.T) {
 	}
 }
 
+func TestCreateAgentConfigCommand_DryRun_SkillsSh(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{
+		"create", "agentconfig", "skills-ac",
+		"--config", cfgPath,
+		"--dry-run",
+		"--skills-sh", "vercel-labs/agent-skills:deploy",
+		"--skills-sh", "anthropics/skills",
+		"--namespace", "test-ns",
+	})
+
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	if err := cmd.Execute(); err != nil {
+		w.Close()
+		os.Stdout = old
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	w.Close()
+	os.Stdout = old
+	var out bytes.Buffer
+	out.ReadFrom(r)
+	output := out.String()
+
+	if !strings.Contains(output, "kind: AgentConfig") {
+		t.Errorf("expected 'kind: AgentConfig' in output, got:\n%s", output)
+	}
+	if !strings.Contains(output, "vercel-labs/agent-skills") {
+		t.Errorf("expected skills.sh source in output, got:\n%s", output)
+	}
+	if !strings.Contains(output, "skill: deploy") {
+		t.Errorf("expected skill name in output, got:\n%s", output)
+	}
+	if !strings.Contains(output, "anthropics/skills") {
+		t.Errorf("expected second skills.sh source in output, got:\n%s", output)
+	}
+}
+
+func TestCreateAgentConfigCommand_DryRun_SkillsShDuplicate(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRootCommand()
+	cmd.SilenceUsage = true
+	cmd.SetArgs([]string{
+		"create", "agentconfig", "dup-ac",
+		"--config", cfgPath,
+		"--dry-run",
+		"--skills-sh", "vercel-labs/agent-skills:deploy",
+		"--skills-sh", "vercel-labs/agent-skills:deploy",
+		"--namespace", "test-ns",
+	})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for duplicate --skills-sh entries, got nil")
+	}
+	if !strings.Contains(err.Error(), "duplicate --skills-sh") {
+		t.Errorf("expected duplicate error, got: %v", err)
+	}
+}
+
+func TestCreateAgentConfigCommand_DryRun_SkillsShEmptySource(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRootCommand()
+	cmd.SilenceUsage = true
+	cmd.SetArgs([]string{
+		"create", "agentconfig", "empty-ac",
+		"--config", cfgPath,
+		"--dry-run",
+		"--skills-sh", ":myskill",
+		"--namespace", "test-ns",
+	})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for empty source in --skills-sh, got nil")
+	}
+	if !strings.Contains(err.Error(), "source must not be empty") {
+		t.Errorf("expected empty source error, got: %v", err)
+	}
+}
+
 func TestCreateAgentConfigCommand_MissingName(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")

@@ -13,11 +13,12 @@ import (
 
 func newCreateAgentConfigCommand(cfg *ClientConfig) *cobra.Command {
 	var (
-		agentsMD   string
-		skillFlags []string
-		agentFlags []string
-		mcpFlags   []string
-		dryRun     bool
+		agentsMD      string
+		skillFlags    []string
+		agentFlags    []string
+		mcpFlags      []string
+		skillsShFlags []string
+		dryRun        bool
 	)
 
 	cmd := &cobra.Command{
@@ -88,6 +89,20 @@ func newCreateAgentConfigCommand(cfg *ClientConfig) *cobra.Command {
 				acSpec.MCPServers = append(acSpec.MCPServers, mcpSpec)
 			}
 
+			skillsSeen := make(map[string]bool, len(skillsShFlags))
+			for _, s := range skillsShFlags {
+				spec, err := parseSkillsShFlag(s)
+				if err != nil {
+					return err
+				}
+				key := spec.Source + ":" + spec.Skill
+				if skillsSeen[key] {
+					return fmt.Errorf("duplicate --skills-sh entry %q", s)
+				}
+				skillsSeen[key] = true
+				acSpec.Skills = append(acSpec.Skills, spec)
+			}
+
 			acObj := &kelosv1alpha1.AgentConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      name,
@@ -114,6 +129,7 @@ func newCreateAgentConfigCommand(cfg *ClientConfig) *cobra.Command {
 	cmd.Flags().StringArrayVar(&skillFlags, "skill", nil, "skill definition as name=content or name=@file")
 	cmd.Flags().StringArrayVar(&agentFlags, "agent", nil, "agent definition as name=content or name=@file")
 	cmd.Flags().StringArrayVar(&mcpFlags, "mcp", nil, "MCP server as name=JSON or name=@file (e.g. github='{\"type\":\"http\",\"url\":\"https://api.githubcopilot.com/mcp/\"}')")
+	cmd.Flags().StringArrayVar(&skillsShFlags, "skills-sh", nil, "skills.sh package as source or source:skill (e.g. vercel-labs/agent-skills:deploy)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print the resource that would be created without submitting it")
 
 	return cmd

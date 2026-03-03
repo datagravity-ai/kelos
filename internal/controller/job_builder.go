@@ -54,6 +54,10 @@ const (
 	// PluginMountPath is the mount path for the plugin volume.
 	PluginMountPath = "/kelos/plugin"
 
+	// NodeImage is the image used for running Node.js-based init containers
+	// (e.g., installing skills.sh packages).
+	NodeImage = "node:22.14.0-alpine"
+
 	// AgentUID is the UID shared between the git-clone init
 	// container and the agent container. Custom agent images must run
 	// as this UID so that both containers can read and write the
@@ -412,12 +416,21 @@ func (b *JobBuilder) buildAgentJob(task *kelosv1alpha1.Task, workspace *kelosv1a
 			})
 		}
 
-		if len(agentConfig.Plugins) > 0 {
+		needsPluginVolume := len(agentConfig.Plugins) > 0 || len(agentConfig.Skills) > 0
+		if needsPluginVolume {
 			volumes = append(volumes, corev1.Volume{
 				Name:         PluginVolumeName,
 				VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
 			})
+			mainContainer.VolumeMounts = append(mainContainer.VolumeMounts,
+				corev1.VolumeMount{Name: PluginVolumeName, MountPath: PluginMountPath})
+			mainContainer.Env = append(mainContainer.Env, corev1.EnvVar{
+				Name:  "KELOS_PLUGIN_DIR",
+				Value: PluginMountPath,
+			})
+		}
 
+		if len(agentConfig.Plugins) > 0 {
 			script, err := buildPluginSetupScript(agentConfig.Plugins)
 			if err != nil {
 				return nil, fmt.Errorf("invalid plugin configuration: %w", err)
@@ -431,12 +444,23 @@ func (b *JobBuilder) buildAgentJob(task *kelosv1alpha1.Task, workspace *kelosv1a
 				},
 				SecurityContext: &corev1.SecurityContext{RunAsUser: &agentUID},
 			})
+		}
 
-			mainContainer.VolumeMounts = append(mainContainer.VolumeMounts,
-				corev1.VolumeMount{Name: PluginVolumeName, MountPath: PluginMountPath})
-			mainContainer.Env = append(mainContainer.Env, corev1.EnvVar{
-				Name:  "KELOS_PLUGIN_DIR",
-				Value: PluginMountPath,
+		if len(agentConfig.Skills) > 0 {
+			script, err := buildSkillsInstallScript(agentConfig.Skills, task.Spec.Type)
+			if err != nil {
+				return nil, fmt.Errorf("invalid skills configuration: %w", err)
+			}
+			initContainers = append(initContainers, corev1.Container{
+				Name:    "skills-install",
+				Image:   NodeImage,
+				Command: []string{"sh", "-c", script},
+				Env: []corev1.EnvVar{
+					{Name: "HOME", Value: PluginMountPath},
+				},
+				VolumeMounts: []corev1.VolumeMount{
+					{Name: PluginVolumeName, MountPath: PluginMountPath},
+				},
 			})
 		}
 
@@ -646,6 +670,32 @@ func buildPluginSetupScript(plugins []kelosv1alpha1.PluginSpec) (string, error) 
 			)
 		}
 	}
+
+	return strings.Join(lines, "\n"), nil
+}
+
+// buildSkillsInstallScript generates a shell script that installs skills.sh
+// packages into the plugin volume using "npx skills add".
+// The script installs git (required by the skills CLI to clone repositories),
+// runs npx as the agent user, and ensures all output files are owned by AgentUID.
+func buildSkillsInstallScript(skills []kelosv1alpha1.SkillsShSpec, agentType string) (string, error) {
+	lines := []string{
+		"set -eu",
+		"apk add --no-cache git >/dev/null 2>&1",
+	}
+
+	for _, s := range skills {
+		if s.Source == "" {
+			return "", fmt.Errorf("skills.sh source is empty")
+		}
+		args := fmt.Sprintf("npx -y skills add %s -a %s -y -g", shellQuote(s.Source), shellQuote(agentType))
+		if s.Skill != "" {
+			args += fmt.Sprintf(" -s %s", shellQuote(s.Skill))
+		}
+		lines = append(lines, args)
+	}
+
+	lines = append(lines, fmt.Sprintf("chown -R %d:%d %s", AgentUID, AgentUID, shellQuote(PluginMountPath)))
 
 	return strings.Join(lines, "\n"), nil
 }

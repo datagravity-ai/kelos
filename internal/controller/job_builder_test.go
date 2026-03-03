@@ -1911,6 +1911,206 @@ func TestBuildJob_AgentConfigFull(t *testing.T) {
 	}
 }
 
+func TestBuildJob_AgentConfigSkills(t *testing.T) {
+	builder := NewJobBuilder()
+	task := &kelosv1alpha1.Task{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-skills",
+			Namespace: "default",
+		},
+		Spec: kelosv1alpha1.TaskSpec{
+			Type:   AgentTypeClaudeCode,
+			Prompt: "Fix issue",
+			Credentials: kelosv1alpha1.Credentials{
+				Type:      kelosv1alpha1.CredentialTypeAPIKey,
+				SecretRef: kelosv1alpha1.SecretReference{Name: "my-secret"},
+			},
+		},
+	}
+
+	agentConfig := &kelosv1alpha1.AgentConfigSpec{
+		Skills: []kelosv1alpha1.SkillsShSpec{
+			{Source: "vercel-labs/agent-skills", Skill: "deploy"},
+			{Source: "anthropics/skills"},
+		},
+	}
+
+	job, err := builder.Build(task, nil, agentConfig, task.Spec.Prompt)
+	if err != nil {
+		t.Fatalf("Build() returned error: %v", err)
+	}
+
+	// Should have plugin volume.
+	foundPluginVolume := false
+	for _, v := range job.Spec.Template.Spec.Volumes {
+		if v.Name == PluginVolumeName {
+			foundPluginVolume = true
+			if v.VolumeSource.EmptyDir == nil {
+				t.Error("Expected EmptyDir volume source for plugin volume")
+			}
+		}
+	}
+	if !foundPluginVolume {
+		t.Error("Expected plugin volume to be created")
+	}
+
+	// Should have skills-install init container.
+	if len(job.Spec.Template.Spec.InitContainers) != 1 {
+		t.Fatalf("Expected 1 init container, got %d", len(job.Spec.Template.Spec.InitContainers))
+	}
+	initContainer := job.Spec.Template.Spec.InitContainers[0]
+	if initContainer.Name != "skills-install" {
+		t.Errorf("Expected init container name %q, got %q", "skills-install", initContainer.Name)
+	}
+	if initContainer.Image != NodeImage {
+		t.Errorf("Expected init container image %q, got %q", NodeImage, initContainer.Image)
+	}
+
+	// Verify HOME env var is set to plugin mount path.
+	homeSet := false
+	for _, env := range initContainer.Env {
+		if env.Name == "HOME" && env.Value == PluginMountPath {
+			homeSet = true
+		}
+	}
+	if !homeSet {
+		t.Error("Expected HOME env var set to plugin mount path")
+	}
+
+	// Verify the init container runs as root (no RunAsUser) so apk can install git.
+	if initContainer.SecurityContext != nil {
+		t.Error("Expected no SecurityContext on skills-install init container (runs as root)")
+	}
+
+	// Verify script installs git, contains npx commands, and chowns output.
+	script := initContainer.Command[2]
+	if !strings.Contains(script, "apk add --no-cache git") {
+		t.Errorf("Expected script to install git, got: %s", script)
+	}
+	if !strings.Contains(script, "npx -y skills add 'vercel-labs/agent-skills' -a 'claude-code' -y -g -s 'deploy'") {
+		t.Errorf("Expected script to contain skills add with skill flag, got: %s", script)
+	}
+	if !strings.Contains(script, "npx -y skills add 'anthropics/skills' -a 'claude-code' -y -g") {
+		t.Errorf("Expected script to contain skills add without skill flag, got: %s", script)
+	}
+	if !strings.Contains(script, "chown -R 61100:61100") {
+		t.Errorf("Expected script to chown output files to AgentUID, got: %s", script)
+	}
+
+	// Main container should have plugin volume mount and KELOS_PLUGIN_DIR.
+	container := job.Spec.Template.Spec.Containers[0]
+	foundPluginMount := false
+	for _, vm := range container.VolumeMounts {
+		if vm.Name == PluginVolumeName && vm.MountPath == PluginMountPath {
+			foundPluginMount = true
+		}
+	}
+	if !foundPluginMount {
+		t.Error("Expected plugin volume mount on main container")
+	}
+
+	envMap := map[string]string{}
+	for _, env := range container.Env {
+		if env.Value != "" {
+			envMap[env.Name] = env.Value
+		}
+	}
+	if envMap["KELOS_PLUGIN_DIR"] != PluginMountPath {
+		t.Errorf("Expected KELOS_PLUGIN_DIR=%q, got %q", PluginMountPath, envMap["KELOS_PLUGIN_DIR"])
+	}
+}
+
+func TestBuildJob_AgentConfigSkillsWithPlugins(t *testing.T) {
+	builder := NewJobBuilder()
+	task := &kelosv1alpha1.Task{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-skills-plugins",
+			Namespace: "default",
+		},
+		Spec: kelosv1alpha1.TaskSpec{
+			Type:   AgentTypeClaudeCode,
+			Prompt: "Fix issue",
+			Credentials: kelosv1alpha1.Credentials{
+				Type:      kelosv1alpha1.CredentialTypeAPIKey,
+				SecretRef: kelosv1alpha1.SecretReference{Name: "my-secret"},
+			},
+		},
+	}
+
+	agentConfig := &kelosv1alpha1.AgentConfigSpec{
+		Plugins: []kelosv1alpha1.PluginSpec{
+			{
+				Name: "team-tools",
+				Skills: []kelosv1alpha1.SkillDefinition{
+					{Name: "review", Content: "Review the PR"},
+				},
+			},
+		},
+		Skills: []kelosv1alpha1.SkillsShSpec{
+			{Source: "vercel-labs/agent-skills", Skill: "deploy"},
+		},
+	}
+
+	job, err := builder.Build(task, nil, agentConfig, task.Spec.Prompt)
+	if err != nil {
+		t.Fatalf("Build() returned error: %v", err)
+	}
+
+	// Should have exactly 1 plugin volume.
+	pluginVolumeCount := 0
+	for _, v := range job.Spec.Template.Spec.Volumes {
+		if v.Name == PluginVolumeName {
+			pluginVolumeCount++
+		}
+	}
+	if pluginVolumeCount != 1 {
+		t.Errorf("Expected exactly 1 plugin volume, got %d", pluginVolumeCount)
+	}
+
+	// Should have both plugin-setup and skills-install init containers.
+	if len(job.Spec.Template.Spec.InitContainers) != 2 {
+		t.Fatalf("Expected 2 init containers, got %d", len(job.Spec.Template.Spec.InitContainers))
+	}
+	if job.Spec.Template.Spec.InitContainers[0].Name != "plugin-setup" {
+		t.Errorf("Expected first init container %q, got %q", "plugin-setup", job.Spec.Template.Spec.InitContainers[0].Name)
+	}
+	if job.Spec.Template.Spec.InitContainers[1].Name != "skills-install" {
+		t.Errorf("Expected second init container %q, got %q", "skills-install", job.Spec.Template.Spec.InitContainers[1].Name)
+	}
+}
+
+func TestBuildJob_AgentConfigSkillsEmptySource(t *testing.T) {
+	builder := NewJobBuilder()
+	task := &kelosv1alpha1.Task{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-skills-empty",
+			Namespace: "default",
+		},
+		Spec: kelosv1alpha1.TaskSpec{
+			Type:   AgentTypeClaudeCode,
+			Prompt: "Fix issue",
+			Credentials: kelosv1alpha1.Credentials{
+				Type:      kelosv1alpha1.CredentialTypeAPIKey,
+				SecretRef: kelosv1alpha1.SecretReference{Name: "my-secret"},
+			},
+		},
+	}
+
+	agentConfig := &kelosv1alpha1.AgentConfigSpec{
+		Skills: []kelosv1alpha1.SkillsShSpec{
+			{Source: ""},
+		},
+	}
+
+	_, err := builder.Build(task, nil, agentConfig, task.Spec.Prompt)
+	if err == nil {
+		t.Fatal("Expected error for empty skills.sh source, got nil")
+	}
+	if !strings.Contains(err.Error(), "source is empty") {
+		t.Errorf("Expected error about empty source, got: %v", err)
+	}
+}
+
 func TestBuildJob_AgentConfigWithWorkspace(t *testing.T) {
 	builder := NewJobBuilder()
 	task := &kelosv1alpha1.Task{

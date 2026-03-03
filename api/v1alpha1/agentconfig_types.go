@@ -18,6 +18,13 @@ type AgentConfigSpec struct {
 	// +optional
 	Plugins []PluginSpec `json:"plugins,omitempty"`
 
+	// Skills defines skills.sh packages to install into the plugin volume.
+	// Each entry references a package in owner/repo format from the skills.sh
+	// ecosystem, installed via "npx skills add" in an init container.
+	// Only applicable to claude-code type agents; other agents ignore this.
+	// +optional
+	Skills []SkillsShSpec `json:"skills,omitempty"`
+
 	// MCPServers defines MCP (Model Context Protocol) servers to make
 	// available to the agent. Each entry is written to the agent's native
 	// MCP configuration (e.g., ~/.claude.json for Claude Code).
@@ -55,6 +62,19 @@ type AgentDefinition struct {
 	// +kubebuilder:validation:MinLength=1
 	Name    string `json:"name"`
 	Content string `json:"content"`
+}
+
+// SkillsShSpec defines a skills.sh package reference.
+type SkillsShSpec struct {
+	// Source is the skills.sh package in owner/repo format
+	// (e.g., "vercel-labs/agent-skills").
+	// +kubebuilder:validation:MinLength=1
+	Source string `json:"source"`
+
+	// Skill selects a specific skill by name from the package.
+	// If empty, all skills in the package are installed.
+	// +optional
+	Skill string `json:"skill,omitempty"`
 }
 
 // MCPServerSpec defines an MCP server configuration.

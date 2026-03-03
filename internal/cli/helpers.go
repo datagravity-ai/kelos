@@ -83,3 +83,23 @@ func parseMCPFlag(s string) (kelosv1alpha1.MCPServerSpec, error) {
 		Env:     raw.Env,
 	}, nil
 }
+
+// parseSkillsShFlag parses a --skills-sh flag value in the format
+// "source" or "source:skill" into a SkillsShSpec.
+func parseSkillsShFlag(s string) (kelosv1alpha1.SkillsShSpec, error) {
+	if s == "" {
+		return kelosv1alpha1.SkillsShSpec{}, fmt.Errorf("invalid --skills-sh value: must not be empty")
+	}
+	parts := strings.SplitN(s, ":", 2)
+	if parts[0] == "" {
+		return kelosv1alpha1.SkillsShSpec{}, fmt.Errorf("invalid --skills-sh value %q: source must not be empty", s)
+	}
+	spec := kelosv1alpha1.SkillsShSpec{Source: parts[0]}
+	if len(parts) == 2 {
+		if parts[1] == "" {
+			return kelosv1alpha1.SkillsShSpec{}, fmt.Errorf("invalid --skills-sh value %q: skill name after colon must not be empty", s)
+		}
+		spec.Skill = parts[1]
+	}
+	return spec, nil
+}
