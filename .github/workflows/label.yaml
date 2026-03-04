@@ -4,7 +4,7 @@ on:
   issues:
     types: [opened, labeled, unlabeled]
   pull_request_target:
-    types: [opened, labeled, unlabeled]
+    types: [opened, edited, labeled, unlabeled]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.issue.number || github.event.pull_request.number || github.run_id }}
@@ -64,6 +64,50 @@ jobs:
                 core.warning(`Failed to sync ${rule.needs}: ${e.message}`);
               }
             }
+            // For PRs, check whether the body contains a release-note block and
+            // sync release-note / release-note-none / needs-release-note labels.
+            const pr = context.payload.pull_request;
+            if (pr) {
+              try {
+                const body = pr.body || '';
+                const match = body.match(/```release-note\s*\n([\s\S]*?)```/);
+                const noteContent = match ? match[1].trim() : '';
+                const isNone = noteContent.toLowerCase() === 'none';
+                const hasNote = noteContent.length > 0 && !isNone;
+
+                const desiredLabel = hasNote ? 'release-note' : isNone ? 'release-note-none' : null;
+                const releaseLabels = ['release-note', 'release-note-none', 'needs-release-note'];
+
+                for (const label of releaseLabels) {
+                  const present = labels.includes(label);
+                  const wanted = label === desiredLabel || (label === 'needs-release-note' && desiredLabel === null);
+
+                  if (wanted && !present) {
+                    await github.rest.issues.addLabels({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      issue_number: pr.number,
+                      labels: [label],
+                    });
+                  } else if (!wanted && present) {
+                    try {
+                      await github.rest.issues.removeLabel({
+                        owner: context.repo.owner,
+                        repo: context.repo.repo,
+                        issue_number: pr.number,
+                        name: label,
+                      });
+                    } catch (e) {
+                      if (e.status !== 404) throw e;
+                    }
+                  }
+                }
+              } catch (e) {
+                errors.push({ rule: 'release-note', error: e });
+                core.warning(`Failed to sync release-note labels: ${e.message}`);
+              }
+            }
+
             if (errors.length > 0) {
               throw new Error(`Failed to sync labels: ${errors.map(e => e.rule).join(', ')}`);
             }
