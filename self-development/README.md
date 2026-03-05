@@ -151,7 +151,6 @@ Runs every 12 hours to strategically explore new ways to use and improve Kelos.
 
 Each run picks one focus area:
 - **New Use Cases** — explore what types of projects/teams could benefit from Kelos
-- **Workflow Improvements** — analyze existing configs and suggest better patterns
 - **Integration Opportunities** — identify tools/platforms Kelos could integrate with
 - **New CRDs & API Extensions** — propose new CRDs or extensions to existing ones
 

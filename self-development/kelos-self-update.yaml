@@ -77,6 +77,10 @@ spec:
       - Do not create duplicate issues — check existing issues first with `gh issue list`
       - Back proposals with evidence from the codebase and recent agent activity
       - Keep changes minimal and focused
-      - Before creating output, review recent issues and PRs labeled "generated-by-kelos" to avoid overlap
+      - Before creating output, review recent issues labeled "generated-by-kelos" (`gh issue list --label generated-by-kelos --state open --limit 50 --json number,title`) to avoid overlap
+      - The following areas are handled by other agents — do not create issues about them:
+        - Strategic proposals, new use cases, integrations, CRD extensions → kelos-fake-strategist
+        - Documentation, CLI UX, error messages → kelos-fake-user
+        - Agent configuration based on PR reviews → kelos-config-update
       - If after review you find nothing actionable to improve, exit without creating an issue or PR. Not every run needs to produce output
   pollInterval: 1m
