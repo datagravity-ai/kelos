@@ -20,7 +20,7 @@
 ## Pull Requests
 - **Always follow `.github/PULL_REQUEST_TEMPLATE.md`** when creating PRs.
 - Fill in every section of the template. Do not remove or skip sections — use "N/A" or "NONE" where appropriate.
-- Choose exactly one `/kind` label from: `bug`, `cleanup`, `documentation`, `feature`.
+- Choose exactly one `/kind` label from: `bug`, `cleanup`, `docs`, `feature`.
 - If there is no associated issue, write "N/A" under the issue section.
 - If the PR does not introduce a user-facing change, write "NONE" in the `release-note` block.
 

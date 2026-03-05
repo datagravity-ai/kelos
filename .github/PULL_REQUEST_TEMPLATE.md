@@ -4,7 +4,7 @@
 Add one of the following kinds:
 /kind bug
 /kind cleanup
-/kind documentation
+/kind docs
 /kind feature
 -->
 
