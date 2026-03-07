@@ -5,6 +5,8 @@ on:
     types: [opened, labeled, unlabeled]
   pull_request_target:
     types: [opened, edited, labeled, unlabeled, synchronize]
+  issue_comment:
+    types: [created]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.issue.number || github.event.pull_request.number || github.run_id }}
@@ -15,7 +17,100 @@ permissions:
   pull-requests: write
 
 jobs:
+  comment-label:
+    if: >-
+      github.event_name == 'issue_comment' && (
+        contains(github.event.comment.body, '/kind') ||
+        contains(github.event.comment.body, '/priority') ||
+        contains(github.event.comment.body, '/actor') ||
+        contains(github.event.comment.body, '/triage')
+      )
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check permission
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PERMISSION=$(gh api "repos/${{ github.repository }}/collaborators/${{ github.event.comment.user.login }}/permission" -q .permission)
+          if [[ "$PERMISSION" != "admin" && "$PERMISSION" != "write" ]]; then
+            echo "User ${{ github.event.comment.user.login }} does not have write permission (permission=$PERMISSION)"
+            exit 1
+          fi
+
+      - name: Apply labels
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = context.payload.comment.body;
+            const issueNumber = context.payload.issue.number;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            const commands = [
+              { command: 'kind', prefix: 'kind/' },
+              { command: 'priority', prefix: 'priority/' },
+              { command: 'actor', prefix: 'actor/' },
+            ];
+
+            const toAdd = [];
+            const toRemove = [];
+
+            for (const { command, prefix } of commands) {
+              const addPattern = new RegExp(`^\\s*/(?:remove-)?${command}\\s+(.+)$`, 'gm');
+              let match;
+              while ((match = addPattern.exec(body)) !== null) {
+                const line = match[0].trim();
+                const value = match[1].trim();
+                const label = `${prefix}${value}`;
+                if (line.startsWith(`/remove-${command}`)) {
+                  toRemove.push(label);
+                } else {
+                  toAdd.push(label);
+                }
+              }
+            }
+
+            // Handle /triage-accepted and /remove-triage-accepted
+            if (/^\s*\/triage-accepted\s*$/m.test(body)) {
+              toAdd.push('triage-accepted');
+            }
+            if (/^\s*\/remove-triage-accepted\s*$/m.test(body)) {
+              toRemove.push('triage-accepted');
+            }
+
+            if (toAdd.length === 0 && toRemove.length === 0) {
+              core.info('No label commands found');
+              return;
+            }
+
+            if (toAdd.length > 0) {
+              core.info(`Adding labels: ${toAdd.join(', ')}`);
+              await github.rest.issues.addLabels({
+                owner,
+                repo,
+                issue_number: issueNumber,
+                labels: toAdd,
+              });
+            }
+
+            for (const label of toRemove) {
+              core.info(`Removing label: ${label}`);
+              try {
+                await github.rest.issues.removeLabel({
+                  owner,
+                  repo,
+                  issue_number: issueNumber,
+                  name: label,
+                });
+              } catch (e) {
+                if (e.status !== 404) throw e;
+                core.warning(`Label ${label} was not present`);
+              }
+            }
+
   sync-labels:
+    if: always() && !cancelled() && (needs.comment-label.result == 'success' || needs.comment-label.result == 'skipped')
+    needs: comment-label
     runs-on: ubuntu-latest
     steps:
       - name: Sync needs-* labels
@@ -23,7 +118,19 @@ jobs:
         with:
           script: |
             const item = context.payload.issue || context.payload.pull_request;
-            const labels = item.labels.map(l => l.name);
+            // For issue_comment events, re-fetch labels since the comment-label
+            // job may have just modified them.
+            let labels;
+            if (context.eventName === 'issue_comment') {
+              const { data: fresh } = await github.rest.issues.listLabelsOnIssue({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: item.number,
+              });
+              labels = fresh.map(l => l.name);
+            } else {
+              labels = item.labels.map(l => l.name);
+            }
 
             const rules = [
               { prefix: null, match: 'triage-accepted', needs: 'needs-triage' },
