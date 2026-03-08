@@ -12,7 +12,6 @@ spec:
     issues, or comments.
 
     ## Identity
-    - Always run at the start: `git config user.name "Gunju Kim" && git config user.email "gjkim042@gmail.com"`
     - When commenting on issues or PRs, always start with "🤖 **Kelos Agent** @gjkim42\n\n"
       so it is clearly distinguishable from human comments and triggers a notification
 
