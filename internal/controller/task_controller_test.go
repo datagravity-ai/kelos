@@ -9,6 +9,7 @@ import (
 	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -336,6 +337,173 @@ func TestResolveGitHubAppToken_PATSecret(t *testing.T) {
 	// PAT secrets should pass through unchanged
 	if result.SecretRef.Name != "pat-secret" {
 		t.Errorf("secret name = %q, want %q (should be unchanged for PAT)", result.SecretRef.Name, "pat-secret")
+	}
+}
+
+func newReconcilerWithFakeClient(objs ...runtime.Object) *TaskReconciler {
+	scheme := runtime.NewScheme()
+	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+	utilruntime.Must(kelosv1alpha1.AddToScheme(scheme))
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithRuntimeObjects(objs...).
+		Build()
+
+	return &TaskReconciler{
+		Client: cl,
+		Scheme: scheme,
+	}
+}
+
+func TestResolveMCPServerSecrets_HeadersFrom(t *testing.T) {
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "mcp-headers",
+			Namespace: "default",
+		},
+		Data: map[string][]byte{
+			"Authorization": []byte("Bearer secret-token"),
+			"X-From-Secret": []byte("secret-value"),
+		},
+	}
+
+	r := newReconcilerWithFakeClient(secret)
+	servers := []kelosv1alpha1.MCPServerSpec{
+		{
+			Name: "github",
+			Type: "http",
+			URL:  "https://api.example.com/mcp/",
+			Headers: map[string]string{
+				"X-Inline": "inline-value",
+			},
+			HeadersFrom: &kelosv1alpha1.SecretValuesSource{
+				SecretRef: kelosv1alpha1.SecretReference{Name: "mcp-headers"},
+			},
+		},
+	}
+
+	resolved, err := r.resolveMCPServerSecrets(context.Background(), "default", servers)
+	if err != nil {
+		t.Fatalf("resolveMCPServerSecrets() error = %v", err)
+	}
+
+	if got := resolved[0].Headers["Authorization"]; got != "Bearer secret-token" {
+		t.Errorf("Authorization = %q, want %q", got, "Bearer secret-token")
+	}
+	if got := resolved[0].Headers["X-From-Secret"]; got != "secret-value" {
+		t.Errorf("X-From-Secret = %q, want %q", got, "secret-value")
+	}
+	if got := resolved[0].Headers["X-Inline"]; got != "inline-value" {
+		t.Errorf("X-Inline = %q, want %q", got, "inline-value")
+	}
+	if resolved[0].HeadersFrom != nil {
+		t.Fatal("HeadersFrom should be nil after resolution")
+	}
+}
+
+func TestResolveMCPServerSecrets_EnvFrom(t *testing.T) {
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "mcp-env",
+			Namespace: "default",
+		},
+		Data: map[string][]byte{
+			"DB_PASSWORD": []byte("secret-pass"),
+			"DB_HOST":     []byte("db.internal"),
+		},
+	}
+
+	r := newReconcilerWithFakeClient(secret)
+	servers := []kelosv1alpha1.MCPServerSpec{
+		{
+			Name:    "local-db",
+			Type:    "stdio",
+			Command: "npx",
+			Args:    []string{"-y", "@bytebase/dbhub"},
+			Env: map[string]string{
+				"DSN": "postgres://localhost/db",
+			},
+			EnvFrom: &kelosv1alpha1.SecretValuesSource{
+				SecretRef: kelosv1alpha1.SecretReference{Name: "mcp-env"},
+			},
+		},
+	}
+
+	resolved, err := r.resolveMCPServerSecrets(context.Background(), "default", servers)
+	if err != nil {
+		t.Fatalf("resolveMCPServerSecrets() error = %v", err)
+	}
+
+	if got := resolved[0].Env["DB_PASSWORD"]; got != "secret-pass" {
+		t.Errorf("DB_PASSWORD = %q, want %q", got, "secret-pass")
+	}
+	if got := resolved[0].Env["DB_HOST"]; got != "db.internal" {
+		t.Errorf("DB_HOST = %q, want %q", got, "db.internal")
+	}
+	if got := resolved[0].Env["DSN"]; got != "postgres://localhost/db" {
+		t.Errorf("DSN = %q, want %q", got, "postgres://localhost/db")
+	}
+	if resolved[0].EnvFrom != nil {
+		t.Fatal("EnvFrom should be nil after resolution")
+	}
+}
+
+func TestResolveMCPServerSecrets_SecretTakesPrecedence(t *testing.T) {
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "mcp-headers",
+			Namespace: "default",
+		},
+		Data: map[string][]byte{
+			"Authorization": []byte("Bearer from-secret"),
+		},
+	}
+
+	r := newReconcilerWithFakeClient(secret)
+	servers := []kelosv1alpha1.MCPServerSpec{
+		{
+			Name: "github",
+			Type: "http",
+			URL:  "https://api.example.com/mcp/",
+			Headers: map[string]string{
+				"Authorization": "Bearer inline-token",
+			},
+			HeadersFrom: &kelosv1alpha1.SecretValuesSource{
+				SecretRef: kelosv1alpha1.SecretReference{Name: "mcp-headers"},
+			},
+		},
+	}
+
+	resolved, err := r.resolveMCPServerSecrets(context.Background(), "default", servers)
+	if err != nil {
+		t.Fatalf("resolveMCPServerSecrets() error = %v", err)
+	}
+
+	if got := resolved[0].Headers["Authorization"]; got != "Bearer from-secret" {
+		t.Errorf("Authorization = %q, want %q", got, "Bearer from-secret")
+	}
+}
+
+func TestResolveMCPServerSecrets_MissingSecret(t *testing.T) {
+	r := newReconcilerWithFakeClient()
+	servers := []kelosv1alpha1.MCPServerSpec{
+		{
+			Name: "github",
+			Type: "http",
+			URL:  "https://api.example.com/mcp/",
+			HeadersFrom: &kelosv1alpha1.SecretValuesSource{
+				SecretRef: kelosv1alpha1.SecretReference{Name: "missing-secret"},
+			},
+		},
+	}
+
+	_, err := r.resolveMCPServerSecrets(context.Background(), "default", servers)
+	if err == nil {
+		t.Fatal("resolveMCPServerSecrets() error = nil, want non-nil")
+	}
+	if !strings.Contains(err.Error(), "missing-secret") {
+		t.Errorf("error = %q, want it to mention missing-secret", err)
 	}
 }
 

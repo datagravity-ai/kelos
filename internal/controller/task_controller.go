@@ -258,6 +258,27 @@ func (r *TaskReconciler) createJob(ctx context.Context, task *kelosv1alpha1.Task
 			return ctrl.Result{}, err
 		}
 		agentConfig = &ac.Spec
+
+		if len(agentConfig.MCPServers) > 0 {
+			resolved, err := r.resolveMCPServerSecrets(ctx, task.Namespace, agentConfig.MCPServers)
+			if err != nil {
+				logger.Error(err, "Unable to resolve MCP server secrets")
+				r.recordEvent(task, corev1.EventTypeWarning, "MCPSecretFailed", "Failed to resolve MCP server secret: %v", err)
+				updateErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+					if getErr := r.Get(ctx, client.ObjectKeyFromObject(task), task); getErr != nil {
+						return getErr
+					}
+					task.Status.Phase = kelosv1alpha1.TaskPhaseFailed
+					task.Status.Message = fmt.Sprintf("Failed to resolve MCP server secret: %v", err)
+					return r.Status().Update(ctx, task)
+				})
+				if updateErr != nil {
+					logger.Error(updateErr, "Unable to update Task status")
+				}
+				return ctrl.Result{}, nil
+			}
+			agentConfig.MCPServers = resolved
+		}
 	}
 
 	resolvedPrompt := r.resolvePromptTemplate(ctx, task)
@@ -399,6 +420,53 @@ func (r *TaskReconciler) resolveGitHubAppToken(ctx context.Context, task *kelosv
 		Name: tokenSecretName,
 	}
 	return &resolved, nil
+}
+
+func (r *TaskReconciler) resolveMCPServerSecrets(ctx context.Context, namespace string, servers []kelosv1alpha1.MCPServerSpec) ([]kelosv1alpha1.MCPServerSpec, error) {
+	resolved := make([]kelosv1alpha1.MCPServerSpec, len(servers))
+	for i, server := range servers {
+		resolved[i] = server
+
+		if server.HeadersFrom != nil {
+			var secret corev1.Secret
+			if err := r.Get(ctx, client.ObjectKey{
+				Namespace: namespace,
+				Name:      server.HeadersFrom.SecretRef.Name,
+			}, &secret); err != nil {
+				return nil, fmt.Errorf("fetching headersFrom secret %q for MCP server %q: %w", server.HeadersFrom.SecretRef.Name, server.Name, err)
+			}
+			merged := make(map[string]string, len(server.Headers)+len(secret.Data))
+			for key, value := range server.Headers {
+				merged[key] = value
+			}
+			for key, value := range secret.Data {
+				merged[key] = string(value)
+			}
+			resolved[i].Headers = merged
+			resolved[i].HeadersFrom = nil
+		}
+
+		if server.EnvFrom != nil {
+			var secret corev1.Secret
+			if err := r.Get(ctx, client.ObjectKey{
+				Namespace: namespace,
+				Name:      server.EnvFrom.SecretRef.Name,
+			}, &secret); err != nil {
+				return nil, fmt.Errorf("fetching envFrom secret %q for MCP server %q: %w", server.EnvFrom.SecretRef.Name, server.Name, err)
+			}
+			merged := make(map[string]string, len(server.Env)+len(secret.Data))
+			for key, value := range server.Env {
+				merged[key] = value
+			}
+			for key, value := range secret.Data {
+				merged[key] = string(value)
+			}
+			resolved[i].Env = merged
+			resolved[i].EnvFrom = nil
+		}
+	}
+
+	return resolved, nil
 }
 
 // updateStatus updates Task status based on Job status.
