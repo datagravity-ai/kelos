@@ -668,6 +668,44 @@ func TestDiscoverTriggerComment(t *testing.T) {
 	}
 }
 
+func TestDiscoverTriggerCommentInBody(t *testing.T) {
+	issues := []githubIssue{
+		{Number: 1, Title: "Trigger in body", Body: "/kelos pick-up", HTMLURL: "https://github.com/o/r/issues/1"},
+		{Number: 2, Title: "No trigger", Body: "Just a description", HTMLURL: "https://github.com/o/r/issues/2"},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/owner/repo/issues":
+			json.NewEncoder(w).Encode(issues)
+		case r.URL.Path == "/repos/owner/repo/issues/1/comments":
+			json.NewEncoder(w).Encode([]githubComment{})
+		case r.URL.Path == "/repos/owner/repo/issues/2/comments":
+			json.NewEncoder(w).Encode([]githubComment{})
+		}
+	}))
+	defer server.Close()
+
+	s := &GitHubSource{
+		Owner:          "owner",
+		Repo:           "repo",
+		BaseURL:        server.URL,
+		TriggerComment: "/kelos pick-up",
+	}
+
+	items, err := s.Discover(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(items))
+	}
+	if items[0].Number != 1 {
+		t.Errorf("expected issue #1, got #%d", items[0].Number)
+	}
+}
+
 func TestDiscoverExcludeComment(t *testing.T) {
 	issues := []githubIssue{
 		{Number: 1, Title: "Active", Body: "Body 1", HTMLURL: "https://github.com/o/r/issues/1"},
@@ -799,7 +837,7 @@ func TestDiscoverTriggerAndExcludeComment(t *testing.T) {
 	issues := []githubIssue{
 		{Number: 1, Title: "Triggered and active", Body: "Body 1", HTMLURL: "https://github.com/o/r/issues/1"},
 		{Number: 2, Title: "Triggered but excluded", Body: "Body 2", HTMLURL: "https://github.com/o/r/issues/2"},
-		{Number: 3, Title: "Not triggered", Body: "Body 3", HTMLURL: "https://github.com/o/r/issues/3"},
+		{Number: 3, Title: "No control comments", Body: "Body 3", HTMLURL: "https://github.com/o/r/issues/3"},
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -832,6 +870,9 @@ func TestDiscoverTriggerAndExcludeComment(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
+	// Issue #1 has trigger, no exclude → allowed.
+	// Issue #2 has exclude after trigger → blocked.
+	// Issue #3 has no control comments → blocked (trigger required but absent).
 	if len(items) != 1 {
 		t.Fatalf("expected 1 item, got %d", len(items))
 	}
@@ -845,6 +886,7 @@ func TestPassesCommentFilter(t *testing.T) {
 		name            string
 		triggerComment  string
 		excludeComments []string
+		body            string
 		comments        string
 		want            bool
 	}{
@@ -870,6 +912,12 @@ func TestPassesCommentFilter(t *testing.T) {
 			triggerComment: "/kelos pick-up",
 			comments:       "",
 			want:           false,
+		},
+		{
+			name:           "trigger in body",
+			triggerComment: "/kelos pick-up",
+			body:           "/kelos pick-up",
+			want:           true,
 		},
 		{
 			name:            "exclude present",
@@ -898,7 +946,7 @@ func TestPassesCommentFilter(t *testing.T) {
 			want:            false,
 		},
 		{
-			name:            "both set but neither found",
+			name:            "both set but neither found rejects issue",
 			triggerComment:  "/kelos pick-up",
 			excludeComments: []string{"/kelos needs-input"},
 			comments:        "normal comment",
@@ -936,6 +984,20 @@ func TestPassesCommentFilter(t *testing.T) {
 			comments:        "/kelos pick-up\n---\n/kelos pause",
 			want:            false,
 		},
+		{
+			name:            "body with both trigger and exclude rejects issue",
+			triggerComment:  "/kelos pick-up",
+			excludeComments: []string{"/kelos needs-input"},
+			body:            "/kelos pick-up\n/kelos needs-input",
+			want:            false,
+		},
+		{
+			name:            "exclude in body blocks even with no comments",
+			triggerComment:  "/kelos pick-up",
+			excludeComments: []string{"/kelos needs-input"},
+			body:            "/kelos needs-input",
+			want:            false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -944,7 +1006,7 @@ func TestPassesCommentFilter(t *testing.T) {
 				TriggerComment:  tt.triggerComment,
 				ExcludeComments: tt.excludeComments,
 			}
-			got := s.passesCommentFilter(tt.comments)
+			got := s.passesCommentFilter(tt.body, tt.comments)
 			if got != tt.want {
 				t.Errorf("passesCommentFilter() = %v, want %v", got, tt.want)
 			}

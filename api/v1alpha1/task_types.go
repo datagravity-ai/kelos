@@ -108,9 +108,10 @@ type TaskSpec struct {
 	// +optional
 	DependsOn []string `json:"dependsOn,omitempty"`
 
-	// Branch is the git branch this Task works on.
-	// The controller ensures only one Task with the same Branch value
-	// runs at a time. Overrides workspace ref for checkout.
+	// Branch is the git branch this Task works on. When set, an init
+	// container checks out this branch before the agent starts. The
+	// controller ensures only one Task with the same Branch value
+	// runs at a time for the same workspace.
 	// +optional
 	Branch string `json:"branch,omitempty"`
 

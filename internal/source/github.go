@@ -99,7 +99,7 @@ func (s *GitHubSource) Discover(ctx context.Context) ([]WorkItem, error) {
 
 		comments := concatCommentBodies(rawComments)
 
-		if needsCommentFilter && !s.passesCommentFilter(comments) {
+		if needsCommentFilter && !s.passesCommentFilter(issue.Body, comments) {
 			continue
 		}
 
@@ -150,19 +150,21 @@ func latestTriggerTime(comments []githubComment, trigger string) time.Time {
 	return latest
 }
 
-// passesCommentFilter checks whether an issue's comments satisfy the
-// comment-based trigger and exclude rules. Comments are expected in the
-// concatenated format produced by fetchComments (separated by "\n---\n").
+// passesCommentFilter checks whether an issue's body and comments satisfy
+// the comment-based trigger and exclude rules. The issue body is checked
+// first (as the earliest entry), followed by comments in chronological order.
 //
-// When both TriggerComment and ExcludeComments are set, the most recent
+// If TriggerComment is configured, a matching command in the body or any
+// comment is required. When combined with ExcludeComments, the most recent
 // matching command wins (scanned in reverse chronological order).
-// TriggerComment doubles as a resume command — posting it after an
-// ExcludeComment re-enables the issue.
-func (s *GitHubSource) passesCommentFilter(comments string) bool {
-	// Split into individual comment bodies.
+func (s *GitHubSource) passesCommentFilter(body, comments string) bool {
+	// Build parts list: body first, then comments.
 	var parts []string
+	if body != "" {
+		parts = append(parts, body)
+	}
 	if comments != "" {
-		parts = strings.Split(comments, "\n---\n")
+		parts = append(parts, strings.Split(comments, "\n---\n")...)
 	}
 
 	// When only TriggerComment is set, require at least one matching comment.
@@ -186,7 +188,6 @@ func (s *GitHubSource) passesCommentFilter(comments string) bool {
 	}
 
 	// When both are set, scan in reverse; the most recent matching command wins.
-	// TriggerComment acts as both initial trigger and resume.
 	if s.TriggerComment != "" && len(s.ExcludeComments) > 0 {
 		for i := len(parts) - 1; i >= 0; i-- {
 			if containsAnyCommand(parts[i], s.ExcludeComments) {
