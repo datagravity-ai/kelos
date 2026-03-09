@@ -165,6 +165,57 @@ func TestParseManifests_EmbeddedController(t *testing.T) {
 	}
 }
 
+func TestSpawnerRole_CanDeleteTasks(t *testing.T) {
+	objs, err := parseManifests(manifests.InstallController)
+	if err != nil {
+		t.Fatalf("parsing embedded controller manifest: %v", err)
+	}
+
+	var found bool
+	for _, obj := range objs {
+		if obj.GetKind() != "ClusterRole" || obj.GetName() != "kelos-spawner-role" {
+			continue
+		}
+		found = true
+
+		rules, ok, err := unstructured.NestedSlice(obj.Object, "rules")
+		if err != nil || !ok {
+			t.Fatal("expected rules in kelos-spawner-role")
+		}
+
+		var hasDeleteTasks bool
+		for _, r := range rules {
+			rule, ok := r.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			resources, _, _ := unstructured.NestedStringSlice(rule, "resources")
+			verbs, _, _ := unstructured.NestedStringSlice(rule, "verbs")
+
+			var hasTasks, hasDelete bool
+			for _, res := range resources {
+				if res == "tasks" {
+					hasTasks = true
+				}
+			}
+			for _, v := range verbs {
+				if v == "delete" {
+					hasDelete = true
+				}
+			}
+			if hasTasks && hasDelete {
+				hasDeleteTasks = true
+			}
+		}
+		if !hasDeleteTasks {
+			t.Error("kelos-spawner-role must have delete permission on tasks resource")
+		}
+	}
+	if !found {
+		t.Fatal("kelos-spawner-role ClusterRole not found in embedded manifest")
+	}
+}
+
 func TestInstallCommand_SkipsConfigLoading(t *testing.T) {
 	cmd := NewRootCommand()
 	cmd.SetArgs([]string{
