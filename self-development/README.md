@@ -6,7 +6,7 @@ This directory contains real-world orchestration patterns used by the Kelos proj
 
 <img width="2694" height="1966" alt="kelos-self-development" src="https://github.com/user-attachments/assets/10719599-426e-4c3d-87a0-cde43e1b3113" />
 
-Each TaskSpawner references an `AgentConfig` that defines git identity, comment signatures, and standard constraints. Some agents (triage, pr-responder, squash-commits, config-update) share the base `agentconfig.yaml` (`kelos-dev-agent`), while others (workers, fake-user, fake-strategist, self-update, image-update) define their own `AgentConfig` inline.
+Each TaskSpawner references an `AgentConfig` that defines git identity, comment signatures, and standard constraints. Some agents (triage, planner, pr-responder, squash-commits, config-update) share the base `agentconfig.yaml` (`kelos-dev-agent`), while others (workers, fake-user, fake-strategist, self-update, image-update) define their own `AgentConfig` inline.
 
 ## Prerequisites
 
@@ -87,6 +87,33 @@ Picks up open GitHub issues labeled `actor/kelos` and creates autonomous agent t
 **Deploy:**
 ```bash
 kubectl apply -f self-development/kelos-workers.yaml
+```
+
+### kelos-planner.yaml
+
+Reacts to `/kelos plan` comments on open issues. Investigates the issue, inspects the codebase, and posts a structured implementation plan — advisory only, no code changes.
+
+| | |
+|---|---|
+| **Trigger** | GitHub Issues with `/kelos plan` comment |
+| **Model** | Opus |
+| **Concurrency** | 2 |
+
+**Key features:**
+- Reads the issue body, all comments, linked issues/PRs, and relevant source code
+- Posts a single planning comment with: plan assessment, implementation steps, acceptance criteria, and open questions/risks
+- If the issue already contains a solid plan, normalizes it into a canonical step list instead of inventing a new one
+- Ends every response with `/kelos needs-input` to pause further automation
+- A later `/kelos plan` comment retriggers planning after more discussion or scope changes
+
+**Handoff flow:**
+1. `/kelos plan` — requests or refreshes an implementation plan
+2. `/kelos needs-input` — pauses further automation after planning
+3. `/kelos pick-up` — maintainer hands off to workers when ready
+
+**Deploy:**
+```bash
+kubectl apply -f self-development/kelos-planner.yaml
 ```
 
 ### kelos-pr-responder.yaml
@@ -303,6 +330,13 @@ The key pattern in these examples uses `triggerComment` and `excludeComments` to
 2. Agent picks up the issue, investigates, creates/updates a PR, and self-reviews
 3. If the agent needs human input, it posts a `/kelos needs-input` comment
 4. The maintainer can re-trigger the agent by posting the trigger comment again
+
+The planner uses the same pattern with a different trigger:
+
+1. A maintainer posts `/kelos plan` on an issue to request an implementation plan
+2. The planner investigates the issue and codebase, then posts a structured plan
+3. The plan comment ends with `/kelos needs-input`, pausing further automation
+4. A later `/kelos plan` comment retriggers planning after more discussion or scope changes
 
 This allows agents to work fully autonomously while keeping a maintainer approval gate, without requiring any external GitHub Actions or label management.
 
