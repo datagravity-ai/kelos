@@ -20,7 +20,7 @@
 
 Kelos lets you **define your development workflow as Kubernetes resources** and run it continuously. Declare what triggers agents, what they do, and how they hand off — Kelos handles the rest.
 
-Kelos develops Kelos through six TaskSpawners run 24/7: triaging issues, fixing bugs, responding to PR feedback, testing DX, brainstorming improvements, and tuning their own prompts. [See the full pipeline below.](#kelos-developing-kelos)
+Kelos develops Kelos through seven TaskSpawners run 24/7: triaging issues, planning implementations, fixing bugs, responding to PR feedback, testing DX, brainstorming improvements, and tuning their own prompts. [See the full pipeline below.](#kelos-developing-kelos)
 
 Supports **Claude Code**, **OpenAI Codex**, **Google Gemini**, **OpenCode**, **Cursor**, and [custom agent images](docs/agent-image-interface.md).
 
@@ -59,7 +59,7 @@ TaskSpawner watches external sources (e.g., GitHub Issues) and automatically cre
 
 ## Kelos Developing Kelos
 
-Kelos develops itself. Six TaskSpawners run 24/7, each handling a different part of the development lifecycle — fully autonomous.
+Kelos develops itself. Seven TaskSpawners run 24/7, each handling a different part of the development lifecycle — fully autonomous.
 
 <img width="2694" height="1966" alt="kelos-self-development" src="https://github.com/user-attachments/assets/a205f0c6-9eb4-4001-8ee6-5c8ab187fbea" />
 
@@ -67,6 +67,7 @@ Kelos develops itself. Six TaskSpawners run 24/7, each handling a different part
 |---|---|---|---|
 | **kelos-workers** | GitHub Issues (`actor/kelos`) | Opus | Picks up issues, creates or updates PRs, self-reviews, and ensures CI passes |
 | **kelos-pr-responder** | GitHub Pull Requests (`generated-by-kelos`, `changes_requested`) | Opus | Re-engages on PR review feedback and updates the existing branch incrementally |
+| **kelos-planner** | GitHub Issues (`/kelos plan` comment) | Opus | Investigates an issue and posts a structured implementation plan — advisory only, no code changes |
 | **kelos-triage** | GitHub Issues (`needs-actor`) | Opus | Classifies issues by kind/priority, detects duplicates, and recommends an actor |
 | **kelos-fake-user** | Cron (daily 09:00 UTC) | Sonnet | Tests DX as a new user — follows docs, tries CLI workflows, files issues for problems found |
 | **kelos-fake-strategist** | Cron (every 12 hours) | Opus | Explores new use cases, workflow improvements, and integration opportunities |
