@@ -6,7 +6,7 @@ This directory contains real-world orchestration patterns used by the Kelos proj
 
 <img width="2694" height="1966" alt="kelos-self-development" src="https://github.com/user-attachments/assets/10719599-426e-4c3d-87a0-cde43e1b3113" />
 
-Each TaskSpawner references an `AgentConfig` that defines git identity, comment signatures, and standard constraints. Some agents (triage, planner, pr-responder, squash-commits, config-update) share the base `agentconfig.yaml` (`kelos-dev-agent`), while others (workers, fake-user, fake-strategist, self-update, image-update) define their own `AgentConfig` inline.
+Each TaskSpawner references an `AgentConfig` that defines git identity, comment signatures, and standard constraints. Some agents (triage, pr-responder, squash-commits, config-update) share the base `agentconfig.yaml` (`kelos-dev-agent`), while others (workers, planner, fake-user, fake-strategist, self-update, image-update) define their own `AgentConfig` inline.
 
 ## Prerequisites
 

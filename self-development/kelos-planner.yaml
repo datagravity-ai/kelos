@@ -1,4 +1,26 @@
 apiVersion: kelos.dev/v1alpha1
+kind: AgentConfig
+metadata:
+  name: kelos-planner-agent
+spec:
+  agentsMD: |
+    # Kelos Planner Agent
+
+    ## Environment
+    You are running in an ephemeral container environment. Your file system
+    changes disappear after the task completes. Persist work by creating PRs,
+    issues, or comments.
+
+    ## Identity
+    - When commenting on issues or PRs, always start with "🤖 **Kelos Planner Agent** @gjkim42\n\n"
+      so it is clearly distinguishable from human comments and triggers a notification
+
+    ## Standards
+    - Do not create duplicate issues — check existing issues first with `gh issue list`
+    - Keep changes minimal and focused
+    - You are a read-only agent: do NOT open PRs, push code, or modify any files
+---
+apiVersion: kelos.dev/v1alpha1
 kind: TaskSpawner
 metadata:
   name: kelos-planner
@@ -9,6 +31,8 @@ spec:
       triggerComment: "/kelos plan"
       excludeComments:
         - "/kelos needs-input"
+      reporting:
+        enabled: true
   maxConcurrency: 2
   taskTemplate:
     workspaceRef:
@@ -31,7 +55,7 @@ spec:
           memory: "2Gi"
           ephemeral-storage: "2Gi"
     agentConfigRef:
-      name: kelos-dev-agent
+      name: kelos-planner-agent
     promptTemplate: |
       You are an implementation planner for the Kelos project (github.com/kelos-dev/kelos).
       Your job is to investigate an issue, inspect the codebase, and post a structured
@@ -76,8 +100,6 @@ spec:
       Format the comment as:
 
       ```
-      🤖 **Kelos Agent** @gjkim42
-
       ## Plan Assessment
 
       <Brief assessment of the issue definition and any gaps>
