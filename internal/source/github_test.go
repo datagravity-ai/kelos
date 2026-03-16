@@ -951,8 +951,8 @@ func TestDiscoverSetsTriggerTime(t *testing.T) {
 func TestDiscoverTriggerTimeSurvivesByteLimit(t *testing.T) {
 	// An early trigger comment passes the comment filter, then a large
 	// comment pushes us past maxCommentBytes. A second (newer) trigger
-	// comment posted after the big comment must still be found by
-	// latestTriggerTime even though concatCommentBodies truncates it.
+	// comment posted after the big comment must still be discovered even
+	// though concatCommentBodies truncates it.
 	earlyTS := "2026-01-10T10:00:00Z"
 	latestTS := "2026-01-20T10:00:00Z"
 

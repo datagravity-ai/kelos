@@ -355,9 +355,9 @@ func (s *GitHubSource) fetchCommentsPage(ctx context.Context, pageURL string) ([
 }
 
 // concatCommentBodies joins comment bodies into a single string separated by
-// "\n---\n", matching the format expected by passesCommentFilter. When the
-// total size exceeds maxCommentBytes, older comments are dropped from the
-// front so that the most recent (and most relevant) comments are preserved.
+// "\n---\n". When the total size exceeds maxCommentBytes, older comments are
+// dropped from the front so that the most recent (and most relevant) comments
+// are preserved.
 func concatCommentBodies(comments []githubComment) string {
 	totalBytes := 0
 	for _, c := range comments {
