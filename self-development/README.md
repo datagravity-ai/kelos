@@ -116,6 +116,34 @@ Reacts to `/kelos plan` comments on open issues. Investigates the issue, inspect
 kubectl apply -f self-development/kelos-planner.yaml
 ```
 
+### kelos-reviewer.yaml
+
+Reviews open pull requests on demand when a maintainer posts `/kelos review`.
+
+| | |
+|---|---|
+| **Trigger** | GitHub Pull Requests with `/kelos review` comment |
+| **Model** | Opus |
+| **Concurrency** | 3 |
+
+**Key features:**
+- Reads the full diff and surrounding context to understand changes
+- Checks correctness, tests, project conventions, security, and code quality
+- Runs `make test` to verify tests pass
+- Submits a structured review via `gh pr review` (approve, request changes, or comment)
+- Uses inline review comments for specific file/line findings
+- Read-only agent — does not push code or modify files
+
+**Handoff flow:**
+1. `/kelos review` — requests a code review on the PR
+2. `/kelos needs-input` — pauses further automation after review is posted
+3. `/kelos review` — maintainer can retrigger review after changes are pushed
+
+**Deploy:**
+```bash
+kubectl apply -f self-development/kelos-reviewer.yaml
+```
+
 ### kelos-pr-responder.yaml
 
 Picks up open GitHub pull requests labeled `generated-by-kelos` when a reviewer requests changes.
