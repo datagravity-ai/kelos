@@ -8,6 +8,7 @@ spec:
       labels:
         - bug
       state: open
+      pollInterval: 5m
   taskTemplate:
     type: claude-code
     workspaceRef:
@@ -23,5 +24,4 @@ spec:
 
       {{.Body}}
     ttlSecondsAfterFinished: 3600
-  pollInterval: 5m
   maxConcurrency: 3

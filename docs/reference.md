@@ -124,6 +124,7 @@ GitHub Apps are preferred over PATs for production use because they offer fine-g
 | `spec.when.githubIssues.assignee` | Filter by assignee username; use `"*"` for any assignee or `"none"` for unassigned | No |
 | `spec.when.githubIssues.author` | Filter by issue author username | No |
 | `spec.when.githubIssues.priorityLabels` | Priority-order labels for task selection when `maxConcurrency` is set; index 0 is highest priority | No |
+| `spec.when.githubIssues.pollInterval` | Per-source poll interval override (e.g., `"30s"`, `"5m"`); takes precedence over `spec.pollInterval` | No |
 | `spec.when.githubPullRequests.repo` | Override repository to poll for PRs (in `owner/repo` format or full URL); defaults to workspace repo URL | No |
 | `spec.when.githubPullRequests.labels` | Filter pull requests by labels | No |
 | `spec.when.githubPullRequests.excludeLabels` | Exclude pull requests with these labels | No |
@@ -134,6 +135,8 @@ GitHub Apps are preferred over PATs for production use because they offer fine-g
 | `spec.when.githubPullRequests.author` | Filter by PR author username | No |
 | `spec.when.githubPullRequests.draft` | Filter by draft state | No |
 | `spec.when.githubPullRequests.priorityLabels` | Priority-order labels for task selection when `maxConcurrency` is set; index 0 is highest priority | No |
+| `spec.when.githubPullRequests.pollInterval` | Per-source poll interval override (e.g., `"30s"`, `"5m"`); takes precedence over `spec.pollInterval` | No |
+| `spec.when.jira.pollInterval` | Per-source poll interval override (e.g., `"30s"`, `"5m"`); takes precedence over `spec.pollInterval` | No |
 | `spec.when.cron.schedule` | Cron schedule expression (e.g., `"0 * * * *"`) | Yes (when using cron) |
 | `spec.taskTemplate.type` | Agent type (`claude-code`, `codex`, `gemini`, `opencode`, or `cursor`) | Yes |
 | `spec.taskTemplate.credentials` | Credentials for the agent (same as Task) | Yes |
@@ -145,7 +148,7 @@ GitHub Apps are preferred over PATs for production use because they offer fine-g
 | `spec.taskTemplate.branch` | Git branch template for spawned Tasks (supports Go template variables, e.g., `kelos-task-{{.Number}}`) | No |
 | `spec.taskTemplate.ttlSecondsAfterFinished` | Auto-delete spawned tasks after N seconds | No |
 | `spec.taskTemplate.podOverrides` | Pod customization for spawned Tasks (resources, timeout, env, nodeSelector) | No |
-| `spec.pollInterval` | How often to poll the source (default: `5m`) | No |
+| `spec.pollInterval` | How often to poll the source (default: `5m`). Deprecated: use per-source `pollInterval` instead | No |
 | `spec.maxConcurrency` | Limit max concurrent running tasks (important for cost control) | No |
 | `spec.maxTotalTasks` | Lifetime limit on total tasks created by this spawner | No |
 | `spec.suspend` | Pause the spawner without deleting it; resume with `spec.suspend: false` (default: `false`) | No |

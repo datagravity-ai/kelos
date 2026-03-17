@@ -2377,4 +2377,69 @@ var _ = Describe("TaskSpawner Controller", func() {
 			}, timeout, interval).Should(BeTrue())
 		})
 	})
+
+	Context("When creating a TaskSpawner with per-source pollInterval", func() {
+		It("Should store the per-source pollInterval in the spec", func() {
+			By("Creating a namespace")
+			ns := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-taskspawner-source-poll",
+				},
+			}
+			Expect(k8sClient.Create(ctx, ns)).Should(Succeed())
+
+			By("Creating a Workspace")
+			ws := &kelosv1alpha1.Workspace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-workspace-source-poll",
+					Namespace: ns.Name,
+				},
+				Spec: kelosv1alpha1.WorkspaceSpec{
+					Repo: "https://github.com/kelos-dev/kelos.git",
+					Ref:  "main",
+				},
+			}
+			Expect(k8sClient.Create(ctx, ws)).Should(Succeed())
+
+			By("Creating a TaskSpawner with per-source pollInterval")
+			ts := &kelosv1alpha1.TaskSpawner{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-spawner-source-poll",
+					Namespace: ns.Name,
+				},
+				Spec: kelosv1alpha1.TaskSpawnerSpec{
+					When: kelosv1alpha1.When{
+						GitHubIssues: &kelosv1alpha1.GitHubIssues{
+							Labels:       []string{"bug"},
+							PollInterval: "30s",
+						},
+					},
+					TaskTemplate: kelosv1alpha1.TaskTemplate{
+						Type: "claude-code",
+						Credentials: kelosv1alpha1.Credentials{
+							Type: kelosv1alpha1.CredentialTypeOAuth,
+							SecretRef: kelosv1alpha1.SecretReference{
+								Name: "claude-credentials",
+							},
+						},
+						WorkspaceRef: &kelosv1alpha1.WorkspaceReference{
+							Name: "test-workspace-source-poll",
+						},
+					},
+					PollInterval: "5m",
+				},
+			}
+			Expect(k8sClient.Create(ctx, ts)).Should(Succeed())
+
+			By("Verifying the per-source pollInterval is stored in spec")
+			tsLookupKey := types.NamespacedName{Name: ts.Name, Namespace: ns.Name}
+			createdTS := &kelosv1alpha1.TaskSpawner{}
+			Eventually(func() bool {
+				err := k8sClient.Get(ctx, tsLookupKey, createdTS)
+				return err == nil
+			}, timeout, interval).Should(BeTrue())
+			Expect(createdTS.Spec.When.GitHubIssues.PollInterval).To(Equal("30s"))
+			Expect(createdTS.Spec.PollInterval).To(Equal("5m"))
+		})
+	})
 })

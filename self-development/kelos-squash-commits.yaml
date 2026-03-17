@@ -15,6 +15,7 @@ spec:
           - kelos-bot[bot]
       reporting:
         enabled: true
+      pollInterval: 1m
   maxConcurrency: 1
   taskTemplate:
     workspaceRef:
@@ -100,4 +101,3 @@ spec:
       - Do NOT start any new development work
       - Do NOT modify any source code
       - Only rebase, squash commits, and update descriptions as needed
-  pollInterval: 1m

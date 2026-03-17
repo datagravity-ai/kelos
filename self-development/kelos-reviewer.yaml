@@ -47,6 +47,7 @@ spec:
       draft: false
       reporting:
         enabled: true
+      pollInterval: 1m
   maxConcurrency: 3
   taskTemplate:
     workspaceRef:
@@ -179,4 +180,3 @@ spec:
       - Be specific: reference file paths and line numbers
       - Be constructive: explain why something is a problem and suggest a fix
       - Distinguish between blocking issues (request changes) and optional nits (approve with comments)
-  pollInterval: 1m

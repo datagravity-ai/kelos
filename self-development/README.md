@@ -338,10 +338,12 @@ To adapt these examples for your own repository:
    | `{{.Time}}` | Trigger time (RFC3339) | Empty | Cron tick time (e.g., `"2026-02-07T09:00:00Z"`) |
    | `{{.Schedule}}` | Cron schedule expression | Empty | Schedule string (e.g., `"0 * * * *"`) |
 
-4. **Set the polling interval:**
+4. **Set the polling interval** (per-source):
    ```yaml
    spec:
-     pollInterval: 5m  # How often to check for new issues
+     when:
+       githubIssues:
+         pollInterval: 5m  # How often to check for new issues
    ```
 
 5. **Choose the right model:**

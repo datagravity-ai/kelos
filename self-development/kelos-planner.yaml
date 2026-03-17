@@ -37,6 +37,7 @@ spec:
           - kelos-bot[bot]
       reporting:
         enabled: true
+      pollInterval: 1m
   maxConcurrency: 2
   taskTemplate:
     workspaceRef:
@@ -134,4 +135,3 @@ spec:
       - Do NOT trigger other automation (except the `/kelos needs-input` line above)
       - Post exactly one comment per run
       - The comment MUST end with a standalone `/kelos needs-input` line
-  pollInterval: 1m

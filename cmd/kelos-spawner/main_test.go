@@ -2085,3 +2085,120 @@ func TestSpawnerReconcilerRequestsForTask(t *testing.T) {
 		t.Fatalf("Expected no requests for non-matching task, got %d", len(requests))
 	}
 }
+
+func TestResolvedPollInterval_SourceOverridesRoot(t *testing.T) {
+	ts := &kelosv1alpha1.TaskSpawner{
+		Spec: kelosv1alpha1.TaskSpawnerSpec{
+			When: kelosv1alpha1.When{
+				GitHubIssues: &kelosv1alpha1.GitHubIssues{
+					PollInterval: "10s",
+				},
+			},
+			PollInterval: "5m",
+		},
+	}
+	got := resolvedPollInterval(ts)
+	if got != 10*time.Second {
+		t.Fatalf("resolvedPollInterval = %v, want %v", got, 10*time.Second)
+	}
+}
+
+func TestResolvedPollInterval_FallsBackToRoot(t *testing.T) {
+	ts := &kelosv1alpha1.TaskSpawner{
+		Spec: kelosv1alpha1.TaskSpawnerSpec{
+			When: kelosv1alpha1.When{
+				GitHubIssues: &kelosv1alpha1.GitHubIssues{},
+			},
+			PollInterval: "2m",
+		},
+	}
+	got := resolvedPollInterval(ts)
+	if got != 2*time.Minute {
+		t.Fatalf("resolvedPollInterval = %v, want %v", got, 2*time.Minute)
+	}
+}
+
+func TestResolvedPollInterval_BothEmptyDefaultsFiveMinutes(t *testing.T) {
+	ts := &kelosv1alpha1.TaskSpawner{
+		Spec: kelosv1alpha1.TaskSpawnerSpec{
+			When: kelosv1alpha1.When{
+				GitHubIssues: &kelosv1alpha1.GitHubIssues{},
+			},
+		},
+	}
+	got := resolvedPollInterval(ts)
+	if got != 5*time.Minute {
+		t.Fatalf("resolvedPollInterval = %v, want %v", got, 5*time.Minute)
+	}
+}
+
+func TestResolvedPollInterval_PullRequestsSourceOverride(t *testing.T) {
+	ts := &kelosv1alpha1.TaskSpawner{
+		Spec: kelosv1alpha1.TaskSpawnerSpec{
+			When: kelosv1alpha1.When{
+				GitHubPullRequests: &kelosv1alpha1.GitHubPullRequests{
+					PollInterval: "45s",
+				},
+			},
+			PollInterval: "5m",
+		},
+	}
+	got := resolvedPollInterval(ts)
+	if got != 45*time.Second {
+		t.Fatalf("resolvedPollInterval = %v, want %v", got, 45*time.Second)
+	}
+}
+
+func TestResolvedPollInterval_JiraSourceOverride(t *testing.T) {
+	ts := &kelosv1alpha1.TaskSpawner{
+		Spec: kelosv1alpha1.TaskSpawnerSpec{
+			When: kelosv1alpha1.When{
+				Jira: &kelosv1alpha1.Jira{
+					BaseURL:      "https://example.atlassian.net",
+					Project:      "TEST",
+					SecretRef:    kelosv1alpha1.SecretReference{Name: "jira-creds"},
+					PollInterval: "1m",
+				},
+			},
+			PollInterval: "10m",
+		},
+	}
+	got := resolvedPollInterval(ts)
+	if got != 1*time.Minute {
+		t.Fatalf("resolvedPollInterval = %v, want %v", got, 1*time.Minute)
+	}
+}
+
+func TestResolvedPollInterval_CronUsesRootLevel(t *testing.T) {
+	ts := &kelosv1alpha1.TaskSpawner{
+		Spec: kelosv1alpha1.TaskSpawnerSpec{
+			When: kelosv1alpha1.When{
+				Cron: &kelosv1alpha1.Cron{
+					Schedule: "0 * * * *",
+				},
+			},
+			PollInterval: "3m",
+		},
+	}
+	got := resolvedPollInterval(ts)
+	if got != 3*time.Minute {
+		t.Fatalf("resolvedPollInterval = %v, want %v", got, 3*time.Minute)
+	}
+}
+
+func TestRunOnce_ReturnsSourcePollInterval(t *testing.T) {
+	ts := newTaskSpawner("spawner", "default", nil)
+	ts.Spec.Suspend = boolPtr(true)
+	ts.Spec.PollInterval = "5m"
+	ts.Spec.When.GitHubIssues.PollInterval = "15s"
+
+	cl, key := setupTest(t, ts)
+
+	interval, err := runOnce(context.Background(), cl, key, spawnerRuntimeConfig{})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if interval != 15*time.Second {
+		t.Fatalf("Interval = %v, want %v", interval, 15*time.Second)
+	}
+}

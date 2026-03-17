@@ -66,6 +66,6 @@ kubectl delete -f examples/03-taskspawner-github-issues/
 - Change `labels` in `taskspawner.yaml` to match your labeling scheme.
 - Add `excludeLabels` to skip issues that need human input (e.g.,
   `["needs-triage", "wontfix"]`).
-- Adjust `pollInterval` to control how often GitHub is polled.
+- Adjust `pollInterval` inside the source block to control how often GitHub is polled.
 - Set `maxConcurrency` to limit how many Tasks run in parallel.
 - Edit `promptTemplate` to give the agent more specific instructions.

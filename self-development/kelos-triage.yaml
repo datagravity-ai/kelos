@@ -14,6 +14,7 @@ spec:
         - triage-accepted
       reporting:
         enabled: true
+      pollInterval: 1m
   maxConcurrency: 8
   taskTemplate:
     workspaceRef:
@@ -153,4 +154,3 @@ spec:
 
       Do NOT open PRs, push code, or modify any files. Read-only analysis only
       (except for the comment and labels above).
-  pollInterval: 1m

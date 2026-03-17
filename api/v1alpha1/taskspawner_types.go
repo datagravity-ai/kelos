@@ -166,6 +166,11 @@ type GitHubIssues struct {
 	// Reporting configures status reporting back to the originating GitHub issue.
 	// +optional
 	Reporting *GitHubReporting `json:"reporting,omitempty"`
+
+	// PollInterval overrides spec.pollInterval for this source (e.g., "30s", "5m").
+	// When empty, spec.pollInterval is used.
+	// +optional
+	PollInterval string `json:"pollInterval,omitempty"`
 }
 
 // GitHubPullRequests discovers pull requests from a GitHub repository.
@@ -248,6 +253,11 @@ type GitHubPullRequests struct {
 	// Reporting configures status reporting back to the originating GitHub pull request.
 	// +optional
 	Reporting *GitHubReporting `json:"reporting,omitempty"`
+
+	// PollInterval overrides spec.pollInterval for this source (e.g., "30s", "5m").
+	// When empty, spec.pollInterval is used.
+	// +optional
+	PollInterval string `json:"pollInterval,omitempty"`
 }
 
 // Jira discovers issues from a Jira project.
@@ -278,6 +288,11 @@ type Jira struct {
 	// (Jira Data Center/Server PAT).
 	// +kubebuilder:validation:Required
 	SecretRef SecretReference `json:"secretRef"`
+
+	// PollInterval overrides spec.pollInterval for this source (e.g., "30s", "5m").
+	// When empty, spec.pollInterval is used.
+	// +optional
+	PollInterval string `json:"pollInterval,omitempty"`
 }
 
 // TaskTemplate defines the template for spawned Tasks.
@@ -370,6 +385,7 @@ type TaskSpawnerSpec struct {
 	TaskTemplate TaskTemplate `json:"taskTemplate"`
 
 	// PollInterval is how often to poll the source for new items (e.g., "5m"). Defaults to "5m".
+	// Deprecated: use per-source pollInterval (e.g., spec.when.githubIssues.pollInterval) instead.
 	// +kubebuilder:default="5m"
 	// +optional
 	PollInterval string `json:"pollInterval,omitempty"`

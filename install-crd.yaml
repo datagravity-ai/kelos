@@ -751,8 +751,9 @@ spec:
                 type: integer
               pollInterval:
                 default: 5m
-                description: PollInterval is how often to poll the source for new
-                  items (e.g., "5m"). Defaults to "5m".
+                description: |-
+                  PollInterval is how often to poll the source for new items (e.g., "5m"). Defaults to "5m".
+                  Deprecated: use per-source pollInterval (e.g., spec.when.githubIssues.pollInterval) instead.
                 type: string
               suspend:
                 default: false
@@ -1212,6 +1213,11 @@ spec:
                         items:
                           type: string
                         type: array
+                      pollInterval:
+                        description: |-
+                          PollInterval overrides spec.pollInterval for this source (e.g., "30s", "5m").
+                          When empty, spec.pollInterval is used.
+                        type: string
                       priorityLabels:
                         description: |-
                           PriorityLabels defines a label-based priority order for discovered items.
@@ -1351,6 +1357,11 @@ spec:
                         items:
                           type: string
                         type: array
+                      pollInterval:
+                        description: |-
+                          PollInterval overrides spec.pollInterval for this source (e.g., "30s", "5m").
+                          When empty, spec.pollInterval is used.
+                        type: string
                       priorityLabels:
                         description: |-
                           PriorityLabels defines a label-based priority order for discovered items.
@@ -1426,6 +1437,11 @@ spec:
                           JQL is an optional JQL filter appended to the default query.
                           When set, the full query is: "project = <project> AND (<jql>)".
                           When empty, all issues in the project are discovered.
+                        type: string
+                      pollInterval:
+                        description: |-
+                          PollInterval overrides spec.pollInterval for this source (e.g., "30s", "5m").
+                          When empty, spec.pollInterval is used.
                         type: string
                       project:
                         description: Project is the Jira project key (e.g., "PROJ").
