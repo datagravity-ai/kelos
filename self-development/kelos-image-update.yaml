@@ -100,9 +100,9 @@ spec:
          b. Compare it with the latest available version
          c. If the existing PR already targets the latest version, skip it — no update needed
          d. If the existing PR targets an older version, update it:
-            i. Check out the existing PR branch and reset it to origin/main:
+            i. Check out the existing PR branch, resetting it to origin/main:
                ```
-               git checkout -b <existing-branch> origin/main
+               git checkout -B <existing-branch> origin/main
                ```
             ii. Update the version ARG in the Dockerfile to the latest version
             iii. Commit the change:
