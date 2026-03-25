@@ -57,10 +57,10 @@ type GitHubWebhookPayload struct {
 func (s *GitHubWebhookSource) Discover(ctx context.Context) ([]WorkItem, error) {
 	var eventList kelosv1alpha1.WebhookEventList
 
-	// List unprocessed webhook events for GitHub source
+	// List all webhook events in namespace
+	// Field selectors are not supported by fake clients in tests, so filter client-side
 	if err := s.Client.List(ctx, &eventList,
 		client.InNamespace(s.Namespace),
-		client.MatchingFields{"spec.source": "github", "status.processed": "false"},
 	); err != nil {
 		return nil, fmt.Errorf("listing webhook events: %w", err)
 	}
@@ -69,6 +69,11 @@ func (s *GitHubWebhookSource) Discover(ctx context.Context) ([]WorkItem, error) 
 
 	for i := range eventList.Items {
 		event := &eventList.Items[i]
+
+		// Filter by source and processed status client-side
+		if event.Spec.Source != "github" || event.Status.Processed {
+			continue
+		}
 
 		// Parse webhook payload
 		var payload GitHubWebhookPayload

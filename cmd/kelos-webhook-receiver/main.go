@@ -12,6 +12,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/go-logr/logr"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -86,7 +87,7 @@ func main() {
 type webhookHandler struct {
 	client    client.Client
 	namespace string
-	log       ctrl.LogrLogger
+	log       logr.Logger
 }
 
 func (h *webhookHandler) handle(w http.ResponseWriter, r *http.Request) {
