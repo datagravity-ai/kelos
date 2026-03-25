@@ -29,22 +29,22 @@ type GitHubWebhookSource struct {
 type GitHubWebhookPayload struct {
 	Action string `json:"action"` // "opened", "reopened", "labeled", etc.
 	Issue  *struct {
-		Number int    `json:"number"`
-		Title  string `json:"title"`
-		Body   string `json:"body"`
+		Number  int    `json:"number"`
+		Title   string `json:"title"`
+		Body    string `json:"body"`
 		HTMLURL string `json:"html_url"`
-		State  string `json:"state"` // "open" or "closed"
-		Labels []struct {
+		State   string `json:"state"` // "open" or "closed"
+		Labels  []struct {
 			Name string `json:"name"`
 		} `json:"labels"`
 	} `json:"issue,omitempty"`
 	PullRequest *struct {
-		Number int    `json:"number"`
-		Title  string `json:"title"`
-		Body   string `json:"body"`
+		Number  int    `json:"number"`
+		Title   string `json:"title"`
+		Body    string `json:"body"`
 		HTMLURL string `json:"html_url"`
-		State  string `json:"state"` // "open" or "closed"
-		Labels []struct {
+		State   string `json:"state"` // "open" or "closed"
+		Labels  []struct {
 			Name string `json:"name"`
 		} `json:"labels"`
 		Head struct {

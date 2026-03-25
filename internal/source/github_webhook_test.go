@@ -121,53 +121,53 @@ func TestGitHubWebhookSource_SkipClosedIssues(t *testing.T) {
 
 func TestGitHubWebhookSource_LabelFiltering(t *testing.T) {
 	tests := []struct {
-		name          string
-		itemLabels    []string
+		name           string
+		itemLabels     []string
 		requiredLabels []string
-		excludeLabels []string
-		expectedMatch bool
+		excludeLabels  []string
+		expectedMatch  bool
 	}{
 		{
-			name:          "No filters - matches",
-			itemLabels:    []string{"bug"},
+			name:           "No filters - matches",
+			itemLabels:     []string{"bug"},
 			requiredLabels: nil,
-			excludeLabels: nil,
-			expectedMatch: true,
+			excludeLabels:  nil,
+			expectedMatch:  true,
 		},
 		{
-			name:          "Required label present",
-			itemLabels:    []string{"bug", "kelos-task"},
+			name:           "Required label present",
+			itemLabels:     []string{"bug", "kelos-task"},
 			requiredLabels: []string{"kelos-task"},
-			excludeLabels: nil,
-			expectedMatch: true,
+			excludeLabels:  nil,
+			expectedMatch:  true,
 		},
 		{
-			name:          "Required label missing",
-			itemLabels:    []string{"bug"},
+			name:           "Required label missing",
+			itemLabels:     []string{"bug"},
 			requiredLabels: []string{"kelos-task"},
-			excludeLabels: nil,
-			expectedMatch: false,
+			excludeLabels:  nil,
+			expectedMatch:  false,
 		},
 		{
-			name:          "Excluded label present",
-			itemLabels:    []string{"bug", "skip"},
+			name:           "Excluded label present",
+			itemLabels:     []string{"bug", "skip"},
 			requiredLabels: nil,
-			excludeLabels: []string{"skip"},
-			expectedMatch: false,
+			excludeLabels:  []string{"skip"},
+			expectedMatch:  false,
 		},
 		{
-			name:          "Multiple required labels",
-			itemLabels:    []string{"bug", "kelos-task", "high-priority"},
+			name:           "Multiple required labels",
+			itemLabels:     []string{"bug", "kelos-task", "high-priority"},
 			requiredLabels: []string{"kelos-task", "high-priority"},
-			excludeLabels: nil,
-			expectedMatch: true,
+			excludeLabels:  nil,
+			expectedMatch:  true,
 		},
 		{
-			name:          "Required present but also excluded",
-			itemLabels:    []string{"kelos-task", "skip"},
+			name:           "Required present but also excluded",
+			itemLabels:     []string{"kelos-task", "skip"},
 			requiredLabels: []string{"kelos-task"},
-			excludeLabels: []string{"skip"},
-			expectedMatch: false,
+			excludeLabels:  []string{"skip"},
+			expectedMatch:  false,
 		},
 	}
 
