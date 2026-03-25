@@ -241,6 +241,7 @@ func TestGitHubWebhookSource_Discover(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(event1, event2).
+		WithStatusSubresource(&kelosv1alpha1.WebhookEvent{}).
 		Build()
 
 	source := &GitHubWebhookSource{

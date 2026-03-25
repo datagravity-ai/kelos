@@ -14,8 +14,8 @@ func TestValidateGitHubSignature_ValidSignature(t *testing.T) {
 
 	// Compute expected signature
 	// echo -n '{"action":"opened"}' | openssl dgst -sha256 -hmac 'test-secret'
-	// Result: sha256=d5d8634ca6bb8fcf239a9c24d47f5c90f96cf45b9b4475d5e32f1e6f3e6e8b14
-	expectedSig := "sha256=d5d8634ca6bb8fcf239a9c24d47f5c90f96cf45b9b4475d5e32f1e6f3e6e8b14"
+	// Result: sha256=6e939b5b3d3e8eba83ff81dde0030a8f2190d965e8bec7a17842863e979c4d7d
+	expectedSig := "sha256=6e939b5b3d3e8eba83ff81dde0030a8f2190d965e8bec7a17842863e979c4d7d"
 
 	headers := http.Header{}
 	headers.Set("X-Hub-Signature-256", expectedSig)
