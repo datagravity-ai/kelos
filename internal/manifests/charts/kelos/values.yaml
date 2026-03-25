@@ -17,3 +17,7 @@ spawnerResourceLimits: ""
 tokenRefresherImage: public.ecr.aws/anomalo/kelos/kelos-token-refresher
 tokenRefresherResourceRequests: ""
 tokenRefresherResourceLimits: ""
+controller:
+  resources:
+    requests: {}
+    limits: {}
