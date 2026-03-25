@@ -1,42 +1,36 @@
-# Webhook Support
+# GitHub Webhook Support
 
-Kelos supports webhook-based work item discovery as an alternative to API polling. Instead of repeatedly querying external APIs (GitHub, Slack, Linear, etc.), Kelos can receive push notifications via webhooks and process them on-demand.
+Kelos supports GitHub webhooks for work item discovery. Instead of polling the GitHub API, Kelos can receive push notifications when issues or pull requests are created or updated.
 
 ## Architecture
 
 The webhook system consists of three components:
 
-### 1. WebhookEvent CRD (Queue)
+### 1. WebhookEvent CRD
 
-Webhook payloads are stored as `WebhookEvent` custom resources in Kubernetes. This CRD-based queue provides:
+Webhook payloads are stored as `WebhookEvent` custom resources in Kubernetes, providing:
 
 - **Persistence**: Events survive pod restarts (stored in etcd)
 - **Auditability**: All events are visible via `kubectl get webhookevents`
 - **Processing tracking**: Events are marked as processed after discovery
 
-**Alternative approaches considered:**
-- In-memory queue with ConfigMap snapshots (faster but loses events on crash)
-- External queue like Redis/RabbitMQ (adds infrastructure dependency)
-
-We chose CRD-based queuing because it's consistent with Kelos' existing architecture where all state lives in Kubernetes resources.
-
 ### 2. Webhook Receiver (kelos-webhook-receiver)
 
 An HTTP server that:
-- Listens on `/webhook/:source` (e.g., `/webhook/github`, `/webhook/slack`)
-- Validates webhook signatures (e.g., GitHub HMAC-SHA256)
+- Listens on `/webhook/github`
+- Validates GitHub webhook signatures (HMAC-SHA256)
 - Creates `WebhookEvent` CRD instances
 - Returns 202 Accepted
 
 Deploy as a Deployment with a LoadBalancer Service to expose it publicly.
 
-### 3. Webhook Source Implementation
+### 3. GitHubWebhookSource
 
-Source implementations (e.g., `GitHubWebhookSource`) that:
-- List unprocessed `WebhookEvent` resources
-- Parse webhook payloads into `WorkItem` format
-- Apply filters (labels, state, etc.)
-- Mark events as processed
+The `GitHubWebhookSource` implementation:
+- Lists unprocessed `WebhookEvent` resources
+- Parses GitHub webhook payloads into `WorkItem` format
+- Applies filters (labels, state, etc.)
+- Marks events as processed
 
 ## GitHub Webhook Setup
 
@@ -93,16 +87,6 @@ spec:
       {{ .Body }}
 ```
 
-## Differences from API Polling
-
-| Aspect | API Polling | Webhooks |
-|--------|-------------|----------|
-| **Latency** | Poll interval (e.g., 5 minutes) | Near-instant |
-| **API Rate Limits** | Consumes API quota | No API calls for discovery |
-| **Complexity** | Simple (no external endpoint) | Requires public endpoint + signature validation |
-| **Missed Events** | Can miss events between polls | Events queued reliably |
-| **Infrastructure** | Just spawner pod | Spawner + webhook receiver + LoadBalancer |
-
 ## Webhook Signature Validation
 
 For GitHub webhooks, the receiver validates the `X-Hub-Signature-256` header using HMAC-SHA256.
@@ -119,15 +103,3 @@ env:
 ```
 
 If the secret is not set, signature validation is skipped (development mode only).
-
-## Future Sources
-
-The webhook architecture is designed to support multiple sources:
-- **Slack**: `/webhook/slack` for slash commands or event subscriptions
-- **Linear**: `/webhook/linear` for issue events
-- **Salesforce**: `/webhook/salesforce` for custom events
-
-Each source requires:
-1. A Source implementation (similar to `GitHubWebhookSource`)
-2. Payload parsing logic
-3. Signature validation (if applicable)
