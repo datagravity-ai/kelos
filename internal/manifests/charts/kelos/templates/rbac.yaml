@@ -152,6 +152,34 @@ rules:
       - patch
       - update
       - watch
+  - apiGroups:
+      - kelos.dev
+    resources:
+      - webhookevents
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - kelos.dev
+    resources:
+      - webhookevents/status
+    verbs:
+      - get
+      - update
+      - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kelos-webhook-receiver-role
+rules:
+  - apiGroups:
+      - kelos.dev
+    resources:
+      - webhookevents
+    verbs:
+      - create
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
