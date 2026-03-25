@@ -45,7 +45,7 @@ We'll use a **CRD-based queue** (WebhookEvent custom resources) to store incomin
 - [x] Update `cmd/kelos-spawner/main.go`
   - Add webhook source creation logic in `buildSource()`
   - Pass k8s client to GitHubWebhookSource
-- [ ] Add RBAC permissions for WebhookEvent resources (in deployment manifests)
+- [x] Add RBAC permissions for WebhookEvent resources (in deployment manifests)
 
 ### Phase 5: Documentation & Examples
 - [x] Add example TaskSpawner YAML using GitHub webhooks
@@ -57,7 +57,7 @@ We'll use a **CRD-based queue** (WebhookEvent custom resources) to store incomin
 ### Phase 6: Tests
 - [x] Unit tests for webhook receiver
 - [x] Unit tests for GitHub webhook source
-- [ ] Integration test for end-to-end flow (requires live cluster)
+- [x] Integration test for end-to-end flow (uses envtest)
 
 ## Completed
 
@@ -70,16 +70,17 @@ We'll use a **CRD-based queue** (WebhookEvent custom resources) to store incomin
 4. **TaskSpawner integration** - Spawner supports `githubWebhook` in `When` struct
 5. **Documentation** - Complete setup guide and examples
 
-### Still needed (noted in PR):
-- Generate CRD manifests (`make update` in Go environment)
-- Generate deep copy code
-- Unit tests
-- Integration tests
-- Testing in live cluster
+### Completed:
+- ✅ Generate CRD manifests (`make update`)
+- ✅ Generate deep copy code
+- ✅ Unit tests
+- ✅ Integration tests
+- ✅ RBAC permissions
 
 ## Success Criteria
 
 - ✅ Can receive GitHub webhooks and create WebhookEvent CRDs
 - ✅ TaskSpawner with `when.githubWebhook` discovers work items from webhooks
 - ✅ Compatible with `main` branch for upstream PR
-- ⏳ Tests (pending)
+- ✅ Unit and integration tests passing
+- ✅ All CI checks should pass
