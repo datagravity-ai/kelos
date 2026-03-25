@@ -55,9 +55,9 @@ We'll use a **CRD-based queue** (WebhookEvent custom resources) to store incomin
 - [x] Comparison with API polling approach
 
 ### Phase 6: Tests
-- [ ] Unit tests for webhook receiver
-- [ ] Unit tests for GitHub webhook source
-- [ ] Integration test for end-to-end flow
+- [x] Unit tests for webhook receiver
+- [x] Unit tests for GitHub webhook source
+- [ ] Integration test for end-to-end flow (requires live cluster)
 
 ## Completed
 
