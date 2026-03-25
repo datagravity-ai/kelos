@@ -11,7 +11,7 @@ cd /workspaces/kelos && go mod download
 echo "==> Building kelos CLI..."
 make -C /workspaces/kelos build WHAT=cmd/kelos 2>/dev/null || true
 
-cat << 'MSG'
+cat <<'MSG'
 
 ==> Done! To get started:
 1. tailscale up --accept-routes
