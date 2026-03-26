@@ -188,15 +188,15 @@ func validateGitHubSignature(headers http.Header, payload []byte) error {
 // validateLinearSignature validates the X-Linear-Signature header against the payload.
 // The secret is read from the LINEAR_WEBHOOK_SECRET environment variable.
 func validateLinearSignature(headers http.Header, payload []byte) error {
-	signature := headers.Get("X-Linear-Signature")
-	if signature == "" {
-		return fmt.Errorf("missing X-Linear-Signature header")
-	}
-
 	secret := os.Getenv("LINEAR_WEBHOOK_SECRET")
 	if secret == "" {
 		// If no secret is configured, skip validation (development mode)
 		return nil
+	}
+
+	signature := headers.Get("X-Linear-Signature")
+	if signature == "" {
+		return fmt.Errorf("missing X-Linear-Signature header")
 	}
 
 	// Compute expected signature
