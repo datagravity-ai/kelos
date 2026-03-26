@@ -149,3 +149,18 @@ func TestValidateLinearSignature_NoSecretConfigured(t *testing.T) {
 		t.Errorf("Expected no error when secret not configured, got: %v", err)
 	}
 }
+
+func TestValidateLinearSignature_NoSecretNoHeader(t *testing.T) {
+	// Don't set LINEAR_WEBHOOK_SECRET and don't send signature header
+	// This is the actual scenario when Linear webhooks are sent without a secret configured
+	t.Setenv("LINEAR_WEBHOOK_SECRET", "")
+
+	payload := []byte(`{"action":"create","type":"Issue"}`)
+	headers := http.Header{}
+	// Note: NO X-Linear-Signature header set
+
+	err := validateLinearSignature(headers, payload)
+	if err != nil {
+		t.Errorf("Expected no error when secret not configured and no header sent, got: %v", err)
+	}
+}
