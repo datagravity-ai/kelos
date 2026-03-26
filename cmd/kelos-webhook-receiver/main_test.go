@@ -91,3 +91,62 @@ func TestWebhookHandler_MissingSource(t *testing.T) {
 		t.Errorf("Expected status %d, got %d", http.StatusBadRequest, w.Code)
 	}
 }
+
+func TestValidateLinearSignature_ValidSignature(t *testing.T) {
+	t.Setenv("LINEAR_WEBHOOK_SECRET", "test-secret")
+
+	payload := []byte(`{"action":"create","type":"Issue"}`)
+
+	// Compute expected signature
+	// echo -n '{"action":"create","type":"Issue"}' | openssl dgst -sha256 -hmac 'test-secret'
+	// Result: 6e939b5b3d3e8eba83ff81dde0030a8f2190d965e8bec7a17842863e979c4d7d (no sha256= prefix)
+	expectedSig := "75e46a6705b60bd5d39aeefbd095eaeb4f8dd7a34e38946c5d0b993b3dbb7cc1"
+
+	headers := http.Header{}
+	headers.Set("X-Linear-Signature", expectedSig)
+
+	err := validateLinearSignature(headers, payload)
+	if err != nil {
+		t.Errorf("Expected valid signature, got error: %v", err)
+	}
+}
+
+func TestValidateLinearSignature_InvalidSignature(t *testing.T) {
+	t.Setenv("LINEAR_WEBHOOK_SECRET", "test-secret")
+
+	payload := []byte(`{"action":"create","type":"Issue"}`)
+
+	headers := http.Header{}
+	headers.Set("X-Linear-Signature", "wrongsignature")
+
+	err := validateLinearSignature(headers, payload)
+	if err == nil {
+		t.Error("Expected error for invalid signature, got nil")
+	}
+}
+
+func TestValidateLinearSignature_MissingHeader(t *testing.T) {
+	t.Setenv("LINEAR_WEBHOOK_SECRET", "test-secret")
+
+	payload := []byte(`{"action":"create","type":"Issue"}`)
+	headers := http.Header{}
+
+	err := validateLinearSignature(headers, payload)
+	if err == nil {
+		t.Error("Expected error for missing signature header, got nil")
+	}
+}
+
+func TestValidateLinearSignature_NoSecretConfigured(t *testing.T) {
+	// Don't set LINEAR_WEBHOOK_SECRET - should skip validation
+	t.Setenv("LINEAR_WEBHOOK_SECRET", "")
+
+	payload := []byte(`{"action":"create","type":"Issue"}`)
+	headers := http.Header{}
+	headers.Set("X-Linear-Signature", "anysignature")
+
+	err := validateLinearSignature(headers, payload)
+	if err != nil {
+		t.Errorf("Expected no error when secret not configured, got: %v", err)
+	}
+}

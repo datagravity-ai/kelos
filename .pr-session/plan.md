@@ -22,12 +22,12 @@ Linear webhook support will follow the same CRD-based queue pattern as GitHub we
 ## Plan
 
 ### Phase 1: Extend WebhookEvent Support for Linear
-- [ ] Update webhook receiver to handle Linear signature validation
+- [x] Update webhook receiver to handle Linear signature validation
   - Add `validateLinearSignature()` function in `cmd/kelos-webhook-receiver/main.go`
   - Check for `LINEAR_WEBHOOK_SECRET` env var (optional, skip if not set)
   - Validate `X-Linear-Signature` header using HMAC-SHA256
   - Update `handle()` to call validator when source is "linear"
-- [ ] Add unit tests for Linear signature validation
+- [x] Add unit tests for Linear signature validation
 
 ### Phase 2: Linear Webhook Source Implementation
 - [ ] Create `internal/source/linear_webhook.go`
