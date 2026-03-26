@@ -56,7 +56,7 @@ Linear webhook support will follow the same CRD-based queue pattern as GitHub we
   - Create `LinearWebhookSource` instance with k8s client
 
 ### Phase 5: Integration Tests
-- [ ] Create `test/integration/linear_webhook_test.go`
+- [x] Create `test/integration/linear_webhook_test.go`
   - Test Linear webhook discovery and processing
   - Test state filtering (include/exclude based on config)
   - Test label filtering
