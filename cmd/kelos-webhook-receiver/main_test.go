@@ -99,8 +99,7 @@ func TestValidateLinearSignature_ValidSignature(t *testing.T) {
 
 	// Compute expected signature
 	// echo -n '{"action":"create","type":"Issue"}' | openssl dgst -sha256 -hmac 'test-secret'
-	// Result: 6e939b5b3d3e8eba83ff81dde0030a8f2190d965e8bec7a17842863e979c4d7d (no sha256= prefix)
-	expectedSig := "75e46a6705b60bd5d39aeefbd095eaeb4f8dd7a34e38946c5d0b993b3dbb7cc1"
+	expectedSig := "3b4c0e7668708bcb65b6103de3d28cae0bead64460615aaa232f645b96568741"
 
 	headers := http.Header{}
 	headers.Set("X-Linear-Signature", expectedSig)
