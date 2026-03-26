@@ -21,6 +21,11 @@ PATTERNS=(
   'token\s*[:=]\s*["\x27][^"\x27]{4,}'        # token assignments
   'AIza[0-9A-Za-z\-_]{35}'                    # Google API key
   '[0-9]+-[0-9A-Za-z_]{32}\.apps\.googleusercontent\.com'  # Google OAuth client ID
+  'sk-ant-api[0-9]{2}-[a-zA-Z0-9\-_]{80,}'   # Anthropic API key
+  'sk-ant-[a-zA-Z0-9\-_]{40,}'               # Anthropic API key (older format)
+  'sk-proj-[a-zA-Z0-9\-_]{40,}'              # OpenAI project API key
+  'sk-[a-zA-Z0-9]{48}'                       # OpenAI API key (legacy)
+  'ya29\.[a-zA-Z0-9_\-]{50,}'                # Google/Vertex OAuth access token
 )
 
 STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACM 2>/dev/null || true)
