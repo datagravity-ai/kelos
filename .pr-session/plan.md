@@ -51,7 +51,7 @@ Linear webhook support will follow the same CRD-based queue pattern as GitHub we
   - Mirror GitHub webhook pattern for consistency
 
 ### Phase 4: Spawner Integration
-- [ ] Update `cmd/kelos-spawner/main.go`
+- [x] Update `cmd/kelos-spawner/main.go`
   - Extend `buildSource()` to handle `LinearWebhook` case
   - Create `LinearWebhookSource` instance with k8s client
 
