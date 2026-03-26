@@ -30,19 +30,18 @@ Linear webhook support will follow the same CRD-based queue pattern as GitHub we
 - [x] Add unit tests for Linear signature validation
 
 ### Phase 2: Linear Webhook Source Implementation
-- [ ] Create `internal/source/linear_webhook.go`
+- [x] Create `internal/source/linear_webhook.go`
   - Implement `LinearWebhookSource` struct with Client, Namespace, filters
   - Add `LinearWebhookPayload` struct for Linear webhook format
   - Implement `Discover()` to list unprocessed WebhookEvent with source=linear
-  - Parse Linear webhook payloads (Issue and Comment events)
+  - Parse Linear webhook payloads (Issue events only)
   - Filter by states (if configured), exclude terminal states (Done, Canceled)
   - Convert to WorkItem (ID format: "TEAM-123", Kind = state name)
   - Mark events as processed using DeepCopy pattern
-- [ ] Create `internal/source/linear_webhook_test.go`
+- [x] Create `internal/source/linear_webhook_test.go`
   - Unit tests for payload parsing (Issue create/update)
   - Tests for state filtering
   - Tests for label filtering
-  - Tests for comment event handling
   - End-to-end Discover() test with fake client
 
 ### Phase 3: TaskSpawner CRD Updates
