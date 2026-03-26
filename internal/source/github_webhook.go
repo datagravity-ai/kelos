@@ -68,7 +68,7 @@ func (s *GitHubWebhookSource) Discover(ctx context.Context) ([]WorkItem, error) 
 	var items []WorkItem
 
 	for i := range eventList.Items {
-		event := &eventList.Items[i]
+		event := eventList.Items[i].DeepCopy()
 
 		// Filter by source and processed status client-side
 		if event.Spec.Source != "github" || event.Status.Processed {
@@ -85,11 +85,21 @@ func (s *GitHubWebhookSource) Discover(ctx context.Context) ([]WorkItem, error) 
 		// Convert to WorkItem
 		item, ok := s.payloadToWorkItem(payload)
 		if !ok {
+			// Mark event as processed even if payload couldn't be converted
+			event.Status.Processed = true
+			now := metav1.Now()
+			event.Status.ProcessedAt = &now
+			_ = s.Client.Status().Update(ctx, event)
 			continue
 		}
 
 		// Apply label filters
 		if !s.matchesLabels(item.Labels) {
+			// Mark event as processed even if it was filtered out
+			event.Status.Processed = true
+			now := metav1.Now()
+			event.Status.ProcessedAt = &now
+			_ = s.Client.Status().Update(ctx, event)
 			continue
 		}
 
