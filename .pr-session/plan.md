@@ -45,7 +45,7 @@ Linear webhook support will follow the same CRD-based queue pattern as GitHub we
   - End-to-end Discover() test with fake client
 
 ### Phase 3: TaskSpawner CRD Updates
-- [ ] Update `api/v1alpha1/taskspawner_types.go`
+- [x] Update `api/v1alpha1/taskspawner_types.go`
   - Add `LinearWebhook` struct with filters (namespace, states, labels, excludeLabels)
   - Add `When.LinearWebhook` field
   - Mirror GitHub webhook pattern for consistency
