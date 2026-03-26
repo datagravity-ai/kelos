@@ -8,6 +8,11 @@ SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 RUN curl -Lo /usr/local/bin/kind https://kind.sigs.k8s.io/dl/latest/kind-linux-amd64 \
     && chmod +x /usr/local/bin/kind
 
+# kubectx and kubens (for switching Kubernetes contexts and namespaces)
+RUN curl -fsSL https://github.com/ahmetb/kubectx/releases/latest/download/kubectx -o /usr/local/bin/kubectx \
+    && curl -fsSL https://github.com/ahmetb/kubectx/releases/latest/download/kubens -o /usr/local/bin/kubens \
+    && chmod +x /usr/local/bin/kubectx /usr/local/bin/kubens
+
 # Claude Code
 RUN curl -fsSL https://claude.ai/install.sh | bash
 
