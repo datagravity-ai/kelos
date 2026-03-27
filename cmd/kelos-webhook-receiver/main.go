@@ -194,9 +194,9 @@ func validateLinearSignature(headers http.Header, payload []byte) error {
 		return nil
 	}
 
-	signature := headers.Get("X-Linear-Signature")
+	signature := headers.Get("linear-signature")
 	if signature == "" {
-		return fmt.Errorf("missing X-Linear-Signature header")
+		return fmt.Errorf("missing linear-signature header")
 	}
 
 	// Compute expected signature
