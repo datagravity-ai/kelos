@@ -142,7 +142,7 @@ func TestValidateLinearSignature_NoSecretConfigured(t *testing.T) {
 
 	payload := []byte(`{"action":"create","type":"Issue"}`)
 	headers := http.Header{}
-	headers.Set("X-Linear-Signature", "anysignature")
+	headers.Set("linear-signature", "anysignature")
 
 	err := validateLinearSignature(headers, payload)
 	if err != nil {
@@ -157,7 +157,7 @@ func TestValidateLinearSignature_NoSecretNoHeader(t *testing.T) {
 
 	payload := []byte(`{"action":"create","type":"Issue"}`)
 	headers := http.Header{}
-	// Note: NO X-Linear-Signature header set
+	// Note: NO linear-signature header set
 
 	err := validateLinearSignature(headers, payload)
 	if err != nil {
