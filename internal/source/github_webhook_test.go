@@ -13,6 +13,10 @@ import (
 	kelosv1alpha1 "github.com/kelos-dev/kelos/api/v1alpha1"
 )
 
+func webhookPayloadToWorkItem(s *GitHubWebhookSource, payload GitHubWebhookPayload) (WorkItem, bool) {
+	return s.payloadToWorkItem(context.Background(), payload, nil)
+}
+
 func TestGitHubWebhookSource_ParseIssuePayload(t *testing.T) {
 	payload := []byte(`{
 		"action": "opened",
@@ -25,7 +29,8 @@ func TestGitHubWebhookSource_ParseIssuePayload(t *testing.T) {
 			"labels": [
 				{"name": "bug"},
 				{"name": "kelos-task"}
-			]
+			],
+			"user": {"login": "octocat"}
 		}
 	}`)
 
@@ -35,7 +40,7 @@ func TestGitHubWebhookSource_ParseIssuePayload(t *testing.T) {
 	}
 
 	source := &GitHubWebhookSource{}
-	item, ok := source.payloadToWorkItem(parsed)
+	item, ok := webhookPayloadToWorkItem(source, parsed)
 
 	if !ok {
 		t.Fatal("Expected payload to be converted to WorkItem")
@@ -53,6 +58,15 @@ func TestGitHubWebhookSource_ParseIssuePayload(t *testing.T) {
 	if len(item.Labels) != 2 {
 		t.Errorf("Expected 2 labels, got %d", len(item.Labels))
 	}
+	if item.Author != "octocat" {
+		t.Errorf("Expected author 'octocat', got %s", item.Author)
+	}
+	if item.State != "open" {
+		t.Errorf("Expected state 'open', got %s", item.State)
+	}
+	if item.Action != "opened" {
+		t.Errorf("Expected action 'opened', got %s", item.Action)
+	}
 }
 
 func TestGitHubWebhookSource_ParsePullRequestPayload(t *testing.T) {
@@ -64,9 +78,11 @@ func TestGitHubWebhookSource_ParsePullRequestPayload(t *testing.T) {
 			"body": "PR body",
 			"html_url": "https://github.com/test/repo/pull/456",
 			"state": "open",
+			"draft": true,
 			"labels": [
 				{"name": "enhancement"}
 			],
+			"user": {"login": "contributor"},
 			"head": {
 				"ref": "feature-branch"
 			}
@@ -79,7 +95,7 @@ func TestGitHubWebhookSource_ParsePullRequestPayload(t *testing.T) {
 	}
 
 	source := &GitHubWebhookSource{}
-	item, ok := source.payloadToWorkItem(parsed)
+	item, ok := webhookPayloadToWorkItem(source, parsed)
 
 	if !ok {
 		t.Fatal("Expected payload to be converted to WorkItem")
@@ -93,6 +109,18 @@ func TestGitHubWebhookSource_ParsePullRequestPayload(t *testing.T) {
 	}
 	if item.Branch != "feature-branch" {
 		t.Errorf("Expected branch 'feature-branch', got %s", item.Branch)
+	}
+	if item.Author != "contributor" {
+		t.Errorf("Expected author 'contributor', got %s", item.Author)
+	}
+	if item.State != "open" {
+		t.Errorf("Expected state 'open', got %s", item.State)
+	}
+	if item.Action != "opened" {
+		t.Errorf("Expected action 'opened', got %s", item.Action)
+	}
+	if !item.Draft {
+		t.Error("Expected draft to be true")
 	}
 }
 
@@ -112,7 +140,7 @@ func TestGitHubWebhookSource_SkipClosedIssues(t *testing.T) {
 	}
 
 	source := &GitHubWebhookSource{}
-	_, ok := source.payloadToWorkItem(parsed)
+	_, ok := webhookPayloadToWorkItem(source, parsed)
 
 	if ok {
 		t.Error("Expected closed issue to be skipped")
@@ -186,6 +214,338 @@ func TestGitHubWebhookSource_LabelFiltering(t *testing.T) {
 	}
 }
 
+func TestGitHubWebhookSource_AuthorFiltering(t *testing.T) {
+	makePayload := func() GitHubWebhookPayload {
+		raw := []byte(`{"action":"opened","issue":{"number":1,"title":"Test","state":"open","html_url":"https://github.com/t/r/issues/1","user":{"login":"octocat"}}}`)
+		var p GitHubWebhookPayload
+		_ = json.Unmarshal(raw, &p)
+		return p
+	}
+
+	// Should match when author filter matches
+	s := &GitHubWebhookSource{Author: "octocat"}
+	_, ok := webhookPayloadToWorkItem(s, makePayload())
+	if !ok {
+		t.Error("Expected item to match author filter")
+	}
+
+	// Should not match when author filter does not match
+	s = &GitHubWebhookSource{Author: "other-user"}
+	_, ok = webhookPayloadToWorkItem(s, makePayload())
+	if ok {
+		t.Error("Expected item to be filtered out by author")
+	}
+
+	// Should match when no author filter is set
+	s = &GitHubWebhookSource{}
+	_, ok = webhookPayloadToWorkItem(s, makePayload())
+	if !ok {
+		t.Error("Expected item to match with no author filter")
+	}
+}
+
+func TestGitHubWebhookSource_StateFiltering(t *testing.T) {
+	makePayload := func(state string) GitHubWebhookPayload {
+		raw := []byte(`{"action":"opened","issue":{"number":1,"title":"T","state":"` + state + `","html_url":"https://github.com/t/r/issues/1"}}`)
+		var p GitHubWebhookPayload
+		_ = json.Unmarshal(raw, &p)
+		return p
+	}
+
+	// Default (empty) state should only match "open"
+	s := &GitHubWebhookSource{}
+	_, ok := webhookPayloadToWorkItem(s, makePayload("open"))
+	if !ok {
+		t.Error("Expected open issue to match default state filter")
+	}
+	_, ok = webhookPayloadToWorkItem(s, makePayload("closed"))
+	if ok {
+		t.Error("Expected closed issue to be filtered by default state filter")
+	}
+
+	// Explicit "closed" state
+	s = &GitHubWebhookSource{State: "closed"}
+	_, ok = webhookPayloadToWorkItem(s, makePayload("closed"))
+	if !ok {
+		t.Error("Expected closed issue to match 'closed' state filter")
+	}
+	_, ok = webhookPayloadToWorkItem(s, makePayload("open"))
+	if ok {
+		t.Error("Expected open issue to be filtered by 'closed' state filter")
+	}
+
+	// "all" state should match everything
+	s = &GitHubWebhookSource{State: "all"}
+	_, ok = webhookPayloadToWorkItem(s, makePayload("open"))
+	if !ok {
+		t.Error("Expected open issue to match 'all' state filter")
+	}
+	_, ok = webhookPayloadToWorkItem(s, makePayload("closed"))
+	if !ok {
+		t.Error("Expected closed issue to match 'all' state filter")
+	}
+}
+
+func TestGitHubWebhookSource_ActionsFiltering(t *testing.T) {
+	makePayload := func(action string) GitHubWebhookPayload {
+		raw := []byte(`{"action":"` + action + `","issue":{"number":1,"title":"T","state":"open","html_url":"https://github.com/t/r/issues/1"}}`)
+		var p GitHubWebhookPayload
+		_ = json.Unmarshal(raw, &p)
+		return p
+	}
+
+	// No actions filter - all actions match
+	s := &GitHubWebhookSource{}
+	_, ok := webhookPayloadToWorkItem(s, makePayload("labeled"))
+	if !ok {
+		t.Error("Expected item to match with no actions filter")
+	}
+
+	// With actions filter
+	s = &GitHubWebhookSource{Actions: []string{"opened", "reopened"}}
+	_, ok = webhookPayloadToWorkItem(s, makePayload("opened"))
+	if !ok {
+		t.Error("Expected 'opened' action to match filter")
+	}
+	_, ok = webhookPayloadToWorkItem(s, makePayload("labeled"))
+	if ok {
+		t.Error("Expected 'labeled' action to be filtered out")
+	}
+}
+
+func TestGitHubWebhookSource_DraftFiltering(t *testing.T) {
+	makePayload := func(draft bool) GitHubWebhookPayload {
+		draftStr := "false"
+		if draft {
+			draftStr = "true"
+		}
+		raw := []byte(`{"action":"opened","pull_request":{"number":1,"title":"T","state":"open","draft":` + draftStr + `,"html_url":"https://github.com/t/r/pull/1","head":{"ref":"b"}}}`)
+		var p GitHubWebhookPayload
+		_ = json.Unmarshal(raw, &p)
+		return p
+	}
+
+	boolPtr := func(b bool) *bool { return &b }
+
+	// No draft filter - both match
+	s := &GitHubWebhookSource{}
+	_, ok := webhookPayloadToWorkItem(s, makePayload(true))
+	if !ok {
+		t.Error("Expected draft PR to match with no draft filter")
+	}
+	_, ok = webhookPayloadToWorkItem(s, makePayload(false))
+	if !ok {
+		t.Error("Expected non-draft PR to match with no draft filter")
+	}
+
+	// Draft=true filter
+	s = &GitHubWebhookSource{Draft: boolPtr(true)}
+	_, ok = webhookPayloadToWorkItem(s, makePayload(true))
+	if !ok {
+		t.Error("Expected draft PR to match draft=true filter")
+	}
+	_, ok = webhookPayloadToWorkItem(s, makePayload(false))
+	if ok {
+		t.Error("Expected non-draft PR to be filtered by draft=true filter")
+	}
+
+	// Draft=false filter
+	s = &GitHubWebhookSource{Draft: boolPtr(false)}
+	_, ok = webhookPayloadToWorkItem(s, makePayload(false))
+	if !ok {
+		t.Error("Expected non-draft PR to match draft=false filter")
+	}
+	_, ok = webhookPayloadToWorkItem(s, makePayload(true))
+	if ok {
+		t.Error("Expected draft PR to be filtered by draft=false filter")
+	}
+}
+
+func TestGitHubWebhookSource_TriggerComment(t *testing.T) {
+	// issue_comment event with matching trigger
+	commentPayload := []byte(`{
+		"action": "created",
+		"comment": {"body": "/kelos-run", "user": {"login": "admin"}},
+		"issue": {
+			"number": 42,
+			"title": "Test Issue",
+			"body": "Some body",
+			"html_url": "https://github.com/test/repo/issues/42",
+			"state": "open",
+			"labels": [{"name": "bug"}],
+			"user": {"login": "author"}
+		}
+	}`)
+
+	var parsed GitHubWebhookPayload
+	if err := json.Unmarshal(commentPayload, &parsed); err != nil {
+		t.Fatalf("Failed to parse: %v", err)
+	}
+
+	// With trigger comment set, matching comment should be accepted
+	s := &GitHubWebhookSource{TriggerComment: "/kelos-run"}
+	item, ok := webhookPayloadToWorkItem(s, parsed)
+	if !ok {
+		t.Fatal("Expected comment with trigger to produce a work item")
+	}
+	if item.Number != 42 {
+		t.Errorf("Expected number 42, got %d", item.Number)
+	}
+	if item.Kind != "Issue" {
+		t.Errorf("Expected kind 'Issue', got %s", item.Kind)
+	}
+
+	// Non-matching comment should be rejected
+	nonMatchPayload := []byte(`{
+		"action": "created",
+		"comment": {"body": "just a normal comment", "user": {"login": "admin"}},
+		"issue": {
+			"number": 42,
+			"title": "Test Issue",
+			"state": "open",
+			"html_url": "https://github.com/test/repo/issues/42",
+			"user": {"login": "author"}
+		}
+	}`)
+	var nonMatch GitHubWebhookPayload
+	_ = json.Unmarshal(nonMatchPayload, &nonMatch)
+	_, ok = webhookPayloadToWorkItem(s, nonMatch)
+	if ok {
+		t.Error("Expected non-matching comment to be rejected")
+	}
+
+	// Issue event without trigger in body should be rejected
+	issuePayload := []byte(`{
+		"action": "opened",
+		"issue": {
+			"number": 42,
+			"title": "Test Issue",
+			"body": "No trigger here",
+			"state": "open",
+			"html_url": "https://github.com/test/repo/issues/42",
+			"user": {"login": "author"}
+		}
+	}`)
+	var issueParsed GitHubWebhookPayload
+	_ = json.Unmarshal(issuePayload, &issueParsed)
+	_, ok = webhookPayloadToWorkItem(s, issueParsed)
+	if ok {
+		t.Error("Expected issue without trigger in body to be rejected")
+	}
+
+	// Issue event WITH trigger in body should be accepted
+	issueWithTrigger := []byte(`{
+		"action": "opened",
+		"issue": {
+			"number": 42,
+			"title": "Test Issue",
+			"body": "/kelos-run",
+			"state": "open",
+			"html_url": "https://github.com/test/repo/issues/42",
+			"user": {"login": "author"}
+		}
+	}`)
+	var issueTrigger GitHubWebhookPayload
+	_ = json.Unmarshal(issueWithTrigger, &issueTrigger)
+	_, ok = webhookPayloadToWorkItem(s, issueTrigger)
+	if !ok {
+		t.Error("Expected issue with trigger in body to be accepted")
+	}
+}
+
+func TestGitHubWebhookSource_ExcludeComments(t *testing.T) {
+	commentPayload := []byte(`{
+		"action": "created",
+		"comment": {"body": "/kelos-stop", "user": {"login": "admin"}},
+		"issue": {
+			"number": 42,
+			"title": "Test Issue",
+			"state": "open",
+			"html_url": "https://github.com/test/repo/issues/42",
+			"user": {"login": "author"}
+		}
+	}`)
+
+	var parsed GitHubWebhookPayload
+	_ = json.Unmarshal(commentPayload, &parsed)
+
+	s := &GitHubWebhookSource{ExcludeComments: []string{"/kelos-stop"}}
+	_, ok := webhookPayloadToWorkItem(s, parsed)
+	if ok {
+		t.Error("Expected exclude comment to reject the event")
+	}
+}
+
+func TestGitHubWebhookSource_AllowedUsers(t *testing.T) {
+	commentPayload := []byte(`{
+		"action": "created",
+		"comment": {"body": "/kelos-run", "user": {"login": "trusted"}},
+		"issue": {
+			"number": 42,
+			"title": "Test Issue",
+			"state": "open",
+			"html_url": "https://github.com/test/repo/issues/42",
+			"user": {"login": "author"}
+		}
+	}`)
+
+	var parsed GitHubWebhookPayload
+	_ = json.Unmarshal(commentPayload, &parsed)
+
+	// Allowed user should be accepted
+	s := &GitHubWebhookSource{
+		TriggerComment: "/kelos-run",
+		AllowedUsers:   []string{"trusted"},
+	}
+	_, ok := webhookPayloadToWorkItem(s, parsed)
+	if !ok {
+		t.Error("Expected allowed user to be accepted")
+	}
+
+	// Non-allowed user should be rejected
+	s = &GitHubWebhookSource{
+		TriggerComment: "/kelos-run",
+		AllowedUsers:   []string{"other-user"},
+	}
+	_, ok = webhookPayloadToWorkItem(s, parsed)
+	if ok {
+		t.Error("Expected non-allowed user to be rejected")
+	}
+}
+
+func TestGitHubWebhookSource_CommentOnPR(t *testing.T) {
+	// issue_comment event on a pull request (has pull_request field on issue)
+	commentPayload := []byte(`{
+		"action": "created",
+		"comment": {"body": "/kelos-run", "user": {"login": "admin"}},
+		"issue": {
+			"number": 99,
+			"title": "Test PR",
+			"body": "PR body",
+			"html_url": "https://github.com/test/repo/pull/99",
+			"state": "open",
+			"labels": [{"name": "enhancement"}],
+			"user": {"login": "pr-author"},
+			"pull_request": {}
+		}
+	}`)
+
+	var parsed GitHubWebhookPayload
+	_ = json.Unmarshal(commentPayload, &parsed)
+
+	s := &GitHubWebhookSource{TriggerComment: "/kelos-run"}
+	item, ok := webhookPayloadToWorkItem(s, parsed)
+	if !ok {
+		t.Fatal("Expected comment on PR to produce a work item")
+	}
+	if item.Kind != "PR" {
+		t.Errorf("Expected kind 'PR', got %s", item.Kind)
+	}
+	if item.ID != "pr-99" {
+		t.Errorf("Expected ID 'pr-99', got %s", item.ID)
+	}
+}
+
 func TestGitHubWebhookSource_Discover(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = kelosv1alpha1.AddToScheme(scheme)
@@ -244,12 +604,13 @@ func TestGitHubWebhookSource_Discover(t *testing.T) {
 		WithStatusSubresource(&kelosv1alpha1.WebhookEvent{}).
 		Build()
 
-	source := &GitHubWebhookSource{
-		Client:    fakeClient,
-		Namespace: "default",
+	src := &GitHubWebhookSource{
+		Client:      fakeClient,
+		Namespace:   "default",
+		SpawnerName: "spawner-a",
 	}
 
-	items, err := source.Discover(context.Background())
+	items, err := src.Discover(context.Background())
 	if err != nil {
 		t.Fatalf("Discover failed: %v", err)
 	}
@@ -263,7 +624,7 @@ func TestGitHubWebhookSource_Discover(t *testing.T) {
 		t.Errorf("Expected issue 100, got %d", items[0].Number)
 	}
 
-	// Verify events were marked as processed
+	// Verify events were marked as processed by this spawner
 	var updatedEvent kelosv1alpha1.WebhookEvent
 	if err := fakeClient.Get(context.Background(), client.ObjectKey{
 		Name:      "event-1",
@@ -274,5 +635,34 @@ func TestGitHubWebhookSource_Discover(t *testing.T) {
 
 	if !updatedEvent.Status.Processed {
 		t.Error("Expected event to be marked as processed")
+	}
+	if len(updatedEvent.Status.ProcessedBy) != 1 || updatedEvent.Status.ProcessedBy[0] != "spawner-a" {
+		t.Errorf("Expected ProcessedBy to contain 'spawner-a', got %v", updatedEvent.Status.ProcessedBy)
+	}
+
+	// A second spawner should still see event1
+	src2 := &GitHubWebhookSource{
+		Client:      fakeClient,
+		Namespace:   "default",
+		SpawnerName: "spawner-b",
+	}
+
+	items2, err := src2.Discover(context.Background())
+	if err != nil {
+		t.Fatalf("Second Discover failed: %v", err)
+	}
+
+	if len(items2) != 1 {
+		t.Errorf("Expected spawner-b to discover 1 item, got %d", len(items2))
+	}
+
+	// Same spawner should not see it again
+	items3, err := src.Discover(context.Background())
+	if err != nil {
+		t.Fatalf("Third Discover failed: %v", err)
+	}
+
+	if len(items3) != 0 {
+		t.Errorf("Expected spawner-a to discover 0 items on re-run, got %d", len(items3))
 	}
 }

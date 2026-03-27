@@ -17,6 +17,14 @@ type WorkItem struct {
 	Comments string
 	Kind     string // "Issue" or "PR"
 	Branch   string
+	// Author is the username of the user who created the issue or pull request.
+	Author string
+	// State is the state of the issue or pull request (e.g. "open", "closed").
+	State string
+	// Action is the webhook action that triggered this work item (e.g. "opened", "reopened").
+	Action string
+	// Draft indicates whether a pull request is a draft.
+	Draft bool
 	// ReviewState is the aggregated pull request review state for GitHub PR sources.
 	ReviewState string
 	// ReviewComments contains formatted inline review comments for GitHub PR sources.

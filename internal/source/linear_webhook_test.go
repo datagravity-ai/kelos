@@ -375,12 +375,13 @@ func TestLinearWebhookSource_Discover(t *testing.T) {
 		WithStatusSubresource(&kelosv1alpha1.WebhookEvent{}).
 		Build()
 
-	source := &LinearWebhookSource{
-		Client:    fakeClient,
-		Namespace: "default",
+	src := &LinearWebhookSource{
+		Client:      fakeClient,
+		Namespace:   "default",
+		SpawnerName: "spawner-a",
 	}
 
-	items, err := source.Discover(context.Background())
+	items, err := src.Discover(context.Background())
 	if err != nil {
 		t.Fatalf("Discover failed: %v", err)
 	}
@@ -394,7 +395,7 @@ func TestLinearWebhookSource_Discover(t *testing.T) {
 		t.Errorf("Expected issue 100, got %d", items[0].Number)
 	}
 
-	// Verify events were marked as processed
+	// Verify events were marked as processed by this spawner
 	var updatedEvent kelosv1alpha1.WebhookEvent
 	if err := fakeClient.Get(context.Background(), client.ObjectKey{
 		Name:      "event-1",
@@ -405,6 +406,9 @@ func TestLinearWebhookSource_Discover(t *testing.T) {
 
 	if !updatedEvent.Status.Processed {
 		t.Error("Expected event to be marked as processed")
+	}
+	if len(updatedEvent.Status.ProcessedBy) != 1 || updatedEvent.Status.ProcessedBy[0] != "spawner-a" {
+		t.Errorf("Expected ProcessedBy to contain 'spawner-a', got %v", updatedEvent.Status.ProcessedBy)
 	}
 }
 
@@ -464,12 +468,13 @@ func TestLinearWebhookSource_OnlyProcessLinearSource(t *testing.T) {
 		WithStatusSubresource(&kelosv1alpha1.WebhookEvent{}).
 		Build()
 
-	source := &LinearWebhookSource{
-		Client:    fakeClient,
-		Namespace: "default",
+	src := &LinearWebhookSource{
+		Client:      fakeClient,
+		Namespace:   "default",
+		SpawnerName: "linear-spawner",
 	}
 
-	items, err := source.Discover(context.Background())
+	items, err := src.Discover(context.Background())
 	if err != nil {
 		t.Fatalf("Discover failed: %v", err)
 	}
