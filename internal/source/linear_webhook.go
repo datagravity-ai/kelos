@@ -17,6 +17,10 @@ type LinearWebhookSource struct {
 	Client    client.Client
 	Namespace string
 
+	// SpawnerName is the name of the TaskSpawner using this source.
+	// Used for per-spawner processed tracking so multiple spawners can
+	// independently react to the same webhook event.
+	SpawnerName string
 	// Types filters webhook events by type (e.g., ["Issue", "Comment"])
 	// When empty, defaults to ["Issue"] for backward compatibility
 	Types []string
@@ -76,8 +80,8 @@ func (s *LinearWebhookSource) Discover(ctx context.Context) ([]WorkItem, error) 
 	for i := range eventList.Items {
 		event := eventList.Items[i].DeepCopy()
 
-		// Filter by source and processed status client-side
-		if event.Spec.Source != "linear" || event.Status.Processed {
+		// Filter by source; skip if already processed by this spawner
+		if event.Spec.Source != "linear" || s.alreadyProcessed(event) {
 			continue
 		}
 
@@ -236,8 +240,19 @@ func (s *LinearWebhookSource) matchesState(state struct {
 	return false
 }
 
-// markProcessed marks an event as processed.
+// alreadyProcessed returns true if this spawner has already processed the event.
+func (s *LinearWebhookSource) alreadyProcessed(event *kelosv1alpha1.WebhookEvent) bool {
+	for _, name := range event.Status.ProcessedBy {
+		if name == s.SpawnerName {
+			return true
+		}
+	}
+	return false
+}
+
+// markProcessed records that this spawner has processed the event.
 func (s *LinearWebhookSource) markProcessed(ctx context.Context, event *kelosv1alpha1.WebhookEvent) {
+	event.Status.ProcessedBy = append(event.Status.ProcessedBy, s.SpawnerName)
 	event.Status.Processed = true
 	now := metav1.Now()
 	event.Status.ProcessedAt = &now

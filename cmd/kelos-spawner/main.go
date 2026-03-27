@@ -571,12 +571,38 @@ func buildSource(ts *kelosv1alpha1.TaskSpawner, owner, repo, apiBaseURL, tokenFi
 
 	if ts.Spec.When.GitHubWebhook != nil {
 		webhook := ts.Spec.When.GitHubWebhook
-		return &source.GitHubWebhookSource{
-			Client:        k8sClient,
-			Namespace:     webhook.Namespace,
-			Labels:        webhook.Labels,
-			ExcludeLabels: webhook.ExcludeLabels,
-		}, nil
+		token, err := readGitHubToken(tokenFile)
+		if err != nil {
+			return nil, err
+		}
+		src := &source.GitHubWebhookSource{
+			Client:         k8sClient,
+			Namespace:      webhook.Namespace,
+			SpawnerName:    ts.Name,
+			Labels:         webhook.Labels,
+			ExcludeLabels:  webhook.ExcludeLabels,
+			Author:         webhook.Author,
+			State:          webhook.State,
+			Actions:        webhook.Actions,
+			Draft:          webhook.Draft,
+			PriorityLabels: webhook.PriorityLabels,
+			Owner:          owner,
+			Repo:           repo,
+			Token:          token,
+			BaseURL:        apiBaseURL,
+			HTTPClient:     httpClient,
+		}
+		if webhook.CommentPolicy != nil {
+			src.TriggerComment = webhook.CommentPolicy.TriggerComment
+			src.ExcludeComments = webhook.CommentPolicy.ExcludeComments
+			src.AllowedUsers = webhook.CommentPolicy.AllowedUsers
+			src.AllowedTeams = make([]string, len(webhook.CommentPolicy.AllowedTeams))
+			for i, t := range webhook.CommentPolicy.AllowedTeams {
+				src.AllowedTeams[i] = string(t)
+			}
+			src.MinimumPermission = webhook.CommentPolicy.MinimumPermission
+		}
+		return src, nil
 	}
 
 	if ts.Spec.When.LinearWebhook != nil {
@@ -584,6 +610,7 @@ func buildSource(ts *kelosv1alpha1.TaskSpawner, owner, repo, apiBaseURL, tokenFi
 		return &source.LinearWebhookSource{
 			Client:        k8sClient,
 			Namespace:     webhook.Namespace,
+			SpawnerName:   ts.Name,
 			Types:         webhook.Types,
 			Actions:       webhook.Actions,
 			States:        webhook.States,

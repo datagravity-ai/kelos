@@ -22,11 +22,19 @@ type WebhookEventSpec struct {
 
 // WebhookEventStatus defines the observed state of WebhookEvent.
 type WebhookEventStatus struct {
-	// Processed indicates whether this event has been processed by a source.
+	// Processed indicates whether this event has been processed by at least one spawner.
+	// Maintained for backward compatibility; prefer checking ProcessedBy for
+	// per-spawner tracking.
 	// +optional
 	Processed bool `json:"processed,omitempty"`
 
-	// ProcessedAt is the timestamp when the event was processed.
+	// ProcessedBy lists the names of TaskSpawners that have processed this event.
+	// Each spawner appends its name after processing, allowing multiple spawners
+	// to independently react to the same webhook event.
+	// +optional
+	ProcessedBy []string `json:"processedBy,omitempty"`
+
+	// ProcessedAt is the timestamp when the event was last processed.
 	// +optional
 	ProcessedAt *metav1.Time `json:"processedAt,omitempty"`
 
