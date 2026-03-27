@@ -250,7 +250,7 @@ func runCycleWithSource(ctx context.Context, cl client.Client, key types.Namespa
 
 	var newItems []source.WorkItem
 	for _, item := range items {
-		taskName := fmt.Sprintf("%s-%s", ts.Name, item.ID)
+		taskName := fmt.Sprintf("%s-%s", ts.Name, strings.ToLower(item.ID))
 		existing, found := existingTaskMap[taskName]
 		if !found {
 			newItems = append(newItems, item)
@@ -306,7 +306,7 @@ func runCycleWithSource(ctx context.Context, cl client.Client, key types.Namespa
 			break
 		}
 
-		taskName := fmt.Sprintf("%s-%s", ts.Name, item.ID)
+		taskName := fmt.Sprintf("%s-%s", ts.Name, strings.ToLower(item.ID))
 
 		prompt, err := source.RenderPrompt(ts.Spec.TaskTemplate.PromptTemplate, item)
 		if err != nil {
@@ -584,6 +584,8 @@ func buildSource(ts *kelosv1alpha1.TaskSpawner, owner, repo, apiBaseURL, tokenFi
 		return &source.LinearWebhookSource{
 			Client:        k8sClient,
 			Namespace:     webhook.Namespace,
+			Types:         webhook.Types,
+			Actions:       webhook.Actions,
 			States:        webhook.States,
 			Labels:        webhook.Labels,
 			ExcludeLabels: webhook.ExcludeLabels,

@@ -73,6 +73,7 @@ func TestLinearWebhookSource_SkipNonIssueEvents(t *testing.T) {
 		"type": "Comment",
 		"action": "create",
 		"data": {
+			"identifier": "ENG-42-comment",
 			"body": "This is a comment"
 		}
 	}`)
@@ -86,7 +87,39 @@ func TestLinearWebhookSource_SkipNonIssueEvents(t *testing.T) {
 	_, ok := source.payloadToWorkItem(parsed)
 
 	if ok {
-		t.Error("Expected Comment event to be skipped")
+		t.Error("Expected Comment event to be skipped by default")
+	}
+}
+
+func TestLinearWebhookSource_ProcessCommentWhenAllowed(t *testing.T) {
+	payload := []byte(`{
+		"type": "Comment",
+		"action": "create",
+		"data": {
+			"identifier": "comment-123",
+			"number": 123,
+			"title": "Comment title",
+			"description": "This is a comment",
+			"url": "https://linear.app/myteam/issue/ENG-42#comment-123"
+		}
+	}`)
+
+	var parsed LinearWebhookPayload
+	if err := json.Unmarshal(payload, &parsed); err != nil {
+		t.Fatalf("Failed to parse payload: %v", err)
+	}
+
+	source := &LinearWebhookSource{
+		Types: []string{"Comment"},
+	}
+	item, ok := source.payloadToWorkItem(parsed)
+
+	if !ok {
+		t.Fatal("Expected Comment event to be processed when Types includes Comment")
+	}
+
+	if item.Kind != "Comment" {
+		t.Errorf("Expected kind 'Comment', got %s", item.Kind)
 	}
 }
 
@@ -110,7 +143,37 @@ func TestLinearWebhookSource_SkipRemoveAction(t *testing.T) {
 	_, ok := source.payloadToWorkItem(parsed)
 
 	if ok {
-		t.Error("Expected remove action to be skipped")
+		t.Error("Expected remove action to be skipped by default")
+	}
+}
+
+func TestLinearWebhookSource_ProcessRemoveWhenAllowed(t *testing.T) {
+	payload := []byte(`{
+		"type": "Issue",
+		"action": "remove",
+		"data": {
+			"identifier": "ENG-42",
+			"number": 42,
+			"title": "Deleted Issue"
+		}
+	}`)
+
+	var parsed LinearWebhookPayload
+	if err := json.Unmarshal(payload, &parsed); err != nil {
+		t.Fatalf("Failed to parse payload: %v", err)
+	}
+
+	source := &LinearWebhookSource{
+		Actions: []string{"remove"},
+	}
+	item, ok := source.payloadToWorkItem(parsed)
+
+	if !ok {
+		t.Fatal("Expected remove action to be processed when Actions includes remove")
+	}
+
+	if item.ID != "ENG-42" {
+		t.Errorf("Expected ID 'ENG-42', got %s", item.ID)
 	}
 }
 
@@ -234,7 +297,9 @@ func TestLinearWebhookSource_LabelFiltering(t *testing.T) {
 			}
 
 			item := WorkItem{Labels: tt.itemLabels}
-			payload := LinearWebhookPayload{}
+			payload := LinearWebhookPayload{
+				Type: "Issue", // Label filtering only applies to Issue events
+			}
 			payload.Data.State.Type = "unstarted" // Non-terminal state
 
 			matches := source.matchesFilters(item, payload)

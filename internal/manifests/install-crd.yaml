@@ -1523,15 +1523,25 @@ spec:
                   linearWebhook:
                     description: LinearWebhook discovers issues from Linear webhooks.
                     properties:
+                      actions:
+                        description: |-
+                          Actions filters webhook events by action (e.g., ["create", "update"]).
+                          When empty, defaults to ["create", "update"] for backward compatibility.
+                          Supported actions: create, update, remove.
+                        items:
+                          type: string
+                        type: array
                       excludeLabels:
-                        description: ExcludeLabels filters out issues that have any
-                          of these labels (client-side).
+                        description: |-
+                          ExcludeLabels filters out issues that have any of these labels (client-side).
+                          Only applies to Issue type events.
                         items:
                           type: string
                         type: array
                       labels:
-                        description: Labels filters issues by labels (applied client-side
-                          to webhook payloads).
+                        description: |-
+                          Labels filters issues by labels (applied client-side to webhook payloads).
+                          Only applies to Issue type events.
                         items:
                           type: string
                         type: array
@@ -1544,6 +1554,15 @@ spec:
                         description: |-
                           States filters issues by workflow state names (e.g., ["Todo", "In Progress"]).
                           When empty, all non-terminal states are processed (excludes "Done", "Canceled").
+                          Only applies to Issue type events.
+                        items:
+                          type: string
+                        type: array
+                      types:
+                        description: |-
+                          Types filters webhook events by type (e.g., ["Issue", "Comment", "Project"]).
+                          When empty, defaults to ["Issue"] for backward compatibility.
+                          Supported types: Issue, Comment, IssueLabel, Project, ProjectUpdate, Cycle, Initiative.
                         items:
                           type: string
                         type: array

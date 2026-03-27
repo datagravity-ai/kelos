@@ -1,0 +1,68 @@
+apiVersion: kelos.dev/v1alpha1
+kind: TaskSpawner
+metadata:
+  name: linear-test
+  namespace: kelos-agents
+spec:
+  # Don't create too many tasks during testing
+  maxConcurrency: 1
+  pollInterval: 1m
+  suspend: false
+
+  when:
+    linearWebhook:
+      # Watch for webhook events in kelos-agents namespace
+      namespace: kelos-agents
+      # Test new flexible filtering - process both Issues and Comments
+      types:
+        - "Issue"
+        - "Comment"
+      # Process create and update actions
+      actions:
+        - "create"
+        - "update"
+        # For testing, accept all non-terminal states (only applies to Issues)
+        # states: []
+        # For testing, no label filtering (only applies to Issues)
+        # labels: []
+        # excludeLabels: []
+
+  taskTemplate:
+    type: claude-code
+    credentials:
+      type: none
+    workspaceRef:
+      name: anomalo-main
+
+    podOverrides:
+      activeDeadlineSeconds: 600 # 10 min timeout for testing
+      env:
+        - name: CLAUDE_CODE_USE_BEDROCK
+          value: "1"
+        - name: AWS_REGION
+          value: us-west-2
+        - name: ANTHROPIC_MODEL
+          value: global.anthropic.claude-sonnet-4-6
+      nodeSelector:
+        workload-type: ai-agent
+
+    promptTemplate: |
+      Linear Issue: {{.Title}}
+      ID: {{.ID}}
+      URL: {{.URL}}
+      State: {{.Kind}}
+      Labels: {{.Labels}}
+
+      Description:
+      {{.Body}}
+
+      ---
+      This is a test task spawned from a Linear webhook.
+      Please acknowledge this test by responding with:
+      - The issue identifier
+      - The current state
+      - A brief summary of what would be done
+
+      Do not make any actual changes. This is just a connectivity test.
+
+    ttlSecondsAfterFinished: 1800 # Keep task for 30 min after completion

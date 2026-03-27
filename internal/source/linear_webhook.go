@@ -17,12 +17,21 @@ type LinearWebhookSource struct {
 	Client    client.Client
 	Namespace string
 
+	// Types filters webhook events by type (e.g., ["Issue", "Comment"])
+	// When empty, defaults to ["Issue"] for backward compatibility
+	Types []string
+	// Actions filters webhook events by action (e.g., ["create", "update"])
+	// When empty, defaults to ["create", "update"] for backward compatibility
+	Actions []string
 	// States filters issues by workflow state names (e.g., ["Todo", "In Progress"])
 	// When empty, all non-terminal states are processed (excludes "Done", "Canceled")
+	// Only applies to Issue type events
 	States []string
 	// Labels filters issues by labels (applied client-side to webhook payloads)
+	// Only applies to Issue type events
 	Labels []string
 	// ExcludeLabels filters out items with these labels (applied client-side)
+	// Only applies to Issue type events
 	ExcludeLabels []string
 }
 
@@ -107,13 +116,21 @@ func (s *LinearWebhookSource) Discover(ctx context.Context) ([]WorkItem, error) 
 // payloadToWorkItem converts a Linear webhook payload to a WorkItem.
 // Returns false if the payload should be skipped.
 func (s *LinearWebhookSource) payloadToWorkItem(payload LinearWebhookPayload) (WorkItem, bool) {
-	// Only process Issue events
-	if payload.Type != "Issue" {
+	// Apply type filter (default to Issue if not specified)
+	allowedTypes := s.Types
+	if len(allowedTypes) == 0 {
+		allowedTypes = []string{"Issue"}
+	}
+	if !contains(allowedTypes, payload.Type) {
 		return WorkItem{}, false
 	}
 
-	// Only process create and update actions
-	if payload.Action != "create" && payload.Action != "update" {
+	// Apply action filter (default to create and update if not specified)
+	allowedActions := s.Actions
+	if len(allowedActions) == 0 {
+		allowedActions = []string{"create", "update"}
+	}
+	if !contains(allowedActions, payload.Action) {
 		return WorkItem{}, false
 	}
 
@@ -128,6 +145,12 @@ func (s *LinearWebhookSource) payloadToWorkItem(payload LinearWebhookPayload) (W
 		labels[i] = l.Name
 	}
 
+	// Determine Kind based on event type
+	kind := payload.Type
+	if payload.Type == "Issue" && payload.Data.State.Name != "" {
+		kind = payload.Data.State.Name // e.g., "Todo", "In Progress"
+	}
+
 	return WorkItem{
 		ID:     payload.Data.Identifier, // e.g., "ENG-42"
 		Number: payload.Data.Number,
@@ -135,43 +158,56 @@ func (s *LinearWebhookSource) payloadToWorkItem(payload LinearWebhookPayload) (W
 		Body:   payload.Data.Description,
 		URL:    payload.Data.URL,
 		Labels: labels,
-		Kind:   payload.Data.State.Name, // e.g., "Todo", "In Progress"
+		Kind:   kind,
 	}, true
+}
+
+// contains checks if a slice contains a string.
+func contains(slice []string, item string) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
 }
 
 // matchesFilters returns true if the item matches the configured filters.
 func (s *LinearWebhookSource) matchesFilters(item WorkItem, payload LinearWebhookPayload) bool {
-	// Check state filter
-	if !s.matchesState(payload.Data.State) {
-		return false
-	}
+	// State and label filters only apply to Issue type events
+	if payload.Type == "Issue" {
+		// Check state filter
+		if !s.matchesState(payload.Data.State) {
+			return false
+		}
 
-	// Check required labels
-	if len(s.Labels) > 0 {
-		hasAllRequired := true
-		for _, required := range s.Labels {
-			found := false
-			for _, label := range item.Labels {
-				if label == required {
-					found = true
+		// Check required labels
+		if len(s.Labels) > 0 {
+			hasAllRequired := true
+			for _, required := range s.Labels {
+				found := false
+				for _, label := range item.Labels {
+					if label == required {
+						found = true
+						break
+					}
+				}
+				if !found {
+					hasAllRequired = false
 					break
 				}
 			}
-			if !found {
-				hasAllRequired = false
-				break
+			if !hasAllRequired {
+				return false
 			}
 		}
-		if !hasAllRequired {
-			return false
-		}
-	}
 
-	// Check excluded labels
-	for _, excluded := range s.ExcludeLabels {
-		for _, label := range item.Labels {
-			if label == excluded {
-				return false
+		// Check excluded labels
+		for _, excluded := range s.ExcludeLabels {
+			for _, label := range item.Labels {
+				if label == excluded {
+					return false
+				}
 			}
 		}
 	}
