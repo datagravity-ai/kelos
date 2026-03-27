@@ -584,6 +584,8 @@ func buildSource(ts *kelosv1alpha1.TaskSpawner, owner, repo, apiBaseURL, tokenFi
 		return &source.LinearWebhookSource{
 			Client:        k8sClient,
 			Namespace:     webhook.Namespace,
+			Types:         webhook.Types,
+			Actions:       webhook.Actions,
 			States:        webhook.States,
 			Labels:        webhook.Labels,
 			ExcludeLabels: webhook.ExcludeLabels,

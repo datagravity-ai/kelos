@@ -8,15 +8,27 @@ spec:
     linearWebhook:
       # Namespace where kelos-webhook-receiver creates WebhookEvent resources
       namespace: default
-      # Optional: filter by Linear issue states
+      # Optional: filter by Linear event types
+      # If not specified, defaults to ["Issue"] for backward compatibility
+      # Supported: Issue, Comment, IssueLabel, Project, ProjectUpdate, Cycle, Initiative
+      types:
+        - "Issue"
+        - "Comment"
+      # Optional: filter by action types
+      # If not specified, defaults to ["create", "update"] for backward compatibility
+      # Supported: create, update, remove
+      actions:
+        - "create"
+        - "update"
+      # Optional: filter by Linear issue states (only applies to Issue events)
       # If not specified, all non-terminal states are accepted (excludes 'completed' and 'canceled')
       states:
         - "Todo"
         - "In Progress"
-      # Optional: filter by labels (applied client-side to webhook payloads)
+      # Optional: filter by labels (only applies to Issue events, applied client-side to webhook payloads)
       labels:
         - "kelos-task"
-      # Optional: exclude items with these labels
+      # Optional: exclude items with these labels (only applies to Issue events)
       excludeLabels:
         - "skip-kelos"
 
