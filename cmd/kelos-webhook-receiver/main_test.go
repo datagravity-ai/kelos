@@ -102,7 +102,7 @@ func TestValidateLinearSignature_ValidSignature(t *testing.T) {
 	expectedSig := "3b4c0e7668708bcb65b6103de3d28cae0bead64460615aaa232f645b96568741"
 
 	headers := http.Header{}
-	headers.Set("X-Linear-Signature", expectedSig)
+	headers.Set("linear-signature", expectedSig)
 
 	err := validateLinearSignature(headers, payload)
 	if err != nil {
@@ -116,7 +116,7 @@ func TestValidateLinearSignature_InvalidSignature(t *testing.T) {
 	payload := []byte(`{"action":"create","type":"Issue"}`)
 
 	headers := http.Header{}
-	headers.Set("X-Linear-Signature", "wrongsignature")
+	headers.Set("linear-signature", "wrongsignature")
 
 	err := validateLinearSignature(headers, payload)
 	if err == nil {
