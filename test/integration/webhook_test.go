@@ -82,6 +82,13 @@ var _ = Describe("Webhook Integration", func() {
 			Expect(items[0].Labels).To(ContainElement("bug"))
 			Expect(items[0].Labels).To(ContainElement("kelos-task"))
 
+			By("Acknowledging discovered items")
+			ids := make([]string, len(items))
+			for i, item := range items {
+				ids[i] = item.ID
+			}
+			webhookSource.AcknowledgeItems(context.Background(), ids)
+
 			By("Verifying the WebhookEvent was marked as processed")
 			updatedEvent := &kelosv1alpha1.WebhookEvent{}
 			Eventually(func() bool {
@@ -173,6 +180,13 @@ var _ = Describe("Webhook Integration", func() {
 			By("Verifying only the issue with the required label was discovered")
 			Expect(items).To(HaveLen(1))
 			Expect(items[0].Number).To(Equal(200))
+
+			By("Acknowledging discovered items")
+			ids := make([]string, len(items))
+			for i, item := range items {
+				ids[i] = item.ID
+			}
+			webhookSource.AcknowledgeItems(context.Background(), ids)
 
 			By("Verifying both events were marked as processed")
 			Eventually(func() bool {
@@ -433,6 +447,13 @@ var _ = Describe("Webhook Integration", func() {
 			By("Verifying only the GitHub event was discovered")
 			Expect(items).To(HaveLen(1))
 			Expect(items[0].Number).To(Equal(500))
+
+			By("Acknowledging discovered items")
+			ids := make([]string, len(items))
+			for i, item := range items {
+				ids[i] = item.ID
+			}
+			webhookSource.AcknowledgeItems(context.Background(), ids)
 
 			By("Verifying only the GitHub event was marked as processed")
 			Eventually(func() bool {
