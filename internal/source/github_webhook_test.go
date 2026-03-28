@@ -624,7 +624,7 @@ func TestGitHubWebhookSource_Discover(t *testing.T) {
 		t.Errorf("Expected issue 100, got %d", items[0].Number)
 	}
 
-	// Verify events were marked as processed by this spawner
+	// Matching event should NOT be marked as processed yet (deferred acknowledgment)
 	var updatedEvent kelosv1alpha1.WebhookEvent
 	if err := fakeClient.Get(context.Background(), client.ObjectKey{
 		Name:      "event-1",
@@ -633,14 +633,42 @@ func TestGitHubWebhookSource_Discover(t *testing.T) {
 		t.Fatalf("Failed to get updated event: %v", err)
 	}
 
+	if len(updatedEvent.Status.ProcessedBy) != 0 {
+		t.Errorf("Expected event-1 to NOT be processed yet, got ProcessedBy: %v", updatedEvent.Status.ProcessedBy)
+	}
+
+	// Filtered event (event-2, closed) should be marked as processed immediately
+	var filteredEvent kelosv1alpha1.WebhookEvent
+	if err := fakeClient.Get(context.Background(), client.ObjectKey{
+		Name:      "event-2",
+		Namespace: "default",
+	}, &filteredEvent); err != nil {
+		t.Fatalf("Failed to get filtered event: %v", err)
+	}
+
+	if !filteredEvent.Status.Processed {
+		t.Error("Expected filtered event-2 to be marked as processed")
+	}
+
+	// Acknowledge the matching item
+	src.AcknowledgeItems(context.Background(), []string{items[0].ID})
+
+	// Now event-1 should be marked as processed
+	if err := fakeClient.Get(context.Background(), client.ObjectKey{
+		Name:      "event-1",
+		Namespace: "default",
+	}, &updatedEvent); err != nil {
+		t.Fatalf("Failed to get updated event after acknowledge: %v", err)
+	}
+
 	if !updatedEvent.Status.Processed {
-		t.Error("Expected event to be marked as processed")
+		t.Error("Expected event-1 to be marked as processed after acknowledge")
 	}
 	if len(updatedEvent.Status.ProcessedBy) != 1 || updatedEvent.Status.ProcessedBy[0] != "spawner-a" {
 		t.Errorf("Expected ProcessedBy to contain 'spawner-a', got %v", updatedEvent.Status.ProcessedBy)
 	}
 
-	// A second spawner should still see event1
+	// A second spawner should still see event1 (it was only acknowledged by spawner-a)
 	src2 := &GitHubWebhookSource{
 		Client:      fakeClient,
 		Namespace:   "default",
@@ -656,6 +684,9 @@ func TestGitHubWebhookSource_Discover(t *testing.T) {
 		t.Errorf("Expected spawner-b to discover 1 item, got %d", len(items2))
 	}
 
+	// Acknowledge spawner-b's items
+	src2.AcknowledgeItems(context.Background(), []string{items2[0].ID})
+
 	// Same spawner should not see it again
 	items3, err := src.Discover(context.Background())
 	if err != nil {
@@ -664,5 +695,119 @@ func TestGitHubWebhookSource_Discover(t *testing.T) {
 
 	if len(items3) != 0 {
 		t.Errorf("Expected spawner-a to discover 0 items on re-run, got %d", len(items3))
+	}
+}
+
+func TestGitHubWebhookSource_DeferredAcknowledgment(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = kelosv1alpha1.AddToScheme(scheme)
+
+	// Create two matching events for different PRs
+	event1 := &kelosv1alpha1.WebhookEvent{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "event-pr-1",
+			Namespace: "default",
+		},
+		Spec: kelosv1alpha1.WebhookEventSpec{
+			Source: "github",
+			Payload: []byte(`{
+				"action": "opened",
+				"pull_request": {
+					"number": 100,
+					"title": "PR 100",
+					"body": "Body",
+					"html_url": "https://github.com/test/repo/pull/100",
+					"state": "open",
+					"draft": false,
+					"labels": [],
+					"user": {"login": "renovate[bot]"},
+					"head": {"ref": "renovate/dep-1"}
+				}
+			}`),
+			ReceivedAt: metav1.Now(),
+		},
+	}
+	event2 := &kelosv1alpha1.WebhookEvent{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "event-pr-2",
+			Namespace: "default",
+		},
+		Spec: kelosv1alpha1.WebhookEventSpec{
+			Source: "github",
+			Payload: []byte(`{
+				"action": "opened",
+				"pull_request": {
+					"number": 200,
+					"title": "PR 200",
+					"body": "Body",
+					"html_url": "https://github.com/test/repo/pull/200",
+					"state": "open",
+					"draft": false,
+					"labels": [],
+					"user": {"login": "renovate[bot]"},
+					"head": {"ref": "renovate/dep-2"}
+				}
+			}`),
+			ReceivedAt: metav1.Now(),
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(event1, event2).
+		WithStatusSubresource(&kelosv1alpha1.WebhookEvent{}).
+		Build()
+
+	src := &GitHubWebhookSource{
+		Client:      fakeClient,
+		Namespace:   "default",
+		SpawnerName: "dep-review",
+		Author:      "renovate[bot]",
+	}
+
+	items, err := src.Discover(context.Background())
+	if err != nil {
+		t.Fatalf("Discover failed: %v", err)
+	}
+
+	if len(items) != 2 {
+		t.Fatalf("Expected 2 items, got %d", len(items))
+	}
+
+	// Simulate maxConcurrency=1: only acknowledge the first item
+	src.AcknowledgeItems(context.Background(), []string{items[0].ID})
+
+	// Verify: first event is processed, second is NOT
+	var ev1 kelosv1alpha1.WebhookEvent
+	if err := fakeClient.Get(context.Background(), client.ObjectKey{
+		Name: "event-pr-1", Namespace: "default",
+	}, &ev1); err != nil {
+		t.Fatalf("Failed to get event-pr-1: %v", err)
+	}
+	if !ev1.Status.Processed {
+		t.Error("Expected event-pr-1 to be processed after acknowledge")
+	}
+
+	var ev2 kelosv1alpha1.WebhookEvent
+	if err := fakeClient.Get(context.Background(), client.ObjectKey{
+		Name: "event-pr-2", Namespace: "default",
+	}, &ev2); err != nil {
+		t.Fatalf("Failed to get event-pr-2: %v", err)
+	}
+	if ev2.Status.Processed {
+		t.Error("Expected event-pr-2 to NOT be processed (skipped by maxConcurrency)")
+	}
+
+	// On the next cycle, the unacknowledged event should be rediscovered
+	items2, err := src.Discover(context.Background())
+	if err != nil {
+		t.Fatalf("Second Discover failed: %v", err)
+	}
+
+	if len(items2) != 1 {
+		t.Fatalf("Expected 1 item on second discover, got %d", len(items2))
+	}
+	if items2[0].Number != 200 {
+		t.Errorf("Expected rediscovered item to be PR 200, got %d", items2[0].Number)
 	}
 }

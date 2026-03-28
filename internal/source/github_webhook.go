@@ -38,6 +38,10 @@ type GitHubWebhookSource struct {
 	// PriorityLabels defines label-based priority ordering for discovered items
 	PriorityLabels []string
 
+	// pendingEvents tracks webhook events that passed filters during Discover
+	// but have not yet been acknowledged by the caller. Keyed by work item ID.
+	pendingEvents map[string][]*kelosv1alpha1.WebhookEvent
+
 	// TriggerComment requires a matching command in an issue_comment event.
 	// When set, only issue_comment events with a matching command are
 	// discovered; issues/pull_request events are skipped unless the body
@@ -138,6 +142,7 @@ func (s *GitHubWebhookSource) Discover(ctx context.Context) ([]WorkItem, error) 
 	}
 
 	var items []WorkItem
+	s.pendingEvents = make(map[string][]*kelosv1alpha1.WebhookEvent)
 
 	for i := range eventList.Items {
 		event := eventList.Items[i].DeepCopy()
@@ -169,13 +174,31 @@ func (s *GitHubWebhookSource) Discover(ctx context.Context) ([]WorkItem, error) 
 
 		items = append(items, item)
 
-		// Mark event as processed by this spawner
-		s.markProcessed(ctx, event)
+		// Defer marking as processed — the caller must acknowledge items
+		// after task creation so that events skipped due to concurrency
+		// or budget limits are rediscovered on the next cycle.
+		s.pendingEvents[item.ID] = append(s.pendingEvents[item.ID], event)
 	}
 
 	SortByLabelPriority(items, s.PriorityLabels)
 
 	return items, nil
+}
+
+// AcknowledgeItems marks the webhook events for the given work item IDs
+// as processed by this spawner. This should be called after task creation
+// or deduplication. Events for IDs not in the pending set are ignored.
+func (s *GitHubWebhookSource) AcknowledgeItems(ctx context.Context, ids []string) {
+	for _, id := range ids {
+		events, ok := s.pendingEvents[id]
+		if !ok {
+			continue
+		}
+		for _, event := range events {
+			s.markProcessed(ctx, event)
+		}
+		delete(s.pendingEvents, id)
+	}
 }
 
 // alreadyProcessed returns true if this spawner has already processed the event.
