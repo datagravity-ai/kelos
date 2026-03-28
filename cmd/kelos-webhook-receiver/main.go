@@ -133,15 +133,17 @@ func (h *webhookHandler) handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create WebhookEvent CRD
+	defaultTTL := int32(7200) // 2 hours
 	event := &kelosv1alpha1.WebhookEvent{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: fmt.Sprintf("%s-webhook-", source),
 			Namespace:    h.namespace,
 		},
 		Spec: kelosv1alpha1.WebhookEventSpec{
-			Source:     source,
-			Payload:    body,
-			ReceivedAt: metav1.Now(),
+			Source:                   source,
+			Payload:                  body,
+			ReceivedAt:               metav1.Now(),
+			TTLSecondsAfterProcessed: &defaultTTL,
 		},
 	}
 

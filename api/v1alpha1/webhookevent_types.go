@@ -18,6 +18,14 @@ type WebhookEventSpec struct {
 	// ReceivedAt is the timestamp when the webhook was received.
 	// +kubebuilder:validation:Required
 	ReceivedAt metav1.Time `json:"receivedAt"`
+
+	// TTLSecondsAfterProcessed limits the lifetime of a WebhookEvent after
+	// it has been processed. If set, the event will be automatically deleted
+	// after the given number of seconds once ProcessedAt is set.
+	// Defaults to 7200 (2 hours) when created by the webhook receiver.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	TTLSecondsAfterProcessed *int32 `json:"ttlSecondsAfterProcessed,omitempty"`
 }
 
 // WebhookEventStatus defines the observed state of WebhookEvent.

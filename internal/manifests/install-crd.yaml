@@ -1833,6 +1833,15 @@ spec:
                   "linear").
                 minLength: 1
                 type: string
+              ttlSecondsAfterProcessed:
+                description: |-
+                  TTLSecondsAfterProcessed limits the lifetime of a WebhookEvent after
+                  it has been processed. If set, the event will be automatically deleted
+                  after the given number of seconds once ProcessedAt is set.
+                  Defaults to 7200 (2 hours) when created by the webhook receiver.
+                format: int32
+                minimum: 0
+                type: integer
             required:
             - payload
             - receivedAt
