@@ -235,10 +235,10 @@ func (b *DeploymentBuilder) buildPodParts(ts *kelosv1alpha1.TaskSpawner, workspa
 	}
 
 	labels := map[string]string{
-		"app.kubernetes.io/name":       "kelos",
-		"app.kubernetes.io/component":  "spawner",
-		"app.kubernetes.io/managed-by": "kelos-controller",
-		"kelos.dev/taskspawner":        ts.Name,
+		"kelos.dev/name":        "kelos",
+		"kelos.dev/component":   "spawner",
+		"kelos.dev/managed-by":  "kelos-controller",
+		"kelos.dev/taskspawner": ts.Name,
 	}
 
 	return spawnerPodParts{

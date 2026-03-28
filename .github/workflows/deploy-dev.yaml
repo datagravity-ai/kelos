@@ -58,8 +58,8 @@ jobs:
             --controller-resource-limits cpu=500m,memory=128Mi
           kubectl rollout restart deployment/kelos-controller-manager -n kelos-system
           kubectl rollout status deployment/kelos-controller-manager -n kelos-system --timeout=120s
-          kubectl rollout restart deployment -l app.kubernetes.io/component=spawner -n "${KELOS_NAMESPACE}"
-          kubectl rollout status deployment -l app.kubernetes.io/component=spawner -n "${KELOS_NAMESPACE}" --timeout=120s
+          kubectl rollout restart deployment -l kelos.dev/component=spawner -n "${KELOS_NAMESPACE}"
+          kubectl rollout status deployment -l kelos.dev/component=spawner -n "${KELOS_NAMESPACE}" --timeout=120s
 
       - name: Apply PodMonitoring
         run: |
@@ -87,13 +87,13 @@ jobs:
             name: kelos-spawner
             namespace: ${KELOS_NAMESPACE}
             labels:
-              app.kubernetes.io/name: kelos
-              app.kubernetes.io/component: spawner
+              kelos.dev/name: kelos
+              kelos.dev/component: spawner
           spec:
             selector:
               matchLabels:
-                app.kubernetes.io/name: kelos
-                app.kubernetes.io/component: spawner
+                kelos.dev/name: kelos
+                kelos.dev/component: spawner
               matchExpressions:
                 - key: job-name
                   operator: DoesNotExist

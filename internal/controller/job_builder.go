@@ -632,10 +632,10 @@ func (b *JobBuilder) buildAgentJob(task *kelosv1alpha1.Task, workspace *kelosv1a
 			Name:      task.Name,
 			Namespace: task.Namespace,
 			Labels: map[string]string{
-				"app.kubernetes.io/name":       "kelos",
-				"app.kubernetes.io/component":  "task",
-				"app.kubernetes.io/managed-by": "kelos-controller",
-				"kelos.dev/task":               task.Name,
+				"kelos.dev/name":       "kelos",
+				"kelos.dev/component":  "task",
+				"kelos.dev/managed-by": "kelos-controller",
+				"kelos.dev/task":       task.Name,
 			},
 		},
 		Spec: batchv1.JobSpec{
@@ -645,10 +645,10 @@ func (b *JobBuilder) buildAgentJob(task *kelosv1alpha1.Task, workspace *kelosv1a
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{
-						"app.kubernetes.io/name":       "kelos",
-						"app.kubernetes.io/component":  "task",
-						"app.kubernetes.io/managed-by": "kelos-controller",
-						"kelos.dev/task":               task.Name,
+						"kelos.dev/name":       "kelos",
+						"kelos.dev/component":  "task",
+						"kelos.dev/managed-by": "kelos-controller",
+						"kelos.dev/task":       task.Name,
 					},
 				},
 				Spec: corev1.PodSpec{

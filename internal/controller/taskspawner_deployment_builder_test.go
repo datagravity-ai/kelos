@@ -2868,3 +2868,131 @@ func TestDeploymentBuilder_MetricsPort(t *testing.T) {
 		t.Errorf("expected protocol TCP, got %s", port.Protocol)
 	}
 }
+
+func TestReconcileDeployment_DeletesDeploymentWithOldSelectorLabels(t *testing.T) {
+	builder := NewDeploymentBuilder()
+	scheme := newTestScheme()
+
+	ts := &kelosv1alpha1.TaskSpawner{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "my-spawner",
+			Namespace:  "default",
+			Finalizers: []string{taskSpawnerFinalizer},
+		},
+		Spec: kelosv1alpha1.TaskSpawnerSpec{
+			When: kelosv1alpha1.When{
+				GitHubIssues: &kelosv1alpha1.GitHubIssues{},
+			},
+			TaskTemplate: kelosv1alpha1.TaskTemplate{
+				Type: "claude-code",
+			},
+		},
+	}
+
+	// A Deployment with old app.kubernetes.io/* selector labels.
+	oldLabels := map[string]string{
+		"app.kubernetes.io/name":       "kelos",
+		"app.kubernetes.io/component":  "spawner",
+		"app.kubernetes.io/managed-by": "kelos-controller",
+		"kelos.dev/taskspawner":        "my-spawner",
+	}
+	oldDeploy := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "my-spawner",
+			Namespace: "default",
+			Labels:    oldLabels,
+		},
+		Spec: appsv1.DeploymentSpec{
+			Selector: &metav1.LabelSelector{
+				MatchLabels: oldLabels,
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: oldLabels},
+				Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "spawner", Image: "test"}}},
+			},
+		},
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(ts, oldDeploy).
+		WithStatusSubresource(ts).
+		Build()
+
+	r := &TaskSpawnerReconciler{
+		Client:            cl,
+		Scheme:            scheme,
+		DeploymentBuilder: builder,
+	}
+
+	ctx := context.Background()
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: "my-spawner", Namespace: "default"}}
+	_, err := r.reconcileDeployment(ctx, req, ts, false)
+	if err != nil {
+		t.Fatalf("reconcileDeployment error: %v", err)
+	}
+
+	// Verify a new Deployment was created with kelos.dev/* labels.
+	var deploy appsv1.Deployment
+	if err := cl.Get(ctx, types.NamespacedName{Name: "my-spawner", Namespace: "default"}, &deploy); err != nil {
+		t.Fatalf("expected Deployment to be recreated, got error: %v", err)
+	}
+	if _, ok := deploy.Spec.Selector.MatchLabels["app.kubernetes.io/component"]; ok {
+		t.Errorf("expected old app.kubernetes.io/component label to be gone from selector")
+	}
+	if _, ok := deploy.Spec.Selector.MatchLabels["kelos.dev/component"]; !ok {
+		t.Errorf("expected new kelos.dev/component label in selector")
+	}
+}
+
+func TestReconcileDeployment_KeepsDeploymentWithNewLabels(t *testing.T) {
+	builder := NewDeploymentBuilder()
+	scheme := newTestScheme()
+
+	ts := &kelosv1alpha1.TaskSpawner{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "my-spawner",
+			Namespace:  "default",
+			Finalizers: []string{taskSpawnerFinalizer},
+		},
+		Spec: kelosv1alpha1.TaskSpawnerSpec{
+			When: kelosv1alpha1.When{
+				GitHubIssues: &kelosv1alpha1.GitHubIssues{},
+			},
+			TaskTemplate: kelosv1alpha1.TaskTemplate{
+				Type: "claude-code",
+			},
+		},
+	}
+
+	// A Deployment that already has the new kelos.dev/* labels.
+	deploy := builder.Build(ts, nil, false)
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(ts, deploy).
+		WithStatusSubresource(ts).
+		Build()
+
+	r := &TaskSpawnerReconciler{
+		Client:            cl,
+		Scheme:            scheme,
+		DeploymentBuilder: builder,
+	}
+
+	ctx := context.Background()
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: "my-spawner", Namespace: "default"}}
+	_, err := r.reconcileDeployment(ctx, req, ts, false)
+	if err != nil {
+		t.Fatalf("reconcileDeployment error: %v", err)
+	}
+
+	// Verify the Deployment still exists and has the correct labels.
+	var updated appsv1.Deployment
+	if err := cl.Get(ctx, types.NamespacedName{Name: "my-spawner", Namespace: "default"}, &updated); err != nil {
+		t.Fatalf("expected Deployment to exist, got error: %v", err)
+	}
+	if _, ok := updated.Spec.Selector.MatchLabels["kelos.dev/component"]; !ok {
+		t.Errorf("expected kelos.dev/component label in selector")
+	}
+}
