@@ -46,6 +46,17 @@ type Source interface {
 	Discover(ctx context.Context) ([]WorkItem, error)
 }
 
+// WebhookAcknowledger is implemented by webhook-based sources to support
+// deferred event acknowledgment. Matching events are not marked as processed
+// during Discover; the caller must acknowledge them after task creation or
+// deduplication so that events skipped due to maxConcurrency or budget limits
+// are rediscovered on the next cycle.
+type WebhookAcknowledger interface {
+	// AcknowledgeItems marks the webhook events associated with the given
+	// work item IDs as processed. IDs not in the pending set are ignored.
+	AcknowledgeItems(ctx context.Context, ids []string)
+}
+
 // SortByLabelPriority sorts items in place by the first matching label in
 // priorityLabels. Items whose labels match an earlier index are sorted first.
 // Items with no matching label are placed last. The sort is stable so items

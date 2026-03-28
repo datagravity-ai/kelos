@@ -395,7 +395,26 @@ func TestLinearWebhookSource_Discover(t *testing.T) {
 		t.Errorf("Expected issue 100, got %d", items[0].Number)
 	}
 
-	// Verify events were marked as processed by this spawner
+	// Before acknowledgment, matching event should NOT be marked processed
+	var beforeAck kelosv1alpha1.WebhookEvent
+	if err := fakeClient.Get(context.Background(), client.ObjectKey{
+		Name:      "event-1",
+		Namespace: "default",
+	}, &beforeAck); err != nil {
+		t.Fatalf("Failed to get event: %v", err)
+	}
+	if beforeAck.Status.Processed {
+		t.Error("Expected matching event to NOT be processed before acknowledgment")
+	}
+
+	// Acknowledge the discovered items
+	ids := make([]string, len(items))
+	for i, item := range items {
+		ids[i] = item.ID
+	}
+	src.AcknowledgeItems(context.Background(), ids)
+
+	// After acknowledgment, event should be marked as processed by this spawner
 	var updatedEvent kelosv1alpha1.WebhookEvent
 	if err := fakeClient.Get(context.Background(), client.ObjectKey{
 		Name:      "event-1",
@@ -405,7 +424,7 @@ func TestLinearWebhookSource_Discover(t *testing.T) {
 	}
 
 	if !updatedEvent.Status.Processed {
-		t.Error("Expected event to be marked as processed")
+		t.Error("Expected event to be marked as processed after acknowledgment")
 	}
 	if len(updatedEvent.Status.ProcessedBy) != 1 || updatedEvent.Status.ProcessedBy[0] != "spawner-a" {
 		t.Errorf("Expected ProcessedBy to contain 'spawner-a', got %v", updatedEvent.Status.ProcessedBy)

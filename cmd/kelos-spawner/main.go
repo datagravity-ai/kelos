@@ -248,6 +248,12 @@ func runCycleWithSource(ctx context.Context, cl client.Client, key types.Namespa
 		}
 	}
 
+	// Track which work item IDs have been handled (task exists or will be
+	// created) so webhook sources can acknowledge their events. Items
+	// skipped due to maxConcurrency or budget limits are NOT acknowledged,
+	// allowing them to be rediscovered on the next cycle.
+	var acknowledgedIDs []string
+
 	var newItems []source.WorkItem
 	for _, item := range items {
 		taskName := fmt.Sprintf("%s-%s", ts.Name, strings.ToLower(item.ID))
@@ -274,7 +280,11 @@ func runCycleWithSource(ctx context.Context, cl client.Client, key types.Namespa
 			}
 			log.Info("Deleted completed task for retrigger", "task", taskName)
 			newItems = append(newItems, item)
+			continue
 		}
+
+		// Task already exists and no retrigger needed — acknowledge the event
+		acknowledgedIDs = append(acknowledgedIDs, item.ID)
 	}
 
 	// Sort new items by priority labels when configured
@@ -311,6 +321,7 @@ func runCycleWithSource(ctx context.Context, cl client.Client, key types.Namespa
 		prompt, err := source.RenderPrompt(ts.Spec.TaskTemplate.PromptTemplate, item)
 		if err != nil {
 			log.Error(err, "rendering prompt", "item", item.ID)
+			acknowledgedIDs = append(acknowledgedIDs, item.ID)
 			continue
 		}
 
@@ -350,6 +361,7 @@ func runCycleWithSource(ctx context.Context, cl client.Client, key types.Namespa
 			branch, err := source.RenderTemplate(ts.Spec.TaskTemplate.Branch, item)
 			if err != nil {
 				log.Error(err, "rendering branch template", "item", item.ID)
+				acknowledgedIDs = append(acknowledgedIDs, item.ID)
 				continue
 			}
 			task.Spec.Branch = branch
@@ -370,12 +382,23 @@ func runCycleWithSource(ctx context.Context, cl client.Client, key types.Namespa
 			} else {
 				log.Error(err, "creating Task", "task", taskName)
 			}
+			// Acknowledge even on error/already-exists so the event is not
+			// retried indefinitely for permanently failing items.
+			acknowledgedIDs = append(acknowledgedIDs, item.ID)
 			continue
 		}
 
 		log.Info("Created Task", "task", taskName, "item", item.ID)
+		acknowledgedIDs = append(acknowledgedIDs, item.ID)
 		newTasksCreated++
 		activeTasks++
+	}
+
+	// Acknowledge handled items so webhook sources mark their events as
+	// processed. Items skipped by maxConcurrency/budget remain pending
+	// and will be rediscovered on the next cycle.
+	if ack, ok := src.(source.WebhookAcknowledger); ok {
+		ack.AcknowledgeItems(ctx, acknowledgedIDs)
 	}
 
 	// Update status in a single batch

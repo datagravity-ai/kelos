@@ -37,6 +37,10 @@ type LinearWebhookSource struct {
 	// ExcludeLabels filters out items with these labels (applied client-side)
 	// Only applies to Issue type events
 	ExcludeLabels []string
+
+	// pendingEvents tracks webhook events that passed filters during Discover
+	// but have not yet been acknowledged by the caller. Keyed by work item ID.
+	pendingEvents map[string][]*kelosv1alpha1.WebhookEvent
 }
 
 // LinearWebhookPayload represents the relevant fields from a Linear webhook payload.
@@ -76,6 +80,7 @@ func (s *LinearWebhookSource) Discover(ctx context.Context) ([]WorkItem, error) 
 	}
 
 	var items []WorkItem
+	s.pendingEvents = make(map[string][]*kelosv1alpha1.WebhookEvent)
 
 	for i := range eventList.Items {
 		event := eventList.Items[i].DeepCopy()
@@ -110,11 +115,29 @@ func (s *LinearWebhookSource) Discover(ctx context.Context) ([]WorkItem, error) 
 
 		items = append(items, item)
 
-		// Mark event as processed
-		s.markProcessed(ctx, event)
+		// Defer marking as processed — the caller must acknowledge items
+		// after task creation so that events skipped due to concurrency
+		// or budget limits are rediscovered on the next cycle.
+		s.pendingEvents[item.ID] = append(s.pendingEvents[item.ID], event)
 	}
 
 	return items, nil
+}
+
+// AcknowledgeItems marks the webhook events for the given work item IDs
+// as processed by this spawner. This should be called after task creation
+// or deduplication. Events for IDs not in the pending set are ignored.
+func (s *LinearWebhookSource) AcknowledgeItems(ctx context.Context, ids []string) {
+	for _, id := range ids {
+		events, ok := s.pendingEvents[id]
+		if !ok {
+			continue
+		}
+		for _, event := range events {
+			s.markProcessed(ctx, event)
+		}
+		delete(s.pendingEvents, id)
+	}
 }
 
 // payloadToWorkItem converts a Linear webhook payload to a WorkItem.
