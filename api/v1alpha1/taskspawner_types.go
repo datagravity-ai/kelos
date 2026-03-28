@@ -33,6 +33,10 @@ type When struct {
 	// +optional
 	GitHubWebhook *GitHubWebhook `json:"githubWebhook,omitempty"`
 
+	// LinearWebhook discovers issues from Linear webhooks.
+	// +optional
+	LinearWebhook *LinearWebhook `json:"linearWebhook,omitempty"`
+
 	// Cron triggers task spawning on a cron schedule.
 	// +optional
 	Cron *Cron `json:"cron,omitempty"`
@@ -326,6 +330,45 @@ type GitHubWebhook struct {
 	Reporting *GitHubReporting `json:"reporting,omitempty"`
 }
 
+// LinearWebhook discovers issues from Linear webhooks.
+// Linear webhooks must be configured to POST to the kelos-webhook-receiver
+// endpoint at /webhook/linear. The webhook receiver creates WebhookEvent
+// CRDs that the spawner processes.
+type LinearWebhook struct {
+	// Namespace is the Kubernetes namespace where WebhookEvent resources are created.
+	// The spawner will watch for Linear webhook events in this namespace.
+	// +kubebuilder:validation:Required
+	Namespace string `json:"namespace"`
+
+	// Types filters webhook events by type (e.g., ["Issue", "Comment", "Project"]).
+	// When empty, defaults to ["Issue"] for backward compatibility.
+	// Supported types: Issue, Comment, IssueLabel, Project, ProjectUpdate, Cycle, Initiative.
+	// +optional
+	Types []string `json:"types,omitempty"`
+
+	// Actions filters webhook events by action (e.g., ["create", "update"]).
+	// When empty, defaults to ["create", "update"] for backward compatibility.
+	// Supported actions: create, update, remove.
+	// +optional
+	Actions []string `json:"actions,omitempty"`
+
+	// States filters issues by workflow state names (e.g., ["Todo", "In Progress"]).
+	// When empty, all non-terminal states are processed (excludes "Done", "Canceled").
+	// Only applies to Issue type events.
+	// +optional
+	States []string `json:"states,omitempty"`
+
+	// Labels filters issues by labels (applied client-side to webhook payloads).
+	// Only applies to Issue type events.
+	// +optional
+	Labels []string `json:"labels,omitempty"`
+
+	// ExcludeLabels filters out issues that have any of these labels (client-side).
+	// Only applies to Issue type events.
+	// +optional
+	ExcludeLabels []string `json:"excludeLabels,omitempty"`
+}
+
 // Jira discovers issues from a Jira project.
 // Authentication is provided via a Secret referenced in the TaskSpawner's
 // namespace. The secret must contain a "JIRA_TOKEN" key. For Jira Cloud,
@@ -451,7 +494,7 @@ type TaskTemplate struct {
 	// Metadata holds optional labels and annotations for spawned Tasks.
 	// +optional
 	Metadata *TaskTemplateMetadata `json:"metadata,omitempty"`
-
+	
 	// UpstreamRepo is the upstream repository in "owner/repo" format.
 	// When set, spawned Tasks inherit this value and inject
 	// KELOS_UPSTREAM_REPO into the agent container. This is typically

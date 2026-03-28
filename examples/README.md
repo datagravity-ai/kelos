@@ -21,6 +21,7 @@ Ready-to-use patterns and YAML manifests for orchestrating AI agents with Kelos.
 | [08-task-with-kelos-skill](08-task-with-kelos-skill/) | Give an agent the Kelos skill for authoring and debugging resources |
 | [09-bedrock-credentials](09-bedrock-credentials/) | Run an agent using AWS Bedrock with static credentials or IRSA |
 | [10-taskspawner-github-webhook](10-taskspawner-github-webhook/) | React to GitHub webhook events instead of polling |
+| [11-taskspawner-linear-webhook](11-taskspawner-linear-webhook/) | React to Linear webhook events for issue tracking |
 
 ## How to Use
 

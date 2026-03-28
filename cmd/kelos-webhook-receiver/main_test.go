@@ -91,3 +91,76 @@ func TestWebhookHandler_MissingSource(t *testing.T) {
 		t.Errorf("Expected status %d, got %d", http.StatusBadRequest, w.Code)
 	}
 }
+
+func TestValidateLinearSignature_ValidSignature(t *testing.T) {
+	t.Setenv("LINEAR_WEBHOOK_SECRET", "test-secret")
+
+	payload := []byte(`{"action":"create","type":"Issue"}`)
+
+	// Compute expected signature
+	// echo -n '{"action":"create","type":"Issue"}' | openssl dgst -sha256 -hmac 'test-secret'
+	expectedSig := "3b4c0e7668708bcb65b6103de3d28cae0bead64460615aaa232f645b96568741"
+
+	headers := http.Header{}
+	headers.Set("linear-signature", expectedSig)
+
+	err := validateLinearSignature(headers, payload)
+	if err != nil {
+		t.Errorf("Expected valid signature, got error: %v", err)
+	}
+}
+
+func TestValidateLinearSignature_InvalidSignature(t *testing.T) {
+	t.Setenv("LINEAR_WEBHOOK_SECRET", "test-secret")
+
+	payload := []byte(`{"action":"create","type":"Issue"}`)
+
+	headers := http.Header{}
+	headers.Set("linear-signature", "wrongsignature")
+
+	err := validateLinearSignature(headers, payload)
+	if err == nil {
+		t.Error("Expected error for invalid signature, got nil")
+	}
+}
+
+func TestValidateLinearSignature_MissingHeader(t *testing.T) {
+	t.Setenv("LINEAR_WEBHOOK_SECRET", "test-secret")
+
+	payload := []byte(`{"action":"create","type":"Issue"}`)
+	headers := http.Header{}
+
+	err := validateLinearSignature(headers, payload)
+	if err == nil {
+		t.Error("Expected error for missing signature header, got nil")
+	}
+}
+
+func TestValidateLinearSignature_NoSecretConfigured(t *testing.T) {
+	// Don't set LINEAR_WEBHOOK_SECRET - should skip validation
+	t.Setenv("LINEAR_WEBHOOK_SECRET", "")
+
+	payload := []byte(`{"action":"create","type":"Issue"}`)
+	headers := http.Header{}
+	headers.Set("linear-signature", "anysignature")
+
+	err := validateLinearSignature(headers, payload)
+	if err != nil {
+		t.Errorf("Expected no error when secret not configured, got: %v", err)
+	}
+}
+
+func TestValidateLinearSignature_NoSecretNoHeader(t *testing.T) {
+	// Don't set LINEAR_WEBHOOK_SECRET and don't send signature header
+	// This is the actual scenario when Linear webhooks are sent without a secret configured
+	t.Setenv("LINEAR_WEBHOOK_SECRET", "")
+
+	payload := []byte(`{"action":"create","type":"Issue"}`)
+	headers := http.Header{}
+	// Note: NO linear-signature header set
+
+	err := validateLinearSignature(headers, payload)
+	if err != nil {
+		t.Errorf("Expected no error when secret not configured and no header sent, got: %v", err)
+	}
+}
