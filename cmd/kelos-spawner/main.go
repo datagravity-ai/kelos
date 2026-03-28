@@ -321,6 +321,7 @@ func runCycleWithSource(ctx context.Context, cl client.Client, key types.Namespa
 		prompt, err := source.RenderPrompt(ts.Spec.TaskTemplate.PromptTemplate, item)
 		if err != nil {
 			log.Error(err, "rendering prompt", "item", item.ID)
+			acknowledgedIDs = append(acknowledgedIDs, item.ID)
 			continue
 		}
 
@@ -360,6 +361,7 @@ func runCycleWithSource(ctx context.Context, cl client.Client, key types.Namespa
 			branch, err := source.RenderTemplate(ts.Spec.TaskTemplate.Branch, item)
 			if err != nil {
 				log.Error(err, "rendering branch template", "item", item.ID)
+				acknowledgedIDs = append(acknowledgedIDs, item.ID)
 				continue
 			}
 			task.Spec.Branch = branch
