@@ -29,6 +29,8 @@ import (
 	"github.com/kelos-dev/kelos/internal/source"
 )
 
+const ghProxyURL = "http://ghproxy.kelos-system:8888"
+
 var scheme = runtime.NewScheme()
 
 func init() {
@@ -93,14 +95,21 @@ func main() {
 
 	log.Info("Starting spawner", "taskspawner", key, "oneShot", oneShot)
 
-	httpClient := &http.Client{
-		Transport: source.NewETagTransport(source.NewMetricsTransport(http.DefaultTransport), log),
+	upstreamURL := githubAPIBaseURL
+	if upstreamURL == "" {
+		upstreamURL = "https://api.github.com"
 	}
+	transport := source.NewUpstreamHeaderTransport(
+		source.NewMetricsTransport(http.DefaultTransport),
+		upstreamURL,
+	)
+	httpClient := &http.Client{Transport: transport}
 
 	cfgArgs := spawnerRuntimeConfig{
 		GitHubOwner:      githubOwner,
 		GitHubRepo:       githubRepo,
 		GitHubAPIBaseURL: githubAPIBaseURL,
+		GHProxyURL:       ghProxyURL,
 		GitHubTokenFile:  githubTokenFile,
 		JiraBaseURL:      jiraBaseURL,
 		JiraProject:      jiraProject,

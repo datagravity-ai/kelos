@@ -149,7 +149,7 @@ func TestParseManifests_EmbeddedCRDs(t *testing.T) {
 
 func renderDefaultChart(t *testing.T) []byte {
 	t.Helper()
-	vals := buildHelmValues("v0.0.0-test", "", false, "", "", "", "", "", "")
+	vals := buildHelmValues("v0.0.0-test", "", false, "", "", "", "", "", "", "")
 	data, err := helmchart.Render(manifests.ChartFS, vals)
 	if err != nil {
 		t.Fatalf("rendering chart: %v", err)
@@ -178,7 +178,7 @@ func TestRenderChart_DefaultValues(t *testing.T) {
 }
 
 func TestDisableChartCRDs(t *testing.T) {
-	vals := disableChartCRDs(buildHelmValues("latest", "", false, "", "", "", "", "", ""))
+	vals := disableChartCRDs(buildHelmValues("latest", "", false, "", "", "", "", "", "", ""))
 	crds, ok := vals["crds"].(map[string]interface{})
 	if !ok {
 		t.Fatal("expected crds values to be present")
@@ -197,7 +197,7 @@ func TestDisableChartCRDs(t *testing.T) {
 }
 
 func TestRenderChart_ControllerOnlyExcludesCRDs(t *testing.T) {
-	vals := disableChartCRDs(buildHelmValues("v0.0.0-test", "", false, "", "", "", "", "", ""))
+	vals := disableChartCRDs(buildHelmValues("v0.0.0-test", "", false, "", "", "", "", "", "", ""))
 	data, err := helmchart.Render(manifests.ChartFS, vals)
 	if err != nil {
 		t.Fatalf("rendering chart: %v", err)
@@ -221,7 +221,7 @@ func TestRenderChart_ControllerOnlyExcludesCRDs(t *testing.T) {
 }
 
 func TestRenderChart_VersionSubstitution(t *testing.T) {
-	vals := buildHelmValues("v0.5.0", "", false, "", "", "", "", "", "")
+	vals := buildHelmValues("v0.5.0", "", false, "", "", "", "", "", "", "")
 	data, err := helmchart.Render(manifests.ChartFS, vals)
 	if err != nil {
 		t.Fatalf("rendering chart: %v", err)
@@ -235,7 +235,7 @@ func TestRenderChart_VersionSubstitution(t *testing.T) {
 }
 
 func TestRenderChart_ImageArgs(t *testing.T) {
-	vals := buildHelmValues("v0.3.0", "", false, "", "", "", "", "", "")
+	vals := buildHelmValues("v0.3.0", "", false, "", "", "", "", "", "", "")
 	data, err := helmchart.Render(manifests.ChartFS, vals)
 	if err != nil {
 		t.Fatalf("rendering chart: %v", err)
@@ -256,7 +256,7 @@ func TestRenderChart_ImageArgs(t *testing.T) {
 }
 
 func TestRenderChart_ImagePullPolicy(t *testing.T) {
-	vals := buildHelmValues("v0.1.0", "Always", false, "", "", "", "", "", "")
+	vals := buildHelmValues("v0.1.0", "Always", false, "", "", "", "", "", "", "")
 	data, err := helmchart.Render(manifests.ChartFS, vals)
 	if err != nil {
 		t.Fatalf("rendering chart: %v", err)
@@ -279,7 +279,7 @@ func TestRenderChart_ImagePullPolicy(t *testing.T) {
 }
 
 func TestRenderChart_NoPullPolicyByDefault(t *testing.T) {
-	vals := buildHelmValues("latest", "", false, "", "", "", "", "", "")
+	vals := buildHelmValues("latest", "", false, "", "", "", "", "", "", "")
 	data, err := helmchart.Render(manifests.ChartFS, vals)
 	if err != nil {
 		t.Fatalf("rendering chart: %v", err)
@@ -293,7 +293,7 @@ func TestRenderChart_NoPullPolicyByDefault(t *testing.T) {
 }
 
 func TestRenderChart_DisableHeartbeat(t *testing.T) {
-	vals := buildHelmValues("latest", "", true, "", "", "", "", "", "")
+	vals := buildHelmValues("latest", "", true, "", "", "", "", "", "", "")
 	data, err := helmchart.Render(manifests.ChartFS, vals)
 	if err != nil {
 		t.Fatalf("rendering chart: %v", err)
@@ -320,7 +320,7 @@ func TestRenderChart_DisableHeartbeat(t *testing.T) {
 }
 
 func TestRenderChart_EnableHeartbeat(t *testing.T) {
-	vals := buildHelmValues("latest", "", false, "", "", "", "", "", "")
+	vals := buildHelmValues("latest", "", false, "", "", "", "", "", "", "")
 	data, err := helmchart.Render(manifests.ChartFS, vals)
 	if err != nil {
 		t.Fatalf("rendering chart: %v", err)
@@ -679,7 +679,7 @@ func TestInstallCommand_NoControllerResourcesByDefault(t *testing.T) {
 }
 
 func TestRenderChart_ControllerResources(t *testing.T) {
-	vals := buildHelmValues("latest", "", false, "", "", "", "", "cpu=100m,memory=256Mi", "cpu=1,memory=512Mi")
+	vals := buildHelmValues("latest", "", false, "", "", "", "", "cpu=100m,memory=256Mi", "cpu=1,memory=512Mi", "")
 	data, err := helmchart.Render(manifests.ChartFS, vals)
 	if err != nil {
 		t.Fatalf("rendering chart: %v", err)
@@ -699,7 +699,7 @@ func TestRenderChart_ControllerResources(t *testing.T) {
 }
 
 func TestRenderChart_NoControllerResourcesByDefault(t *testing.T) {
-	vals := buildHelmValues("latest", "", false, "", "", "", "", "", "")
+	vals := buildHelmValues("latest", "", false, "", "", "", "", "", "", "")
 	data, err := helmchart.Render(manifests.ChartFS, vals)
 	if err != nil {
 		t.Fatalf("rendering chart: %v", err)
@@ -717,7 +717,7 @@ func TestRenderChart_NoControllerResourcesByDefault(t *testing.T) {
 }
 
 func TestRenderChart_SpawnerResources(t *testing.T) {
-	vals := buildHelmValues("latest", "", false, "cpu=250m,memory=512Mi", "cpu=1,memory=1Gi", "", "", "", "")
+	vals := buildHelmValues("latest", "", false, "cpu=250m,memory=512Mi", "cpu=1,memory=1Gi", "", "", "", "", "")
 	data, err := helmchart.Render(manifests.ChartFS, vals)
 	if err != nil {
 		t.Fatalf("rendering chart: %v", err)
@@ -731,7 +731,7 @@ func TestRenderChart_SpawnerResources(t *testing.T) {
 }
 
 func TestRenderChart_TokenRefresherResources(t *testing.T) {
-	vals := buildHelmValues("latest", "", false, "", "", "cpu=100m,memory=128Mi", "cpu=200m,memory=256Mi", "", "")
+	vals := buildHelmValues("latest", "", false, "", "", "cpu=100m,memory=128Mi", "cpu=200m,memory=256Mi", "", "", "")
 	data, err := helmchart.Render(manifests.ChartFS, vals)
 	if err != nil {
 		t.Fatalf("rendering chart: %v", err)
@@ -745,7 +745,7 @@ func TestRenderChart_TokenRefresherResources(t *testing.T) {
 }
 
 func TestRenderChart_NoSpawnerResourcesByDefault(t *testing.T) {
-	vals := buildHelmValues("latest", "", false, "", "", "", "", "", "")
+	vals := buildHelmValues("latest", "", false, "", "", "", "", "", "", "")
 	data, err := helmchart.Render(manifests.ChartFS, vals)
 	if err != nil {
 		t.Fatalf("rendering chart: %v", err)
@@ -759,7 +759,7 @@ func TestRenderChart_NoSpawnerResourcesByDefault(t *testing.T) {
 }
 
 func TestRenderChart_NoTokenRefresherResourcesByDefault(t *testing.T) {
-	vals := buildHelmValues("latest", "", false, "", "", "", "", "", "")
+	vals := buildHelmValues("latest", "", false, "", "", "", "", "", "", "")
 	data, err := helmchart.Render(manifests.ChartFS, vals)
 	if err != nil {
 		t.Fatalf("rendering chart: %v", err)
@@ -1047,6 +1047,7 @@ func TestBuildHelmValues(t *testing.T) {
 				tt.tokenRefresherResourceLimits,
 				tt.controllerResourceRequests,
 				tt.controllerResourceLimits,
+				"",
 			)
 			tt.checkFn(t, vals)
 		})

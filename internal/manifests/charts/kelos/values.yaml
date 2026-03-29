@@ -10,6 +10,9 @@ telemetry:
   enabled: true
 
 controllerImage: ghcr.io/kelos-dev/kelos-controller
+ghproxy:
+  image: ghcr.io/kelos-dev/ghproxy
+  allowedUpstreams: "https://api.github.com"
 claudeCodeImage: ghcr.io/kelos-dev/claude-code
 codexImage: ghcr.io/kelos-dev/codex
 geminiImage: ghcr.io/kelos-dev/gemini

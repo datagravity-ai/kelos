@@ -93,7 +93,6 @@ func (b *DeploymentBuilder) buildPodParts(ts *kelosv1alpha1.TaskSpawner, workspa
 		if apiBaseURL := gitHubAPIBaseURL(host); apiBaseURL != "" {
 			args = append(args, "--github-api-base-url="+apiBaseURL)
 		}
-
 		if workspace.SecretRef != nil {
 			if isGitHubApp {
 				// GitHub App: add token refresher as a native sidecar

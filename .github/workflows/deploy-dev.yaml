@@ -58,6 +58,8 @@ jobs:
             --controller-resource-limits cpu=500m,memory=128Mi
           kubectl rollout restart deployment/kelos-controller-manager -n kelos-system
           kubectl rollout status deployment/kelos-controller-manager -n kelos-system --timeout=120s
+          kubectl rollout restart deployment/ghproxy -n kelos-system
+          kubectl rollout status deployment/ghproxy -n kelos-system --timeout=120s
           kubectl rollout restart deployment -l kelos.dev/component=spawner -n "${KELOS_NAMESPACE}"
           kubectl rollout status deployment -l kelos.dev/component=spawner -n "${KELOS_NAMESPACE}" --timeout=120s
 
@@ -97,6 +99,21 @@ jobs:
               matchExpressions:
                 - key: job-name
                   operator: DoesNotExist
+            endpoints:
+              - port: metrics
+                interval: 30s
+          ---
+          apiVersion: monitoring.googleapis.com/v1
+          kind: PodMonitoring
+          metadata:
+            name: ghproxy
+            namespace: kelos-system
+            labels:
+              app.kubernetes.io/name: ghproxy
+          spec:
+            selector:
+              matchLabels:
+                app.kubernetes.io/name: ghproxy
             endpoints:
               - port: metrics
                 interval: 30s

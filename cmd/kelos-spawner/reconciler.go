@@ -25,6 +25,7 @@ type spawnerRuntimeConfig struct {
 	GitHubOwner      string
 	GitHubRepo       string
 	GitHubAPIBaseURL string
+	GHProxyURL       string
 	GitHubTokenFile  string
 	JiraBaseURL      string
 	JiraProject      string
@@ -68,7 +69,7 @@ func (r *spawnerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 func runOnce(ctx context.Context, cl client.Client, key types.NamespacedName, cfg spawnerRuntimeConfig) (time.Duration, error) {
-	if err := runCycle(ctx, cl, key, cfg.GitHubOwner, cfg.GitHubRepo, cfg.GitHubAPIBaseURL, cfg.GitHubTokenFile, cfg.JiraBaseURL, cfg.JiraProject, cfg.JiraJQL, cfg.HTTPClient); err != nil {
+	if err := runCycle(ctx, cl, key, cfg.GitHubOwner, cfg.GitHubRepo, cfg.GHProxyURL, cfg.GitHubTokenFile, cfg.JiraBaseURL, cfg.JiraProject, cfg.JiraJQL, cfg.HTTPClient); err != nil {
 		return 0, err
 	}
 
@@ -83,6 +84,7 @@ func runOnce(ctx context.Context, cl client.Client, key types.NamespacedName, cf
 			return 0, fmt.Errorf("reading GitHub token for reporting: %w", err)
 		}
 
+		// Reporting always uses the direct API base URL (writes bypass the proxy).
 		reporter := &reporting.TaskReporter{
 			Client: cl,
 			Reporter: &reporting.GitHubReporter{

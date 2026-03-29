@@ -42,6 +42,7 @@ func newInstallCommand(cfg *ClientConfig) *cobra.Command {
 	var tokenRefresherResourceLimits string
 	var controllerResourceRequests string
 	var controllerResourceLimits string
+	var ghproxyAllowedUpstreams string
 
 	cmd := &cobra.Command{
 		Use:   "install",
@@ -62,6 +63,7 @@ func newInstallCommand(cfg *ClientConfig) *cobra.Command {
 				tokenRefresherResourceLimits,
 				controllerResourceRequests,
 				controllerResourceLimits,
+				ghproxyAllowedUpstreams,
 			))
 			controllerManifest, err := helmchart.Render(manifests.ChartFS, vals)
 			if err != nil {
@@ -118,12 +120,13 @@ func newInstallCommand(cfg *ClientConfig) *cobra.Command {
 	cmd.Flags().StringVar(&tokenRefresherResourceLimits, "token-refresher-resource-limits", "", "resource limits for token refresher sidecars (e.g., cpu=200m,memory=256Mi)")
 	cmd.Flags().StringVar(&controllerResourceRequests, "controller-resource-requests", "", "resource requests for the controller container (e.g., cpu=10m,memory=64Mi)")
 	cmd.Flags().StringVar(&controllerResourceLimits, "controller-resource-limits", "", "resource limits for the controller container (e.g., cpu=500m,memory=128Mi)")
+	cmd.Flags().StringVar(&ghproxyAllowedUpstreams, "ghproxy-allowed-upstreams", "", "comma-separated list of allowed upstream base URLs for ghproxy (e.g., https://api.github.com,https://github.example.com/api/v3)")
 
 	return cmd
 }
 
 // buildHelmValues constructs the values map for Helm chart rendering from CLI flags.
-func buildHelmValues(ver string, pullPolicy string, disableHeartbeat bool, spawnerResourceRequests string, spawnerResourceLimits string, tokenRefresherResourceRequests string, tokenRefresherResourceLimits string, controllerResourceRequests string, controllerResourceLimits string) map[string]interface{} {
+func buildHelmValues(ver string, pullPolicy string, disableHeartbeat bool, spawnerResourceRequests string, spawnerResourceLimits string, tokenRefresherResourceRequests string, tokenRefresherResourceLimits string, controllerResourceRequests string, controllerResourceLimits string, ghproxyAllowedUpstreams string) map[string]interface{} {
 	imageVals := map[string]interface{}{
 		"tag": ver,
 	}
@@ -172,6 +175,11 @@ func buildHelmValues(ver string, pullPolicy string, disableHeartbeat bool, spawn
 	if len(controllerResources) > 0 {
 		vals["controller"] = map[string]interface{}{
 			"resources": controllerResources,
+		}
+	}
+	if ghproxyAllowedUpstreams != "" {
+		vals["ghproxy"] = map[string]interface{}{
+			"allowedUpstreams": ghproxyAllowedUpstreams,
 		}
 	}
 	return vals
