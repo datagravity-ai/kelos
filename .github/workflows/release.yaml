@@ -77,7 +77,7 @@ jobs:
           - cmd/kelos-controller
           - cmd/kelos-spawner
           - cmd/kelos-token-refresher
-          - cmd/kelos-webhook-receiver
+          - cmd/kelos-webhook-server
         arch: [amd64, arm64]
         include:
           - arch: amd64
@@ -165,7 +165,7 @@ jobs:
           - kelos-controller
           - kelos-spawner
           - kelos-token-refresher
-          - kelos-webhook-receiver
+          - kelos-webhook-server
           - claude-code
           - codex
           - gemini
@@ -205,7 +205,7 @@ jobs:
           - kelos-controller
           - kelos-spawner
           - kelos-token-refresher
-          - kelos-webhook-receiver
+          - kelos-webhook-server
           - claude-code
           - codex
           - gemini
