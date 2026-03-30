@@ -1,7 +1,8 @@
 # Image configuration
-REGISTRY ?= ghcr.io/kelos-dev
+REGISTRY ?= public.ecr.aws/anomalo/kelos
 VERSION ?= latest
-IMAGE_DIRS ?= cmd/kelos-controller cmd/kelos-spawner cmd/kelos-token-refresher cmd/ghproxy claude-code codex gemini opencode cursor
+IMAGE_DIRS ?= cmd/kelos-controller cmd/kelos-spawner cmd/kelos-webhook-server cmd/kelos-token-refresher claude-code codex gemini opencode cursor
+AGENT_BASE_IMAGE ?= $(REGISTRY)/agent-base:$(VERSION)
 
 # Version injection for the kelos CLI – only set ldflags when an explicit
 # version is given so that dev builds fall through to runtime/debug info.
@@ -79,14 +80,15 @@ build: ## Build binaries (use WHAT=cmd/kelos to build specific binary).
 run: ## Run a controller from your host.
 	go run ./cmd/kelos-controller
 
+.PHONY: image-agent-base
+image-agent-base: ## Build the shared agent base image.
+	docker build -t $(AGENT_BASE_IMAGE) -f agent-base/Dockerfile .
+
 .PHONY: image
-image: ## Build docker images (use WHAT to build specific image).
-	@for dir in $(filter cmd/%,$(or $(WHAT),$(IMAGE_DIRS))); do \
-		GOOS=linux GOARCH=amd64 $(MAKE) build WHAT=$$dir; \
-	done
-	@GOOS=linux GOARCH=amd64 $(MAKE) build WHAT=cmd/kelos-capture
+image: image-agent-base ## Build docker images (use WHAT to build specific image).
 	@for dir in $(or $(WHAT),$(IMAGE_DIRS)); do \
-		docker build -t $(REGISTRY)/$$(basename $$dir):$(VERSION) -f $$dir/Dockerfile .; \
+		docker build --build-arg BASE_IMAGE=$(AGENT_BASE_IMAGE) \
+			-t $(REGISTRY)/$$(basename $$dir):$(VERSION) -f $$dir/Dockerfile .; \
 	done
 
 .PHONY: push
@@ -94,6 +96,48 @@ push: ## Push docker images (use WHAT to push specific image).
 	@for dir in $(or $(WHAT),$(IMAGE_DIRS)); do \
 		docker push $(REGISTRY)/$$(basename $$dir):$(VERSION); \
 	done
+
+DOCKER_PLATFORMS ?= linux/amd64,linux/arm64
+
+BUILDX_CACHE_TYPE ?=
+
+.PHONY: push-multiarch
+push-multiarch: ## Build and push multi-arch docker images (legacy, uses QEMU).
+	@for dir in $(or $(WHAT),$(IMAGE_DIRS)); do \
+		name=$$(basename $$dir); \
+		cache_flags=""; \
+		if [ -n "$(BUILDX_CACHE_TYPE)" ]; then \
+			cache_flags="--cache-from type=$(BUILDX_CACHE_TYPE),scope=$$name --cache-to type=$(BUILDX_CACHE_TYPE),scope=$$name,mode=max"; \
+		fi; \
+		docker buildx build --platform $(DOCKER_PLATFORMS) \
+			$$cache_flags \
+			-t $(REGISTRY)/$$name:$(VERSION) \
+			-f $$dir/Dockerfile --push .; \
+	done
+
+.PHONY: push-image
+push-image: ## Build and push a single image for the native platform (use WHAT=dir).
+	@dir=$(WHAT); \
+	name=$$(basename $$dir); \
+	cache_flags=""; \
+	if [ -n "$(BUILDX_CACHE_TYPE)" ]; then \
+		cache_flags="--cache-from type=$(BUILDX_CACHE_TYPE),scope=$$name --cache-to type=$(BUILDX_CACHE_TYPE),scope=$$name,mode=max"; \
+	fi; \
+	base_arg=""; \
+	if [ -n "$(BASE_IMAGE)" ]; then \
+		base_arg="--build-arg BASE_IMAGE=$(BASE_IMAGE)"; \
+	fi; \
+	docker buildx build \
+		$$cache_flags $$base_arg \
+		--provenance=false \
+		-t $(REGISTRY)/$$name:$(VERSION) \
+		-f $$dir/Dockerfile --push .
+
+.PHONY: create-manifest
+create-manifest: ## Create a multi-arch manifest from per-arch images (use IMAGE=name).
+	docker buildx imagetools create -t $(REGISTRY)/$(IMAGE):$(VERSION) \
+		$(REGISTRY)/$(IMAGE):$(VERSION)-amd64 \
+		$(REGISTRY)/$(IMAGE):$(VERSION)-arm64
 
 RELEASE_PLATFORMS ?= linux/amd64 linux/arm64 darwin/amd64 darwin/arm64
 

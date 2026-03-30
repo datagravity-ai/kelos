@@ -154,6 +154,29 @@ rules:
       - watch
 ---
 apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kelos-webhook-server-role
+rules:
+  - apiGroups:
+      - kelos.dev
+    resources:
+      - taskspawners
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - kelos.dev
+    resources:
+      - tasks
+    verbs:
+      - create
+      - get
+      - list
+      - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
   name: kelos-controller-rolebinding

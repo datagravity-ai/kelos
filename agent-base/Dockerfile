@@ -1,5 +1,11 @@
-ARG BASE_IMAGE=agent-base:latest
-FROM ${BASE_IMAGE}
+FROM golang:1.25 AS builder
+WORKDIR /workspace
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -o bin/kelos-capture ./cmd/kelos-capture
+
+FROM ubuntu:24.04
 
 ARG GO_VERSION=1.25.0
 
@@ -28,20 +34,4 @@ RUN ARCH=$(dpkg --print-architecture) \
 
 ENV PATH="/usr/local/go/bin:${PATH}"
 
-ARG GEMINI_CLI_VERSION=0.35.3
-RUN npm install -g @google/gemini-cli@${GEMINI_CLI_VERSION}
-
-COPY gemini/kelos_entrypoint.sh /kelos_entrypoint.sh
-RUN chmod +x /kelos_entrypoint.sh
-
-RUN useradd -u 61100 -m -s /bin/bash agent
-RUN mkdir -p /home/agent/.gemini && chown -R agent:agent /home/agent
-
-USER agent
-
-ENV GOPATH="/home/agent/go"
-ENV PATH="${GOPATH}/bin:${PATH}"
-
-WORKDIR /workspace
-
-ENTRYPOINT ["gemini"]
+COPY --from=builder /workspace/bin/kelos-capture /kelos/kelos-capture

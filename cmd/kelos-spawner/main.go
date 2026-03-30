@@ -98,6 +98,9 @@ func main() {
 	upstreamURL := githubAPIBaseURL
 	if upstreamURL == "" {
 		upstreamURL = "https://api.github.com"
+   }
+	httpClient := &http.Client{
+		Transport: source.NewETagTransport(source.NewMetricsTransport(http.DefaultTransport), log),
 	}
 	transport := source.NewUpstreamHeaderTransport(
 		source.NewMetricsTransport(http.DefaultTransport),

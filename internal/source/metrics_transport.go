@@ -50,7 +50,7 @@ func NewMetricsTransport(base http.RoundTripper) http.RoundTripper {
 
 func (t *metricsTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	start := time.Now()
-	resource := ClassifyResource(req.URL.Path)
+	resource := classifyResource(req.URL.Path)
 
 	resp, err := t.base.RoundTrip(req)
 
@@ -67,12 +67,12 @@ func (t *metricsTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	return resp, nil
 }
 
-// ClassifyResource extracts the GitHub API resource type from a URL path.
+// classifyResource extracts the GitHub API resource type from a URL path.
 // It walks backwards through the path segments and returns the first
 // non-numeric segment that matches a known resource type, skipping
 // unknown segments so that sub-resources like "events" do not shadow
 // their parent (e.g. "issues").
-func ClassifyResource(urlPath string) string {
+func classifyResource(urlPath string) string {
 	if i := strings.Index(urlPath, "?"); i != -1 {
 		urlPath = urlPath[:i]
 	}

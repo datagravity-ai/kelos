@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, prod]
   pull_request:
-    branches: [main]
+    branches: [main, prod]
     types: [opened, synchronize, reopened, labeled]
   merge_group:
   workflow_dispatch:
@@ -76,11 +76,44 @@ jobs:
 
   test-e2e:
     if: >-
-      github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'workflow_dispatch' && inputs.ok-to-test) || (contains(github.event.pull_request.labels.*.name, 'ok-to-test') && github.event.pull_request.head.repo.full_name == github.repository)
-    permissions:
-      contents: read
-      issues: read
-    uses: ./.github/workflows/reusable-e2e.yaml
-    secrets:
-      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-      CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+      github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'workflow_dispatch' && inputs.ok-to-test) || contains(github.event.pull_request.labels.*.name, 'ok-to-test')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: kind
+
+      - name: Build images
+        run: make image VERSION=e2e REGISTRY=public.ecr.aws/anomalo/kelos
+
+      - name: Load images into kind
+        run: |
+          kind load docker-image public.ecr.aws/anomalo/kelos/kelos-controller:e2e
+          kind load docker-image public.ecr.aws/anomalo/kelos/kelos-spawner:e2e
+          kind load docker-image public.ecr.aws/anomalo/kelos/claude-code:e2e
+          kind load docker-image public.ecr.aws/anomalo/kelos/codex:e2e
+          kind load docker-image public.ecr.aws/anomalo/kelos/gemini:e2e
+          kind load docker-image public.ecr.aws/anomalo/kelos/opencode:e2e
+          kind load docker-image public.ecr.aws/anomalo/kelos/cursor:e2e
+
+      - name: Build CLI
+        run: make build WHAT=cmd/kelos
+
+      - name: Deploy controller
+        run: |
+          bin/kelos install --version e2e --image-pull-policy Never --disable-heartbeat
+          kubectl wait --for=condition=available deployment/kelos-controller-manager -n kelos-system --timeout=120s
+
+      - name: E2E Test
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+          GITHUB_TOKEN: ${{ github.token }}
+          KELOS_BIN: ${{ github.workspace }}/bin/kelos
+        run: make test-e2e

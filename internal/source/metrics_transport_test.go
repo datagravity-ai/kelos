@@ -155,9 +155,9 @@ func TestClassifyResource(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.path, func(t *testing.T) {
-			got := ClassifyResource(tt.path)
+			got := classifyResource(tt.path)
 			if got != tt.expected {
-				t.Errorf("ClassifyResource(%q) = %q, want %q", tt.path, got, tt.expected)
+				t.Errorf("classifyResource(%q) = %q, want %q", tt.path, got, tt.expected)
 			}
 		})
 	}

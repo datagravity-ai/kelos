@@ -1,0 +1,35 @@
+{{- if .Values.webhookServer.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: kelos-webhook-server
+  namespace: kelos-system
+  labels:
+    app.kubernetes.io/name: kelos
+    app.kubernetes.io/component: webhook-server
+  {{- with .Values.webhookServer.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if .Values.webhookServer.ingress.className }}
+  ingressClassName: {{ .Values.webhookServer.ingress.className }}
+  {{- end }}
+  rules:
+    - {{- if .Values.webhookServer.ingress.host }}
+      host: {{ .Values.webhookServer.ingress.host }}
+      {{- end }}
+      http:
+        paths:
+          {{- range $name, $source := .Values.webhookServer.sources }}
+          {{- if $source.enabled }}
+          - path: /webhook/{{ $name }}
+            pathType: Prefix
+            backend:
+              service:
+                name: kelos-webhook-server-{{ $name }}
+                port:
+                  name: webhook
+          {{- end }}
+          {{- end }}
+{{- end }}

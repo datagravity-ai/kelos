@@ -4,10 +4,10 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 RUN --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 go build -o bin/kelos-controller ./cmd/kelos-controller
+    CGO_ENABLED=0 go build -o bin/kelos-webhook-server ./cmd/kelos-webhook-server
 
 FROM gcr.io/distroless/static:nonroot
 WORKDIR /
-COPY --from=builder /workspace/bin/kelos-controller .
+COPY --from=builder /workspace/bin/kelos-webhook-server .
 USER 65532:65532
-ENTRYPOINT ["/kelos-controller"]
+ENTRYPOINT ["/kelos-webhook-server"]

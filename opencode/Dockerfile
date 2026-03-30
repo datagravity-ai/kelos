@@ -1,4 +1,5 @@
-FROM ubuntu:24.04
+ARG BASE_IMAGE=agent-base:latest
+FROM ${BASE_IMAGE}
 
 ARG GO_VERSION=1.25.0
 
@@ -32,8 +33,6 @@ RUN npm install -g opencode-ai@${OPENCODE_VERSION}
 
 COPY opencode/kelos_entrypoint.sh /kelos_entrypoint.sh
 RUN chmod +x /kelos_entrypoint.sh
-
-COPY bin/kelos-capture /kelos/kelos-capture
 
 RUN useradd -u 61100 -m -s /bin/bash agent
 RUN mkdir -p /home/agent/.opencode && chown -R agent:agent /home/agent
