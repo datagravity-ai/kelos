@@ -293,6 +293,7 @@ func matchesFilter(filter v1alpha1.GitHubWebhookFilter, eventData *GitHubEventDa
 						return false
 					}
 				}
+			}
 
 			// ExcludeLabels filter (PR must NOT have any of these labels)
 			if len(filter.ExcludeLabels) > 0 {
@@ -306,21 +307,20 @@ func matchesFilter(filter v1alpha1.GitHubWebhookFilter, eventData *GitHubEventDa
 					}
 				}
 			}
-			}
-		}
 
-		// BodyContains filter for reviews
-		if filter.BodyContains != "" {
-			if reviewEvent, ok := e.(*github.PullRequestReviewEvent); ok {
-				if review := reviewEvent.GetReview(); review != nil {
-					if !strings.Contains(review.GetBody(), filter.BodyContains) {
-						return false
+			// BodyContains filter for reviews
+			if filter.BodyContains != "" {
+				if reviewEvent, ok := e.(*github.PullRequestReviewEvent); ok {
+					if review := reviewEvent.GetReview(); review != nil {
+						if !strings.Contains(review.GetBody(), filter.BodyContains) {
+							return false
+						}
 					}
-				}
-			} else if commentEvent, ok := e.(*github.PullRequestReviewCommentEvent); ok {
-				if comment := commentEvent.GetComment(); comment != nil {
-					if !strings.Contains(comment.GetBody(), filter.BodyContains) {
-						return false
+				} else if commentEvent, ok := e.(*github.PullRequestReviewCommentEvent); ok {
+					if comment := commentEvent.GetComment(); comment != nil {
+						if !strings.Contains(comment.GetBody(), filter.BodyContains) {
+							return false
+						}
 					}
 				}
 			}
