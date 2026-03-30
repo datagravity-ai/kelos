@@ -121,10 +121,14 @@ func NewWebhookHandler(client client.Client, source WebhookSource, log logr.Logg
 // ServeHTTP handles webhook HTTP requests.
 func (h *WebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	log := h.log.WithValues("method", r.Method, "path", r.URL.Path, "source", h.source)
+	log := h.log.WithValues("method", r.Method, "path", r.URL.Path, "source", h.source, "remoteAddr", r.RemoteAddr)
+
+	// Log incoming webhook request
+	log.Info("Received webhook request")
 
 	// Only accept POST requests
 	if r.Method != http.MethodPost {
+		log.Info("Rejected non-POST request", "method", r.Method)
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -146,8 +150,10 @@ func (h *WebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		signature = r.Header.Get(GitHubSignatureHeader)
 		deliveryID = r.Header.Get(GitHubDeliveryHeader)
 
+		log.Info("Processing GitHub webhook", "eventType", eventType, "deliveryID", deliveryID, "payloadSize", len(body))
+
 		if err := ValidateGitHubSignature(body, signature, h.secret); err != nil {
-			log.Error(err, "GitHub signature validation failed")
+			log.Error(err, "GitHub signature validation failed", "eventType", eventType, "deliveryID", deliveryID)
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -157,8 +163,10 @@ func (h *WebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		deliveryID = r.Header.Get(LinearDeliveryHeader)
 		eventType = "linear" // Linear doesn't send event type in header
 
+		log.Info("Processing Linear webhook", "eventType", eventType, "deliveryID", deliveryID, "payloadSize", len(body))
+
 		if err := ValidateLinearSignature(body, signature, h.secret); err != nil {
-			log.Error(err, "Linear signature validation failed")
+			log.Error(err, "Linear signature validation failed", "eventType", eventType, "deliveryID", deliveryID)
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -171,7 +179,7 @@ func (h *WebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Check for duplicate delivery
 	if deliveryID != "" && h.deliveryCache.CheckAndMark(deliveryID) {
-		log.Info("Webhook delivery already processed", "deliveryID", deliveryID)
+		log.Info("Webhook delivery already processed - returning cached response", "eventType", eventType, "deliveryID", deliveryID)
 		w.WriteHeader(http.StatusOK)
 		return
 	}
@@ -181,15 +189,17 @@ func (h *WebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		var concErr *MaxConcurrencyError
 		if errors.As(err, &concErr) {
+			log.Info("Webhook processing blocked by rate limit", "eventType", eventType, "deliveryID", deliveryID, "retryAfter", concErr.RetryAfter)
 			w.Header().Set("Retry-After", fmt.Sprintf("%d", concErr.RetryAfter))
 			http.Error(w, "Service unavailable", http.StatusServiceUnavailable)
 			return
 		}
-		log.Error(err, "Failed to process webhook")
+		log.Error(err, "Failed to process webhook", "eventType", eventType, "deliveryID", deliveryID)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
 
+	log.Info("Webhook processed successfully", "eventType", eventType, "deliveryID", deliveryID)
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -204,9 +214,11 @@ func (h *WebhookHandler) processWebhook(ctx context.Context, eventType string, p
 	}
 
 	if len(spawners) == 0 {
-		log.V(1).Info("No matching TaskSpawners found")
+		log.Info("No matching TaskSpawners found for webhook")
 		return true, nil // Not an error, just nothing to do
 	}
+
+	log.Info("Found matching TaskSpawners", "count", len(spawners))
 
 	tasksCreated := 0
 
@@ -245,9 +257,11 @@ func (h *WebhookHandler) processWebhook(ctx context.Context, eventType string, p
 		}
 
 		if !matches {
-			spawnerLog.V(1).Info("Webhook does not match spawner filters")
+			spawnerLog.Info("Webhook does not match spawner filters")
 			continue
 		}
+
+		spawnerLog.Info("Webhook matches spawner filters - creating task")
 
 		// Create task for this spawner
 		err = h.createTask(ctx, spawner, eventType, payload)
@@ -257,10 +271,10 @@ func (h *WebhookHandler) processWebhook(ctx context.Context, eventType string, p
 		}
 
 		tasksCreated++
-		spawnerLog.Info("Created task from webhook")
+		spawnerLog.Info("Successfully created task from webhook")
 	}
 
-	log.Info("Webhook processing completed", "tasksCreated", tasksCreated)
+	log.Info("Webhook processing completed", "totalSpawners", len(spawners), "tasksCreated", tasksCreated)
 	return tasksCreated > 0, nil
 }
 
@@ -321,6 +335,8 @@ func (h *WebhookHandler) matchesSpawner(spawner *v1alpha1.TaskSpawner, eventType
 
 // createTask creates a new Task from the webhook event.
 func (h *WebhookHandler) createTask(ctx context.Context, spawner *v1alpha1.TaskSpawner, eventType string, payload []byte) error {
+	log := h.log.WithValues("spawner", spawner.Name, "namespace", spawner.Namespace, "eventType", eventType)
+
 	// Extract template variables based on source
 	var templateVars map[string]interface{}
 	var err error
@@ -343,6 +359,8 @@ func (h *WebhookHandler) createTask(ctx context.Context, spawner *v1alpha1.TaskS
 	default:
 		return fmt.Errorf("unsupported source: %s", h.source)
 	}
+
+	log.Info("Extracted template variables", "ID", templateVars["ID"], "Title", templateVars["Title"], "Action", templateVars["Action"])
 
 	// Build unique task name from delivery info
 	idVal, _ := templateVars["ID"].(string)
