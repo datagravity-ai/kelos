@@ -22,15 +22,18 @@ import (
 )
 
 type spawnerRuntimeConfig struct {
-	GitHubOwner      string
-	GitHubRepo       string
-	GitHubAPIBaseURL string
-	GHProxyURL       string
-	GitHubTokenFile  string
-	JiraBaseURL      string
-	JiraProject      string
-	JiraJQL          string
-	HTTPClient       *http.Client
+	GitHubOwner         string
+	GitHubRepo          string
+	GitHubAPIBaseURL    string
+	GHProxyURL          string
+	GitHubTokenFile     string
+	JiraBaseURL         string
+	JiraProject         string
+	JiraJQL             string
+	SlackTriggerCommand string
+	SlackChannels       string
+	SlackAllowedUsers   string
+	HTTPClient          *http.Client
 }
 
 type spawnerReconciler struct {
@@ -69,7 +72,7 @@ func (r *spawnerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 func runOnce(ctx context.Context, cl client.Client, key types.NamespacedName, cfg spawnerRuntimeConfig) (time.Duration, error) {
-	if err := runCycle(ctx, cl, key, cfg.GitHubOwner, cfg.GitHubRepo, cfg.GHProxyURL, cfg.GitHubTokenFile, cfg.JiraBaseURL, cfg.JiraProject, cfg.JiraJQL, cfg.HTTPClient); err != nil {
+	if err := runCycle(ctx, cl, key, cfg.GitHubOwner, cfg.GitHubRepo, cfg.GHProxyURL, cfg.GitHubTokenFile, cfg.JiraBaseURL, cfg.JiraProject, cfg.JiraJQL, cfg.SlackTriggerCommand, cfg.SlackChannels, cfg.SlackAllowedUsers, cfg.HTTPClient); err != nil {
 		return 0, err
 	}
 
@@ -116,6 +119,8 @@ func resolvedPollInterval(ts *kelosv1alpha1.TaskSpawner) time.Duration {
 		sourceInterval = ts.Spec.When.GitHubPullRequests.PollInterval
 	case ts.Spec.When.Jira != nil:
 		sourceInterval = ts.Spec.When.Jira.PollInterval
+	case ts.Spec.When.Slack != nil:
+		sourceInterval = ts.Spec.When.Slack.PollInterval
 	}
 	if sourceInterval != "" {
 		return parsePollInterval(sourceInterval)
