@@ -392,7 +392,9 @@ func (h *WebhookHandler) createTask(ctx context.Context, spawner *v1alpha1.TaskS
 
 	// Build unique task name from delivery info
 	idVal, _ := templateVars["ID"].(string)
-	taskName := fmt.Sprintf("%s-%s-%s", spawner.Name, eventType, idVal)
+	// Sanitize event type for Kubernetes naming (replace underscores with hyphens)
+	sanitizedEventType := strings.ReplaceAll(eventType, "_", "-")
+	taskName := fmt.Sprintf("%s-%s-%s", spawner.Name, sanitizedEventType, idVal)
 	if len(taskName) > 63 {
 		taskName = strings.TrimRight(taskName[:63], "-.")
 	}
