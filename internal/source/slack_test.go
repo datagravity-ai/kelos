@@ -97,6 +97,33 @@ func TestShouldProcess(t *testing.T) {
 			wantOK:     false,
 		},
 		{
+			name:       "message_changed subtype ignored",
+			userID:     "U001",
+			subtype:    "message_changed",
+			text:       "edited message",
+			selfUserID: "UBOT",
+			wantBody:   "",
+			wantOK:     false,
+		},
+		{
+			name:       "message_deleted subtype ignored",
+			userID:     "U001",
+			subtype:    "message_deleted",
+			text:       "deleted message",
+			selfUserID: "UBOT",
+			wantBody:   "",
+			wantOK:     false,
+		},
+		{
+			name:       "message_replied subtype ignored",
+			userID:     "U001",
+			subtype:    "message_replied",
+			text:       "reply notification",
+			selfUserID: "UBOT",
+			wantBody:   "",
+			wantOK:     false,
+		},
+		{
 			name:       "empty text ignored",
 			userID:     "U001",
 			text:       "",
@@ -219,10 +246,16 @@ func TestBuildWorkItem(t *testing.T) {
 	}
 }
 
+// newStartedSlackSource returns a SlackSource where the startOnce has
+// already fired (so Discover won't call Start).
+func newStartedSlackSource() *SlackSource {
+	s := &SlackSource{}
+	s.startOnce.Do(func() {}) // Mark as started without actually connecting
+	return s
+}
+
 func TestDiscoverDrainsPending(t *testing.T) {
-	s := &SlackSource{
-		started: true, // Skip Start() call
-	}
+	s := newStartedSlackSource()
 
 	// Pre-populate pending items
 	s.pending = []WorkItem{
@@ -249,9 +282,7 @@ func TestDiscoverDrainsPending(t *testing.T) {
 }
 
 func TestDiscoverEmpty(t *testing.T) {
-	s := &SlackSource{
-		started: true, // Skip Start() call
-	}
+	s := newStartedSlackSource()
 
 	items, err := s.Discover(context.Background())
 	if err != nil {
@@ -264,9 +295,7 @@ func TestDiscoverEmpty(t *testing.T) {
 }
 
 func TestDiscoverMultipleCalls(t *testing.T) {
-	s := &SlackSource{
-		started: true,
-	}
+	s := newStartedSlackSource()
 
 	// First batch
 	s.pending = []WorkItem{{ID: "1", Body: "first"}}

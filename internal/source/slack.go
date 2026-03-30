@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"
@@ -31,7 +32,8 @@ type SlackSource struct {
 	mu         sync.Mutex
 	pending    []WorkItem
 	counter    int
-	started    bool
+	startOnce  sync.Once
+	startErr   error
 	selfUserID string
 	api        *slack.Client
 	cancel     context.CancelFunc
@@ -40,11 +42,11 @@ type SlackSource struct {
 // Discover returns accumulated WorkItems since the last call.
 // On the first call it starts the Socket Mode listener.
 func (s *SlackSource) Discover(ctx context.Context) ([]WorkItem, error) {
-	if !s.started {
-		if err := s.Start(ctx); err != nil {
-			return nil, fmt.Errorf("Starting Slack source: %w", err)
-		}
-		s.started = true
+	s.startOnce.Do(func() {
+		s.startErr = s.Start(ctx)
+	})
+	if s.startErr != nil {
+		return nil, fmt.Errorf("Starting Slack source: %w", s.startErr)
 	}
 
 	s.mu.Lock()
@@ -73,10 +75,11 @@ func (s *SlackSource) Start(ctx context.Context) error {
 
 	sm := socketmode.New(s.api)
 
-	ctx, s.cancel = context.WithCancel(ctx)
+	bgCtx, cancel := context.WithCancel(context.Background())
+	s.cancel = cancel
 
 	go func() {
-		if err := sm.RunContext(ctx); err != nil {
+		if err := sm.RunContext(bgCtx); err != nil {
 			log.Error(err, "Socket Mode connection closed")
 		}
 	}()
@@ -130,7 +133,10 @@ func (s *SlackSource) handleEventsAPI(sm *socketmode.Client, evt socketmode.Even
 	}
 
 	userName := innerEvent.User
-	if info, err := s.api.GetUserInfo(innerEvent.User); err == nil {
+	enrichCtx, enrichCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer enrichCancel()
+
+	if info, err := s.api.GetUserInfoContext(enrichCtx, innerEvent.User); err == nil {
 		userName = info.RealName
 		if userName == "" {
 			userName = info.Name
@@ -138,7 +144,7 @@ func (s *SlackSource) handleEventsAPI(sm *socketmode.Client, evt socketmode.Even
 	}
 
 	permalink := ""
-	if link, err := s.api.GetPermalink(&slack.PermalinkParameters{
+	if link, err := s.api.GetPermalinkContext(enrichCtx, &slack.PermalinkParameters{
 		Channel: innerEvent.Channel,
 		Ts:      innerEvent.TimeStamp,
 	}); err == nil {
@@ -146,7 +152,7 @@ func (s *SlackSource) handleEventsAPI(sm *socketmode.Client, evt socketmode.Even
 	}
 
 	channelName := innerEvent.Channel
-	if info, err := s.api.GetConversationInfo(&slack.GetConversationInfoInput{
+	if info, err := s.api.GetConversationInfoContext(enrichCtx, &slack.GetConversationInfoInput{
 		ChannelID: innerEvent.Channel,
 	}); err == nil {
 		channelName = info.Name
@@ -191,7 +197,8 @@ func (s *SlackSource) handleSlashCommand(sm *socketmode.Client, evt socketmode.E
 
 	s.mu.Lock()
 	s.counter++
-	item := buildWorkItem(cmd.TriggerID, s.counter, userName, body, "", channelName)
+	itemID := fmt.Sprintf("%s:%s:%s", cmd.ChannelID, cmd.Command, cmd.TriggerID)
+	item := buildWorkItem(itemID, s.counter, userName, body, "", channelName)
 	s.pending = append(s.pending, item)
 	s.mu.Unlock()
 
@@ -205,7 +212,8 @@ func shouldProcess(userID, subtype, threadTS, text, selfUserID, triggerCmd strin
 	if userID == selfUserID {
 		return "", false
 	}
-	if subtype == "bot_message" {
+	switch subtype {
+	case "bot_message", "message_changed", "message_deleted", "message_replied":
 		return "", false
 	}
 	if threadTS != "" {
