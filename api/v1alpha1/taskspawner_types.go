@@ -436,12 +436,6 @@ type Slack struct {
 	// +optional
 	AllowedUsers []string `json:"allowedUsers,omitempty"`
 
-	// ResponseChannel optionally specifies a channel to post task status
-	// updates to (created, succeeded, failed). When empty, responses are
-	// posted as thread replies in the channel where the message was posted.
-	// +optional
-	ResponseChannel string `json:"responseChannel,omitempty"`
-
 	// PollInterval overrides spec.pollInterval for this source (e.g., "30s", "5m").
 	// Slack uses Socket Mode (real-time), but Discover() is still called on
 	// this interval to drain accumulated events. When empty, spec.pollInterval

@@ -984,12 +984,6 @@ spec:
                           this interval to drain accumulated events. When empty, spec.pollInterval
                           is used.
                         type: string
-                      responseChannel:
-                        description: |-
-                          ResponseChannel optionally specifies a channel to post task status
-                          updates to (created, succeeded, failed). When empty, responses are
-                          posted as thread replies in the channel where the message was posted.
-                        type: string
                       secretRef:
                         description: |-
                           SecretRef references a Secret containing "SLACK_BOT_TOKEN" and
