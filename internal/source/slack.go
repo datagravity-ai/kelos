@@ -76,7 +76,9 @@ func (s *SlackSource) Start(ctx context.Context) error {
 	sm := socketmode.New(s.api)
 
 	bgCtx, cancel := context.WithCancel(context.Background())
+	s.mu.Lock()
 	s.cancel = cancel
+	s.mu.Unlock()
 
 	go func() {
 		if err := sm.RunContext(bgCtx); err != nil {
@@ -100,8 +102,11 @@ func (s *SlackSource) Start(ctx context.Context) error {
 
 // Stop shuts down the Socket Mode listener.
 func (s *SlackSource) Stop() {
-	if s.cancel != nil {
-		s.cancel()
+	s.mu.Lock()
+	cancel := s.cancel
+	s.mu.Unlock()
+	if cancel != nil {
+		cancel()
 	}
 }
 
