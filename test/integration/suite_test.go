@@ -117,9 +117,7 @@ var _ = BeforeSuite(func() {
 	Eventually(func() error {
 		return k8sClient.List(ctx, &kelosv1alpha1.WorkspaceList{})
 	}, 30*time.Second, 100*time.Millisecond).Should(Succeed())
-	Eventually(func() error {
-		return k8sClient.List(ctx, &kelosv1alpha1.WebhookEventList{})
-	}, 30*time.Second, 100*time.Millisecond).Should(Succeed())
+	// Webhook system ready - no separate CRD to check
 })
 
 var _ = AfterSuite(func() {

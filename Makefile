@@ -1,7 +1,7 @@
 # Image configuration
 REGISTRY ?= public.ecr.aws/anomalo/kelos
 VERSION ?= latest
-IMAGE_DIRS ?= cmd/kelos-controller cmd/kelos-spawner cmd/kelos-token-refresher cmd/kelos-webhook-receiver claude-code codex gemini opencode cursor
+IMAGE_DIRS ?= cmd/kelos-controller cmd/kelos-spawner cmd/kelos-webhook-server cmd/kelos-token-refresher claude-code codex gemini opencode cursor
 AGENT_BASE_IMAGE ?= $(REGISTRY)/agent-base:$(VERSION)
 
 # Version injection for the kelos CLI – only set ldflags when an explicit

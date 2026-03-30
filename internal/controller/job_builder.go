@@ -16,19 +16,19 @@ import (
 
 const (
 	// ClaudeCodeImage is the default image for Claude Code agent.
-	ClaudeCodeImage = "public.ecr.aws/anomalo/kelos/claude-code:latest"
+	ClaudeCodeImage = "ghcr.io/kelos-dev/claude-code:latest"
 
 	// CodexImage is the default image for OpenAI Codex agent.
-	CodexImage = "public.ecr.aws/anomalo/kelos/codex:latest"
+	CodexImage = "ghcr.io/kelos-dev/codex:latest"
 
 	// GeminiImage is the default image for Google Gemini CLI agent.
-	GeminiImage = "public.ecr.aws/anomalo/kelos/gemini:latest"
+	GeminiImage = "ghcr.io/kelos-dev/gemini:latest"
 
 	// OpenCodeImage is the default image for OpenCode agent.
-	OpenCodeImage = "public.ecr.aws/anomalo/kelos/opencode:latest"
+	OpenCodeImage = "ghcr.io/kelos-dev/opencode:latest"
 
 	// CursorImage is the default image for Cursor CLI agent.
-	CursorImage = "public.ecr.aws/anomalo/kelos/cursor:latest"
+	CursorImage = "ghcr.io/kelos-dev/cursor:latest"
 
 	// AgentTypeClaudeCode is the agent type for Claude Code.
 	AgentTypeClaudeCode = "claude-code"
@@ -632,10 +632,10 @@ func (b *JobBuilder) buildAgentJob(task *kelosv1alpha1.Task, workspace *kelosv1a
 			Name:      task.Name,
 			Namespace: task.Namespace,
 			Labels: map[string]string{
-				"app.kubernetes.io/name":       "kelos",
-				"app.kubernetes.io/component":  "task",
-				"app.kubernetes.io/managed-by": "kelos-controller",
-				"kelos.dev/task":               task.Name,
+				"kelos.dev/name":       "kelos",
+				"kelos.dev/component":  "task",
+				"kelos.dev/managed-by": "kelos-controller",
+				"kelos.dev/task":       task.Name,
 			},
 		},
 		Spec: batchv1.JobSpec{
@@ -645,10 +645,10 @@ func (b *JobBuilder) buildAgentJob(task *kelosv1alpha1.Task, workspace *kelosv1a
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{
-						"app.kubernetes.io/name":       "kelos",
-						"app.kubernetes.io/component":  "task",
-						"app.kubernetes.io/managed-by": "kelos-controller",
-						"kelos.dev/task":               task.Name,
+						"kelos.dev/name":       "kelos",
+						"kelos.dev/component":  "task",
+						"kelos.dev/managed-by": "kelos-controller",
+						"kelos.dev/task":       task.Name,
 					},
 				},
 				Spec: corev1.PodSpec{

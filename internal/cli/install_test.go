@@ -177,6 +177,49 @@ func TestRenderChart_DefaultValues(t *testing.T) {
 	}
 }
 
+func TestDisableChartCRDs(t *testing.T) {
+	vals := disableChartCRDs(buildHelmValues("latest", "", false, "", "", "", "", "", ""))
+	crds, ok := vals["crds"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected crds values to be present")
+	}
+	install, ok := crds["install"].(bool)
+	if !ok {
+		t.Fatal("expected crds.install to be a bool")
+	}
+	if install {
+		t.Fatal("expected chart CRDs to be disabled")
+	}
+	image := vals["image"].(map[string]interface{})
+	if image["tag"] != "latest" {
+		t.Fatalf("expected image tag to be preserved, got %v", image["tag"])
+	}
+}
+
+func TestRenderChart_ControllerOnlyExcludesCRDs(t *testing.T) {
+	vals := disableChartCRDs(buildHelmValues("v0.0.0-test", "", false, "", "", "", "", "", ""))
+	data, err := helmchart.Render(manifests.ChartFS, vals)
+	if err != nil {
+		t.Fatalf("rendering chart: %v", err)
+	}
+	objs, err := parseManifests(data)
+	if err != nil {
+		t.Fatalf("parsing rendered chart: %v", err)
+	}
+	kinds := make(map[string]bool)
+	for _, obj := range objs {
+		if obj.GetKind() == "CustomResourceDefinition" {
+			t.Fatalf("expected controller-only chart render to exclude CRDs, found %s", obj.GetName())
+		}
+		kinds[obj.GetKind()] = true
+	}
+	for _, expected := range []string{"Namespace", "ServiceAccount", "ClusterRole", "Deployment", "CronJob"} {
+		if !kinds[expected] {
+			t.Errorf("expected to find %s in controller-only rendered chart", expected)
+		}
+	}
+}
+
 func TestRenderChart_VersionSubstitution(t *testing.T) {
 	vals := buildHelmValues("v0.5.0", "", false, "", "", "", "", "", "")
 	data, err := helmchart.Render(manifests.ChartFS, vals)
@@ -198,12 +241,12 @@ func TestRenderChart_ImageArgs(t *testing.T) {
 		t.Fatalf("rendering chart: %v", err)
 	}
 	versionedArgs := []string{
-		"--claude-code-image=public.ecr.aws/anomalo/kelos/claude-code:v0.3.0",
-		"--codex-image=public.ecr.aws/anomalo/kelos/codex:v0.3.0",
-		"--gemini-image=public.ecr.aws/anomalo/kelos/gemini:v0.3.0",
-		"--opencode-image=public.ecr.aws/anomalo/kelos/opencode:v0.3.0",
-		"--spawner-image=public.ecr.aws/anomalo/kelos/kelos-spawner:v0.3.0",
-		"--token-refresher-image=public.ecr.aws/anomalo/kelos/kelos-token-refresher:v0.3.0",
+		"--claude-code-image=ghcr.io/kelos-dev/claude-code:v0.3.0",
+		"--codex-image=ghcr.io/kelos-dev/codex:v0.3.0",
+		"--gemini-image=ghcr.io/kelos-dev/gemini:v0.3.0",
+		"--opencode-image=ghcr.io/kelos-dev/opencode:v0.3.0",
+		"--spawner-image=ghcr.io/kelos-dev/kelos-spawner:v0.3.0",
+		"--token-refresher-image=ghcr.io/kelos-dev/kelos-token-refresher:v0.3.0",
 	}
 	for _, arg := range versionedArgs {
 		if !bytes.Contains(data, []byte(arg)) {
@@ -405,6 +448,46 @@ func TestInstallCommand_ImagePullPolicyFlag(t *testing.T) {
 
 	if !strings.Contains(output, "imagePullPolicy: Always") {
 		t.Errorf("expected imagePullPolicy: Always in output, got:\n%s", output[:min(len(output), 500)])
+	}
+}
+
+func TestInstallCommand_DryRunIncludesEachCRDOnce(t *testing.T) {
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"install", "--dry-run"})
+
+	output := captureStdout(t, func() {
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	objs, err := parseManifests([]byte(output))
+	if err != nil {
+		t.Fatalf("parsing dry-run output: %v", err)
+	}
+
+	crdNames := map[string]int{}
+	crdCount := 0
+	for _, obj := range objs {
+		if obj.GetKind() != "CustomResourceDefinition" {
+			continue
+		}
+		crdCount++
+		crdNames[obj.GetName()]++
+	}
+
+	if crdCount != 4 {
+		t.Fatalf("expected 4 CRDs in dry-run output, got %d", crdCount)
+	}
+	for _, name := range []string{
+		"agentconfigs.kelos.dev",
+		"tasks.kelos.dev",
+		"taskspawners.kelos.dev",
+		"workspaces.kelos.dev",
+	} {
+		if crdNames[name] != 1 {
+			t.Errorf("expected dry-run output to contain %s exactly once, got %d", name, crdNames[name])
+		}
 	}
 }
 
@@ -844,17 +927,11 @@ func TestBuildHelmValues(t *testing.T) {
 				if _, ok := vals["telemetry"]; ok {
 					t.Error("expected no telemetry key when not disabled")
 				}
-				if _, ok := vals["spawnerResourceRequests"]; ok {
-					t.Error("expected no spawnerResourceRequests when empty")
+				if _, ok := vals["spawner"]; ok {
+					t.Error("expected no spawner key when empty")
 				}
-				if _, ok := vals["spawnerResourceLimits"]; ok {
-					t.Error("expected no spawnerResourceLimits when empty")
-				}
-				if _, ok := vals["tokenRefresherResourceRequests"]; ok {
-					t.Error("expected no tokenRefresherResourceRequests when empty")
-				}
-				if _, ok := vals["tokenRefresherResourceLimits"]; ok {
-					t.Error("expected no tokenRefresherResourceLimits when empty")
+				if _, ok := vals["tokenRefresher"]; ok {
+					t.Error("expected no tokenRefresher key when empty")
 				}
 				if _, ok := vals["controller"]; ok {
 					t.Error("expected no controller key when empty")
@@ -888,8 +965,10 @@ func TestBuildHelmValues(t *testing.T) {
 			version:                 "latest",
 			spawnerResourceRequests: "cpu=250m,memory=512Mi",
 			checkFn: func(t *testing.T, vals map[string]interface{}) {
-				if vals["spawnerResourceRequests"] != "cpu=250m,memory=512Mi" {
-					t.Errorf("expected spawnerResourceRequests=cpu=250m,memory=512Mi, got %v", vals["spawnerResourceRequests"])
+				spawner := vals["spawner"].(map[string]interface{})
+				res := spawner["resources"].(map[string]interface{})
+				if res["requests"] != "cpu=250m,memory=512Mi" {
+					t.Errorf("expected spawner.resources.requests=cpu=250m,memory=512Mi, got %v", res["requests"])
 				}
 			},
 		},
@@ -898,8 +977,10 @@ func TestBuildHelmValues(t *testing.T) {
 			version:               "latest",
 			spawnerResourceLimits: "cpu=1,memory=1Gi",
 			checkFn: func(t *testing.T, vals map[string]interface{}) {
-				if vals["spawnerResourceLimits"] != "cpu=1,memory=1Gi" {
-					t.Errorf("expected spawnerResourceLimits=cpu=1,memory=1Gi, got %v", vals["spawnerResourceLimits"])
+				spawner := vals["spawner"].(map[string]interface{})
+				res := spawner["resources"].(map[string]interface{})
+				if res["limits"] != "cpu=1,memory=1Gi" {
+					t.Errorf("expected spawner.resources.limits=cpu=1,memory=1Gi, got %v", res["limits"])
 				}
 			},
 		},
@@ -908,8 +989,10 @@ func TestBuildHelmValues(t *testing.T) {
 			version:                        "latest",
 			tokenRefresherResourceRequests: "cpu=100m,memory=128Mi",
 			checkFn: func(t *testing.T, vals map[string]interface{}) {
-				if vals["tokenRefresherResourceRequests"] != "cpu=100m,memory=128Mi" {
-					t.Errorf("expected tokenRefresherResourceRequests=cpu=100m,memory=128Mi, got %v", vals["tokenRefresherResourceRequests"])
+				tr := vals["tokenRefresher"].(map[string]interface{})
+				res := tr["resources"].(map[string]interface{})
+				if res["requests"] != "cpu=100m,memory=128Mi" {
+					t.Errorf("expected tokenRefresher.resources.requests=cpu=100m,memory=128Mi, got %v", res["requests"])
 				}
 			},
 		},
@@ -918,8 +1001,10 @@ func TestBuildHelmValues(t *testing.T) {
 			version:                      "latest",
 			tokenRefresherResourceLimits: "cpu=200m,memory=256Mi",
 			checkFn: func(t *testing.T, vals map[string]interface{}) {
-				if vals["tokenRefresherResourceLimits"] != "cpu=200m,memory=256Mi" {
-					t.Errorf("expected tokenRefresherResourceLimits=cpu=200m,memory=256Mi, got %v", vals["tokenRefresherResourceLimits"])
+				tr := vals["tokenRefresher"].(map[string]interface{})
+				res := tr["resources"].(map[string]interface{})
+				if res["limits"] != "cpu=200m,memory=256Mi" {
+					t.Errorf("expected tokenRefresher.resources.limits=cpu=200m,memory=256Mi, got %v", res["limits"])
 				}
 			},
 		},

@@ -1,7 +1,7 @@
 ARG BASE_IMAGE=agent-base:latest
 FROM ${BASE_IMAGE}
 
-ARG GEMINI_CLI_VERSION=0.34.0
+ARG GEMINI_CLI_VERSION=0.35.0
 RUN npm install -g @google/gemini-cli@${GEMINI_CLI_VERSION}
 
 COPY gemini/kelos_entrypoint.sh /kelos_entrypoint.sh

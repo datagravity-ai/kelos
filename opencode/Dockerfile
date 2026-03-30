@@ -1,7 +1,7 @@
 ARG BASE_IMAGE=agent-base:latest
 FROM ${BASE_IMAGE}
 
-ARG OPENCODE_VERSION=1.2.27
+ARG OPENCODE_VERSION=1.3.2
 RUN npm install -g opencode-ai@${OPENCODE_VERSION}
 
 COPY opencode/kelos_entrypoint.sh /kelos_entrypoint.sh

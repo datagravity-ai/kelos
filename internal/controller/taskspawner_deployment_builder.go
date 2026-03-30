@@ -17,10 +17,10 @@ import (
 
 const (
 	// DefaultSpawnerImage is the default image for the spawner binary.
-	DefaultSpawnerImage = "public.ecr.aws/anomalo/kelos/kelos-spawner:latest"
+	DefaultSpawnerImage = "ghcr.io/kelos-dev/kelos-spawner:latest"
 
 	// DefaultTokenRefresherImage is the default image for the token refresher sidecar.
-	DefaultTokenRefresherImage = "public.ecr.aws/anomalo/kelos/kelos-token-refresher:latest"
+	DefaultTokenRefresherImage = "ghcr.io/kelos-dev/kelos-token-refresher:latest"
 
 	// SpawnerServiceAccount is the service account used by spawner Deployments.
 	SpawnerServiceAccount = "kelos-spawner"
@@ -235,10 +235,10 @@ func (b *DeploymentBuilder) buildPodParts(ts *kelosv1alpha1.TaskSpawner, workspa
 	}
 
 	labels := map[string]string{
-		"app.kubernetes.io/name":       "kelos",
-		"app.kubernetes.io/component":  "spawner",
-		"app.kubernetes.io/managed-by": "kelos-controller",
-		"kelos.dev/taskspawner":        ts.Name,
+		"kelos.dev/name":        "kelos",
+		"kelos.dev/component":   "spawner",
+		"kelos.dev/managed-by":  "kelos-controller",
+		"kelos.dev/taskspawner": ts.Name,
 	}
 
 	return spawnerPodParts{
@@ -267,6 +267,13 @@ func (b *DeploymentBuilder) Build(ts *kelosv1alpha1.TaskSpawner, workspace *kelo
 		Args:            p.args,
 		Env:             p.envVars,
 		VolumeMounts:    p.volumeMounts,
+		Ports: []corev1.ContainerPort{
+			{
+				Name:          "metrics",
+				ContainerPort: 8080,
+				Protocol:      corev1.ProtocolTCP,
+			},
+		},
 	}
 	if b.SpawnerResources != nil {
 		spawnerContainer.Resources = *b.SpawnerResources

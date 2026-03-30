@@ -170,6 +170,23 @@ kubectl get pods -n kelos-system
 kubectl get crds | grep kelos.dev
 ```
 
+### Helm Install
+
+Kelos also publishes a Helm chart as an OCI artifact in GHCR.
+
+To install Kelos with Helm:
+
+```bash
+helm upgrade --install kelos oci://ghcr.io/kelos-dev/charts/kelos \
+  -n kelos-system \
+  --create-namespace \
+  --version <version>
+```
+
+This installs the controller and, by default, the Kelos CRDs.
+
+For CRD migration, adopting existing CRDs into Helm ownership, and advanced chart usage, see [the Helm chart README](internal/manifests/charts/kelos/README.md).
+
 ### 3. Initialize Your Config
 
 ```bash

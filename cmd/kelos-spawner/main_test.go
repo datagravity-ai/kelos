@@ -3,11 +3,15 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
+	dto "github.com/prometheus/client_model/go"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -16,6 +20,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
@@ -61,6 +66,27 @@ func setupTest(t *testing.T, ts *kelosv1alpha1.TaskSpawner, existingTasks ...kel
 
 	key := types.NamespacedName{Name: ts.Name, Namespace: ts.Namespace}
 	return cl, key
+}
+
+func histogramSampleCount(t *testing.T, collector prometheus.Collector) uint64 {
+	t.Helper()
+
+	ch := make(chan prometheus.Metric, 10)
+	collector.Collect(ch)
+	close(ch)
+
+	for metric := range ch {
+		var dtoMetric dto.Metric
+		if err := metric.Write(&dtoMetric); err != nil {
+			t.Fatalf("Writing metric: %v", err)
+		}
+		if dtoMetric.Histogram != nil {
+			return dtoMetric.GetHistogram().GetSampleCount()
+		}
+	}
+
+	t.Fatal("Expected histogram metric to be collected")
+	return 0
 }
 
 func newTaskSpawner(name, namespace string, maxConcurrency *int32) *kelosv1alpha1.TaskSpawner {
@@ -112,7 +138,7 @@ func newTask(name, namespace, spawnerName string, phase kelosv1alpha1.TaskPhase)
 func TestBuildSource_GitHubIssuesWithBaseURL(t *testing.T) {
 	ts := newTaskSpawner("spawner", "default", nil)
 
-	src, err := buildSource(ts, "my-org", "my-repo", "https://github.example.com/api/v3", "", "", "", "", nil, nil)
+	src, err := buildSource(ts, "my-org", "my-repo", "https://github.example.com/api/v3", "", "", "", "", nil)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -135,7 +161,7 @@ func TestBuildSource_GitHubIssuesWithBaseURL(t *testing.T) {
 func TestBuildSource_GitHubIssuesDefaultBaseURL(t *testing.T) {
 	ts := newTaskSpawner("spawner", "default", nil)
 
-	src, err := buildSource(ts, "kelos-dev", "kelos", "", "", "", "", "", nil, nil)
+	src, err := buildSource(ts, "kelos-dev", "kelos", "", "", "", "", "", nil)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -161,7 +187,7 @@ func TestBuildSource_GitHubPullRequests(t *testing.T) {
 		},
 	}
 
-	src, err := buildSource(ts, "kelos-dev", "kelos", "https://github.example.com/api/v3", "", "", "", "", nil, nil)
+	src, err := buildSource(ts, "kelos-dev", "kelos", "https://github.example.com/api/v3", "", "", "", "", nil)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -221,7 +247,7 @@ func TestBuildSource_Jira(t *testing.T) {
 	t.Setenv("JIRA_USER", "user@example.com")
 	t.Setenv("JIRA_TOKEN", "jira-api-token")
 
-	src, err := buildSource(ts, "", "", "", "", "https://mycompany.atlassian.net", "PROJ", "status = Open", nil, nil)
+	src, err := buildSource(ts, "", "", "", "", "https://mycompany.atlassian.net", "PROJ", "status = Open", nil)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -447,6 +473,81 @@ func TestRunCycleWithSource_ActiveTasksStatusUpdated(t *testing.T) {
 	// 1 existing running + 1 new = 2 active
 	if updatedTS.Status.ActiveTasks != 2 {
 		t.Errorf("Expected activeTasks=2, got %d", updatedTS.Status.ActiveTasks)
+	}
+}
+
+func TestRunCycleWithSource_StatusUpdateFailureCountsDiscoveryError(t *testing.T) {
+	ts := newTaskSpawner("spawner", "default", nil)
+	src := &fakeSource{
+		items: []source.WorkItem{
+			{ID: "1", Title: "Item 1"},
+		},
+	}
+
+	updateErr := errors.New("status update failed")
+	cl := fake.NewClientBuilder().
+		WithScheme(newTestScheme()).
+		WithObjects(ts).
+		WithStatusSubresource(ts).
+		WithInterceptorFuncs(interceptor.Funcs{
+			SubResourceUpdate: func(_ context.Context, _ client.Client, subResourceName string, obj client.Object, _ ...client.SubResourceUpdateOption) error {
+				if subResourceName == "status" {
+					if _, ok := obj.(*kelosv1alpha1.TaskSpawner); ok {
+						return updateErr
+					}
+				}
+				return nil
+			},
+		}).
+		Build()
+	key := types.NamespacedName{Name: ts.Name, Namespace: ts.Namespace}
+
+	beforeDiscovery := testutil.ToFloat64(discoveryTotal)
+	beforeErrors := testutil.ToFloat64(discoveryErrorsTotal)
+	beforeTasksCreated := testutil.ToFloat64(tasksCreatedTotal)
+
+	err := runCycleWithSource(context.Background(), cl, key, src)
+	if !errors.Is(err, updateErr) {
+		t.Fatalf("Expected status update error %q, got %v", updateErr, err)
+	}
+
+	if delta := testutil.ToFloat64(discoveryTotal) - beforeDiscovery; delta != 0 {
+		t.Errorf("Expected discoveryTotal delta 0 on failed cycle, got %f", delta)
+	}
+	if delta := testutil.ToFloat64(discoveryErrorsTotal) - beforeErrors; delta != 1 {
+		t.Errorf("Expected discoveryErrorsTotal delta 1 on failed cycle, got %f", delta)
+	}
+	if delta := testutil.ToFloat64(tasksCreatedTotal) - beforeTasksCreated; delta != 1 {
+		t.Errorf("Expected tasksCreatedTotal delta 1 after creating a Task, got %f", delta)
+	}
+}
+
+func TestRunCycle_BuildSourceFailureCountsDiscoveryErrorAndDuration(t *testing.T) {
+	ts := newTaskSpawner("spawner", "default", nil)
+	ts.Spec.When.GitHubIssues.TriggerComment = "/kelos pick-up"
+	ts.Spec.When.GitHubIssues.CommentPolicy = &kelosv1alpha1.GitHubCommentPolicy{
+		AllowedUsers: []string{"alice"},
+	}
+
+	cl, key := setupTest(t, ts)
+
+	beforeDiscovery := testutil.ToFloat64(discoveryTotal)
+	beforeErrors := testutil.ToFloat64(discoveryErrorsTotal)
+	beforeDurationCount := histogramSampleCount(t, discoveryDurationSeconds)
+
+	err := runCycle(context.Background(), cl, key, "owner", "repo", "", "", "", "", "", nil)
+	if err == nil {
+		t.Fatal("Expected buildSource error")
+	}
+
+	if delta := testutil.ToFloat64(discoveryTotal) - beforeDiscovery; delta != 0 {
+		t.Errorf("Expected discoveryTotal delta 0 on pre-discovery failure, got %f", delta)
+	}
+	if delta := testutil.ToFloat64(discoveryErrorsTotal) - beforeErrors; delta != 1 {
+		t.Errorf("Expected discoveryErrorsTotal delta 1 on pre-discovery failure, got %f", delta)
+	}
+	if delta := histogramSampleCount(t, discoveryDurationSeconds) - beforeDurationCount; delta != 1 {
+		t.Errorf("Expected discoveryDurationSeconds sample count delta 1 on pre-discovery failure, got %d", delta)
 	}
 }
 
@@ -1002,7 +1103,7 @@ func TestBuildSource_PriorityLabelsPassedToSource(t *testing.T) {
 		"priority/imporant-soon",
 	}
 
-	src, err := buildSource(ts, "owner", "repo", "", "", "", "", "", nil, nil)
+	src, err := buildSource(ts, "owner", "repo", "", "", "", "", "", nil)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -1029,7 +1130,7 @@ func TestRunCycleWithSource_CommentFieldsPassedToSource(t *testing.T) {
 		ExcludeComments: []string{"/kelos needs-input"},
 	}
 
-	src, err := buildSource(ts, "owner", "repo", "", "", "", "", "", nil, nil)
+	src, err := buildSource(ts, "owner", "repo", "", "", "", "", "", nil)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -1058,7 +1159,7 @@ func TestBuildSource_CommentPolicyPassedToIssueSource(t *testing.T) {
 		},
 	}
 
-	src, err := buildSource(ts, "owner", "repo", "", "", "", "", "", nil, nil)
+	src, err := buildSource(ts, "owner", "repo", "", "", "", "", "", nil)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -1098,7 +1199,7 @@ func TestBuildSource_CommentPolicyPassedToPullRequestSource(t *testing.T) {
 		},
 	}
 
-	src, err := buildSource(ts, "owner", "repo", "", "", "", "", "", nil, nil)
+	src, err := buildSource(ts, "owner", "repo", "", "", "", "", "", nil)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -1163,7 +1264,7 @@ func TestBuildSource_CommentPolicyRejectsMixedConfig(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := buildSource(tt.ts, "owner", "repo", "", "", "", "", "", nil, nil)
+			_, err := buildSource(tt.ts, "owner", "repo", "", "", "", "", "", nil)
 			if err == nil {
 				t.Fatal("Expected error for mixed legacy and commentPolicy config")
 			}
@@ -1746,6 +1847,118 @@ func TestRunCycleWithSource_AnnotationsStamped(t *testing.T) {
 	}
 	if task.Annotations[reporting.AnnotationGitHubReporting] != "enabled" {
 		t.Errorf("Expected github-reporting 'enabled', got %q", task.Annotations[reporting.AnnotationGitHubReporting])
+	}
+}
+
+func TestRunCycleWithSource_TaskTemplateMetadataLabelsAndAnnotations(t *testing.T) {
+	ts := newTaskSpawner("spawner", "default", nil)
+	ts.Spec.TaskTemplate.Metadata = &kelosv1alpha1.TaskTemplateMetadata{
+		Labels: map[string]string{
+			"app": "issue-{{.Number}}",
+		},
+		Annotations: map[string]string{
+			"kelos.dev/custom": "title-{{.Title}}",
+		},
+	}
+	cl, key := setupTest(t, ts)
+
+	src := &fakeSource{
+		items: []source.WorkItem{
+			{ID: "42", Number: 42, Title: "Hello", Kind: "Issue"},
+		},
+	}
+
+	if err := runCycleWithSource(context.Background(), cl, key, src); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	var task kelosv1alpha1.Task
+	if err := cl.Get(context.Background(), types.NamespacedName{Name: "spawner-42", Namespace: "default"}, &task); err != nil {
+		t.Fatalf("Failed to get created task: %v", err)
+	}
+
+	if task.Labels["app"] != "issue-42" {
+		t.Errorf(`Labels["app"] = %q, want "issue-42"`, task.Labels["app"])
+	}
+	if task.Labels["kelos.dev/taskspawner"] != "spawner" {
+		t.Errorf(`Labels["kelos.dev/taskspawner"] = %q, want "spawner"`, task.Labels["kelos.dev/taskspawner"])
+	}
+	if task.Annotations["kelos.dev/custom"] != "title-Hello" {
+		t.Errorf(`Annotations["kelos.dev/custom"] = %q, want "title-Hello"`, task.Annotations["kelos.dev/custom"])
+	}
+	if task.Annotations[reporting.AnnotationSourceKind] != "issue" {
+		t.Errorf("Expected source-kind from GitHub source, got %q", task.Annotations[reporting.AnnotationSourceKind])
+	}
+}
+
+func TestRunCycleWithSource_TaskTemplateMetadataReservedAnnotationsPrecedence(t *testing.T) {
+	ts := newTaskSpawner("spawner", "default", nil)
+	ts.Spec.TaskTemplate.Metadata = &kelosv1alpha1.TaskTemplateMetadata{
+		Annotations: map[string]string{
+			reporting.AnnotationSourceKind:      "wrong",
+			reporting.AnnotationSourceNumber:    "999",
+			reporting.AnnotationGitHubReporting: "disabled",
+			"kelos.dev/preserved-custom":        "from-template",
+		},
+	}
+	ts.Spec.When.GitHubIssues.Reporting = &kelosv1alpha1.GitHubReporting{Enabled: true}
+	cl, key := setupTest(t, ts)
+
+	src := &fakeSource{
+		items: []source.WorkItem{
+			{ID: "42", Number: 42, Title: "Test", Kind: "Issue"},
+		},
+	}
+
+	if err := runCycleWithSource(context.Background(), cl, key, src); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	var task kelosv1alpha1.Task
+	if err := cl.Get(context.Background(), types.NamespacedName{Name: "spawner-42", Namespace: "default"}, &task); err != nil {
+		t.Fatalf("Failed to get created task: %v", err)
+	}
+
+	if task.Annotations[reporting.AnnotationSourceKind] != "issue" {
+		t.Errorf("Source should win for %s, got %q", reporting.AnnotationSourceKind, task.Annotations[reporting.AnnotationSourceKind])
+	}
+	if task.Annotations[reporting.AnnotationSourceNumber] != "42" {
+		t.Errorf("Source should win for %s, got %q", reporting.AnnotationSourceNumber, task.Annotations[reporting.AnnotationSourceNumber])
+	}
+	if task.Annotations[reporting.AnnotationGitHubReporting] != "enabled" {
+		t.Errorf("Source should win for %s, got %q", reporting.AnnotationGitHubReporting, task.Annotations[reporting.AnnotationGitHubReporting])
+	}
+	if task.Annotations["kelos.dev/preserved-custom"] != "from-template" {
+		t.Errorf(`Non-conflicting template annotation should be kept, got %q`, task.Annotations["kelos.dev/preserved-custom"])
+	}
+}
+
+func TestRunCycleWithSource_TaskTemplateMetadataTaskSpawnerLabelWins(t *testing.T) {
+	ts := newTaskSpawner("spawner", "default", nil)
+	ts.Spec.TaskTemplate.Metadata = &kelosv1alpha1.TaskTemplateMetadata{
+		Labels: map[string]string{
+			"kelos.dev/taskspawner": "wrong",
+		},
+	}
+	cl, key := setupTest(t, ts)
+
+	src := &fakeSource{
+		items: []source.WorkItem{
+			{ID: "1", Title: "Test", Kind: "Issue"},
+		},
+	}
+
+	if err := runCycleWithSource(context.Background(), cl, key, src); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	var task kelosv1alpha1.Task
+	if err := cl.Get(context.Background(), types.NamespacedName{Name: "spawner-1", Namespace: "default"}, &task); err != nil {
+		t.Fatalf("Failed to get created task: %v", err)
+	}
+
+	if task.Labels["kelos.dev/taskspawner"] != "spawner" {
+		t.Errorf(`Labels["kelos.dev/taskspawner"] = %q, want "spawner"`, task.Labels["kelos.dev/taskspawner"])
 	}
 }
 

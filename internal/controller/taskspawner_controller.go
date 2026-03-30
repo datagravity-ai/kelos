@@ -120,6 +120,22 @@ func (r *TaskSpawnerReconciler) reconcileDeployment(ctx context.Context, req ctr
 		}
 	}
 
+	// FIXME: Remove this migration block after a couple of releases.
+	// Delete Deployments with old app.kubernetes.io/* selector labels so they
+	// get recreated with the new kelos.dev/* labels. spec.selector.matchLabels
+	// is immutable, so an in-place update is not possible.
+	if deployExists {
+		if _, ok := deploy.Spec.Selector.MatchLabels["app.kubernetes.io/component"]; ok {
+			logger.Info("Deleting Deployment with stale app.kubernetes.io/* selector labels for migration", "deployment", deploy.Name)
+			if err := r.Delete(ctx, &deploy); err != nil && !apierrors.IsNotFound(err) {
+				logger.Error(err, "Unable to delete Deployment with stale selector labels", "deployment", deploy.Name)
+				return ctrl.Result{}, err
+			}
+			r.recordEvent(ts, corev1.EventTypeNormal, "DeploymentMigrated", "Deleted Deployment %s with old app.kubernetes.io/* labels; it will be recreated with kelos.dev/* labels", deploy.Name)
+			deployExists = false
+		}
+	}
+
 	// Resolve workspace if workspaceRef is set in taskTemplate
 	var workspace *kelosv1alpha1.WorkspaceSpec
 	var isGitHubApp bool
@@ -396,11 +412,13 @@ func (r *TaskSpawnerReconciler) updateDeployment(ctx context.Context, ts *kelosv
 			!equalStringSlices(current.Args, target.Args) ||
 			!equalEnvVars(current.Env, target.Env) ||
 			!reflect.DeepEqual(current.VolumeMounts, target.VolumeMounts) ||
+			!reflect.DeepEqual(current.Ports, target.Ports) ||
 			!resourceRequirementsEqual(current.Resources, target.Resources) {
 			deploy.Spec.Template.Spec.Containers[0].Image = target.Image
 			deploy.Spec.Template.Spec.Containers[0].Args = target.Args
 			deploy.Spec.Template.Spec.Containers[0].Env = target.Env
 			deploy.Spec.Template.Spec.Containers[0].VolumeMounts = target.VolumeMounts
+			deploy.Spec.Template.Spec.Containers[0].Ports = target.Ports
 			deploy.Spec.Template.Spec.Containers[0].Resources = target.Resources
 			needsUpdate = true
 		}

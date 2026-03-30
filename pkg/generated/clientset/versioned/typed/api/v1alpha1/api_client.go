@@ -31,7 +31,6 @@ type ApiV1alpha1Interface interface {
 	AgentConfigsGetter
 	TasksGetter
 	TaskSpawnersGetter
-	WebhookEventsGetter
 	WorkspacesGetter
 }
 
@@ -50,10 +49,6 @@ func (c *ApiV1alpha1Client) Tasks(namespace string) TaskInterface {
 
 func (c *ApiV1alpha1Client) TaskSpawners(namespace string) TaskSpawnerInterface {
 	return newTaskSpawners(c, namespace)
-}
-
-func (c *ApiV1alpha1Client) WebhookEvents(namespace string) WebhookEventInterface {
-	return newWebhookEvents(c, namespace)
 }
 
 func (c *ApiV1alpha1Client) Workspaces(namespace string) WorkspaceInterface {

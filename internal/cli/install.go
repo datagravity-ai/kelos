@@ -52,7 +52,7 @@ func newInstallCommand(cfg *ClientConfig) *cobra.Command {
 				version.Version = flagVersion
 			}
 
-			vals := buildHelmValues(
+			vals := disableChartCRDs(buildHelmValues(
 				version.Version,
 				imagePullPolicy,
 				disableHeartbeat,
@@ -62,7 +62,7 @@ func newInstallCommand(cfg *ClientConfig) *cobra.Command {
 				tokenRefresherResourceLimits,
 				controllerResourceRequests,
 				controllerResourceLimits,
-			)
+			))
 			controllerManifest, err := helmchart.Render(manifests.ChartFS, vals)
 			if err != nil {
 				return fmt.Errorf("rendering chart: %w", err)
@@ -138,17 +138,29 @@ func buildHelmValues(ver string, pullPolicy string, disableHeartbeat bool, spawn
 			"enabled": false,
 		}
 	}
+	spawnerResources := map[string]interface{}{}
 	if spawnerResourceRequests != "" {
-		vals["spawnerResourceRequests"] = spawnerResourceRequests
+		spawnerResources["requests"] = spawnerResourceRequests
 	}
 	if spawnerResourceLimits != "" {
-		vals["spawnerResourceLimits"] = spawnerResourceLimits
+		spawnerResources["limits"] = spawnerResourceLimits
 	}
+	if len(spawnerResources) > 0 {
+		vals["spawner"] = map[string]interface{}{
+			"resources": spawnerResources,
+		}
+	}
+	tokenRefresherResources := map[string]interface{}{}
 	if tokenRefresherResourceRequests != "" {
-		vals["tokenRefresherResourceRequests"] = tokenRefresherResourceRequests
+		tokenRefresherResources["requests"] = tokenRefresherResourceRequests
 	}
 	if tokenRefresherResourceLimits != "" {
-		vals["tokenRefresherResourceLimits"] = tokenRefresherResourceLimits
+		tokenRefresherResources["limits"] = tokenRefresherResourceLimits
+	}
+	if len(tokenRefresherResources) > 0 {
+		vals["tokenRefresher"] = map[string]interface{}{
+			"resources": tokenRefresherResources,
+		}
 	}
 	controllerResources := map[string]interface{}{}
 	if controllerResourceRequests != "" {
@@ -161,6 +173,16 @@ func buildHelmValues(ver string, pullPolicy string, disableHeartbeat bool, spawn
 		vals["controller"] = map[string]interface{}{
 			"resources": controllerResources,
 		}
+	}
+	return vals
+}
+
+func disableChartCRDs(vals map[string]interface{}) map[string]interface{} {
+	if vals == nil {
+		vals = map[string]interface{}{}
+	}
+	vals["crds"] = map[string]interface{}{
+		"install": false,
 	}
 	return vals
 }
@@ -217,11 +239,12 @@ func newUninstallCommand(cfg *ClientConfig) *cobra.Command {
 				return fmt.Errorf("creating dynamic client: %w", err)
 			}
 
-			// Render the chart with default values to identify resources to delete.
-			// Resource names and kinds do not change with values, so defaults
-			// suffice. This renders all resources (including telemetry CronJob)
-			// which is safe because deleteManifests ignores not-found errors.
-			controllerManifest, err := helmchart.Render(manifests.ChartFS, nil)
+			// Render the chart with CRDs disabled to identify controller
+			// resources to delete. Resource names and kinds do not change
+			// with values, so defaults suffice. This still renders optional
+			// resources like the telemetry CronJob, which is safe because
+			// deleteManifests ignores not-found errors.
+			controllerManifest, err := helmchart.Render(manifests.ChartFS, disableChartCRDs(nil))
 			if err != nil {
 				return fmt.Errorf("rendering chart for uninstall: %w", err)
 			}

@@ -30,8 +30,6 @@ type Interface interface {
 	Tasks() TaskInformer
 	// TaskSpawners returns a TaskSpawnerInformer.
 	TaskSpawners() TaskSpawnerInformer
-	// WebhookEvents returns a WebhookEventInformer.
-	WebhookEvents() WebhookEventInformer
 	// Workspaces returns a WorkspaceInformer.
 	Workspaces() WorkspaceInformer
 }
@@ -60,11 +58,6 @@ func (v *version) Tasks() TaskInformer {
 // TaskSpawners returns a TaskSpawnerInformer.
 func (v *version) TaskSpawners() TaskSpawnerInformer {
 	return &taskSpawnerInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
-}
-
-// WebhookEvents returns a WebhookEventInformer.
-func (v *version) WebhookEvents() WebhookEventInformer {
-	return &webhookEventInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
 }
 
 // Workspaces returns a WorkspaceInformer.
