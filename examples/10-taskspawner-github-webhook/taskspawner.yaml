@@ -31,6 +31,12 @@ spec:
           action: "labeled"
           labels: ["review-requested"]
 
+        # Respond to issues with "bug" label but exclude "wontfix" or "duplicate"
+        - event: "issues"
+          action: "opened"
+          labels: ["bug"]
+          excludeLabels: ["wontfix", "duplicate"]
+
         # Respond to issue comments containing "/kelos"
         - event: "issue_comment"
           action: "created"

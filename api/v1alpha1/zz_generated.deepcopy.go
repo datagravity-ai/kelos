@@ -363,6 +363,11 @@ func (in *GitHubWebhookFilter) DeepCopyInto(out *GitHubWebhookFilter) {
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}
+	if in.ExcludeLabels != nil {
+		in, out := &in.ExcludeLabels, &out.ExcludeLabels
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	if in.Draft != nil {
 		in, out := &in.Draft, &out.Draft
 		*out = new(bool)

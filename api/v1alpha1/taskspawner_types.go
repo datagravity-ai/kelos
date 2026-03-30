@@ -336,6 +336,10 @@ type GitHubWebhookFilter struct {
 	// +optional
 	Labels []string `json:"labels,omitempty"`
 
+	// ExcludeLabels excludes issues/PRs with any of these labels.
+	// +optional
+	ExcludeLabels []string `json:"excludeLabels,omitempty"`
+
 	// State filters by issue/PR state ("open", "closed").
 	// +optional
 	State string `json:"state,omitempty"`

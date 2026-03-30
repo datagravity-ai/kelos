@@ -840,6 +840,12 @@ spec:
                               description: Event is the GitHub event type this filter
                                 applies to.
                               type: string
+                            excludeLabels:
+                              description: ExcludeLabels excludes issues/PRs with
+                                any of these labels.
+                              items:
+                                type: string
+                              type: array
                             labels:
                               description: Labels requires the issue/PR to have all
                                 of these labels.
