@@ -54,6 +54,11 @@ func isCronBased(ts *kelosv1alpha1.TaskSpawner) bool {
 	return ts.Spec.When.Cron != nil
 }
 
+// isWebhookBased returns true if the TaskSpawner is webhook-driven.
+func isWebhookBased(ts *kelosv1alpha1.TaskSpawner) bool {
+	return ts.Spec.When.GitHubWebhook != nil || ts.Spec.When.LinearWebhook != nil
+}
+
 // Reconcile handles TaskSpawner reconciliation.
 func (r *TaskSpawnerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
@@ -96,7 +101,54 @@ func (r *TaskSpawnerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return r.reconcileCronJob(ctx, req, &ts, isSuspended)
 	}
 
+	// Webhook-based TaskSpawners don't need deployments or cronjobs.
+	if isWebhookBased(&ts) {
+		return r.reconcileWebhook(ctx, req, &ts, isSuspended)
+	}
+
 	return r.reconcileDeployment(ctx, req, &ts, isSuspended)
+}
+
+// reconcileWebhook handles webhook-based TaskSpawners by cleaning up any stale resources.
+func (r *TaskSpawnerReconciler) reconcileWebhook(ctx context.Context, req ctrl.Request, ts *kelosv1alpha1.TaskSpawner, isSuspended bool) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+
+	// Clean up any stale Deployment or CronJob from previous configurations
+	if err := r.deleteStaleResource(ctx, req.NamespacedName, &appsv1.Deployment{}, "Deployment"); err != nil {
+		return ctrl.Result{}, err
+	}
+	if err := r.deleteStaleResource(ctx, req.NamespacedName, &batchv1.CronJob{}, "CronJob"); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// Determine the desired phase for webhook TaskSpawners
+	desiredPhase := kelosv1alpha1.TaskSpawnerPhaseRunning
+	desiredMessage := "Webhook-driven TaskSpawner ready"
+	if isSuspended {
+		desiredPhase = kelosv1alpha1.TaskSpawnerPhaseSuspended
+		desiredMessage = "Suspended by user"
+	}
+
+	// Update status to clear any deployment/cronjob names and set appropriate phase
+	needsStatusUpdate := ts.Status.DeploymentName != "" || ts.Status.CronJobName != "" || ts.Status.Phase != desiredPhase
+	if needsStatusUpdate {
+		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			if getErr := r.Get(ctx, req.NamespacedName, ts); getErr != nil {
+				return getErr
+			}
+			ts.Status.DeploymentName = ""
+			ts.Status.CronJobName = ""
+			ts.Status.Phase = desiredPhase
+			ts.Status.Message = desiredMessage
+			return r.Status().Update(ctx, ts)
+		}); err != nil {
+			logger.Error(err, "Unable to update TaskSpawner status")
+			return ctrl.Result{}, err
+		}
+		logger.Info("Updated webhook TaskSpawner status", "phase", desiredPhase)
+	}
+
+	return ctrl.Result{}, nil
 }
 
 // reconcileDeployment handles the Deployment lifecycle for polling-based TaskSpawners.
