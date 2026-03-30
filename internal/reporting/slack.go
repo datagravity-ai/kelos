@@ -11,13 +11,20 @@ import (
 type SlackReporter struct {
 	// BotToken is the Bot User OAuth Token (xoxb-...).
 	BotToken string
+	client   *slack.Client
+}
+
+func (r *SlackReporter) api() *slack.Client {
+	if r.client == nil {
+		r.client = slack.New(r.BotToken)
+	}
+	return r.client
 }
 
 // PostThreadReply posts a new message as a thread reply and returns the
 // reply's message timestamp.
 func (r *SlackReporter) PostThreadReply(ctx context.Context, channel, threadTS, text string) (string, error) {
-	api := slack.New(r.BotToken)
-	_, ts, err := api.PostMessageContext(ctx, channel,
+	_, ts, err := r.api().PostMessageContext(ctx, channel,
 		slack.MsgOptionText(text, false),
 		slack.MsgOptionTS(threadTS),
 	)
@@ -29,8 +36,7 @@ func (r *SlackReporter) PostThreadReply(ctx context.Context, channel, threadTS, 
 
 // UpdateMessage updates an existing Slack message in place.
 func (r *SlackReporter) UpdateMessage(ctx context.Context, channel, messageTS, text string) error {
-	api := slack.New(r.BotToken)
-	_, _, _, err := api.UpdateMessageContext(ctx, channel, messageTS,
+	_, _, _, err := r.api().UpdateMessageContext(ctx, channel, messageTS,
 		slack.MsgOptionText(text, false),
 	)
 	if err != nil {
@@ -45,11 +51,19 @@ func FormatSlackAccepted(taskName string) string {
 }
 
 // FormatSlackSucceeded returns the thread reply text for a succeeded task.
-func FormatSlackSucceeded(taskName string) string {
+// When results contain a PR URL, it is included in the message.
+func FormatSlackSucceeded(taskName string, results map[string]string) string {
+	if pr := results["pr"]; pr != "" {
+		return fmt.Sprintf("Done! PR: %s (Task: %s)", pr, taskName)
+	}
 	return fmt.Sprintf("Done! (Task: %s)", taskName)
 }
 
 // FormatSlackFailed returns the thread reply text for a failed task.
-func FormatSlackFailed(taskName string) string {
+// When a status message is available, it is included in the reply.
+func FormatSlackFailed(taskName, message string) string {
+	if message != "" {
+		return fmt.Sprintf("Failed: %s (Task: %s)", message, taskName)
+	}
 	return fmt.Sprintf("Failed. (Task: %s)", taskName)
 }

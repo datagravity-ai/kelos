@@ -177,11 +177,17 @@ func (tr *TaskReporter) persistReportingState(ctx context.Context, task *kelosv1
 	return nil
 }
 
+// SlackMessenger is the interface for posting and updating Slack messages.
+type SlackMessenger interface {
+	PostThreadReply(ctx context.Context, channel, threadTS, text string) (string, error)
+	UpdateMessage(ctx context.Context, channel, messageTS, text string) error
+}
+
 // SlackTaskReporter watches Tasks and reports status changes to Slack
 // as thread replies on the originating message.
 type SlackTaskReporter struct {
 	Client   client.Client
-	Reporter *SlackReporter
+	Reporter SlackMessenger
 }
 
 // ReportTaskStatus checks a Task's current phase against its last reported
@@ -225,9 +231,9 @@ func (tr *SlackTaskReporter) ReportTaskStatus(ctx context.Context, task *kelosv1
 	case "accepted":
 		body = FormatSlackAccepted(task.Name)
 	case "succeeded":
-		body = FormatSlackSucceeded(task.Name)
+		body = FormatSlackSucceeded(task.Name, task.Status.Results)
 	case "failed":
-		body = FormatSlackFailed(task.Name)
+		body = FormatSlackFailed(task.Name, task.Status.Message)
 	}
 
 	replyTS := annotations[AnnotationSlackReplyTS]

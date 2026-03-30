@@ -85,6 +85,9 @@ func runOnce(ctx context.Context, cl client.Client, key types.NamespacedName, cf
 	if reportingEnabled(&ts) {
 		if ts.Spec.When.Slack != nil {
 			botToken := os.Getenv("SLACK_BOT_TOKEN")
+			if botToken == "" {
+				return 0, fmt.Errorf("SLACK_BOT_TOKEN environment variable is required for Slack reporting")
+			}
 			slackReporter := &reporting.SlackTaskReporter{
 				Client:   cl,
 				Reporter: &reporting.SlackReporter{BotToken: botToken},

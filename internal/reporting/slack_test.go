@@ -6,40 +6,54 @@ import (
 )
 
 func TestFormatSlackMessages(t *testing.T) {
-	tests := []struct {
-		name     string
-		fn       func(string) string
-		taskName string
-		want     string
-	}{
-		{
-			name:     "accepted",
-			fn:       FormatSlackAccepted,
-			taskName: "spawner-1234567890.123456",
-			want:     "Working on your request... (Task: spawner-1234567890.123456)",
-		},
-		{
-			name:     "succeeded",
-			fn:       FormatSlackSucceeded,
-			taskName: "spawner-1234567890.123456",
-			want:     "Done! (Task: spawner-1234567890.123456)",
-		},
-		{
-			name:     "failed",
-			fn:       FormatSlackFailed,
-			taskName: "spawner-1234567890.123456",
-			want:     "Failed. (Task: spawner-1234567890.123456)",
-		},
-	}
+	t.Run("accepted", func(t *testing.T) {
+		got := FormatSlackAccepted("spawner-1234567890.123456")
+		want := "Working on your request... (Task: spawner-1234567890.123456)"
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := tt.fn(tt.taskName)
-			if got != tt.want {
-				t.Errorf("got %q, want %q", got, tt.want)
-			}
-		})
-	}
+	t.Run("succeeded with PR", func(t *testing.T) {
+		results := map[string]string{"pr": "https://github.com/org/repo/pull/42"}
+		got := FormatSlackSucceeded("spawner-1234567890.123456", results)
+		want := "Done! PR: https://github.com/org/repo/pull/42 (Task: spawner-1234567890.123456)"
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("succeeded without results", func(t *testing.T) {
+		got := FormatSlackSucceeded("spawner-1234567890.123456", nil)
+		want := "Done! (Task: spawner-1234567890.123456)"
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("succeeded with empty results", func(t *testing.T) {
+		got := FormatSlackSucceeded("spawner-1234567890.123456", map[string]string{})
+		want := "Done! (Task: spawner-1234567890.123456)"
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("failed with message", func(t *testing.T) {
+		got := FormatSlackFailed("spawner-1234567890.123456", "pod OOMKilled")
+		want := "Failed: pod OOMKilled (Task: spawner-1234567890.123456)"
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("failed without message", func(t *testing.T) {
+		got := FormatSlackFailed("spawner-1234567890.123456", "")
+		want := "Failed. (Task: spawner-1234567890.123456)"
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
 }
 
 func TestSlackReporterConstruction(t *testing.T) {

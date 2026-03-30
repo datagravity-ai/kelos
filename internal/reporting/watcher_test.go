@@ -588,6 +588,14 @@ func TestSlackTaskReporter_PostsThreadReply(t *testing.T) {
 				AnnotationSlackThreadTS:  "1234567890.123456",
 			},
 		},
+		Spec: kelosv1alpha1.TaskSpec{
+			Type:   "claude-code",
+			Prompt: "test",
+			Credentials: kelosv1alpha1.Credentials{
+				Type:      kelosv1alpha1.CredentialTypeOAuth,
+				SecretRef: &kelosv1alpha1.SecretReference{Name: "creds"},
+			},
+		},
 		Status: kelosv1alpha1.TaskStatus{
 			Phase: kelosv1alpha1.TaskPhasePending,
 		},
@@ -598,78 +606,198 @@ func TestSlackTaskReporter_PostsThreadReply(t *testing.T) {
 	var posted []slackReplyRecord
 	reporter := &fakeSlackReporter{
 		postFn: func(ctx context.Context, channel, threadTS, text string) (string, error) {
-			posted = append(posted, slackReplyRecord{channel: channel, threadTS: threadTS, text: text})
+			posted = append(posted, slackReplyRecord{method: "post", channel: channel, threadTS: threadTS, text: text})
 			return "1234567890.999999", nil
 		},
 	}
 
-	tr := &SlackTaskReporter{Client: cl, Reporter: &SlackReporter{BotToken: "unused"}}
-	tr.Reporter = nil // We need to use the fake, so let's test differently
+	tr := &SlackTaskReporter{Client: cl, Reporter: reporter}
 
-	// Test via direct method approach - create reporter with real struct
-	// Since SlackReporter is a concrete type, we test the full flow
-	// by checking annotations after the fact. For unit testing the watcher
-	// logic, we verify the annotation-checking paths.
-
-	// Instead, let's test the skip paths and annotation logic directly.
-	_ = reporter
-	_ = posted
-
-	// Test: skips when Slack reporting not enabled
-	taskNoReporting := task.DeepCopy()
-	delete(taskNoReporting.Annotations, AnnotationSlackReporting)
-	cl2 := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(taskNoReporting).Build()
-	tr2 := &SlackTaskReporter{Client: cl2, Reporter: &SlackReporter{BotToken: "xoxb-test"}}
-	if err := tr2.ReportTaskStatus(context.Background(), taskNoReporting); err != nil {
-		t.Fatalf("expected no error for non-Slack task, got: %v", err)
+	if err := tr.ReportTaskStatus(context.Background(), task); err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Test: skips when already reported same phase
-	taskAlreadyReported := task.DeepCopy()
-	taskAlreadyReported.Annotations[AnnotationSlackReportPhase] = "accepted"
-	cl3 := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(taskAlreadyReported).Build()
-	tr3 := &SlackTaskReporter{Client: cl3, Reporter: &SlackReporter{BotToken: "xoxb-test"}}
-	if err := tr3.ReportTaskStatus(context.Background(), taskAlreadyReported); err != nil {
-		t.Fatalf("expected no error for already-reported task, got: %v", err)
+	if len(posted) != 1 {
+		t.Fatalf("expected 1 post, got %d", len(posted))
+	}
+	if posted[0].channel != "C123ABC" {
+		t.Errorf("channel = %q, want C123ABC", posted[0].channel)
+	}
+	if posted[0].threadTS != "1234567890.123456" {
+		t.Errorf("threadTS = %q, want 1234567890.123456", posted[0].threadTS)
 	}
 
-	// Test: skips when no annotations
-	taskNil := &kelosv1alpha1.Task{
-		ObjectMeta: metav1.ObjectMeta{Name: "nil-task", Namespace: "default"},
+	// Verify annotations were persisted
+	var updated kelosv1alpha1.Task
+	if err := cl.Get(context.Background(), client.ObjectKeyFromObject(task), &updated); err != nil {
+		t.Fatalf("getting updated task: %v", err)
 	}
-	cl4 := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(taskNil).Build()
-	tr4 := &SlackTaskReporter{Client: cl4, Reporter: &SlackReporter{BotToken: "xoxb-test"}}
-	if err := tr4.ReportTaskStatus(context.Background(), taskNil); err != nil {
-		t.Fatalf("expected no error for nil-annotations task, got: %v", err)
+	if updated.Annotations[AnnotationSlackReportPhase] != "accepted" {
+		t.Errorf("report phase = %q, want accepted", updated.Annotations[AnnotationSlackReportPhase])
+	}
+	if updated.Annotations[AnnotationSlackReplyTS] != "1234567890.999999" {
+		t.Errorf("reply ts = %q, want 1234567890.999999", updated.Annotations[AnnotationSlackReplyTS])
+	}
+}
+
+func TestSlackTaskReporter_UpdatesExistingReply(t *testing.T) {
+	task := &kelosv1alpha1.Task{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-task",
+			Namespace: "default",
+			Annotations: map[string]string{
+				AnnotationSlackReporting:   "enabled",
+				AnnotationSlackChannel:     "C123ABC",
+				AnnotationSlackThreadTS:    "1234567890.123456",
+				AnnotationSlackReplyTS:     "1234567890.999999",
+				AnnotationSlackReportPhase: "accepted",
+			},
+		},
+		Spec: kelosv1alpha1.TaskSpec{
+			Type:   "claude-code",
+			Prompt: "test",
+			Credentials: kelosv1alpha1.Credentials{
+				Type:      kelosv1alpha1.CredentialTypeOAuth,
+				SecretRef: &kelosv1alpha1.SecretReference{Name: "creds"},
+			},
+		},
+		Status: kelosv1alpha1.TaskStatus{
+			Phase:   kelosv1alpha1.TaskPhaseSucceeded,
+			Results: map[string]string{"pr": "https://github.com/org/repo/pull/42"},
+		},
 	}
 
-	// Test: skips when channel or threadTS missing
-	taskNoChannel := task.DeepCopy()
-	delete(taskNoChannel.Annotations, AnnotationSlackChannel)
-	cl5 := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(taskNoChannel).Build()
-	tr5 := &SlackTaskReporter{Client: cl5, Reporter: &SlackReporter{BotToken: "xoxb-test"}}
-	if err := tr5.ReportTaskStatus(context.Background(), taskNoChannel); err != nil {
-		t.Fatalf("expected no error for missing-channel task, got: %v", err)
+	cl := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(task).Build()
+
+	var updated []slackReplyRecord
+	reporter := &fakeSlackReporter{
+		updateFn: func(ctx context.Context, channel, messageTS, text string) error {
+			updated = append(updated, slackReplyRecord{method: "update", channel: channel, threadTS: messageTS, text: text})
+			return nil
+		},
 	}
 
-	// Test: skips when phase is empty
-	taskNoPhase := task.DeepCopy()
-	taskNoPhase.Status.Phase = ""
-	cl6 := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(taskNoPhase).Build()
-	tr6 := &SlackTaskReporter{Client: cl6, Reporter: &SlackReporter{BotToken: "xoxb-test"}}
-	if err := tr6.ReportTaskStatus(context.Background(), taskNoPhase); err != nil {
-		t.Fatalf("expected no error for empty-phase task, got: %v", err)
+	tr := &SlackTaskReporter{Client: cl, Reporter: reporter}
+
+	if err := tr.ReportTaskStatus(context.Background(), task); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(updated) != 1 {
+		t.Fatalf("expected 1 update, got %d", len(updated))
+	}
+	if updated[0].channel != "C123ABC" {
+		t.Errorf("channel = %q, want C123ABC", updated[0].channel)
+	}
+	// Verify the message includes the PR URL
+	wantText := FormatSlackSucceeded(task.Name, task.Status.Results)
+	if updated[0].text != wantText {
+		t.Errorf("text = %q, want %q", updated[0].text, wantText)
+	}
+}
+
+func TestSlackTaskReporter_SkipPaths(t *testing.T) {
+	baseTask := &kelosv1alpha1.Task{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-task",
+			Namespace: "default",
+			Annotations: map[string]string{
+				AnnotationSlackReporting: "enabled",
+				AnnotationSlackChannel:   "C123ABC",
+				AnnotationSlackThreadTS:  "1234567890.123456",
+			},
+		},
+		Status: kelosv1alpha1.TaskStatus{
+			Phase: kelosv1alpha1.TaskPhasePending,
+		},
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(t *kelosv1alpha1.Task)
+	}{
+		{
+			name: "no reporting annotation",
+			mutate: func(t *kelosv1alpha1.Task) {
+				delete(t.Annotations, AnnotationSlackReporting)
+			},
+		},
+		{
+			name: "already reported same phase",
+			mutate: func(t *kelosv1alpha1.Task) {
+				t.Annotations[AnnotationSlackReportPhase] = "accepted"
+			},
+		},
+		{
+			name: "nil annotations",
+			mutate: func(t *kelosv1alpha1.Task) {
+				t.Annotations = nil
+			},
+		},
+		{
+			name: "missing channel",
+			mutate: func(t *kelosv1alpha1.Task) {
+				delete(t.Annotations, AnnotationSlackChannel)
+			},
+		},
+		{
+			name: "empty phase",
+			mutate: func(t *kelosv1alpha1.Task) {
+				t.Status.Phase = ""
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			task := baseTask.DeepCopy()
+			tt.mutate(task)
+
+			called := false
+			reporter := &fakeSlackReporter{
+				postFn: func(ctx context.Context, channel, threadTS, text string) (string, error) {
+					called = true
+					return "", nil
+				},
+			}
+
+			cl := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(task).Build()
+			tr := &SlackTaskReporter{Client: cl, Reporter: reporter}
+
+			if err := tr.ReportTaskStatus(context.Background(), task); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if called {
+				t.Error("expected reporter to not be called")
+			}
+		})
 	}
 }
 
 type slackReplyRecord struct {
+	method   string
 	channel  string
 	threadTS string
 	text     string
 }
 
 type fakeSlackReporter struct {
-	postFn func(ctx context.Context, channel, threadTS, text string) (string, error)
+	postFn   func(ctx context.Context, channel, threadTS, text string) (string, error)
+	updateFn func(ctx context.Context, channel, messageTS, text string) error
+}
+
+func (f *fakeSlackReporter) PostThreadReply(ctx context.Context, channel, threadTS, text string) (string, error) {
+	if f.postFn != nil {
+		return f.postFn(ctx, channel, threadTS, text)
+	}
+	return "fake-reply-ts", nil
+}
+
+func (f *fakeSlackReporter) UpdateMessage(ctx context.Context, channel, messageTS, text string) error {
+	if f.updateFn != nil {
+		return f.updateFn(ctx, channel, messageTS, text)
+	}
+	return nil
 }
 
 func TestSlackTaskReporter_PhaseMapping(t *testing.T) {
