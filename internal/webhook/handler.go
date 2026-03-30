@@ -2,10 +2,12 @@ package webhook
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -69,19 +71,16 @@ func NewDeliveryCache() *DeliveryCache {
 	return cache
 }
 
-// IsProcessed checks if a delivery ID has already been processed.
-func (d *DeliveryCache) IsProcessed(deliveryID string) bool {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-	_, exists := d.cache[deliveryID]
-	return exists
-}
-
-// MarkProcessed marks a delivery ID as processed.
-func (d *DeliveryCache) MarkProcessed(deliveryID string) {
+// CheckAndMark atomically checks if a delivery ID was already processed and marks it if not.
+// Returns true if already processed, false if this is the first time.
+func (d *DeliveryCache) CheckAndMark(deliveryID string) (alreadyProcessed bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if _, exists := d.cache[deliveryID]; exists {
+		return true
+	}
 	d.cache[deliveryID] = time.Now()
+	return false
 }
 
 // cleanup removes entries older than 24 hours.
@@ -171,23 +170,24 @@ func (h *WebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check for duplicate delivery
-	if deliveryID != "" && h.deliveryCache.IsProcessed(deliveryID) {
+	if deliveryID != "" && h.deliveryCache.CheckAndMark(deliveryID) {
 		log.Info("Webhook delivery already processed", "deliveryID", deliveryID)
 		w.WriteHeader(http.StatusOK)
 		return
 	}
 
 	// Process the webhook
-	processed, err := h.processWebhook(ctx, eventType, body, deliveryID)
+	_, err = h.processWebhook(ctx, eventType, body, deliveryID)
 	if err != nil {
+		var concErr *MaxConcurrencyError
+		if errors.As(err, &concErr) {
+			w.Header().Set("Retry-After", fmt.Sprintf("%d", concErr.RetryAfter))
+			http.Error(w, "Service unavailable", http.StatusServiceUnavailable)
+			return
+		}
 		log.Error(err, "Failed to process webhook")
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
-	}
-
-	// Mark as processed if successful
-	if processed && deliveryID != "" {
-		h.deliveryCache.MarkProcessed(deliveryID)
 	}
 
 	w.WriteHeader(http.StatusOK)
@@ -345,10 +345,10 @@ func (h *WebhookHandler) createTask(ctx context.Context, spawner *v1alpha1.TaskS
 	}
 
 	// Build unique task name from delivery info
-	taskName := fmt.Sprintf("%s-%s-%s", spawner.Name, eventType, templateVars["ID"])
+	idVal, _ := templateVars["ID"].(string)
+	taskName := fmt.Sprintf("%s-%s-%s", spawner.Name, eventType, idVal)
 	if len(taskName) > 63 {
-		// Kubernetes name length limit
-		taskName = taskName[:63]
+		taskName = strings.TrimRight(taskName[:63], "-.")
 	}
 
 	// Create the task
@@ -372,12 +372,21 @@ func (h *WebhookHandler) createTask(ctx context.Context, spawner *v1alpha1.TaskS
 	task.Annotations["kelos.dev/taskspawner"] = spawner.Name
 
 	// Set owner reference
+	gvks, _, err := h.client.Scheme().ObjectKinds(spawner)
+	if err != nil || len(gvks) == 0 {
+		return fmt.Errorf("failed to get GVK for TaskSpawner: %w", err)
+	}
+	gvk := gvks[0]
+	isController := true
+	blockOwnerDeletion := true
 	task.OwnerReferences = []metav1.OwnerReference{
 		{
-			APIVersion: spawner.APIVersion,
-			Kind:       spawner.Kind,
-			Name:       spawner.Name,
-			UID:        spawner.UID,
+			APIVersion:         gvk.GroupVersion().String(),
+			Kind:               gvk.Kind,
+			Name:               spawner.Name,
+			UID:                spawner.UID,
+			Controller:         &isController,
+			BlockOwnerDeletion: &blockOwnerDeletion,
 		},
 	}
 

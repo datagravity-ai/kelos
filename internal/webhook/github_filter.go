@@ -230,9 +230,15 @@ func matchesFilter(filter v1alpha1.GitHubWebhookFilter, eventData *GitHubEventDa
 			}
 		}
 
-		// BodyContains filter for comments
+		// BodyContains filter
 		if filter.BodyContains != "" {
-			if commentEvent, ok := e.(*github.IssueCommentEvent); ok {
+			if issueEvent, ok := e.(*github.IssuesEvent); ok {
+				if issue := issueEvent.GetIssue(); issue != nil {
+					if !strings.Contains(issue.GetBody(), filter.BodyContains) {
+						return false
+					}
+				}
+			} else if commentEvent, ok := e.(*github.IssueCommentEvent); ok {
 				if comment := commentEvent.GetComment(); comment != nil {
 					if !strings.Contains(comment.GetBody(), filter.BodyContains) {
 						return false
