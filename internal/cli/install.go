@@ -195,16 +195,6 @@ func disableChartCRDs(vals map[string]interface{}) map[string]interface{} {
 	return vals
 }
 
-func disableChartCRDs(vals map[string]interface{}) map[string]interface{} {
-	if vals == nil {
-		vals = map[string]interface{}{}
-	}
-	vals["crds"] = map[string]interface{}{
-		"install": false,
-	}
-	return vals
-}
-
 // parseResourceString converts a comma-separated key=value string (e.g.
 // "cpu=100m,memory=256Mi") into a map suitable for Helm values.
 func parseResourceString(s string) map[string]interface{} {
