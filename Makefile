@@ -1,7 +1,7 @@
 # Image configuration
 REGISTRY ?= ghcr.io/kelos-dev
 VERSION ?= latest
-IMAGE_DIRS ?= cmd/kelos-controller cmd/kelos-spawner cmd/kelos-token-refresher cmd/ghproxy claude-code codex gemini opencode cursor
+IMAGE_DIRS ?= agent-base cmd/kelos-controller cmd/kelos-spawner cmd/kelos-token-refresher cmd/ghproxy claude-code codex gemini opencode cursor
 
 # Version injection for the kelos CLI – only set ldflags when an explicit
 # version is given so that dev builds fall through to runtime/debug info.
@@ -94,6 +94,7 @@ push: ## Push docker images (use WHAT to push specific image).
 	@for dir in $(or $(WHAT),$(IMAGE_DIRS)); do \
 		docker push $(REGISTRY)/$$(basename $$dir):$(VERSION); \
 	done
+
 
 RELEASE_PLATFORMS ?= linux/amd64 linux/arm64 darwin/amd64 darwin/arm64
 
