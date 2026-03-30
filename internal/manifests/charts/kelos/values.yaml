@@ -9,15 +9,15 @@ image:
 telemetry:
   enabled: true
 
-controllerImage: public.ecr.aws/anomalo/kelos/kelos-controller
+controllerImage: ghcr.io/kelos-dev/kelos-controller
 ghproxy:
   image: ghcr.io/kelos-dev/ghproxy
   allowedUpstreams: "https://api.github.com"
-claudeCodeImage: public.ecr.aws/anomalo/kelos/claude-code
-codexImage: public.ecr.aws/anomalo/kelos/codex
-geminiImage: public.ecr.aws/anomalo/kelos/gemini
-opencodeImage: public.ecr.aws/anomalo/kelos/opencode
-cursorImage: public.ecr.aws/anomalo/kelos/cursor
+claudeCodeImage: ghcr.io/kelos-dev/claude-code
+codexImage: ghcr.io/kelos-dev/codex
+geminiImage: ghcr.io/kelos-dev/gemini
+opencodeImage: ghcr.io/kelos-dev/opencode
+cursorImage: ghcr.io/kelos-dev/cursor
 spawner:
   image: ghcr.io/kelos-dev/kelos-spawner
   resources:
@@ -33,7 +33,7 @@ controller:
     requests: {}
     limits: {}
 webhookServer:
-  image: public.ecr.aws/anomalo/kelos/kelos-webhook-server
+  image: ghcr.io/kelos-dev/kelos-webhook-server
   sources:
     github:
       enabled: false
