@@ -186,6 +186,23 @@ func runReportingCycle(ctx context.Context, cl client.Client, key types.Namespac
 	return nil
 }
 
+func runSlackReportingCycle(ctx context.Context, cl client.Client, key types.NamespacedName, reporter *reporting.SlackTaskReporter) error {
+	var taskList kelosv1alpha1.TaskList
+	if err := cl.List(ctx, &taskList,
+		client.InNamespace(key.Namespace),
+		client.MatchingLabels{"kelos.dev/taskspawner": key.Name},
+	); err != nil {
+		return fmt.Errorf("listing tasks for Slack reporting: %w", err)
+	}
+
+	for i := range taskList.Items {
+		if err := reporter.ReportTaskStatus(ctx, &taskList.Items[i]); err != nil {
+			ctrl.Log.WithName("spawner").Error(err, "Reporting Slack task status", "task", taskList.Items[i].Name)
+		}
+	}
+	return nil
+}
+
 func runCycle(ctx context.Context, cl client.Client, key types.NamespacedName, githubOwner, githubRepo, githubAPIBaseURL, githubTokenFile, jiraBaseURL, jiraProject, jiraJQL, slackTriggerCommand, slackChannels, slackAllowedUsers string, httpClient *http.Client) error {
 	start := time.Now()
 	err := runCycleCore(ctx, cl, key, githubOwner, githubRepo, githubAPIBaseURL, githubTokenFile, jiraBaseURL, jiraProject, jiraJQL, slackTriggerCommand, slackChannels, slackAllowedUsers, httpClient)
@@ -526,10 +543,18 @@ func renderTaskTemplateMetadata(ts *kelosv1alpha1.TaskSpawner, item source.WorkI
 	return labels, annotations, nil
 }
 
-// sourceAnnotations returns annotations that stamp GitHub source metadata
-// onto a spawned Task. These annotations enable downstream consumers (such
-// as the reporting watcher) to identify the originating issue or PR.
+// sourceAnnotations returns annotations that stamp source metadata onto a
+// spawned Task. These annotations enable downstream consumers (such as the
+// reporting watcher) to identify the originating issue, PR, or Slack message.
 func sourceAnnotations(ts *kelosv1alpha1.TaskSpawner, item source.WorkItem) map[string]string {
+	if ts.Spec.When.Slack != nil && len(item.Labels) >= 2 {
+		return map[string]string{
+			reporting.AnnotationSlackReporting: "enabled",
+			reporting.AnnotationSlackChannel:   item.Labels[1],
+			reporting.AnnotationSlackThreadTS:  item.ID,
+		}
+	}
+
 	if ts.Spec.When.GitHubIssues == nil && ts.Spec.When.GitHubPullRequests == nil {
 		return nil
 	}
@@ -551,9 +576,12 @@ func sourceAnnotations(ts *kelosv1alpha1.TaskSpawner, item source.WorkItem) map[
 	return annotations
 }
 
-// reportingEnabled returns true when GitHub reporting is configured and enabled
+// reportingEnabled returns true when reporting is configured and enabled
 // on the TaskSpawner.
 func reportingEnabled(ts *kelosv1alpha1.TaskSpawner) bool {
+	if ts.Spec.When.Slack != nil {
+		return true
+	}
 	if ts.Spec.When.GitHubIssues != nil && ts.Spec.When.GitHubIssues.Reporting != nil {
 		return ts.Spec.When.GitHubIssues.Reporting.Enabled
 	}

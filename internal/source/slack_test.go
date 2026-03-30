@@ -221,7 +221,7 @@ func TestMatchesUser(t *testing.T) {
 }
 
 func TestBuildWorkItem(t *testing.T) {
-	item := buildWorkItem("1234567890.123456", 42, "Jane Doe", "fix the bug", "https://slack.com/link", "test-channel")
+	item := buildWorkItem("1234567890.123456", 42, "Jane Doe", "fix the bug", "https://slack.com/link", "test-channel", "C123ABC")
 
 	if item.ID != "1234567890.123456" {
 		t.Errorf("expected ID %q, got %q", "1234567890.123456", item.ID)
@@ -238,8 +238,8 @@ func TestBuildWorkItem(t *testing.T) {
 	if item.URL != "https://slack.com/link" {
 		t.Errorf("expected URL %q, got %q", "https://slack.com/link", item.URL)
 	}
-	if len(item.Labels) != 1 || item.Labels[0] != "test-channel" {
-		t.Errorf("expected Labels [test-channel], got %v", item.Labels)
+	if len(item.Labels) != 2 || item.Labels[0] != "test-channel" || item.Labels[1] != "C123ABC" {
+		t.Errorf("expected Labels [test-channel C123ABC], got %v", item.Labels)
 	}
 	if item.Kind != "SlackMessage" {
 		t.Errorf("expected Kind %q, got %q", "SlackMessage", item.Kind)

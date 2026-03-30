@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -82,25 +83,36 @@ func runOnce(ctx context.Context, cl client.Client, key types.NamespacedName, cf
 	}
 
 	if reportingEnabled(&ts) {
-		token, err := readGitHubToken(cfg.GitHubTokenFile)
-		if err != nil {
-			return 0, fmt.Errorf("reading GitHub token for reporting: %w", err)
-		}
+		if ts.Spec.When.Slack != nil {
+			botToken := os.Getenv("SLACK_BOT_TOKEN")
+			slackReporter := &reporting.SlackTaskReporter{
+				Client:   cl,
+				Reporter: &reporting.SlackReporter{BotToken: botToken},
+			}
+			if err := runSlackReportingCycle(ctx, cl, key, slackReporter); err != nil {
+				return 0, err
+			}
+		} else {
+			token, err := readGitHubToken(cfg.GitHubTokenFile)
+			if err != nil {
+				return 0, fmt.Errorf("reading GitHub token for reporting: %w", err)
+			}
 
-		// Reporting always uses the direct API base URL (writes bypass the proxy).
-		reporter := &reporting.TaskReporter{
-			Client: cl,
-			Reporter: &reporting.GitHubReporter{
-				Owner:     cfg.GitHubOwner,
-				Repo:      cfg.GitHubRepo,
-				Token:     token,
-				TokenFile: cfg.GitHubTokenFile,
-				BaseURL:   cfg.GitHubAPIBaseURL,
-				Client:    cfg.HTTPClient,
-			},
-		}
-		if err := runReportingCycle(ctx, cl, key, reporter); err != nil {
-			return 0, err
+			// Reporting always uses the direct API base URL (writes bypass the proxy).
+			reporter := &reporting.TaskReporter{
+				Client: cl,
+				Reporter: &reporting.GitHubReporter{
+					Owner:     cfg.GitHubOwner,
+					Repo:      cfg.GitHubRepo,
+					Token:     token,
+					TokenFile: cfg.GitHubTokenFile,
+					BaseURL:   cfg.GitHubAPIBaseURL,
+					Client:    cfg.HTTPClient,
+				},
+			}
+			if err := runReportingCycle(ctx, cl, key, reporter); err != nil {
+				return 0, err
+			}
 		}
 	}
 
