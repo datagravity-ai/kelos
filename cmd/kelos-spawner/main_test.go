@@ -273,6 +273,46 @@ func TestBuildSource_Jira(t *testing.T) {
 	}
 }
 
+func TestBuildSource_Slack(t *testing.T) {
+	t.Setenv("SLACK_BOT_TOKEN", "xoxb-test-token")
+	t.Setenv("SLACK_APP_TOKEN", "xapp-test-token")
+
+	ts := &kelosv1alpha1.TaskSpawner{
+		Spec: kelosv1alpha1.TaskSpawnerSpec{
+			When: kelosv1alpha1.When{
+				Slack: &kelosv1alpha1.Slack{
+					SecretRef: kelosv1alpha1.SecretReference{Name: "slack-creds"},
+				},
+			},
+		},
+	}
+
+	src, err := buildSource(ts, "", "", "", "", "", "", "", "/kelos", "C123,C456", "U001,U002", nil)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	slackSrc, ok := src.(*source.SlackSource)
+	if !ok {
+		t.Fatalf("Expected *source.SlackSource, got %T", src)
+	}
+	if slackSrc.BotToken != "xoxb-test-token" {
+		t.Errorf("BotToken = %q, want %q", slackSrc.BotToken, "xoxb-test-token")
+	}
+	if slackSrc.AppToken != "xapp-test-token" {
+		t.Errorf("AppToken = %q, want %q", slackSrc.AppToken, "xapp-test-token")
+	}
+	if slackSrc.TriggerCommand != "/kelos" {
+		t.Errorf("TriggerCommand = %q, want %q", slackSrc.TriggerCommand, "/kelos")
+	}
+	if len(slackSrc.Channels) != 2 || slackSrc.Channels[0] != "C123" || slackSrc.Channels[1] != "C456" {
+		t.Errorf("Channels = %v, want [C123 C456]", slackSrc.Channels)
+	}
+	if len(slackSrc.AllowedUsers) != 2 || slackSrc.AllowedUsers[0] != "U001" || slackSrc.AllowedUsers[1] != "U002" {
+		t.Errorf("AllowedUsers = %v, want [U001 U002]", slackSrc.AllowedUsers)
+	}
+}
+
 func TestRunCycleWithSource_NoMaxConcurrency(t *testing.T) {
 	ts := newTaskSpawner("spawner", "default", nil)
 	cl, key := setupTest(t, ts)
