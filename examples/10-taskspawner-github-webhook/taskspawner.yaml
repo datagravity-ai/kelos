@@ -1,0 +1,36 @@
+apiVersion: kelos.dev/v1alpha1
+kind: TaskSpawner
+metadata:
+  name: pr-fix-command
+spec:
+  maxConcurrency: 3
+  when:
+    githubWebhook:
+      events:
+        - issue_comment
+        - pull_request_review
+      filters:
+        - event: issue_comment
+          action: created
+          bodyContains: "/fix"
+        - event: pull_request_review
+          action: submitted
+  taskTemplate:
+    type: claude-code
+    credentials:
+      type: oauth
+      secretRef:
+        name: claude-credentials
+    workspaceRef:
+      name: my-workspace
+    branch: "kelos-fix-{{.Number}}"
+    promptTemplate: |
+      {{if eq .Event "issue_comment"}}
+      A user commented on {{.Kind}} #{{.Number}}: "{{.Body}}"
+      Please address the request and create a PR with the fix.
+      {{else if eq .Event "pull_request_review"}}
+      A review on PR #{{.Number}} requested changes.
+      Review body: "{{.Body}}"
+      Please address the review feedback.
+      {{end}}
+    ttlSecondsAfterFinished: 3600

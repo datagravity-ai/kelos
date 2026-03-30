@@ -1,0 +1,33 @@
+apiVersion: kelos.dev/v1alpha1
+kind: TaskSpawner
+metadata:
+  name: linear-bug-handler
+spec:
+  maxConcurrency: 2
+  when:
+    linearWebhook:
+      types:
+        - Issue
+      filters:
+        - type: Issue
+          action: create
+          labels:
+            - bug
+          states:
+            - Todo
+  taskTemplate:
+    type: claude-code
+    credentials:
+      type: oauth
+      secretRef:
+        name: claude-credentials
+    workspaceRef:
+      name: my-workspace
+    branch: "kelos-linear-{{.ID}}"
+    promptTemplate: |
+      New bug filed in Linear: "{{.Title}}"
+      Description: {{.Body}}
+      URL: {{.URL}}
+
+      Please investigate and fix this bug. Run tests to verify the fix.
+    ttlSecondsAfterFinished: 3600

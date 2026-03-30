@@ -1,0 +1,108 @@
+{{- range $name, $source := .Values.webhookServer.sources }}
+{{- if $source.enabled }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kelos-webhook-server-{{ $name }}
+  namespace: kelos-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kelos-webhook-server-{{ $name }}
+  namespace: kelos-system
+  labels:
+    app.kubernetes.io/name: kelos
+    app.kubernetes.io/component: webhook-server-{{ $name }}
+spec:
+  replicas: {{ $source.replicas | default 1 }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kelos
+      app.kubernetes.io/component: webhook-server-{{ $name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kelos
+        app.kubernetes.io/component: webhook-server-{{ $name }}
+    spec:
+      serviceAccountName: kelos-webhook-server-{{ $name }}
+      securityContext:
+        runAsNonRoot: true
+      containers:
+        - name: webhook-server
+          image: {{ $.Values.webhookServer.image }}{{- if $.Values.image.tag }}:{{ $.Values.image.tag }}{{- end }}
+          {{- if $.Values.image.pullPolicy }}
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          {{- end }}
+          args:
+            - --source={{ $name }}
+          {{- if $source.secretName }}
+          env:
+            - name: WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $source.secretName }}
+                  key: webhook-secret
+          {{- end }}
+          ports:
+            - name: webhook
+              containerPort: 8080
+              protocol: TCP
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+            - name: health
+              containerPort: 8081
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8081
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kelos-webhook-server-{{ $name }}
+  namespace: kelos-system
+  labels:
+    app.kubernetes.io/name: kelos
+    app.kubernetes.io/component: webhook-server-{{ $name }}
+spec:
+  selector:
+    app.kubernetes.io/name: kelos
+    app.kubernetes.io/component: webhook-server-{{ $name }}
+  ports:
+    - name: webhook
+      port: 80
+      targetPort: webhook
+      protocol: TCP
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kelos-webhook-server-{{ $name }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kelos-webhook-server-role
+subjects:
+  - kind: ServiceAccount
+    name: kelos-webhook-server-{{ $name }}
+    namespace: kelos-system
+{{- end }}
+{{- end }}
