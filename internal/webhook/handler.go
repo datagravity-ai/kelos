@@ -207,6 +207,34 @@ func (h *WebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (h *WebhookHandler) processWebhook(ctx context.Context, eventType string, payload []byte, deliveryID string) (bool, error) {
 	log := h.log.WithValues("eventType", eventType, "deliveryID", deliveryID)
 
+	// Parse webhook early to extract issue/PR ID for logging
+	var issueID, issueTitle string
+	if h.source == GitHubSource {
+		if eventData, err := ParseGitHubWebhook(eventType, payload); err == nil {
+			issueID = eventData.ID
+			issueTitle = eventData.Title
+			if issueID != "" {
+				log = log.WithValues("githubID", issueID)
+				if issueTitle != "" {
+					log = log.WithValues("githubTitle", issueTitle)
+				}
+			}
+		}
+	} else if h.source == LinearSource {
+		if eventData, err := ParseLinearWebhook(payload); err == nil {
+			issueID = eventData.ID
+			issueTitle = eventData.Title
+			if issueID != "" {
+				log = log.WithValues("linearID", issueID)
+				if issueTitle != "" {
+					log = log.WithValues("linearTitle", issueTitle)
+				}
+			}
+		}
+	}
+
+	log.Info("Processing webhook event", "issueID", issueID, "title", issueTitle)
+
 	// Get all TaskSpawners that match this source type
 	spawners, err := h.getMatchingSpawners(ctx)
 	if err != nil {
