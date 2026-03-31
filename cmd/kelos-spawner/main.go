@@ -125,9 +125,18 @@ func main() {
 	// reused across discovery cycles to accumulate events.
 	var persistentSrc source.Source
 	var ts kelosv1alpha1.TaskSpawner
-	if err := cl.Get(ctx, key, &ts); err != nil {
-		log.Error(err, "fetching TaskSpawner to determine source type")
-		os.Exit(1)
+	// Retry the CRD fetch in case the TaskSpawner hasn't been created yet
+	// (e.g., race during initial deploy).
+	for attempt := 1; ; attempt++ {
+		if err := cl.Get(ctx, key, &ts); err == nil {
+			break
+		} else if attempt >= 5 {
+			log.Error(err, "fetching TaskSpawner to determine source type (giving up after retries)")
+			os.Exit(1)
+		} else {
+			log.Info("TaskSpawner not found, retrying", "attempt", attempt, "backoff", time.Duration(attempt)*time.Second)
+			time.Sleep(time.Duration(attempt) * time.Second)
+		}
 	}
 	if ts.Spec.When.Slack != nil {
 		persistentSrc = &source.SlackSource{
