@@ -2328,7 +2328,7 @@ func TestRunOnce_ReturnsPollIntervalForSuspendedTaskSpawner(t *testing.T) {
 
 	cl, key := setupTest(t, ts)
 
-	interval, err := runOnce(context.Background(), cl, key, spawnerRuntimeConfig{})
+	interval, err := runOnce(context.Background(), cl, key, spawnerRuntimeConfig{}, nil)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -2373,7 +2373,7 @@ func TestRunOnce_UsesEnvTokenForReporting(t *testing.T) {
 		GitHubOwner:      "owner",
 		GitHubRepo:       "repo",
 		GitHubAPIBaseURL: server.URL,
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -2579,7 +2579,7 @@ func TestRunOnce_ReturnsSourcePollInterval(t *testing.T) {
 
 	cl, key := setupTest(t, ts)
 
-	interval, err := runOnce(context.Background(), cl, key, spawnerRuntimeConfig{})
+	interval, err := runOnce(context.Background(), cl, key, spawnerRuntimeConfig{}, nil)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}

@@ -20,6 +20,7 @@ import (
 
 	kelosv1alpha1 "github.com/kelos-dev/kelos/api/v1alpha1"
 	"github.com/kelos-dev/kelos/internal/reporting"
+	"github.com/kelos-dev/kelos/internal/source"
 )
 
 type spawnerRuntimeConfig struct {
@@ -41,6 +42,11 @@ type spawnerReconciler struct {
 	client.Client
 	Key    types.NamespacedName
 	Config spawnerRuntimeConfig
+
+	// slackSource holds a persistent SlackSource that survives across reconcile
+	// cycles. Slack uses Socket Mode (a long-lived WebSocket), so the source
+	// must be reused to accumulate events between Discover() calls.
+	slackSource *source.SlackSource
 }
 
 func (r *spawnerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -48,7 +54,7 @@ func (r *spawnerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, nil
 	}
 
-	interval, err := runOnce(ctx, r.Client, r.Key, r.Config)
+	interval, err := runOnce(ctx, r.Client, r.Key, r.Config, r.slackSource)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, nil
@@ -72,8 +78,14 @@ func (r *spawnerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-func runOnce(ctx context.Context, cl client.Client, key types.NamespacedName, cfg spawnerRuntimeConfig) (time.Duration, error) {
-	if err := runCycleWithProxy(ctx, cl, key, cfg.GitHubOwner, cfg.GitHubRepo, cfg.GHProxyURL, cfg.GitHubAPIBaseURL, cfg.GitHubTokenFile, cfg.JiraBaseURL, cfg.JiraProject, cfg.JiraJQL, cfg.SlackTriggerCommand, cfg.SlackChannels, cfg.SlackAllowedUsers, cfg.HTTPClient); err != nil {
+func runOnce(ctx context.Context, cl client.Client, key types.NamespacedName, cfg spawnerRuntimeConfig, slackSource *source.SlackSource) (time.Duration, error) {
+	if slackSource != nil {
+		// Reuse the persistent SlackSource so its Socket Mode connection
+		// survives across cycles and accumulated events are preserved.
+		if err := runCycleWithSource(ctx, cl, key, slackSource); err != nil {
+			return 0, err
+		}
+	} else if err := runCycleWithProxy(ctx, cl, key, cfg.GitHubOwner, cfg.GitHubRepo, cfg.GHProxyURL, cfg.GitHubAPIBaseURL, cfg.GitHubTokenFile, cfg.JiraBaseURL, cfg.JiraProject, cfg.JiraJQL, cfg.SlackTriggerCommand, cfg.SlackChannels, cfg.SlackAllowedUsers, cfg.HTTPClient); err != nil {
 		return 0, err
 	}
 
