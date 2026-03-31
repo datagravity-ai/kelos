@@ -106,15 +106,16 @@ func MatchesLinearEvent(spawner *v1alpha1.LinearWebhook, payload []byte) (bool, 
 
 // extractLabels extracts labels from a data object, checking both data.labels
 // and data.issue.labels (for Comment webhooks).
+// Returns nil if labels are missing or empty in both locations.
 func extractLabels(dataObj map[string]interface{}) []interface{} {
-	// Try data.labels first (Issue events)
+	// Try data.labels first (Issue events) — only if non-empty
 	if labels, ok := dataObj["labels"].([]interface{}); ok && labels != nil && len(labels) > 0 {
 		return labels
 	}
 
-	// Fall back to data.issue.labels (Comment and IssueLabel events)
+	// Fall back to data.issue.labels (Comment and IssueLabel events) — only if non-empty
 	if issue, ok := dataObj["issue"].(map[string]interface{}); ok {
-		if labels, ok := issue["labels"].([]interface{}); ok && labels != nil {
+		if labels, ok := issue["labels"].([]interface{}); ok && labels != nil && len(labels) > 0 {
 			return labels
 		}
 	}
