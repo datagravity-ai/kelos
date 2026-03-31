@@ -1,0 +1,36 @@
+# Example Helm values to enable webhook servers
+
+# Enable webhook server for GitHub
+webhookServer:
+  sources:
+    # Enable GitHub webhook server
+    github:
+      enabled: true
+      replicas: 2 # For high availability
+      secretName: github-webhook-secret # Must contain WEBHOOK_SECRET key
+
+  # Enable ingress for external webhook access
+  ingress:
+    enabled: true
+    className: "nginx" # Or your ingress class
+    host: "webhooks.your-domain.com"
+
+    # Enable TLS for secure HTTPS connections
+    tls:
+      enabled: true
+      # secretName: ""  # Leave empty for cert-manager auto-generation
+      # secretName: "webhook-tls-secret"  # Or specify existing secret name
+
+    annotations:
+      cert-manager.io/cluster-issuer: "letsencrypt-prod"
+      nginx.ingress.kubernetes.io/ssl-redirect: "true"
+      nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+
+# Use versioned images for production
+image:
+  tag: "v1.0.0" # Replace with your desired version
+  pullPolicy: "IfNotPresent"
+
+# Enable telemetry for monitoring
+telemetry:
+  enabled: true

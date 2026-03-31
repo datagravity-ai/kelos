@@ -27,6 +27,9 @@ func RenderPrompt(promptTemplate string, item WorkItem) (string, error) {
 }
 
 // RenderTemplate renders a Go text/template string with the given work item's fields.
+// This function is used by polling-based TaskSpawners (githubIssues, githubPullRequests, jira, cron).
+// Webhook-based TaskSpawners use a different template rendering path with additional variables.
+//
 // Available variables (all sources): {{.ID}}, {{.Title}}, {{.Kind}}
 // GitHub issue/Jira sources: {{.Number}}, {{.Body}}, {{.URL}}, {{.Labels}}, {{.Comments}}
 // GitHub pull request sources additionally expose: {{.Branch}}, {{.ReviewState}}, {{.ReviewComments}}

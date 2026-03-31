@@ -1,0 +1,41 @@
+{{- if .Values.webhookServer.ingress.enabled }}
+{{- $githubEnabled := .Values.webhookServer.sources.github.enabled }}
+{{- if $githubEnabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: kelos-webhook
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: kelos
+    app.kubernetes.io/component: webhook-ingress
+  {{- with .Values.webhookServer.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if .Values.webhookServer.ingress.className }}
+  ingressClassName: {{ .Values.webhookServer.ingress.className }}
+  {{- end }}
+  {{- if .Values.webhookServer.ingress.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ .Values.webhookServer.ingress.host }}
+      {{- if .Values.webhookServer.ingress.tls.secretName }}
+      secretName: {{ .Values.webhookServer.ingress.tls.secretName }}
+      {{- end }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.webhookServer.ingress.host }}
+      http:
+        paths:
+          - path: /webhook/github
+            pathType: Prefix
+            backend:
+              service:
+                name: kelos-webhook-github
+                port:
+                  number: 8443
+{{- end }}
+{{- end }}
