@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -24,11 +25,16 @@ type WebhookSource string
 
 const (
 	GitHubSource WebhookSource = "github"
+	LinearSource WebhookSource = "linear"
 
 	// GitHub webhook headers
 	GitHubEventHeader     = "X-GitHub-Event"
 	GitHubSignatureHeader = "X-Hub-Signature-256"
 	GitHubDeliveryHeader  = "X-GitHub-Delivery"
+
+	// Linear webhook headers
+	LinearSignatureHeader = "Linear-Signature"
+	LinearDeliveryHeader  = "Linear-Delivery"
 )
 
 // WebhookHandler handles webhook requests for a specific source type.
@@ -165,6 +171,19 @@ func (h *WebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+	case LinearSource:
+		signature = r.Header.Get(LinearSignatureHeader)
+		deliveryID = r.Header.Get(LinearDeliveryHeader)
+		eventType = "linear" // Linear doesn't send event type in header
+
+		log.Info("Processing Linear webhook", "eventType", eventType, "deliveryID", deliveryID, "payloadSize", len(body))
+
+		if err := ValidateLinearSignature(body, signature, h.secret); err != nil {
+			log.Error(err, "Linear signature validation failed", "eventType", eventType, "deliveryID", deliveryID)
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
 	default:
 		log.Error(fmt.Errorf("unsupported source: %s", h.source), "Unsupported webhook source")
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
@@ -181,6 +200,13 @@ func (h *WebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Process the webhook
 	_, err = h.processWebhook(ctx, eventType, body, deliveryID)
 	if err != nil {
+		var concErr *MaxConcurrencyError
+		if errors.As(err, &concErr) {
+			log.Info("Webhook processing blocked by rate limit", "eventType", eventType, "deliveryID", deliveryID, "retryAfter", concErr.RetryAfter)
+			w.Header().Set("Retry-After", fmt.Sprintf("%d", concErr.RetryAfter))
+			http.Error(w, "Service unavailable", http.StatusServiceUnavailable)
+			return
+		}
 		log.Error(err, "Failed to process webhook", "eventType", eventType, "deliveryID", deliveryID)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
@@ -196,21 +222,40 @@ func (h *WebhookHandler) processWebhook(ctx context.Context, eventType string, p
 
 	// Parse the webhook payload once up front and reuse across matching and task creation.
 	var eventData *GitHubEventData
+	var linearData *LinearEventData
+	var issueID, issueTitle string
+
 	if h.source == GitHubSource {
 		var err error
 		eventData, err = ParseGitHubWebhook(eventType, payload)
 		if err != nil {
 			return false, fmt.Errorf("failed to parse %s webhook: %w", h.source, err)
 		}
-		if eventData.ID != "" {
-			log = log.WithValues("githubID", eventData.ID)
-			if eventData.Title != "" {
-				log = log.WithValues("githubTitle", eventData.Title)
+		issueID = eventData.ID
+		issueTitle = eventData.Title
+		if issueID != "" {
+			log = log.WithValues("githubID", issueID)
+			if issueTitle != "" {
+				log = log.WithValues("githubTitle", issueTitle)
+			}
+		}
+	} else if h.source == LinearSource {
+		var err error
+		linearData, err = ParseLinearWebhook(payload)
+		if err != nil {
+			return false, fmt.Errorf("failed to parse %s webhook: %w", h.source, err)
+		}
+		issueID = linearData.ID
+		issueTitle = linearData.Title
+		if issueID != "" {
+			log = log.WithValues("linearID", issueID)
+			if issueTitle != "" {
+				log = log.WithValues("linearTitle", issueTitle)
 			}
 		}
 	}
 
-	log.Info("Processing webhook event", "issueID", eventData.ID, "title", eventData.Title)
+	log.Info("Processing webhook event", "issueID", issueID, "title", issueTitle)
 
 	// Get all TaskSpawners that match this source type
 	spawners, err := h.getMatchingSpawners(ctx)
@@ -242,16 +287,19 @@ func (h *WebhookHandler) processWebhook(ctx context.Context, eventType string, p
 		if spawner.Spec.MaxConcurrency != nil && *spawner.Spec.MaxConcurrency > 0 {
 			activeTasks := spawner.Status.ActiveTasks
 			if int32(activeTasks) >= *spawner.Spec.MaxConcurrency {
-				spawnerLog.Info("Max concurrency reached, dropping webhook event",
+				spawnerLog.Info("Max concurrency reached, returning 503",
 					"activeTasks", activeTasks,
-					"maxConcurrency", *spawner.Spec.MaxConcurrency,
-					"reason", "Webhook accepted but task creation skipped due to concurrency limits")
-				continue // Skip this spawner, continue with others
+					"maxConcurrency", *spawner.Spec.MaxConcurrency)
+
+				// Return 503 with Retry-After header for this spawner
+				return false, &MaxConcurrencyError{
+					RetryAfter: 60, // Suggest retry after 60 seconds
+				}
 			}
 		}
 
 		// Check if this webhook matches the spawner's filters
-		matches, err := h.matchesSpawner(spawner, eventType, eventData)
+		matches, err := h.matchesSpawner(spawner, eventType, eventData, payload)
 		if err != nil {
 			spawnerLog.Error(err, "Failed to check spawner match")
 			continue
@@ -265,7 +313,7 @@ func (h *WebhookHandler) processWebhook(ctx context.Context, eventType string, p
 		spawnerLog.Info("Webhook matches spawner filters - creating task")
 
 		// Create task for this spawner
-		err = h.createTask(ctx, spawner, eventType, eventData, deliveryID)
+		err = h.createTask(ctx, spawner, eventType, eventData, linearData, deliveryID)
 		if err != nil {
 			spawnerLog.Error(err, "Failed to create task")
 			continue
@@ -277,6 +325,15 @@ func (h *WebhookHandler) processWebhook(ctx context.Context, eventType string, p
 
 	log.Info("Webhook processing completed", "totalSpawners", len(spawners), "tasksCreated", tasksCreated)
 	return tasksCreated > 0, nil
+}
+
+// MaxConcurrencyError represents an error when max concurrency is exceeded.
+type MaxConcurrencyError struct {
+	RetryAfter int
+}
+
+func (e *MaxConcurrencyError) Error() string {
+	return fmt.Sprintf("max concurrency exceeded, retry after %d seconds", e.RetryAfter)
 }
 
 // getMatchingSpawners returns TaskSpawners that match the webhook source.
@@ -295,6 +352,10 @@ func (h *WebhookHandler) getMatchingSpawners(ctx context.Context) ([]*v1alpha1.T
 			if spawner.Spec.When.GitHubWebhook != nil {
 				matching = append(matching, spawner)
 			}
+		case LinearSource:
+			if spawner.Spec.When.LinearWebhook != nil {
+				matching = append(matching, spawner)
+			}
 		}
 	}
 
@@ -302,7 +363,7 @@ func (h *WebhookHandler) getMatchingSpawners(ctx context.Context) ([]*v1alpha1.T
 }
 
 // matchesSpawner checks if the webhook matches the spawner's configuration.
-func (h *WebhookHandler) matchesSpawner(spawner *v1alpha1.TaskSpawner, eventType string, eventData *GitHubEventData) (bool, error) {
+func (h *WebhookHandler) matchesSpawner(spawner *v1alpha1.TaskSpawner, eventType string, eventData *GitHubEventData, payload []byte) (bool, error) {
 	switch h.source {
 	case GitHubSource:
 		if spawner.Spec.When.GitHubWebhook == nil {
@@ -318,13 +379,19 @@ func (h *WebhookHandler) matchesSpawner(spawner *v1alpha1.TaskSpawner, eventType
 
 		return MatchesGitHubEvent(spawner.Spec.When.GitHubWebhook, eventType, eventData)
 
+	case LinearSource:
+		if spawner.Spec.When.LinearWebhook == nil {
+			return false, nil
+		}
+		return MatchesLinearEvent(spawner.Spec.When.LinearWebhook, payload)
+
 	default:
 		return false, fmt.Errorf("unsupported source: %s", h.source)
 	}
 }
 
 // createTask creates a new Task from the webhook event.
-func (h *WebhookHandler) createTask(ctx context.Context, spawner *v1alpha1.TaskSpawner, eventType string, eventData *GitHubEventData, deliveryID string) error {
+func (h *WebhookHandler) createTask(ctx context.Context, spawner *v1alpha1.TaskSpawner, eventType string, eventData *GitHubEventData, linearData *LinearEventData, deliveryID string) error {
 	log := h.log.WithValues("spawner", spawner.Name, "namespace", spawner.Namespace, "eventType", eventType, "deliveryID", deliveryID)
 
 	// Extract template variables based on source
@@ -333,6 +400,9 @@ func (h *WebhookHandler) createTask(ctx context.Context, spawner *v1alpha1.TaskS
 	switch h.source {
 	case GitHubSource:
 		templateVars = ExtractGitHubWorkItem(eventData)
+
+	case LinearSource:
+		templateVars = ExtractLinearWorkItem(linearData)
 
 	default:
 		return fmt.Errorf("unsupported source: %s", h.source)

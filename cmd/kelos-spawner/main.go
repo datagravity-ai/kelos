@@ -48,6 +48,9 @@ func main() {
 	var jiraBaseURL string
 	var jiraProject string
 	var jiraJQL string
+	var slackTriggerCommand string
+	var slackChannels string
+	var slackAllowedUsers string
 	var oneShot bool
 
 	flag.StringVar(&name, "taskspawner-name", "", "Name of the TaskSpawner to manage")
@@ -60,6 +63,9 @@ func main() {
 	flag.StringVar(&jiraBaseURL, "jira-base-url", "", "Jira instance base URL (e.g. https://mycompany.atlassian.net)")
 	flag.StringVar(&jiraProject, "jira-project", "", "Jira project key")
 	flag.StringVar(&jiraJQL, "jira-jql", "", "Optional JQL filter for Jira issues")
+	flag.StringVar(&slackTriggerCommand, "slack-trigger-command", "", "Slack trigger command or message prefix")
+	flag.StringVar(&slackChannels, "slack-channels", "", "Comma-separated list of Slack channel IDs to listen in")
+	flag.StringVar(&slackAllowedUsers, "slack-allowed-users", "", "Comma-separated list of allowed Slack user IDs")
 	flag.BoolVar(&oneShot, "one-shot", false, "Run a single discovery cycle and exit (used by CronJob)")
 
 	opts, applyVerbosity := logging.SetupZapOptions(flag.CommandLine)
@@ -99,15 +105,18 @@ func main() {
 	httpClient := &http.Client{Transport: source.NewMetricsTransport(http.DefaultTransport)}
 
 	cfgArgs := spawnerRuntimeConfig{
-		GitHubOwner:      githubOwner,
-		GitHubRepo:       githubRepo,
-		GitHubAPIBaseURL: githubAPIBaseURL,
-		GHProxyURL:       ghProxyURL,
-		GitHubTokenFile:  githubTokenFile,
-		JiraBaseURL:      jiraBaseURL,
-		JiraProject:      jiraProject,
-		JiraJQL:          jiraJQL,
-		HTTPClient:       httpClient,
+		GitHubOwner:         githubOwner,
+		GitHubRepo:          githubRepo,
+		GitHubAPIBaseURL:    githubAPIBaseURL,
+		GHProxyURL:          ghProxyURL,
+		GitHubTokenFile:     githubTokenFile,
+		JiraBaseURL:         jiraBaseURL,
+		JiraProject:         jiraProject,
+		JiraJQL:             jiraJQL,
+		SlackTriggerCommand: slackTriggerCommand,
+		SlackChannels:       slackChannels,
+		SlackAllowedUsers:   slackAllowedUsers,
+		HTTPClient:          httpClient,
 	}
 
 	if oneShot {
@@ -171,12 +180,12 @@ func runReportingCycle(ctx context.Context, cl client.Client, key types.Namespac
 }
 
 func runCycle(ctx context.Context, cl client.Client, key types.NamespacedName, githubOwner, githubRepo, githubAPIBaseURL, githubTokenFile, jiraBaseURL, jiraProject, jiraJQL string, httpClient *http.Client) error {
-	return runCycleWithProxy(ctx, cl, key, githubOwner, githubRepo, "", githubAPIBaseURL, githubTokenFile, jiraBaseURL, jiraProject, jiraJQL, httpClient)
+	return runCycleWithProxy(ctx, cl, key, githubOwner, githubRepo, "", githubAPIBaseURL, githubTokenFile, jiraBaseURL, jiraProject, jiraJQL, "", "", "", httpClient)
 }
 
-func runCycleWithProxy(ctx context.Context, cl client.Client, key types.NamespacedName, githubOwner, githubRepo, ghProxyURL, githubAPIBaseURL, githubTokenFile, jiraBaseURL, jiraProject, jiraJQL string, httpClient *http.Client) error {
+func runCycleWithProxy(ctx context.Context, cl client.Client, key types.NamespacedName, githubOwner, githubRepo, ghProxyURL, githubAPIBaseURL, githubTokenFile, jiraBaseURL, jiraProject, jiraJQL, slackTriggerCmd, slackChans, slackUsers string, httpClient *http.Client) error {
 	start := time.Now()
-	err := runCycleCore(ctx, cl, key, githubOwner, githubRepo, ghProxyURL, githubAPIBaseURL, githubTokenFile, jiraBaseURL, jiraProject, jiraJQL, httpClient)
+	err := runCycleCore(ctx, cl, key, githubOwner, githubRepo, ghProxyURL, githubAPIBaseURL, githubTokenFile, jiraBaseURL, jiraProject, jiraJQL, slackTriggerCmd, slackChans, slackUsers, httpClient)
 	discoveryDurationSeconds.Observe(time.Since(start).Seconds())
 	if err != nil {
 		discoveryErrorsTotal.Inc()
@@ -184,13 +193,30 @@ func runCycleWithProxy(ctx context.Context, cl client.Client, key types.Namespac
 	return err
 }
 
-func runCycleCore(ctx context.Context, cl client.Client, key types.NamespacedName, githubOwner, githubRepo, ghProxyURL, githubAPIBaseURL, githubTokenFile, jiraBaseURL, jiraProject, jiraJQL string, httpClient *http.Client) error {
+func runSlackReportingCycle(ctx context.Context, cl client.Client, key types.NamespacedName, reporter *reporting.SlackTaskReporter) error {
+	var taskList kelosv1alpha1.TaskList
+	if err := cl.List(ctx, &taskList,
+		client.InNamespace(key.Namespace),
+		client.MatchingLabels{"kelos.dev/taskspawner": key.Name},
+	); err != nil {
+		return fmt.Errorf("listing tasks for Slack reporting: %w", err)
+	}
+
+	for i := range taskList.Items {
+		if err := reporter.ReportTaskStatus(ctx, &taskList.Items[i]); err != nil {
+			ctrl.Log.WithName("spawner").Error(err, "Reporting Slack task status", "task", taskList.Items[i].Name)
+		}
+	}
+	return nil
+}
+
+func runCycleCore(ctx context.Context, cl client.Client, key types.NamespacedName, githubOwner, githubRepo, ghProxyURL, githubAPIBaseURL, githubTokenFile, jiraBaseURL, jiraProject, jiraJQL, slackTriggerCmd, slackChans, slackUsers string, httpClient *http.Client) error {
 	var ts kelosv1alpha1.TaskSpawner
 	if err := cl.Get(ctx, key, &ts); err != nil {
 		return fmt.Errorf("fetching TaskSpawner: %w", err)
 	}
 
-	src, err := buildSourceWithProxy(&ts, githubOwner, githubRepo, ghProxyURL, githubAPIBaseURL, githubTokenFile, jiraBaseURL, jiraProject, jiraJQL, httpClient)
+	src, err := buildSourceWithProxy(&ts, githubOwner, githubRepo, ghProxyURL, githubAPIBaseURL, githubTokenFile, jiraBaseURL, jiraProject, jiraJQL, slackTriggerCmd, slackChans, slackUsers, httpClient)
 	if err != nil {
 		return fmt.Errorf("building source: %w", err)
 	}
@@ -450,7 +476,70 @@ func runCycleWithSourceCore(ctx context.Context, cl client.Client, key types.Nam
 // sourceAnnotations returns annotations that stamp GitHub source metadata
 // onto a spawned Task. These annotations enable downstream consumers (such
 // as the reporting watcher) to identify the originating issue or PR.
+// mergeStringMaps returns a new map with keys from base, then keys from overlay
+// overwriting on duplicate keys.
+func mergeStringMaps(base, overlay map[string]string) map[string]string {
+	if len(base) == 0 && len(overlay) == 0 {
+		return nil
+	}
+	out := make(map[string]string)
+	for k, v := range base {
+		out[k] = v
+	}
+	for k, v := range overlay {
+		out[k] = v
+	}
+	return out
+}
+
+// renderTaskTemplateMetadata renders taskTemplate.metadata label and annotation
+// values using source.RenderTemplate.
+func renderTaskTemplateMetadata(ts *kelosv1alpha1.TaskSpawner, item source.WorkItem) (labels map[string]string, annotations map[string]string, err error) {
+	meta := ts.Spec.TaskTemplate.Metadata
+	if meta == nil {
+		return nil, nil, nil
+	}
+	if len(meta.Labels) > 0 {
+		labels = make(map[string]string)
+		for k, v := range meta.Labels {
+			rendered, err := source.RenderTemplate(v, item)
+			if err != nil {
+				return nil, nil, fmt.Errorf("label %q: %w", k, err)
+			}
+			labels[k] = rendered
+		}
+	}
+	if len(meta.Annotations) > 0 {
+		annotations = make(map[string]string)
+		for k, v := range meta.Annotations {
+			rendered, err := source.RenderTemplate(v, item)
+			if err != nil {
+				return nil, nil, fmt.Errorf("annotation %q: %w", k, err)
+			}
+			annotations[k] = rendered
+		}
+	}
+	return labels, annotations, nil
+}
+
+// sourceAnnotations returns annotations that stamp source metadata onto a
+// spawned Task. These annotations enable downstream consumers (such as the
+// reporting watcher) to identify the originating issue, PR, or Slack message.
 func sourceAnnotations(ts *kelosv1alpha1.TaskSpawner, item source.WorkItem) map[string]string {
+	if ts.Spec.When.Slack != nil && len(item.Labels) >= 2 {
+		annotations := map[string]string{
+			reporting.AnnotationSlackReporting: "enabled",
+			reporting.AnnotationSlackChannel:   item.Labels[1],
+		}
+		// Only set thread_ts when the item ID is a valid Slack message
+		// timestamp (e.g. "1234567890.123456"). Slash command IDs are
+		// compound strings containing colons and are not valid timestamps.
+		if isSlackTimestamp(item.ID) {
+			annotations[reporting.AnnotationSlackThreadTS] = item.ID
+		}
+		return annotations
+	}
+
 	if ts.Spec.When.GitHubIssues == nil && ts.Spec.When.GitHubPullRequests == nil {
 		return nil
 	}
@@ -472,9 +561,12 @@ func sourceAnnotations(ts *kelosv1alpha1.TaskSpawner, item source.WorkItem) map[
 	return annotations
 }
 
-// reportingEnabled returns true when GitHub reporting is configured and enabled
+// reportingEnabled returns true when reporting is configured and enabled
 // on the TaskSpawner.
 func reportingEnabled(ts *kelosv1alpha1.TaskSpawner) bool {
+	if ts.Spec.When.Slack != nil {
+		return true
+	}
 	if ts.Spec.When.GitHubIssues != nil && ts.Spec.When.GitHubIssues.Reporting != nil {
 		return ts.Spec.When.GitHubIssues.Reporting.Enabled
 	}
@@ -526,11 +618,11 @@ func resolveGitHubCommentPolicy(policy *kelosv1alpha1.GitHubCommentPolicy, legac
 	}, nil
 }
 
-func buildSource(ts *kelosv1alpha1.TaskSpawner, owner, repo, apiBaseURL, tokenFile, jiraBaseURL, jiraProject, jiraJQL string, httpClient *http.Client) (source.Source, error) {
-	return buildSourceWithProxy(ts, owner, repo, "", apiBaseURL, tokenFile, jiraBaseURL, jiraProject, jiraJQL, httpClient)
+func buildSource(ts *kelosv1alpha1.TaskSpawner, owner, repo, apiBaseURL, tokenFile, jiraBaseURL, jiraProject, jiraJQL, slackTriggerCmd, slackChans, slackUsers string, httpClient *http.Client) (source.Source, error) {
+	return buildSourceWithProxy(ts, owner, repo, "", apiBaseURL, tokenFile, jiraBaseURL, jiraProject, jiraJQL, slackTriggerCmd, slackChans, slackUsers, httpClient)
 }
 
-func buildSourceWithProxy(ts *kelosv1alpha1.TaskSpawner, owner, repo, ghProxyURL, apiBaseURL, tokenFile, jiraBaseURL, jiraProject, jiraJQL string, httpClient *http.Client) (source.Source, error) {
+func buildSourceWithProxy(ts *kelosv1alpha1.TaskSpawner, owner, repo, ghProxyURL, apiBaseURL, tokenFile, jiraBaseURL, jiraProject, jiraJQL, slackTriggerCmd, slackChans, slackUsers string, httpClient *http.Client) (source.Source, error) {
 	if ts.Spec.When.GitHubIssues != nil {
 		gh := ts.Spec.When.GitHubIssues
 		commentPolicy, err := resolveGitHubCommentPolicy(gh.CommentPolicy, gh.TriggerComment, gh.ExcludeComments)
@@ -619,6 +711,18 @@ func buildSourceWithProxy(ts *kelosv1alpha1.TaskSpawner, owner, repo, ghProxyURL
 		}, nil
 	}
 
+	if ts.Spec.When.Slack != nil {
+		botToken := os.Getenv("SLACK_BOT_TOKEN")
+		appToken := os.Getenv("SLACK_APP_TOKEN")
+		return &source.SlackSource{
+			BotToken:       botToken,
+			AppToken:       appToken,
+			TriggerCommand: slackTriggerCmd,
+			Channels:       parseCSV(slackChans),
+			AllowedUsers:   parseCSV(slackUsers),
+		}, nil
+	}
+
 	if ts.Spec.When.Cron != nil {
 		var lastDiscovery time.Time
 		if ts.Status.LastDiscoveryTime != nil {
@@ -633,6 +737,20 @@ func buildSourceWithProxy(ts *kelosv1alpha1.TaskSpawner, owner, repo, ghProxyURL
 	}
 
 	return nil, fmt.Errorf("no source configured in TaskSpawner %s/%s", ts.Namespace, ts.Name)
+}
+
+func parseCSV(s string) []string {
+	if s == "" {
+		return nil
+	}
+	var result []string
+	for _, item := range strings.Split(s, ",") {
+		item = strings.TrimSpace(item)
+		if item != "" {
+			result = append(result, item)
+		}
+	}
+	return result
 }
 
 func readGitHubToken(tokenFile string) (string, error) {
@@ -713,6 +831,24 @@ func parseOwnerRepo(repoURL string) (string, string) {
 		return parts[len(parts)-2], parts[len(parts)-1]
 	}
 	return "", ""
+}
+
+// isSlackTimestamp returns true when s looks like a Slack message timestamp
+// (e.g. "1234567890.123456"). Slash command work-item IDs are compound
+// strings like "C123:/cmd:trigger" and must not be used as thread_ts.
+func isSlackTimestamp(s string) bool {
+	parts := strings.SplitN(s, ".", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return false
+	}
+	for _, p := range parts {
+		for _, c := range p {
+			if c < '0' || c > '9' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func parsePollInterval(s string) time.Duration {

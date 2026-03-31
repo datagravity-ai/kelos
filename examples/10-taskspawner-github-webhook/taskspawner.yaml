@@ -119,6 +119,9 @@ spec:
     # Auto-cleanup completed tasks after 1 hour
     ttlSecondsAfterFinished: 3600
 
+  # Limit concurrent tasks to prevent overwhelming the system
+  maxConcurrency: 5
+
 ---
 # Example workspace configuration (referenced above)
 apiVersion: kelos.dev/v1alpha1

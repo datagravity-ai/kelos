@@ -103,7 +103,7 @@ Because `crds.keep=true` by default, uninstalling the chart does not delete the 
 
 ## Webhook Server Configuration
 
-The chart includes an optional webhook server for GitHub integration. It is disabled by default and must be explicitly enabled.
+The chart includes optional webhook servers for GitHub and Linear integration. These are disabled by default and must be explicitly enabled.
 
 ### Prerequisites
 
@@ -114,9 +114,14 @@ The chart includes an optional webhook server for GitHub integration. It is disa
 kubectl create secret generic github-webhook-secret \
   --from-literal=WEBHOOK_SECRET=your-github-webhook-secret \
   -n kelos-system
+
+# Linear webhook secret
+kubectl create secret generic linear-webhook-secret \
+  --from-literal=WEBHOOK_SECRET=your-linear-webhook-secret \
+  -n kelos-system
 ```
 
-2. Configure webhooks in your GitHub repositories to send events to your webhook endpoints.
+2. Configure webhooks in your GitHub repositories or Linear workspace to send events to your webhook endpoints.
 
 ### Enable Webhook Servers
 
@@ -126,6 +131,8 @@ helm upgrade --install kelos oci://ghcr.io/kelos-dev/charts/kelos \
   --create-namespace \
   --set webhookServer.sources.github.enabled=true \
   --set webhookServer.sources.github.secretName=github-webhook-secret \
+  --set webhookServer.sources.linear.enabled=true \
+  --set webhookServer.sources.linear.secretName=linear-webhook-secret \
   --set webhookServer.ingress.enabled=true \
   --set webhookServer.ingress.host=webhooks.your-domain.com \
   --set webhookServer.ingress.className=nginx \
@@ -141,6 +148,10 @@ webhookServer:
   sources:
     github:
       enabled: false          # Enable GitHub webhook server
+      replicas: 1            # Number of replicas
+      secretName: ""         # Secret containing WEBHOOK_SECRET
+    linear:
+      enabled: false          # Enable Linear webhook server
       replicas: 1            # Number of replicas
       secretName: ""         # Secret containing WEBHOOK_SECRET
   ingress:
@@ -198,6 +209,7 @@ helm upgrade --install kelos oci://ghcr.io/kelos-dev/charts/kelos \
 When enabled, the webhook servers expose the following endpoints:
 
 - **GitHub**: `https://your-host/webhook/github`
+- **Linear**: `https://your-host/webhook/linear`
 
 ### Example Values File
 

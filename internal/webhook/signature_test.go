@@ -49,3 +49,39 @@ func TestValidateGitHubSignature(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateLinearSignature(t *testing.T) {
+	secret := []byte("linear-secret")
+	payload := []byte(`{"action":"create","data":{"id":"123"}}`)
+
+	tests := []struct {
+		name      string
+		signature string
+		wantErr   bool
+	}{
+		{
+			name:      "valid signature",
+			signature: "21a519179a2a5cb3cc9d6d86d2f8850ac21c048c672922d0cd0640438d645941",
+			wantErr:   false,
+		},
+		{
+			name:      "invalid signature",
+			signature: "invalid",
+			wantErr:   true,
+		},
+		{
+			name:      "empty signature",
+			signature: "",
+			wantErr:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateLinearSignature(payload, tt.signature, secret)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateLinearSignature() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
