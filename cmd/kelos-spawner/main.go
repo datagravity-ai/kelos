@@ -119,11 +119,17 @@ func main() {
 		HTTPClient:          httpClient,
 	}
 
-	// Build a persistent source for Slack-based spawners. Slack uses Socket
-	// Mode (a long-lived WebSocket), so the source must be created once and
+	// Check the TaskSpawner CRD to determine the source type. If the CRD
+	// specifies a Slack source, build a persistent SlackSource once at startup.
+	// Slack uses Socket Mode (a long-lived WebSocket), so the source must be
 	// reused across discovery cycles to accumulate events.
 	var persistentSrc source.Source
-	if slackChannels != "" || os.Getenv("SLACK_BOT_TOKEN") != "" {
+	var ts kelosv1alpha1.TaskSpawner
+	if err := cl.Get(ctx, key, &ts); err != nil {
+		log.Error(err, "fetching TaskSpawner to determine source type")
+		os.Exit(1)
+	}
+	if ts.Spec.When.Slack != nil {
 		persistentSrc = &source.SlackSource{
 			BotToken:       os.Getenv("SLACK_BOT_TOKEN"),
 			AppToken:       os.Getenv("SLACK_APP_TOKEN"),
