@@ -119,12 +119,12 @@ func main() {
 		HTTPClient:          httpClient,
 	}
 
-	// Build a persistent SlackSource if this is a Slack-based spawner.
-	// Slack uses Socket Mode (a long-lived WebSocket), so the source must
-	// be created once and reused across discovery cycles.
-	var slackSrc *source.SlackSource
+	// Build a persistent source for Slack-based spawners. Slack uses Socket
+	// Mode (a long-lived WebSocket), so the source must be created once and
+	// reused across discovery cycles to accumulate events.
+	var persistentSrc source.Source
 	if slackChannels != "" || os.Getenv("SLACK_BOT_TOKEN") != "" {
-		slackSrc = &source.SlackSource{
+		persistentSrc = &source.SlackSource{
 			BotToken:       os.Getenv("SLACK_BOT_TOKEN"),
 			AppToken:       os.Getenv("SLACK_APP_TOKEN"),
 			TriggerCommand: slackTriggerCommand,
@@ -134,7 +134,7 @@ func main() {
 	}
 
 	if oneShot {
-		if _, err := runOnce(ctx, cl, key, cfgArgs, slackSrc); err != nil {
+		if _, err := runOnce(ctx, cl, key, cfgArgs, persistentSrc); err != nil {
 			log.Error(err, "Cycle failed")
 			os.Exit(1)
 		}
@@ -157,10 +157,10 @@ func main() {
 	}
 
 	if err := (&spawnerReconciler{
-		Client:      cl,
-		Key:         key,
-		Config:      cfgArgs,
-		slackSource: slackSrc,
+		Client:           cl,
+		Key:              key,
+		Config:           cfgArgs,
+		persistentSource: persistentSrc,
 	}).SetupWithManager(mgr); err != nil {
 		log.Error(err, "Unable to create controller")
 		os.Exit(1)
