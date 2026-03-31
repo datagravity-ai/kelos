@@ -165,7 +165,7 @@ func (s *SlackSource) handleEventsAPI(sm *socketmode.Client, evt socketmode.Even
 
 	s.mu.Lock()
 	s.counter++
-	item := buildWorkItem(innerEvent.TimeStamp, s.counter, userName, body, permalink, channelName)
+	item := buildWorkItem(innerEvent.TimeStamp, s.counter, userName, body, permalink, channelName, innerEvent.Channel)
 	s.pending = append(s.pending, item)
 	s.mu.Unlock()
 
@@ -203,7 +203,7 @@ func (s *SlackSource) handleSlashCommand(sm *socketmode.Client, evt socketmode.E
 	s.mu.Lock()
 	s.counter++
 	itemID := fmt.Sprintf("%s:%s:%s", cmd.ChannelID, cmd.Command, cmd.TriggerID)
-	item := buildWorkItem(itemID, s.counter, userName, body, "", channelName)
+	item := buildWorkItem(itemID, s.counter, userName, body, "", channelName, cmd.ChannelID)
 	s.pending = append(s.pending, item)
 	s.mu.Unlock()
 
@@ -271,14 +271,14 @@ func matchesUser(userID string, allowed []string) bool {
 }
 
 // buildWorkItem constructs a WorkItem from Slack message fields.
-func buildWorkItem(id string, number int, userName, body, permalink, channelName string) WorkItem {
+func buildWorkItem(id string, number int, userName, body, permalink, channelName, channelID string) WorkItem {
 	return WorkItem{
 		ID:     id,
 		Number: number,
 		Title:  userName,
 		Body:   body,
 		URL:    permalink,
-		Labels: []string{channelName},
+		Labels: []string{channelName, channelID},
 		Kind:   "SlackMessage",
 	}
 }

@@ -1839,6 +1839,90 @@ func TestSourceAnnotations_ReportingEnabledPR(t *testing.T) {
 	}
 }
 
+func TestSourceAnnotations_SlackMessage(t *testing.T) {
+	ts := &kelosv1alpha1.TaskSpawner{
+		Spec: kelosv1alpha1.TaskSpawnerSpec{
+			When: kelosv1alpha1.When{
+				Slack: &kelosv1alpha1.Slack{},
+			},
+		},
+	}
+
+	item := source.WorkItem{
+		ID:     "1234567890.123456",
+		Kind:   "SlackMessage",
+		Labels: []string{"general", "C123ABC"},
+	}
+
+	annotations := sourceAnnotations(ts, item)
+	if annotations == nil {
+		t.Fatal("Expected annotations, got nil")
+	}
+	if annotations[reporting.AnnotationSlackReporting] != "enabled" {
+		t.Errorf("Expected slack-reporting 'enabled', got %q", annotations[reporting.AnnotationSlackReporting])
+	}
+	if annotations[reporting.AnnotationSlackChannel] != "C123ABC" {
+		t.Errorf("Expected slack-channel 'C123ABC', got %q", annotations[reporting.AnnotationSlackChannel])
+	}
+	if annotations[reporting.AnnotationSlackThreadTS] != "1234567890.123456" {
+		t.Errorf("Expected slack-thread-ts '1234567890.123456', got %q", annotations[reporting.AnnotationSlackThreadTS])
+	}
+}
+
+func TestSourceAnnotations_SlackSlashCommand(t *testing.T) {
+	ts := &kelosv1alpha1.TaskSpawner{
+		Spec: kelosv1alpha1.TaskSpawnerSpec{
+			When: kelosv1alpha1.When{
+				Slack: &kelosv1alpha1.Slack{},
+			},
+		},
+	}
+
+	// Slash command IDs are compound strings, not valid Slack timestamps
+	item := source.WorkItem{
+		ID:     "C123ABC:/kelos:trigger-id-abc",
+		Kind:   "SlackMessage",
+		Labels: []string{"general", "C123ABC"},
+	}
+
+	annotations := sourceAnnotations(ts, item)
+	if annotations == nil {
+		t.Fatal("Expected annotations, got nil")
+	}
+	if annotations[reporting.AnnotationSlackReporting] != "enabled" {
+		t.Errorf("Expected slack-reporting 'enabled', got %q", annotations[reporting.AnnotationSlackReporting])
+	}
+	if annotations[reporting.AnnotationSlackChannel] != "C123ABC" {
+		t.Errorf("Expected slack-channel 'C123ABC', got %q", annotations[reporting.AnnotationSlackChannel])
+	}
+	if _, ok := annotations[reporting.AnnotationSlackThreadTS]; ok {
+		t.Errorf("Expected no slack-thread-ts for slash command, got %q", annotations[reporting.AnnotationSlackThreadTS])
+	}
+}
+
+func TestIsSlackTimestamp(t *testing.T) {
+	tests := []struct {
+		input string
+		want  bool
+	}{
+		{"1234567890.123456", true},
+		{"0.0", true},
+		{"C123ABC:/kelos:trigger-id-abc", false},
+		{"not-a-timestamp", false},
+		{"", false},
+		{"1234567890", false},
+		{".123456", false},
+		{"1234567890.", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			if got := isSlackTimestamp(tt.input); got != tt.want {
+				t.Errorf("isSlackTimestamp(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestSourceAnnotations_NonGitHub(t *testing.T) {
 	ts := &kelosv1alpha1.TaskSpawner{
 		Spec: kelosv1alpha1.TaskSpawnerSpec{
