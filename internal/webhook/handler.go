@@ -24,11 +24,16 @@ type WebhookSource string
 
 const (
 	GitHubSource WebhookSource = "github"
+	LinearSource WebhookSource = "linear"
 
 	// GitHub webhook headers
 	GitHubEventHeader     = "X-GitHub-Event"
 	GitHubSignatureHeader = "X-Hub-Signature-256"
 	GitHubDeliveryHeader  = "X-GitHub-Delivery"
+
+	// Linear webhook headers
+	LinearSignatureHeader = "Linear-Signature"
+	LinearDeliveryHeader  = "Linear-Delivery"
 )
 
 // WebhookHandler handles webhook requests for a specific source type.
@@ -158,6 +163,19 @@ func (h *WebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+	case LinearSource:
+		signature = r.Header.Get(LinearSignatureHeader)
+		deliveryID = r.Header.Get(LinearDeliveryHeader)
+		eventType = "linear" // Linear doesn't send event type in header
+
+		log.Info("Processing Linear webhook", "eventType", eventType, "deliveryID", deliveryID, "payloadSize", len(body))
+
+		if err := ValidateLinearSignature(body, signature, h.secret); err != nil {
+			log.Error(err, "Linear signature validation failed", "eventType", eventType, "deliveryID", deliveryID)
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
 	default:
 		log.Error(fmt.Errorf("unsupported source: %s", h.source), "Unsupported webhook source")
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
@@ -204,6 +222,17 @@ func (h *WebhookHandler) processWebhook(ctx context.Context, eventType string, p
 				log = log.WithValues("githubID", issueID)
 				if issueTitle != "" {
 					log = log.WithValues("githubTitle", issueTitle)
+				}
+			}
+		}
+	} else if h.source == LinearSource {
+		if eventData, err := ParseLinearWebhook(payload); err == nil {
+			issueID = eventData.ID
+			issueTitle = eventData.Title
+			if issueID != "" {
+				log = log.WithValues("linearID", issueID)
+				if issueTitle != "" {
+					log = log.WithValues("linearTitle", issueTitle)
 				}
 			}
 		}
@@ -307,6 +336,10 @@ func (h *WebhookHandler) getMatchingSpawners(ctx context.Context) ([]*v1alpha1.T
 			if spawner.Spec.When.GitHubWebhook != nil {
 				matching = append(matching, spawner)
 			}
+		case LinearSource:
+			if spawner.Spec.When.LinearWebhook != nil {
+				matching = append(matching, spawner)
+			}
 		}
 	}
 
@@ -321,6 +354,12 @@ func (h *WebhookHandler) matchesSpawner(spawner *v1alpha1.TaskSpawner, eventType
 			return false, nil
 		}
 		return MatchesGitHubEvent(spawner.Spec.When.GitHubWebhook, eventType, payload)
+
+	case LinearSource:
+		if spawner.Spec.When.LinearWebhook == nil {
+			return false, nil
+		}
+		return MatchesLinearEvent(spawner.Spec.When.LinearWebhook, payload)
 
 	default:
 		return false, fmt.Errorf("unsupported source: %s", h.source)
@@ -342,6 +381,13 @@ func (h *WebhookHandler) createTask(ctx context.Context, spawner *v1alpha1.TaskS
 			return fmt.Errorf("failed to parse GitHub webhook: %w", parseErr)
 		}
 		templateVars = ExtractGitHubWorkItem(eventData)
+
+	case LinearSource:
+		eventData, parseErr := ParseLinearWebhook(payload)
+		if parseErr != nil {
+			return fmt.Errorf("failed to parse Linear webhook: %w", parseErr)
+		}
+		templateVars = ExtractLinearWorkItem(eventData)
 
 	default:
 		return fmt.Errorf("unsupported source: %s", h.source)

@@ -39,6 +39,19 @@ func TestIsWebhookBased(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "Linear webhook TaskSpawner",
+			ts: &kelosv1alpha1.TaskSpawner{
+				Spec: kelosv1alpha1.TaskSpawnerSpec{
+					When: kelosv1alpha1.When{
+						LinearWebhook: &kelosv1alpha1.LinearWebhook{
+							Types: []string{"Issue"},
+						},
+					},
+				},
+			},
+			want: true,
+		},
+		{
 			name: "polling TaskSpawner",
 			ts: &kelosv1alpha1.TaskSpawner{
 				Spec: kelosv1alpha1.TaskSpawnerSpec{
@@ -116,8 +129,8 @@ func TestReconcileWebhook(t *testing.T) {
 				},
 				Spec: kelosv1alpha1.TaskSpawnerSpec{
 					When: kelosv1alpha1.When{
-						GitHubWebhook: &kelosv1alpha1.GitHubWebhook{
-							Events: []string{"issues"},
+						LinearWebhook: &kelosv1alpha1.LinearWebhook{
+							Types: []string{"Issue"},
 						},
 					},
 				},
