@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -30,6 +31,7 @@ type spawnerRuntimeConfig struct {
 	JiraBaseURL      string
 	JiraProject      string
 	JiraJQL          string
+	SlackChannels    string
 	HTTPClient       *http.Client
 }
 
@@ -69,7 +71,7 @@ func (r *spawnerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 func runOnce(ctx context.Context, cl client.Client, key types.NamespacedName, cfg spawnerRuntimeConfig) (time.Duration, error) {
-	if err := runCycleWithProxy(ctx, cl, key, cfg.GitHubOwner, cfg.GitHubRepo, cfg.GHProxyURL, cfg.GitHubAPIBaseURL, cfg.TokenResolver, cfg.JiraBaseURL, cfg.JiraProject, cfg.JiraJQL, cfg.HTTPClient); err != nil {
+	if err := runCycleWithProxy(ctx, cl, key, cfg.GitHubOwner, cfg.GitHubRepo, cfg.GHProxyURL, cfg.GitHubAPIBaseURL, cfg.TokenResolver, cfg.JiraBaseURL, cfg.JiraProject, cfg.JiraJQL, cfg.SlackChannels, cfg.HTTPClient); err != nil {
 		return 0, err
 	}
 
@@ -79,40 +81,54 @@ func runOnce(ctx context.Context, cl client.Client, key types.NamespacedName, cf
 	}
 
 	if reportingEnabled(&ts) || checksReportingEnabled(&ts) {
-		if cfg.TokenResolver == nil {
-			return 0, fmt.Errorf("GitHub reporting is enabled but no token resolver is configured")
-		}
-		resolve := cfg.TokenResolver
-		tokenFunc := func() string {
-			token, err := resolve(ctx)
-			if err != nil {
-				ctrl.Log.WithName("spawner").Error(err, "Resolving GitHub token for reporting")
-				return ""
+		if ts.Spec.When.Slack != nil {
+			botToken := os.Getenv("SLACK_BOT_TOKEN")
+			if botToken == "" {
+				return 0, fmt.Errorf("SLACK_BOT_TOKEN environment variable is required for Slack reporting")
 			}
-			return token
-		}
-		// Reporting always uses the direct API base URL (writes bypass the proxy).
-		reporter := &reporting.TaskReporter{
-			Client: cl,
-			Reporter: &reporting.GitHubReporter{
-				Owner:     cfg.GitHubOwner,
-				Repo:      cfg.GitHubRepo,
-				TokenFunc: tokenFunc,
-				BaseURL:   cfg.GitHubAPIBaseURL,
-				Client:    cfg.HTTPClient,
-			},
-		}
-		if checksReportingEnabled(&ts) {
-			reporter.ChecksReporter = &reporting.ChecksReporter{
-				Owner:     cfg.GitHubOwner,
-				Repo:      cfg.GitHubRepo,
-				TokenFunc: tokenFunc,
-				BaseURL:   cfg.GitHubAPIBaseURL,
-				Client:    cfg.HTTPClient,
+			slackReporter := &reporting.SlackTaskReporter{
+				Client:   cl,
+				Reporter: &reporting.SlackReporter{BotToken: botToken},
 			}
-		}
-		if err := runReportingCycle(ctx, cl, key, reporter); err != nil {
-			return 0, err
+			if err := runSlackReportingCycle(ctx, cl, key, slackReporter); err != nil {
+				return 0, err
+			}
+		} else {
+			if cfg.TokenResolver == nil {
+				return 0, fmt.Errorf("GitHub reporting is enabled but no token resolver is configured")
+			}
+			resolve := cfg.TokenResolver
+			tokenFunc := func() string {
+				token, err := resolve(ctx)
+				if err != nil {
+					ctrl.Log.WithName("spawner").Error(err, "Resolving GitHub token for reporting")
+					return ""
+				}
+				return token
+			}
+			// Reporting always uses the direct API base URL (writes bypass the proxy).
+			reporter := &reporting.TaskReporter{
+				Client: cl,
+				Reporter: &reporting.GitHubReporter{
+					Owner:     cfg.GitHubOwner,
+					Repo:      cfg.GitHubRepo,
+					TokenFunc: tokenFunc,
+					BaseURL:   cfg.GitHubAPIBaseURL,
+					Client:    cfg.HTTPClient,
+				},
+			}
+			if checksReportingEnabled(&ts) {
+				reporter.ChecksReporter = &reporting.ChecksReporter{
+					Owner:     cfg.GitHubOwner,
+					Repo:      cfg.GitHubRepo,
+					TokenFunc: tokenFunc,
+					BaseURL:   cfg.GitHubAPIBaseURL,
+					Client:    cfg.HTTPClient,
+				}
+			}
+			if err := runReportingCycle(ctx, cl, key, reporter); err != nil {
+				return 0, err
+			}
 		}
 	}
 
