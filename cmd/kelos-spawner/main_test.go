@@ -2615,6 +2615,9 @@ func TestRunOnce_UsesPersistentSource(t *testing.T) {
 
 	cl, key := setupTest(t, ts)
 
+	// Slack reporting requires SLACK_BOT_TOKEN in the environment.
+	t.Setenv("SLACK_BOT_TOKEN", "xoxb-test-token")
+
 	// Pass a fakeSource as the persistent source. This verifies that runOnce
 	// uses the provided source via runCycleWithSource rather than falling
 	// through to buildSourceWithProxy (which would fail for a Slack spawner
