@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"time"
 
@@ -16,10 +17,12 @@ import (
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	kelosv1alpha1 "github.com/kelos-dev/kelos/api/v1alpha1"
@@ -129,8 +132,16 @@ func (r *TaskSpawnerReconciler) reconcileWebhook(ctx context.Context, req ctrl.R
 		desiredMessage = "Suspended by user"
 	}
 
+	// Count active tasks for this webhook TaskSpawner
+	activeTasks, err := r.countActiveTasks(ctx, req.NamespacedName)
+	if err != nil {
+		logger.Error(err, "Failed to count active tasks")
+		return ctrl.Result{}, err
+	}
+
 	// Update status to clear any deployment/cronjob names and set appropriate phase
-	needsStatusUpdate := ts.Status.DeploymentName != "" || ts.Status.CronJobName != "" || ts.Status.Phase != desiredPhase
+	needsStatusUpdate := ts.Status.DeploymentName != "" || ts.Status.CronJobName != "" ||
+		ts.Status.Phase != desiredPhase || ts.Status.ActiveTasks != activeTasks
 	if needsStatusUpdate {
 		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 			if getErr := r.Get(ctx, req.NamespacedName, ts); getErr != nil {
@@ -140,15 +151,38 @@ func (r *TaskSpawnerReconciler) reconcileWebhook(ctx context.Context, req ctrl.R
 			ts.Status.CronJobName = ""
 			ts.Status.Phase = desiredPhase
 			ts.Status.Message = desiredMessage
+			ts.Status.ActiveTasks = activeTasks
 			return r.Status().Update(ctx, ts)
 		}); err != nil {
 			logger.Error(err, "Unable to update TaskSpawner status")
 			return ctrl.Result{}, err
 		}
-		logger.Info("Updated webhook TaskSpawner status", "phase", desiredPhase)
+		logger.Info("Updated webhook TaskSpawner status", "phase", desiredPhase, "activeTasks", activeTasks)
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// countActiveTasks counts the number of active (non-terminal) Tasks for a TaskSpawner.
+func (r *TaskSpawnerReconciler) countActiveTasks(ctx context.Context, taskSpawnerName types.NamespacedName) (int, error) {
+	var taskList kelosv1alpha1.TaskList
+	if err := r.List(ctx, &taskList,
+		client.InNamespace(taskSpawnerName.Namespace),
+		client.MatchingLabels{"kelos.dev/taskspawner": taskSpawnerName.Name},
+	); err != nil {
+		return 0, fmt.Errorf("listing tasks for TaskSpawner %s: %w", taskSpawnerName.Name, err)
+	}
+
+	activeTasks := 0
+	for i := range taskList.Items {
+		task := &taskList.Items[i]
+		// Count tasks that are not in terminal phases
+		if task.Status.Phase != kelosv1alpha1.TaskPhaseSucceeded && task.Status.Phase != kelosv1alpha1.TaskPhaseFailed {
+			activeTasks++
+		}
+	}
+
+	return activeTasks, nil
 }
 
 // reconcileDeployment handles the Deployment lifecycle for polling-based TaskSpawners.
@@ -226,6 +260,30 @@ func (r *TaskSpawnerReconciler) reconcileDeployment(ctx context.Context, req ctr
 				}
 			}
 		}
+	}
+	if err := validateWorkspaceGHProxyRepoOverride(ts, workspace); err != nil {
+		if deployExists {
+			if deleteErr := r.Delete(ctx, &deploy); deleteErr != nil && !apierrors.IsNotFound(deleteErr) {
+				logger.Error(deleteErr, "Unable to delete Deployment for invalid repo override", "deployment", deploy.Name)
+				return ctrl.Result{}, deleteErr
+			}
+			deployExists = false
+		}
+		r.recordEvent(ts, corev1.EventTypeWarning, "InvalidGitHubRepoOverride", "%s", err.Error())
+		if statusErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			if getErr := r.Get(ctx, req.NamespacedName, ts); getErr != nil {
+				return getErr
+			}
+			ts.Status.Phase = kelosv1alpha1.TaskSpawnerPhaseFailed
+			ts.Status.Message = err.Error()
+			ts.Status.DeploymentName = ""
+			ts.Status.CronJobName = ""
+			return r.Status().Update(ctx, ts)
+		}); statusErr != nil {
+			logger.Error(statusErr, "Unable to update TaskSpawner status for invalid repo override")
+			return ctrl.Result{}, statusErr
+		}
+		return ctrl.Result{}, nil
 	}
 
 	// Determine desired replica count based on suspend state
@@ -339,6 +397,30 @@ func (r *TaskSpawnerReconciler) reconcileCronJob(ctx context.Context, req ctrl.R
 				}
 			}
 		}
+	}
+	if err := validateWorkspaceGHProxyRepoOverride(ts, workspace); err != nil {
+		if cronJobExists {
+			if deleteErr := r.Delete(ctx, &cronJob); deleteErr != nil && !apierrors.IsNotFound(deleteErr) {
+				logger.Error(deleteErr, "Unable to delete CronJob for invalid repo override", "cronJob", cronJob.Name)
+				return ctrl.Result{}, deleteErr
+			}
+			cronJobExists = false
+		}
+		r.recordEvent(ts, corev1.EventTypeWarning, "InvalidGitHubRepoOverride", "%s", err.Error())
+		if statusErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			if getErr := r.Get(ctx, req.NamespacedName, ts); getErr != nil {
+				return getErr
+			}
+			ts.Status.Phase = kelosv1alpha1.TaskSpawnerPhaseFailed
+			ts.Status.Message = err.Error()
+			ts.Status.DeploymentName = ""
+			ts.Status.CronJobName = ""
+			return r.Status().Update(ctx, ts)
+		}); statusErr != nil {
+			logger.Error(statusErr, "Unable to update TaskSpawner status for invalid repo override")
+			return ctrl.Result{}, statusErr
+		}
+		return ctrl.Result{}, nil
 	}
 
 	if !cronJobExists {
@@ -775,6 +857,11 @@ func (r *TaskSpawnerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&batchv1.CronJob{}).
 		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.findTaskSpawnersForSecret)).
 		Watches(&kelosv1alpha1.Workspace{}, handler.EnqueueRequestsFromMapFunc(r.findTaskSpawnersForWorkspace)).
+		Watches(&kelosv1alpha1.Task{}, handler.EnqueueRequestsFromMapFunc(r.findTaskSpawnersForTask),
+			builder.WithPredicates(predicate.NewPredicateFuncs(func(obj client.Object) bool {
+				_, hasLabel := obj.GetLabels()["kelos.dev/taskspawner"]
+				return hasLabel
+			}))).
 		Complete(r)
 }
 
@@ -852,6 +939,28 @@ func (r *TaskSpawnerReconciler) findTaskSpawnersForWorkspace(ctx context.Context
 		}
 	}
 	return requests
+}
+
+// findTaskSpawnersForTask maps a Task change to the TaskSpawner that owns it.
+// This allows webhook TaskSpawners to update their activeTasks count when Tasks complete/fail.
+func (r *TaskSpawnerReconciler) findTaskSpawnersForTask(ctx context.Context, obj client.Object) []reconcile.Request {
+	task, ok := obj.(*kelosv1alpha1.Task)
+	if !ok {
+		return nil
+	}
+
+	// Tasks have a label that identifies their TaskSpawner
+	taskSpawnerName, ok := task.Labels["kelos.dev/taskspawner"]
+	if !ok {
+		return nil
+	}
+
+	return []reconcile.Request{{
+		NamespacedName: types.NamespacedName{
+			Namespace: task.Namespace,
+			Name:      taskSpawnerName,
+		},
+	}}
 }
 
 // resourceRequirementsEqual compares two ResourceRequirements using semantic

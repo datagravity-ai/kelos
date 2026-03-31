@@ -6,6 +6,7 @@ import (
 	"text/template"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/kelos-dev/kelos/api/v1alpha1"
@@ -16,6 +17,15 @@ type TaskBuilder struct {
 	client client.Client
 }
 
+// SpawnerRef identifies the TaskSpawner that owns a created Task.
+// When set, BuildTask adds the kelos.dev/taskspawner label and an owner reference.
+type SpawnerRef struct {
+	Name       string
+	UID        string
+	APIVersion string
+	Kind       string
+}
+
 // NewTaskBuilder creates a new task builder.
 func NewTaskBuilder(client client.Client) (*TaskBuilder, error) {
 	return &TaskBuilder{
@@ -24,10 +34,13 @@ func NewTaskBuilder(client client.Client) (*TaskBuilder, error) {
 }
 
 // BuildTask creates a Task from a template and template variables.
+// If spawnerRef is non-nil the kelos.dev/taskspawner label and a controller
+// owner reference are set on the resulting Task.
 func (tb *TaskBuilder) BuildTask(
 	name, namespace string,
 	taskTemplate *v1alpha1.TaskTemplate,
 	templateVars map[string]interface{},
+	spawnerRef *SpawnerRef,
 ) (*v1alpha1.Task, error) {
 	// Render the prompt template
 	promptTemplate := taskTemplate.PromptTemplate
@@ -120,6 +133,23 @@ func (tb *TaskBuilder) BuildTask(
 				task.Annotations[key] = value
 			}
 		}
+	}
+
+	// Set spawner label and owner reference when a SpawnerRef is provided.
+	if spawnerRef != nil {
+		if task.Labels == nil {
+			task.Labels = make(map[string]string)
+		}
+		task.Labels["kelos.dev/taskspawner"] = spawnerRef.Name
+
+		isController := true
+		task.OwnerReferences = append(task.OwnerReferences, metav1.OwnerReference{
+			APIVersion: spawnerRef.APIVersion,
+			Kind:       spawnerRef.Kind,
+			Name:       spawnerRef.Name,
+			UID:        types.UID(spawnerRef.UID),
+			Controller: &isController,
+		})
 	}
 
 	return task, nil

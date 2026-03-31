@@ -94,6 +94,7 @@ func newTaskSpawner(name, namespace string, maxConcurrency *int32) *kelosv1alpha
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
+			UID:       types.UID(name + "-uid"),
 		},
 		Spec: kelosv1alpha1.TaskSpawnerSpec{
 			When: kelosv1alpha1.When{
@@ -339,6 +340,53 @@ func TestRunCycleWithSource_NoMaxConcurrency(t *testing.T) {
 	}
 }
 
+func TestRunCycleWithSource_OwnerReferenceSet(t *testing.T) {
+	ts := newTaskSpawner("spawner", "default", nil)
+	cl, key := setupTest(t, ts)
+
+	src := &fakeSource{
+		items: []source.WorkItem{
+			{ID: "1", Title: "Item 1"},
+		},
+	}
+
+	if err := runCycleWithSource(context.Background(), cl, key, src); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	var taskList kelosv1alpha1.TaskList
+	if err := cl.List(context.Background(), &taskList, client.InNamespace("default")); err != nil {
+		t.Fatalf("Listing tasks: %v", err)
+	}
+	if len(taskList.Items) != 1 {
+		t.Fatalf("Expected 1 task, got %d", len(taskList.Items))
+	}
+
+	task := taskList.Items[0]
+	if len(task.OwnerReferences) != 1 {
+		t.Fatalf("Expected 1 owner reference, got %d", len(task.OwnerReferences))
+	}
+	ref := task.OwnerReferences[0]
+	if ref.APIVersion != kelosv1alpha1.GroupVersion.String() {
+		t.Errorf("Expected APIVersion %s, got %s", kelosv1alpha1.GroupVersion.String(), ref.APIVersion)
+	}
+	if ref.Kind != "TaskSpawner" {
+		t.Errorf("Expected Kind TaskSpawner, got %s", ref.Kind)
+	}
+	if ref.Name != "spawner" {
+		t.Errorf("Expected Name spawner, got %s", ref.Name)
+	}
+	if ref.UID != ts.UID {
+		t.Errorf("Expected UID %s, got %s", ts.UID, ref.UID)
+	}
+	if ref.Controller == nil || !*ref.Controller {
+		t.Error("Expected Controller=true")
+	}
+	if ref.BlockOwnerDeletion != nil {
+		t.Errorf("Expected BlockOwnerDeletion to be nil, got %v", *ref.BlockOwnerDeletion)
+	}
+}
+
 func TestRunCycleWithSource_MaxConcurrencyLimitsCreation(t *testing.T) {
 	ts := newTaskSpawner("spawner", "default", int32Ptr(2))
 	cl, key := setupTest(t, ts)
@@ -575,7 +623,7 @@ func TestRunCycle_BuildSourceFailureCountsDiscoveryErrorAndDuration(t *testing.T
 	beforeErrors := testutil.ToFloat64(discoveryErrorsTotal)
 	beforeDurationCount := histogramSampleCount(t, discoveryDurationSeconds)
 
-	err := runCycle(context.Background(), cl, key, "owner", "repo", "", "", "", "", "", "", "", "", nil)
+	err := runCycle(context.Background(), cl, key, "owner", "repo", "", "", "", "", "", nil)
 	if err == nil {
 		t.Fatal("Expected buildSource error")
 	}

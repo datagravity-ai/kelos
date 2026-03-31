@@ -64,6 +64,57 @@ func TestRenderChart_WebhookServers(t *testing.T) {
 	}
 }
 
+func TestRenderChart_WebhookGateway(t *testing.T) {
+	vals := map[string]interface{}{
+		"webhookServer": map[string]interface{}{
+			"image": "ghcr.io/kelos-dev/kelos-webhook-server",
+			"sources": map[string]interface{}{
+				"github": map[string]interface{}{
+					"enabled":    true,
+					"replicas":   1,
+					"secretName": "github-webhook-secret",
+				},
+			},
+			"gateway": map[string]interface{}{
+				"enabled":          true,
+				"gatewayClassName": "istio",
+				"gatewayName":      "kelos-webhook-gateway",
+				"host":             "webhooks.example.com",
+				"tls": map[string]interface{}{
+					"enabled": true,
+				},
+			},
+		},
+		"image": map[string]interface{}{
+			"tag": "latest",
+		},
+	}
+
+	data, err := helmchart.Render(manifests.ChartFS, vals)
+	if err != nil {
+		t.Fatalf("rendering chart: %v", err)
+	}
+
+	content := string(data)
+
+	// Check for Gateway API components
+	expectedComponents := []string{
+		"kind: Gateway",
+		"kind: HTTPRoute",
+		"name: kelos-webhook-gateway",
+		"name: kelos-webhook-routes",
+		"gatewayClassName: istio",
+		"/webhook/github",
+		"kelos-webhook-github",
+	}
+
+	for _, component := range expectedComponents {
+		if !strings.Contains(content, component) {
+			t.Errorf("expected rendered chart to contain %q", component)
+		}
+	}
+}
+
 func TestRenderChart_WebhookServersDisabled(t *testing.T) {
 	vals := map[string]interface{}{
 		"webhookServer": map[string]interface{}{

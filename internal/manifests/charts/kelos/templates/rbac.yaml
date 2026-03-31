@@ -46,6 +46,18 @@ rules:
   - list
   - watch
 - apiGroups:
+  - ""
+  resources:
+  - services
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
   - apps
   resources:
   - deployments
@@ -217,6 +229,7 @@ subjects:
   - kind: ServiceAccount
     name: kelos-controller
     namespace: kelos-system
+{{- if or .Values.webhookServer.sources.github.enabled .Values.webhookServer.sources.linear.enabled }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -260,4 +273,5 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: kelos-webhook
-    namespace: kelos-system
+    namespace: {{ .Release.Namespace }}
+{{- end }}

@@ -1,0 +1,51 @@
+# Example Helm values for Kelos webhooks using Gateway API
+# This is an alternative to the traditional Ingress configuration
+
+# Enable webhook servers
+webhookServer:
+  sources:
+    # Enable GitHub webhook server
+    github:
+      enabled: true
+      replicas: 2
+      secretName: github-webhook-secret
+
+  # Configure resources for webhook pods
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+  # Disable traditional Ingress (using Gateway API instead)
+  ingress:
+    enabled: false
+
+  # Enable Gateway API for advanced routing
+  gateway:
+    enabled: true
+    gatewayClassName: "istio" # Change to your gateway class
+    gatewayName: "kelos-webhook-gateway"
+    host: "webhooks.your-domain.com"
+
+    # Enable TLS termination
+    tls:
+      enabled: true
+      certificateRefs:
+        - name: "webhook-tls-cert"
+          kind: "Secret"
+
+    # Optional annotations (e.g., for cert-manager)
+    annotations:
+      cert-manager.io/cluster-issuer: "letsencrypt-prod"
+
+# Use specific image version for production
+image:
+  tag: "v1.0.0"
+  pullPolicy: "IfNotPresent"
+
+# Enable telemetry for monitoring
+telemetry:
+  enabled: true

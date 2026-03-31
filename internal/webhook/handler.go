@@ -2,6 +2,8 @@ package webhook
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -12,7 +14,6 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/kelos-dev/kelos/api/v1alpha1"
@@ -53,7 +54,7 @@ type DeliveryCache struct {
 }
 
 // NewDeliveryCache creates a new delivery cache with cleanup.
-func NewDeliveryCache() *DeliveryCache {
+func NewDeliveryCache(ctx context.Context) *DeliveryCache {
 	cache := &DeliveryCache{
 		cache: make(map[string]time.Time),
 	}
@@ -63,8 +64,13 @@ func NewDeliveryCache() *DeliveryCache {
 		ticker := time.NewTicker(time.Hour)
 		defer ticker.Stop()
 
-		for range ticker.C {
-			cache.cleanup()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				cache.cleanup()
+			}
 		}
 	}()
 
@@ -97,7 +103,7 @@ func (d *DeliveryCache) cleanup() {
 }
 
 // NewWebhookHandler creates a new webhook handler for the specified source.
-func NewWebhookHandler(client client.Client, source WebhookSource, log logr.Logger) (*WebhookHandler, error) {
+func NewWebhookHandler(ctx context.Context, client client.Client, source WebhookSource, log logr.Logger) (*WebhookHandler, error) {
 	secret := []byte(os.Getenv("WEBHOOK_SECRET"))
 	if len(secret) == 0 {
 		return nil, fmt.Errorf("WEBHOOK_SECRET environment variable is required")
@@ -114,7 +120,7 @@ func NewWebhookHandler(client client.Client, source WebhookSource, log logr.Logg
 		log:           log,
 		taskBuilder:   taskBuilder,
 		secret:        secret,
-		deliveryCache: NewDeliveryCache(),
+		deliveryCache: NewDeliveryCache(ctx),
 	}, nil
 }
 
@@ -133,11 +139,18 @@ func (h *WebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Read the payload
-	body, err := io.ReadAll(r.Body)
+	// Read the payload with a size limit to prevent resource exhaustion.
+	// GitHub caps webhook payloads at 25 MB; we use a 10 MB limit.
+	const maxPayloadSize = 10 * 1024 * 1024 // 10 MB
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxPayloadSize+1))
 	if err != nil {
 		log.Error(err, "Failed to read request body")
 		http.Error(w, "Bad request", http.StatusBadRequest)
+		return
+	}
+	if len(body) > maxPayloadSize {
+		log.Info("Rejected oversized webhook payload", "size", len(body))
+		http.Error(w, "Payload too large", http.StatusRequestEntityTooLarge)
 		return
 	}
 
@@ -179,7 +192,7 @@ func (h *WebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Check for duplicate delivery
 	if deliveryID != "" && h.deliveryCache.CheckAndMark(deliveryID) {
-		log.Info("Webhook delivery already processed - returning cached response", "eventType", eventType, "deliveryID", deliveryID)
+		log.Info("Duplicate webhook delivery, returning cached response", "eventType", eventType, "deliveryID", deliveryID)
 		w.WriteHeader(http.StatusOK)
 		return
 	}
@@ -207,28 +220,37 @@ func (h *WebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (h *WebhookHandler) processWebhook(ctx context.Context, eventType string, payload []byte, deliveryID string) (bool, error) {
 	log := h.log.WithValues("eventType", eventType, "deliveryID", deliveryID)
 
-	// Parse webhook early to extract issue/PR ID for logging
+	// Parse the webhook payload once up front and reuse across matching and task creation.
+	var eventData *GitHubEventData
+	var linearData *LinearEventData
 	var issueID, issueTitle string
+
 	if h.source == GitHubSource {
-		if eventData, err := ParseGitHubWebhook(eventType, payload); err == nil {
-			issueID = eventData.ID
-			issueTitle = eventData.Title
-			if issueID != "" {
-				log = log.WithValues("githubID", issueID)
-				if issueTitle != "" {
-					log = log.WithValues("githubTitle", issueTitle)
-				}
+		var err error
+		eventData, err = ParseGitHubWebhook(eventType, payload)
+		if err != nil {
+			return false, fmt.Errorf("failed to parse %s webhook: %w", h.source, err)
+		}
+		issueID = eventData.ID
+		issueTitle = eventData.Title
+		if issueID != "" {
+			log = log.WithValues("githubID", issueID)
+			if issueTitle != "" {
+				log = log.WithValues("githubTitle", issueTitle)
 			}
 		}
 	} else if h.source == LinearSource {
-		if eventData, err := ParseLinearWebhook(payload); err == nil {
-			issueID = eventData.ID
-			issueTitle = eventData.Title
-			if issueID != "" {
-				log = log.WithValues("linearID", issueID)
-				if issueTitle != "" {
-					log = log.WithValues("linearTitle", issueTitle)
-				}
+		var err error
+		linearData, err = ParseLinearWebhook(payload)
+		if err != nil {
+			return false, fmt.Errorf("failed to parse %s webhook: %w", h.source, err)
+		}
+		issueID = linearData.ID
+		issueTitle = linearData.Title
+		if issueID != "" {
+			log = log.WithValues("linearID", issueID)
+			if issueTitle != "" {
+				log = log.WithValues("linearTitle", issueTitle)
 			}
 		}
 	}
@@ -260,6 +282,8 @@ func (h *WebhookHandler) processWebhook(ctx context.Context, eventType string, p
 		}
 
 		// Check max concurrency
+		// Note: For webhook TaskSpawners, activeTasks is updated by the kelos-controller
+		// when Tasks change status. This provides eventually consistent rate limiting.
 		if spawner.Spec.MaxConcurrency != nil && *spawner.Spec.MaxConcurrency > 0 {
 			activeTasks := spawner.Status.ActiveTasks
 			if int32(activeTasks) >= *spawner.Spec.MaxConcurrency {
@@ -268,9 +292,6 @@ func (h *WebhookHandler) processWebhook(ctx context.Context, eventType string, p
 					"maxConcurrency", *spawner.Spec.MaxConcurrency)
 
 				// Return 503 with Retry-After header for this spawner
-				// Note: This approach returns 503 for any spawner that hits limits,
-				// which may not be ideal if other spawners could still process it.
-				// A more sophisticated approach would track per-spawner limits.
 				return false, &MaxConcurrencyError{
 					RetryAfter: 60, // Suggest retry after 60 seconds
 				}
@@ -278,7 +299,7 @@ func (h *WebhookHandler) processWebhook(ctx context.Context, eventType string, p
 		}
 
 		// Check if this webhook matches the spawner's filters
-		matches, err := h.matchesSpawner(spawner, eventType, payload)
+		matches, err := h.matchesSpawner(spawner, eventType, eventData, payload)
 		if err != nil {
 			spawnerLog.Error(err, "Failed to check spawner match")
 			continue
@@ -292,7 +313,7 @@ func (h *WebhookHandler) processWebhook(ctx context.Context, eventType string, p
 		spawnerLog.Info("Webhook matches spawner filters - creating task")
 
 		// Create task for this spawner
-		err = h.createTask(ctx, spawner, eventType, payload)
+		err = h.createTask(ctx, spawner, eventType, eventData, linearData, deliveryID)
 		if err != nil {
 			spawnerLog.Error(err, "Failed to create task")
 			continue
@@ -342,13 +363,21 @@ func (h *WebhookHandler) getMatchingSpawners(ctx context.Context) ([]*v1alpha1.T
 }
 
 // matchesSpawner checks if the webhook matches the spawner's configuration.
-func (h *WebhookHandler) matchesSpawner(spawner *v1alpha1.TaskSpawner, eventType string, payload []byte) (bool, error) {
+func (h *WebhookHandler) matchesSpawner(spawner *v1alpha1.TaskSpawner, eventType string, eventData *GitHubEventData, payload []byte) (bool, error) {
 	switch h.source {
 	case GitHubSource:
 		if spawner.Spec.When.GitHubWebhook == nil {
 			return false, nil
 		}
-		return MatchesGitHubEvent(spawner.Spec.When.GitHubWebhook, eventType, payload)
+
+		// Check repository filter first
+		if spawner.Spec.When.GitHubWebhook.Repository != "" {
+			if eventData.Repository != spawner.Spec.When.GitHubWebhook.Repository {
+				return false, nil
+			}
+		}
+
+		return MatchesGitHubEvent(spawner.Spec.When.GitHubWebhook, eventType, eventData)
 
 	case LinearSource:
 		if spawner.Spec.When.LinearWebhook == nil {
@@ -362,27 +391,18 @@ func (h *WebhookHandler) matchesSpawner(spawner *v1alpha1.TaskSpawner, eventType
 }
 
 // createTask creates a new Task from the webhook event.
-func (h *WebhookHandler) createTask(ctx context.Context, spawner *v1alpha1.TaskSpawner, eventType string, payload []byte) error {
-	log := h.log.WithValues("spawner", spawner.Name, "namespace", spawner.Namespace, "eventType", eventType)
+func (h *WebhookHandler) createTask(ctx context.Context, spawner *v1alpha1.TaskSpawner, eventType string, eventData *GitHubEventData, linearData *LinearEventData, deliveryID string) error {
+	log := h.log.WithValues("spawner", spawner.Name, "namespace", spawner.Namespace, "eventType", eventType, "deliveryID", deliveryID)
 
 	// Extract template variables based on source
 	var templateVars map[string]interface{}
-	var err error
 
 	switch h.source {
 	case GitHubSource:
-		eventData, parseErr := ParseGitHubWebhook(eventType, payload)
-		if parseErr != nil {
-			return fmt.Errorf("failed to parse GitHub webhook: %w", parseErr)
-		}
 		templateVars = ExtractGitHubWorkItem(eventData)
 
 	case LinearSource:
-		eventData, parseErr := ParseLinearWebhook(payload)
-		if parseErr != nil {
-			return fmt.Errorf("failed to parse Linear webhook: %w", parseErr)
-		}
-		templateVars = ExtractLinearWorkItem(eventData)
+		templateVars = ExtractLinearWorkItem(linearData)
 
 	default:
 		return fmt.Errorf("unsupported source: %s", h.source)
@@ -390,52 +410,39 @@ func (h *WebhookHandler) createTask(ctx context.Context, spawner *v1alpha1.TaskS
 
 	log.Info("Extracted template variables", "ID", templateVars["ID"], "Title", templateVars["Title"], "Action", templateVars["Action"])
 
-	// Build unique task name from delivery info
-	idVal, _ := templateVars["ID"].(string)
-	// Sanitize event type for Kubernetes naming (replace underscores with hyphens)
+	// Build unique task name using a hash of the delivery ID to avoid collisions.
+	// Hashing gives uniform 12-hex-char suffix regardless of input length,
+	// avoiding the collision risk of simple prefix truncation.
 	sanitizedEventType := strings.ReplaceAll(eventType, "_", "-")
-	taskName := fmt.Sprintf("%s-%s-%s", spawner.Name, sanitizedEventType, idVal)
+	sum := sha256.Sum256([]byte(deliveryID))
+	shortHash := hex.EncodeToString(sum[:])[:12]
+	taskName := fmt.Sprintf("%s-%s-%s", spawner.Name, sanitizedEventType, shortHash)
 	if len(taskName) > 63 {
 		taskName = strings.TrimRight(taskName[:63], "-.")
 	}
 
-	// Create the task
-	task, err := h.taskBuilder.BuildTask(
-		taskName,
-		spawner.Namespace,
-		&spawner.Spec.TaskTemplate,
-		templateVars,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to build task: %w", err)
-	}
-
-	// Add webhook-specific annotations
-	if task.Annotations == nil {
-		task.Annotations = make(map[string]string)
-	}
-	task.Annotations["kelos.dev/source-kind"] = "webhook"
-	task.Annotations["kelos.dev/source-event"] = eventType
-	task.Annotations["kelos.dev/source-action"] = fmt.Sprintf("%v", templateVars["Action"])
-	task.Annotations["kelos.dev/taskspawner"] = spawner.Name
-
-	// Set owner reference
+	// Resolve GVK for the spawner owner reference
 	gvks, _, err := h.client.Scheme().ObjectKinds(spawner)
 	if err != nil || len(gvks) == 0 {
 		return fmt.Errorf("failed to get GVK for TaskSpawner: %w", err)
 	}
 	gvk := gvks[0]
-	isController := true
-	blockOwnerDeletion := true
-	task.OwnerReferences = []metav1.OwnerReference{
-		{
-			APIVersion:         gvk.GroupVersion().String(),
-			Kind:               gvk.Kind,
-			Name:               spawner.Name,
-			UID:                spawner.UID,
-			Controller:         &isController,
-			BlockOwnerDeletion: &blockOwnerDeletion,
+
+	// Create the task — BuildTask sets kelos.dev/taskspawner label and owner reference
+	task, err := h.taskBuilder.BuildTask(
+		taskName,
+		spawner.Namespace,
+		&spawner.Spec.TaskTemplate,
+		templateVars,
+		&taskbuilder.SpawnerRef{
+			Name:       spawner.Name,
+			UID:        string(spawner.UID),
+			APIVersion: gvk.GroupVersion().String(),
+			Kind:       gvk.Kind,
 		},
+	)
+	if err != nil {
+		return fmt.Errorf("failed to build task: %w", err)
 	}
 
 	if err := h.client.Create(ctx, task); err != nil {

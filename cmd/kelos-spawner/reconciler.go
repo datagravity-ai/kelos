@@ -73,7 +73,7 @@ func (r *spawnerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 func runOnce(ctx context.Context, cl client.Client, key types.NamespacedName, cfg spawnerRuntimeConfig) (time.Duration, error) {
-	if err := runCycle(ctx, cl, key, cfg.GitHubOwner, cfg.GitHubRepo, cfg.GHProxyURL, cfg.GitHubTokenFile, cfg.JiraBaseURL, cfg.JiraProject, cfg.JiraJQL, cfg.SlackTriggerCommand, cfg.SlackChannels, cfg.SlackAllowedUsers, cfg.HTTPClient); err != nil {
+	if err := runCycleWithProxy(ctx, cl, key, cfg.GitHubOwner, cfg.GitHubRepo, cfg.GHProxyURL, cfg.GitHubAPIBaseURL, cfg.GitHubTokenFile, cfg.JiraBaseURL, cfg.JiraProject, cfg.JiraJQL, cfg.SlackTriggerCommand, cfg.SlackChannels, cfg.SlackAllowedUsers, cfg.HTTPClient); err != nil {
 		return 0, err
 	}
 

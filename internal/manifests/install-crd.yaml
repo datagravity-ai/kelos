@@ -1539,6 +1539,11 @@ spec:
                           - event
                           type: object
                         type: array
+                      repository:
+                        description: |-
+                          Repository restricts webhooks to a specific repository (owner/repo format).
+                          If empty, webhooks from any repository are accepted.
+                        type: string
                     required:
                     - events
                     type: object

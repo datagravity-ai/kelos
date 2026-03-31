@@ -13,6 +13,9 @@ controllerImage: ghcr.io/kelos-dev/kelos-controller
 ghproxy:
   image: ghcr.io/kelos-dev/ghproxy
   allowedUpstreams: "https://api.github.com"
+  resources:
+    requests: ""
+    limits: ""
 claudeCodeImage: ghcr.io/kelos-dev/claude-code
 codexImage: ghcr.io/kelos-dev/codex
 geminiImage: ghcr.io/kelos-dev/gemini
@@ -43,6 +46,13 @@ webhookServer:
       enabled: false
       replicas: 1
       secretName: ""
+  resources:
+    limits:
+      cpu: 500m
+      memory: 128Mi
+    requests:
+      cpu: 10m
+      memory: 64Mi
   ingress:
     enabled: false
     className: ""
@@ -51,3 +61,12 @@ webhookServer:
     tls:
       enabled: false
       secretName: ""
+  gateway:
+    enabled: false
+    gatewayClassName: ""
+    gatewayName: "kelos-webhook-gateway"
+    host: ""
+    annotations: {}
+    tls:
+      enabled: false
+      certificateRefs: []

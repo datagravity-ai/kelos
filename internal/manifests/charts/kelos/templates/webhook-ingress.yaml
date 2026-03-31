@@ -7,7 +7,7 @@ apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: kelos-webhook
-  namespace: kelos-system
+  namespace: {{ .Release.Namespace }}
   labels:
     app.kubernetes.io/name: kelos
     app.kubernetes.io/component: webhook-ingress

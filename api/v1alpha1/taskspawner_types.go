@@ -317,6 +317,11 @@ type GitHubWebhook struct {
 	// +kubebuilder:validation:MinItems=1
 	Events []string `json:"events"`
 
+	// Repository restricts webhooks to a specific repository (owner/repo format).
+	// If empty, webhooks from any repository are accepted.
+	// +optional
+	Repository string `json:"repository,omitempty"`
+
 	// Filters refine which events trigger tasks. If multiple filters match
 	// the same event type, any match triggers a task (OR semantics).
 	// If empty, all events in the Events list trigger tasks.

@@ -21,6 +21,10 @@ type GitHubEventData struct {
 	Sender string
 	// Git ref for push events
 	Ref string
+	// Repository information
+	Repository      string // Full repository name (owner/repo)
+	RepositoryOwner string // Repository owner
+	RepositoryName  string // Repository name only
 	// Raw parsed event payload for template access
 	RawEvent interface{}
 	// Standard template variables for compatibility
@@ -42,6 +46,48 @@ func ParseGitHubWebhook(eventType string, payload []byte) (*GitHubEventData, err
 	data := &GitHubEventData{
 		Event:    eventType,
 		RawEvent: event,
+	}
+
+	// Extract repository information from any event that has it
+	switch e := event.(type) {
+	case *github.IssuesEvent:
+		if repo := e.GetRepo(); repo != nil {
+			data.Repository = repo.GetFullName()
+			data.RepositoryOwner = repo.GetOwner().GetLogin()
+			data.RepositoryName = repo.GetName()
+		}
+	case *github.PullRequestEvent:
+		if repo := e.GetRepo(); repo != nil {
+			data.Repository = repo.GetFullName()
+			data.RepositoryOwner = repo.GetOwner().GetLogin()
+			data.RepositoryName = repo.GetName()
+		}
+	case *github.IssueCommentEvent:
+		if repo := e.GetRepo(); repo != nil {
+			data.Repository = repo.GetFullName()
+			data.RepositoryOwner = repo.GetOwner().GetLogin()
+			data.RepositoryName = repo.GetName()
+		}
+	case *github.PullRequestReviewEvent:
+		if repo := e.GetRepo(); repo != nil {
+			data.Repository = repo.GetFullName()
+			data.RepositoryOwner = repo.GetOwner().GetLogin()
+			data.RepositoryName = repo.GetName()
+		}
+	case *github.PullRequestReviewCommentEvent:
+		if repo := e.GetRepo(); repo != nil {
+			data.Repository = repo.GetFullName()
+			data.RepositoryOwner = repo.GetOwner().GetLogin()
+			data.RepositoryName = repo.GetName()
+		}
+	case *github.PushEvent:
+		if pushRepo := e.GetRepo(); pushRepo != nil {
+			data.Repository = pushRepo.GetFullName()
+			if owner := pushRepo.GetOwner(); owner != nil {
+				data.RepositoryOwner = owner.GetLogin()
+			}
+			data.RepositoryName = pushRepo.GetName()
+		}
 	}
 
 	// Extract common fields based on event type
@@ -117,7 +163,9 @@ func ParseGitHubWebhook(eventType string, payload []byte) (*GitHubEventData, err
 		if strings.HasPrefix(data.Ref, "refs/heads/") {
 			data.Branch = strings.TrimPrefix(data.Ref, "refs/heads/")
 		}
-		data.ID = e.GetHeadCommit().GetID()
+		if hc := e.GetHeadCommit(); hc != nil {
+			data.ID = hc.GetID()
+		}
 		data.Title = fmt.Sprintf("Push to %s", data.Branch)
 
 	default:
@@ -139,7 +187,8 @@ func ParseGitHubWebhook(eventType string, payload []byte) (*GitHubEventData, err
 }
 
 // MatchesGitHubEvent evaluates whether a GitHub webhook event matches the spawner's filters.
-func MatchesGitHubEvent(spawner *v1alpha1.GitHubWebhook, eventType string, payload []byte) (bool, error) {
+// It accepts pre-parsed event data to avoid redundant parsing.
+func MatchesGitHubEvent(spawner *v1alpha1.GitHubWebhook, eventType string, eventData *GitHubEventData) (bool, error) {
 	// Check if event type is in the allowed list
 	eventAllowed := false
 	for _, allowedEvent := range spawner.Events {
@@ -155,12 +204,6 @@ func MatchesGitHubEvent(spawner *v1alpha1.GitHubWebhook, eventType string, paylo
 	// If no filters, all events of the allowed types match
 	if len(spawner.Filters) == 0 {
 		return true, nil
-	}
-
-	// Parse the event for filtering
-	eventData, err := ParseGitHubWebhook(eventType, payload)
-	if err != nil {
-		return false, fmt.Errorf("failed to parse event for filtering: %w", err)
 	}
 
 	// Apply filters with OR semantics for the same event type
@@ -308,9 +351,13 @@ func matchesFilter(filter v1alpha1.GitHubWebhookFilter, eventData *GitHubEventDa
 				}
 			}
 
-			// BodyContains filter for reviews
+			// BodyContains filter for PRs and reviews
 			if filter.BodyContains != "" {
-				if reviewEvent, ok := e.(*github.PullRequestReviewEvent); ok {
+				if _, ok := e.(*github.PullRequestEvent); ok {
+					if !strings.Contains(pr.GetBody(), filter.BodyContains) {
+						return false
+					}
+				} else if reviewEvent, ok := e.(*github.PullRequestReviewEvent); ok {
 					if review := reviewEvent.GetReview(); review != nil {
 						if !strings.Contains(review.GetBody(), filter.BodyContains) {
 							return false
@@ -333,11 +380,14 @@ func matchesFilter(filter v1alpha1.GitHubWebhookFilter, eventData *GitHubEventDa
 // ExtractGitHubWorkItem extracts template variables from GitHub webhook events for task creation.
 func ExtractGitHubWorkItem(eventData *GitHubEventData) map[string]interface{} {
 	vars := map[string]interface{}{
-		"Event":   eventData.Event,
-		"Action":  eventData.Action,
-		"Sender":  eventData.Sender,
-		"Ref":     eventData.Ref,
-		"Payload": eventData.RawEvent,
+		"Event":           eventData.Event,
+		"Action":          eventData.Action,
+		"Sender":          eventData.Sender,
+		"Ref":             eventData.Ref,
+		"Repository":      eventData.Repository,
+		"RepositoryOwner": eventData.RepositoryOwner,
+		"RepositoryName":  eventData.RepositoryName,
+		"Payload":         eventData.RawEvent,
 		// Standard variables for compatibility
 		"ID":    eventData.ID,
 		"Title": eventData.Title,

@@ -27,9 +27,8 @@ import (
 	"github.com/kelos-dev/kelos/internal/logging"
 	"github.com/kelos-dev/kelos/internal/reporting"
 	"github.com/kelos-dev/kelos/internal/source"
+	"github.com/kelos-dev/kelos/internal/taskbuilder"
 )
-
-const ghProxyURL = "http://ghproxy.kelos-system:8888"
 
 var scheme = runtime.NewScheme()
 
@@ -43,6 +42,7 @@ func main() {
 	var namespace string
 	var githubOwner string
 	var githubRepo string
+	var ghProxyURL string
 	var githubAPIBaseURL string
 	var githubTokenFile string
 	var jiraBaseURL string
@@ -57,6 +57,7 @@ func main() {
 	flag.StringVar(&namespace, "taskspawner-namespace", "", "Namespace of the TaskSpawner")
 	flag.StringVar(&githubOwner, "github-owner", "", "GitHub repository owner")
 	flag.StringVar(&githubRepo, "github-repo", "", "GitHub repository name")
+	flag.StringVar(&ghProxyURL, "gh-proxy-url", "", "Workspace ghproxy base URL for GitHub read requests")
 	flag.StringVar(&githubAPIBaseURL, "github-api-base-url", "", "GitHub API base URL for enterprise servers (e.g. https://github.example.com/api/v3)")
 	flag.StringVar(&githubTokenFile, "github-token-file", "", "Path to file containing GitHub token (refreshed by sidecar)")
 	flag.StringVar(&jiraBaseURL, "jira-base-url", "", "Jira instance base URL (e.g. https://mycompany.atlassian.net)")
@@ -101,15 +102,7 @@ func main() {
 
 	log.Info("Starting spawner", "taskspawner", key, "oneShot", oneShot)
 
-	upstreamURL := githubAPIBaseURL
-	if upstreamURL == "" {
-		upstreamURL = "https://api.github.com"
-	}
-	transport := source.NewUpstreamHeaderTransport(
-		source.NewMetricsTransport(http.DefaultTransport),
-		upstreamURL,
-	)
-	httpClient := &http.Client{Transport: transport}
+	httpClient := &http.Client{Transport: source.NewMetricsTransport(http.DefaultTransport)}
 
 	cfgArgs := spawnerRuntimeConfig{
 		GitHubOwner:         githubOwner,
@@ -186,6 +179,20 @@ func runReportingCycle(ctx context.Context, cl client.Client, key types.Namespac
 	return nil
 }
 
+func runCycle(ctx context.Context, cl client.Client, key types.NamespacedName, githubOwner, githubRepo, githubAPIBaseURL, githubTokenFile, jiraBaseURL, jiraProject, jiraJQL string, httpClient *http.Client) error {
+	return runCycleWithProxy(ctx, cl, key, githubOwner, githubRepo, "", githubAPIBaseURL, githubTokenFile, jiraBaseURL, jiraProject, jiraJQL, "", "", "", httpClient)
+}
+
+func runCycleWithProxy(ctx context.Context, cl client.Client, key types.NamespacedName, githubOwner, githubRepo, ghProxyURL, githubAPIBaseURL, githubTokenFile, jiraBaseURL, jiraProject, jiraJQL, slackTriggerCmd, slackChans, slackUsers string, httpClient *http.Client) error {
+	start := time.Now()
+	err := runCycleCore(ctx, cl, key, githubOwner, githubRepo, ghProxyURL, githubAPIBaseURL, githubTokenFile, jiraBaseURL, jiraProject, jiraJQL, slackTriggerCmd, slackChans, slackUsers, httpClient)
+	discoveryDurationSeconds.Observe(time.Since(start).Seconds())
+	if err != nil {
+		discoveryErrorsTotal.Inc()
+	}
+	return err
+}
+
 func runSlackReportingCycle(ctx context.Context, cl client.Client, key types.NamespacedName, reporter *reporting.SlackTaskReporter) error {
 	var taskList kelosv1alpha1.TaskList
 	if err := cl.List(ctx, &taskList,
@@ -203,23 +210,13 @@ func runSlackReportingCycle(ctx context.Context, cl client.Client, key types.Nam
 	return nil
 }
 
-func runCycle(ctx context.Context, cl client.Client, key types.NamespacedName, githubOwner, githubRepo, githubAPIBaseURL, githubTokenFile, jiraBaseURL, jiraProject, jiraJQL, slackTriggerCommand, slackChannels, slackAllowedUsers string, httpClient *http.Client) error {
-	start := time.Now()
-	err := runCycleCore(ctx, cl, key, githubOwner, githubRepo, githubAPIBaseURL, githubTokenFile, jiraBaseURL, jiraProject, jiraJQL, slackTriggerCommand, slackChannels, slackAllowedUsers, httpClient)
-	discoveryDurationSeconds.Observe(time.Since(start).Seconds())
-	if err != nil {
-		discoveryErrorsTotal.Inc()
-	}
-	return err
-}
-
-func runCycleCore(ctx context.Context, cl client.Client, key types.NamespacedName, githubOwner, githubRepo, githubAPIBaseURL, githubTokenFile, jiraBaseURL, jiraProject, jiraJQL, slackTriggerCommand, slackChannels, slackAllowedUsers string, httpClient *http.Client) error {
+func runCycleCore(ctx context.Context, cl client.Client, key types.NamespacedName, githubOwner, githubRepo, ghProxyURL, githubAPIBaseURL, githubTokenFile, jiraBaseURL, jiraProject, jiraJQL, slackTriggerCmd, slackChans, slackUsers string, httpClient *http.Client) error {
 	var ts kelosv1alpha1.TaskSpawner
 	if err := cl.Get(ctx, key, &ts); err != nil {
 		return fmt.Errorf("fetching TaskSpawner: %w", err)
 	}
 
-	src, err := buildSource(&ts, githubOwner, githubRepo, githubAPIBaseURL, githubTokenFile, jiraBaseURL, jiraProject, jiraJQL, slackTriggerCommand, slackChannels, slackAllowedUsers, httpClient)
+	src, err := buildSourceWithProxy(&ts, githubOwner, githubRepo, ghProxyURL, githubAPIBaseURL, githubTokenFile, jiraBaseURL, jiraProject, jiraJQL, slackTriggerCmd, slackChans, slackUsers, httpClient)
 	if err != nil {
 		return fmt.Errorf("building source: %w", err)
 	}
@@ -364,70 +361,49 @@ func runCycleWithSourceCore(ctx context.Context, cl client.Client, key types.Nam
 
 		taskName := fmt.Sprintf("%s-%s", ts.Name, item.ID)
 
-		prompt, err := source.RenderPrompt(ts.Spec.TaskTemplate.PromptTemplate, item)
+		templateVars := source.WorkItemToTemplateVars(item)
+
+		tb, err := taskbuilder.NewTaskBuilder(cl)
 		if err != nil {
-			log.Error(err, "rendering prompt", "item", item.ID)
+			log.Error(err, "creating task builder", "item", item.ID)
 			continue
 		}
 
-		renderedLabels, renderedAnnotations, err := renderTaskTemplateMetadata(&ts, item)
+		task, err := tb.BuildTask(
+			taskName,
+			ts.Namespace,
+			&ts.Spec.TaskTemplate,
+			templateVars,
+			&taskbuilder.SpawnerRef{
+				Name:       ts.Name,
+				UID:        string(ts.UID),
+				APIVersion: kelosv1alpha1.GroupVersion.String(),
+				Kind:       "TaskSpawner",
+			},
+		)
 		if err != nil {
-			log.Error(err, "Rendering task template metadata", "item", item.ID)
+			log.Error(err, "building task", "item", item.ID)
 			continue
 		}
 
-		labels := make(map[string]string)
-		for k, v := range renderedLabels {
-			labels[k] = v
-		}
-		labels["kelos.dev/taskspawner"] = ts.Name
-
-		annotations := mergeStringMaps(renderedAnnotations, sourceAnnotations(&ts, item))
-
-		task := &kelosv1alpha1.Task{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:        taskName,
-				Namespace:   ts.Namespace,
-				Labels:      labels,
-				Annotations: annotations,
-			},
-			Spec: kelosv1alpha1.TaskSpec{
-				Type:                    ts.Spec.TaskTemplate.Type,
-				Prompt:                  prompt,
-				Credentials:             ts.Spec.TaskTemplate.Credentials,
-				Model:                   ts.Spec.TaskTemplate.Model,
-				Image:                   ts.Spec.TaskTemplate.Image,
-				TTLSecondsAfterFinished: ts.Spec.TaskTemplate.TTLSecondsAfterFinished,
-				PodOverrides:            ts.Spec.TaskTemplate.PodOverrides,
-			},
-		}
-
-		if ts.Spec.TaskTemplate.WorkspaceRef != nil {
-			task.Spec.WorkspaceRef = ts.Spec.TaskTemplate.WorkspaceRef
-		}
-		if ts.Spec.TaskTemplate.AgentConfigRef != nil {
-			task.Spec.AgentConfigRef = ts.Spec.TaskTemplate.AgentConfigRef
-		}
-
-		if len(ts.Spec.TaskTemplate.DependsOn) > 0 {
-			task.Spec.DependsOn = ts.Spec.TaskTemplate.DependsOn
-		}
-		if ts.Spec.TaskTemplate.Branch != "" {
-			branch, err := source.RenderTemplate(ts.Spec.TaskTemplate.Branch, item)
-			if err != nil {
-				log.Error(err, "rendering branch template", "item", item.ID)
-				continue
+		// Apply source-specific annotations (GitHub reporting metadata)
+		srcAnnotations := sourceAnnotations(&ts, item)
+		if len(srcAnnotations) > 0 {
+			if task.Annotations == nil {
+				task.Annotations = make(map[string]string)
 			}
-			task.Spec.Branch = branch
+			for k, v := range srcAnnotations {
+				task.Annotations[k] = v
+			}
 		}
 
 		// Propagate upstream repo for fork workflows. Explicit template
 		// value takes precedence; otherwise derive from the source repo
 		// override (githubIssues.repo or githubPullRequests.repo).
-		if ts.Spec.TaskTemplate.UpstreamRepo != "" {
-			task.Spec.UpstreamRepo = ts.Spec.TaskTemplate.UpstreamRepo
-		} else if upstreamRepo := deriveUpstreamRepo(&ts); upstreamRepo != "" {
-			task.Spec.UpstreamRepo = upstreamRepo
+		if task.Spec.UpstreamRepo == "" {
+			if upstreamRepo := deriveUpstreamRepo(&ts); upstreamRepo != "" {
+				task.Spec.UpstreamRepo = upstreamRepo
+			}
 		}
 
 		if err := cl.Create(ctx, task); err != nil {
@@ -497,6 +473,9 @@ func runCycleWithSourceCore(ctx context.Context, cl client.Client, key types.Nam
 	return nil
 }
 
+// sourceAnnotations returns annotations that stamp GitHub source metadata
+// onto a spawned Task. These annotations enable downstream consumers (such
+// as the reporting watcher) to identify the originating issue or PR.
 // mergeStringMaps returns a new map with keys from base, then keys from overlay
 // overwriting on duplicate keys.
 func mergeStringMaps(base, overlay map[string]string) map[string]string {
@@ -639,16 +618,26 @@ func resolveGitHubCommentPolicy(policy *kelosv1alpha1.GitHubCommentPolicy, legac
 	}, nil
 }
 
-func buildSource(ts *kelosv1alpha1.TaskSpawner, owner, repo, apiBaseURL, tokenFile, jiraBaseURL, jiraProject, jiraJQL, slackTriggerCommand, slackChannels, slackAllowedUsers string, httpClient *http.Client) (source.Source, error) {
+func buildSource(ts *kelosv1alpha1.TaskSpawner, owner, repo, apiBaseURL, tokenFile, jiraBaseURL, jiraProject, jiraJQL, slackTriggerCmd, slackChans, slackUsers string, httpClient *http.Client) (source.Source, error) {
+	return buildSourceWithProxy(ts, owner, repo, "", apiBaseURL, tokenFile, jiraBaseURL, jiraProject, jiraJQL, slackTriggerCmd, slackChans, slackUsers, httpClient)
+}
+
+func buildSourceWithProxy(ts *kelosv1alpha1.TaskSpawner, owner, repo, ghProxyURL, apiBaseURL, tokenFile, jiraBaseURL, jiraProject, jiraJQL, slackTriggerCmd, slackChans, slackUsers string, httpClient *http.Client) (source.Source, error) {
 	if ts.Spec.When.GitHubIssues != nil {
 		gh := ts.Spec.When.GitHubIssues
-		token, err := readGitHubToken(tokenFile)
-		if err != nil {
-			return nil, err
-		}
 		commentPolicy, err := resolveGitHubCommentPolicy(gh.CommentPolicy, gh.TriggerComment, gh.ExcludeComments)
 		if err != nil {
 			return nil, err
+		}
+		baseURL := apiBaseURL
+		token := ""
+		if ghProxyURL != "" {
+			baseURL = ghProxyURL
+		} else {
+			token, err = readGitHubToken(tokenFile)
+			if err != nil {
+				return nil, err
+			}
 		}
 		return &source.GitHubSource{
 			Owner:             owner,
@@ -660,7 +649,7 @@ func buildSource(ts *kelosv1alpha1.TaskSpawner, owner, repo, apiBaseURL, tokenFi
 			Assignee:          gh.Assignee,
 			Author:            gh.Author,
 			Token:             token,
-			BaseURL:           apiBaseURL,
+			BaseURL:           baseURL,
 			Client:            httpClient,
 			TriggerComment:    commentPolicy.TriggerComment,
 			ExcludeComments:   commentPolicy.ExcludeComments,
@@ -673,13 +662,19 @@ func buildSource(ts *kelosv1alpha1.TaskSpawner, owner, repo, apiBaseURL, tokenFi
 
 	if ts.Spec.When.GitHubPullRequests != nil {
 		gh := ts.Spec.When.GitHubPullRequests
-		token, err := readGitHubToken(tokenFile)
-		if err != nil {
-			return nil, err
-		}
 		commentPolicy, err := resolveGitHubCommentPolicy(gh.CommentPolicy, gh.TriggerComment, gh.ExcludeComments)
 		if err != nil {
 			return nil, err
+		}
+		baseURL := apiBaseURL
+		token := ""
+		if ghProxyURL != "" {
+			baseURL = ghProxyURL
+		} else {
+			token, err = readGitHubToken(tokenFile)
+			if err != nil {
+				return nil, err
+			}
 		}
 
 		return &source.GitHubPullRequestSource{
@@ -690,7 +685,7 @@ func buildSource(ts *kelosv1alpha1.TaskSpawner, owner, repo, apiBaseURL, tokenFi
 			State:             gh.State,
 			Author:            gh.Author,
 			Token:             token,
-			BaseURL:           apiBaseURL,
+			BaseURL:           baseURL,
 			Client:            httpClient,
 			ReviewState:       gh.ReviewState,
 			TriggerComment:    commentPolicy.TriggerComment,
@@ -722,9 +717,9 @@ func buildSource(ts *kelosv1alpha1.TaskSpawner, owner, repo, apiBaseURL, tokenFi
 		return &source.SlackSource{
 			BotToken:       botToken,
 			AppToken:       appToken,
-			TriggerCommand: slackTriggerCommand,
-			Channels:       parseCSV(slackChannels),
-			AllowedUsers:   parseCSV(slackAllowedUsers),
+			TriggerCommand: slackTriggerCmd,
+			Channels:       parseCSV(slackChans),
+			AllowedUsers:   parseCSV(slackUsers),
 		}, nil
 	}
 

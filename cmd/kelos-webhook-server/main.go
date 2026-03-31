@@ -83,8 +83,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Set up signal handling context
+	ctx := ctrl.SetupSignalHandler()
+
 	// Create webhook handler
 	handler, err := webhook.NewWebhookHandler(
+		ctx,
 		mgr.GetClient(),
 		webhookSource,
 		ctrl.Log.WithName("webhook").WithValues("source", source),
@@ -126,9 +130,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	setupLog.Info("Starting manager")
-	ctx := ctrl.SetupSignalHandler()
-
 	// Shutdown webhook server gracefully when context is cancelled
 	go func() {
 		<-ctx.Done()
@@ -138,6 +139,7 @@ func main() {
 		}
 	}()
 
+	setupLog.Info("Starting manager")
 	if err := mgr.Start(ctx); err != nil {
 		setupLog.Error(err, "Problem running manager")
 		os.Exit(1)

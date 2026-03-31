@@ -15,7 +15,7 @@ webhookServer:
       replicas: 1
       secretName: linear-webhook-secret # Must contain WEBHOOK_SECRET key
 
-  # Enable ingress for external webhook access
+  # Enable ingress for external webhook access (traditional Ingress API)
   ingress:
     enabled: true
     className: "nginx" # Or your ingress class
@@ -31,6 +31,27 @@ webhookServer:
       cert-manager.io/cluster-issuer: "letsencrypt-prod"
       nginx.ingress.kubernetes.io/ssl-redirect: "true"
       nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+
+  # Alternative: Enable Gateway API for external webhook access (next-gen routing)
+  # Note: Only enable one of ingress OR gateway, not both
+  gateway:
+    enabled: false # Set to true to use Gateway API instead of Ingress
+    gatewayClassName: "istio" # Or your gateway class (e.g., "istio", "envoy-gateway", "kong")
+    gatewayName: "kelos-webhook-gateway"
+    host: "webhooks.your-domain.com"
+
+    # Enable TLS for secure HTTPS connections
+    tls:
+      enabled: true
+      # Reference to TLS certificates (Gateway API style)
+      certificateRefs:
+        - name: "webhook-tls-cert"
+          kind: "Secret"
+          # group: ""  # Optional, defaults to core API group
+
+    annotations:
+      # Gateway-specific annotations
+      cert-manager.io/cluster-issuer: "letsencrypt-prod"
 
 # Use versioned images for production
 image:
