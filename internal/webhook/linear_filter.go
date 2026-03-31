@@ -104,6 +104,24 @@ func MatchesLinearEvent(spawner *v1alpha1.LinearWebhook, payload []byte) (bool, 
 	return false, nil
 }
 
+// extractLabels extracts labels from a data object, checking both data.labels
+// and data.issue.labels (for Comment webhooks).
+func extractLabels(dataObj map[string]interface{}) []interface{} {
+	// Try data.labels first (Issue events)
+	if labels, ok := dataObj["labels"].([]interface{}); ok && labels != nil && len(labels) > 0 {
+		return labels
+	}
+
+	// Fall back to data.issue.labels (Comment and IssueLabel events)
+	if issue, ok := dataObj["issue"].(map[string]interface{}); ok {
+		if labels, ok := issue["labels"].([]interface{}); ok && labels != nil {
+			return labels
+		}
+	}
+
+	return nil
+}
+
 // matchesLinearFilter checks if event data matches a specific Linear filter.
 func matchesLinearFilter(filter v1alpha1.LinearWebhookFilter, eventData *LinearEventData) bool {
 	// Action filter
@@ -152,8 +170,8 @@ func matchesLinearFilter(filter v1alpha1.LinearWebhookFilter, eventData *LinearE
 
 	// Labels filter (all required labels must be present)
 	if len(filter.Labels) > 0 {
-		labels, ok := dataObj["labels"].([]interface{})
-		if !ok || labels == nil {
+		labels := extractLabels(dataObj)
+		if labels == nil {
 			// No labels found, but labels filter required
 			return false
 		}
@@ -178,8 +196,8 @@ func matchesLinearFilter(filter v1alpha1.LinearWebhookFilter, eventData *LinearE
 
 	// ExcludeLabels filter (issue must NOT have any of these labels)
 	if len(filter.ExcludeLabels) > 0 {
-		labels, ok := dataObj["labels"].([]interface{})
-		if ok && labels != nil {
+		labels := extractLabels(dataObj)
+		if labels != nil {
 			// Build set of present label names
 			presentLabels := make(map[string]bool)
 			for _, label := range labels {
@@ -212,6 +230,19 @@ func ExtractLinearWorkItem(eventData *LinearEventData) map[string]interface{} {
 		"ID":    eventData.ID,
 		"Title": eventData.Title,
 		"Kind":  "webhook",
+	}
+
+	// For Comment events, extract the parent issue ID
+	if eventData.Type == "Comment" {
+		if dataObj, ok := eventData.RawPayload["data"].(map[string]interface{}); ok {
+			if issue, ok := dataObj["issue"].(map[string]interface{}); ok {
+				if issueID, ok := issue["id"].(string); ok {
+					vars["IssueID"] = issueID
+				} else if issueID, ok := issue["id"].(float64); ok {
+					vars["IssueID"] = fmt.Sprintf("%.0f", issueID)
+				}
+			}
+		}
 	}
 
 	return vars
