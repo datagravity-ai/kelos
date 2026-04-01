@@ -725,6 +725,7 @@ func buildSourceWithProxy(ts *kelosv1alpha1.TaskSpawner, owner, repo, ghProxyURL
 			MinimumPermission: commentPolicy.MinimumPermission,
 			Draft:             gh.Draft,
 			PriorityLabels:    gh.PriorityLabels,
+			FilePatterns:      convertFilePatterns(gh.FilePatterns),
 		}, nil
 	}
 
@@ -879,6 +880,19 @@ func isSlackTimestamp(s string) bool {
 		}
 	}
 	return true
+}
+
+// convertFilePatterns converts the API FilePatternFilter type to the source
+// package's equivalent. Returns nil when the input is nil (no file filtering).
+func convertFilePatterns(api *kelosv1alpha1.FilePatternFilter) *source.FilePatternFilter {
+	if api == nil {
+		return nil
+	}
+	return &source.FilePatternFilter{
+		Include:     append([]string(nil), api.Include...),
+		Exclude:     append([]string(nil), api.Exclude...),
+		ExcludeOnly: api.ExcludeOnly,
+	}
 }
 
 func parsePollInterval(s string) time.Duration {
