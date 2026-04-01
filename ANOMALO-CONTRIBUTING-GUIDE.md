@@ -7,7 +7,7 @@ In order to make this process as smooth as possible the following should be done
 3. Push to feature branch (this will be used for upstream contributions)
 4. Check out prod branch
 5. Checkout new branch called <feature-branch>-prod
-6. Cherry-pick commit from feature branch onto branch
+6. Cherry-pick commit(s) from feature branch onto branch (squash to a single commit first, or use `git cherry-pick <first-commit>..<last-commit>` for multiple commits)
 7. Push to origin
 8. Open PR against prod branch in datagravity-ai/kelos repo
 9. Merge
