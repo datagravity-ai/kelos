@@ -489,12 +489,11 @@ func spawnerNeedsChangedFiles(spawner *v1alpha1.TaskSpawner) bool {
 		}
 	}
 	tmpl := spawner.Spec.TaskTemplate
-	tmpl := spawner.Spec.TaskTemplate
 	if strings.Contains(tmpl.PromptTemplate, "ChangedFiles") ||
-		strings.Contains(tmpl.Branch, "ChangedFiles") ||
-		strings.Contains(tmpl.NameTemplate, "ChangedFiles") {
+		strings.Contains(tmpl.Branch, "ChangedFiles") {
 		return true
 	}
+	return false
 }
 
 // enrichPRChangedFiles fetches changed files for PR-related webhook events

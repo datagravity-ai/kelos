@@ -1178,3 +1178,110 @@ func TestDiscoverPullRequestsExcludeOnlyFilePatterns(t *testing.T) {
 		t.Errorf("expected PR #1, got #%d", items[0].Number)
 	}
 }
+
+func TestDiscoverPullRequestsNeedsChangedFilesWithoutFilePatterns(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/owner/repo/pulls":
+			json.NewEncoder(w).Encode([]githubPullRequest{
+				{
+					Number:  1,
+					Title:   "Backend change",
+					HTMLURL: "https://github.com/owner/repo/pull/1",
+					Head:    githubPullRequestHead{Ref: "feature-1", SHA: "sha-1"},
+				},
+			})
+		case "/repos/owner/repo/pulls/1/files":
+			json.NewEncoder(w).Encode([]githubPullRequestFile{
+				{Filename: "internal/handler.go"},
+				{Filename: "internal/handler_test.go"},
+			})
+		case "/repos/owner/repo/pulls/1/reviews":
+			json.NewEncoder(w).Encode([]githubPullRequestReview{})
+		case "/repos/owner/repo/issues/1/comments":
+			json.NewEncoder(w).Encode([]githubComment{})
+		case "/repos/owner/repo/pulls/1/comments":
+			json.NewEncoder(w).Encode([]githubPullRequestComment{})
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	s := &GitHubPullRequestSource{
+		Owner:             "owner",
+		Repo:              "repo",
+		BaseURL:           server.URL,
+		NeedsChangedFiles: true,
+	}
+
+	items, err := s.Discover(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(items))
+	}
+	if len(items[0].ChangedFiles) != 2 {
+		t.Fatalf("expected 2 changed files, got %d", len(items[0].ChangedFiles))
+	}
+	if items[0].ChangedFiles[0] != "internal/handler.go" {
+		t.Errorf("ChangedFiles[0] = %q, want %q", items[0].ChangedFiles[0], "internal/handler.go")
+	}
+	if items[0].ChangedFiles[1] != "internal/handler_test.go" {
+		t.Errorf("ChangedFiles[1] = %q, want %q", items[0].ChangedFiles[1], "internal/handler_test.go")
+	}
+}
+
+func TestDiscoverPullRequestsChangedFilesEmptyWithoutFlag(t *testing.T) {
+	filesFetched := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/owner/repo/pulls":
+			json.NewEncoder(w).Encode([]githubPullRequest{
+				{
+					Number:  1,
+					Title:   "Some PR",
+					HTMLURL: "https://github.com/owner/repo/pull/1",
+					Head:    githubPullRequestHead{Ref: "feature-1", SHA: "sha-1"},
+				},
+			})
+		case "/repos/owner/repo/pulls/1/files":
+			filesFetched = true
+			json.NewEncoder(w).Encode([]githubPullRequestFile{
+				{Filename: "main.go"},
+			})
+		case "/repos/owner/repo/pulls/1/reviews":
+			json.NewEncoder(w).Encode([]githubPullRequestReview{})
+		case "/repos/owner/repo/issues/1/comments":
+			json.NewEncoder(w).Encode([]githubComment{})
+		case "/repos/owner/repo/pulls/1/comments":
+			json.NewEncoder(w).Encode([]githubPullRequestComment{})
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	s := &GitHubPullRequestSource{
+		Owner:   "owner",
+		Repo:    "repo",
+		BaseURL: server.URL,
+	}
+
+	items, err := s.Discover(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if filesFetched {
+		t.Error("Expected files API to NOT be called when NeedsChangedFiles is false and FilePatterns is nil")
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(items))
+	}
+	if len(items[0].ChangedFiles) != 0 {
+		t.Errorf("expected 0 changed files, got %d", len(items[0].ChangedFiles))
+	}
+}

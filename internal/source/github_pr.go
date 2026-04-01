@@ -100,6 +100,11 @@ type GitHubPullRequestSource struct {
 	Draft             *bool
 	PriorityLabels    []string
 	FilePatterns      *FilePatternFilter
+	// NeedsChangedFiles causes file lists to be fetched for every PR even
+	// when FilePatterns is nil. This mirrors the webhook handler behavior
+	// where templates that reference {{.ChangedFiles}} automatically
+	// trigger file fetching.
+	NeedsChangedFiles bool
 }
 
 type githubUser struct {
@@ -149,8 +154,11 @@ func (s *GitHubPullRequestSource) Discover(ctx context.Context) ([]WorkItem, err
 
 	// File-pattern filtering runs after cheap label/author/draft filters
 	// but before expensive per-PR review and comment fetches.
+	// When NeedsChangedFiles is true (template references {{.ChangedFiles}}),
+	// files are fetched even without FilePatterns so the template variable
+	// is populated — mirroring the webhook handler behavior.
 	var prFiles map[int][]string
-	if s.FilePatterns != nil {
+	if s.FilePatterns != nil || s.NeedsChangedFiles {
 		prFiles = make(map[int][]string)
 		var fileFiltered []githubPullRequest
 		for _, pr := range pullRequests {
