@@ -202,7 +202,7 @@ func MatchesGitHubEvent(spawner *v1alpha1.GitHubWebhook, eventType string, event
 	}
 
 	// Check top-level excluded authors before evaluating filters
-	if len(spawner.ExcludeAuthors) > 0 && eventData.Sender != "" {
+	if len(spawner.ExcludeAuthors) > 0 {
 		for _, excluded := range spawner.ExcludeAuthors {
 			if excluded == eventData.Sender {
 				return false, nil
