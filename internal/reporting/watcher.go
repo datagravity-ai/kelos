@@ -491,7 +491,7 @@ func (tr *SlackTaskReporter) ReportTaskStatus(ctx context.Context, task *kelosv1
 	case "succeeded":
 		body = FormatSlackSucceeded(task.Name, task.Status.Results)
 	case "failed":
-		body = FormatSlackFailed(task.Name, task.Status.Message)
+		body = FormatSlackFailed(task.Name, task.Status.Message, task.Status.Results)
 	}
 
 	replyTS := annotations[AnnotationSlackReplyTS]
