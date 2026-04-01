@@ -154,6 +154,77 @@ func writeTempFile(t *testing.T, content string) string {
 	return path
 }
 
+func TestParseResponse(t *testing.T) {
+	tests := []struct {
+		name      string
+		agentType string
+		content   string
+		want      string
+	}{
+		{
+			name:      "claude-code result with response",
+			agentType: "claude-code",
+			content: `{"type":"assistant","message":"thinking..."}
+{"type":"result","subtype":"success","result":"I need your GitHub username to proceed.","total_cost_usd":0.05,"usage":{"input_tokens":100,"output_tokens":50}}
+`,
+			want: "I need your GitHub username to proceed.",
+		},
+		{
+			name:      "claude-code uses last result",
+			agentType: "claude-code",
+			content: `{"type":"result","result":"first response"}
+{"type":"result","result":"second response"}
+`,
+			want: "second response",
+		},
+		{
+			name:      "cursor result with response",
+			agentType: "cursor",
+			content:   `{"type":"result","subtype":"success","result":"done","usage":{"inputTokens":100,"outputTokens":50}}` + "\n",
+			want:      "done",
+		},
+		{
+			name:      "no result line returns empty",
+			agentType: "claude-code",
+			content:   `{"type":"assistant","message":"thinking"}` + "\n",
+			want:      "",
+		},
+		{
+			name:      "result without result field returns empty",
+			agentType: "claude-code",
+			content:   `{"type":"result","total_cost_usd":0.05}` + "\n",
+			want:      "",
+		},
+		{
+			name:      "empty agent type returns empty",
+			agentType: "",
+			content:   `{"type":"result","result":"hello"}` + "\n",
+			want:      "",
+		},
+		{
+			name:      "missing file returns empty",
+			agentType: "claude-code",
+			content:   "",
+			want:      "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var path string
+			if tt.content == "" && tt.name == "missing file returns empty" {
+				path = "/nonexistent/path/file.jsonl"
+			} else {
+				path = writeTempFile(t, tt.content)
+			}
+			got := ParseResponse(tt.agentType, path)
+			if got != tt.want {
+				t.Errorf("ParseResponse() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func assertMapEqual(t *testing.T, want, got map[string]string) {
 	t.Helper()
 	if len(want) == 0 && len(got) == 0 {

@@ -3,6 +3,7 @@ package capture
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -88,6 +89,10 @@ func captureOutputs(r runner, usageFile string) []string {
 		if v, ok := usage[key]; ok {
 			outputs = append(outputs, key+": "+v)
 		}
+	}
+
+	if resp := ParseResponse(agentType, usageFile); resp != "" {
+		outputs = append(outputs, "response: "+base64.StdEncoding.EncodeToString([]byte(resp)))
 	}
 
 	return outputs

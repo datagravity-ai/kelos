@@ -210,6 +210,41 @@ func formatNumber(v any) string {
 	return fmt.Sprint(v)
 }
 
+// ParseResponse extracts the agent's final response text from the output file.
+// It looks for the last {"type":"result","result":"..."} JSON line.
+// Returns an empty string if the file doesn't exist, the agent type is unknown,
+// or no result line is found.
+func ParseResponse(agentType, filePath string) string {
+	if agentType == "" {
+		return ""
+	}
+	f, err := os.Open(filePath)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	var lines [][]byte
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024)
+	for scanner.Scan() {
+		lines = append(lines, append([]byte(nil), scanner.Bytes()...))
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+
+	last := findLastByType(lines, "result")
+	if last == nil {
+		return ""
+	}
+	result, ok := last["result"].(string)
+	if !ok {
+		return ""
+	}
+	return result
+}
+
 // toInt64 converts a json.Number to int64, returning 0 on failure.
 func toInt64(v any) int64 {
 	n, ok := v.(json.Number)
