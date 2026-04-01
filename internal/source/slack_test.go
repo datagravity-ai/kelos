@@ -259,6 +259,49 @@ func TestBuildWorkItem(t *testing.T) {
 	}
 }
 
+func TestBotParticipated(t *testing.T) {
+	tests := []struct {
+		name       string
+		msgs       []slack.Message
+		selfUserID string
+		want       bool
+	}{
+		{
+			name: "bot present",
+			msgs: []slack.Message{
+				{Msg: slack.Msg{User: "U001", Text: "hello"}},
+				{Msg: slack.Msg{User: "UBOT", Text: "hi back"}},
+			},
+			selfUserID: "UBOT",
+			want:       true,
+		},
+		{
+			name: "bot absent",
+			msgs: []slack.Message{
+				{Msg: slack.Msg{User: "U001", Text: "hello"}},
+				{Msg: slack.Msg{User: "U002", Text: "hi"}},
+			},
+			selfUserID: "UBOT",
+			want:       false,
+		},
+		{
+			name:       "empty messages",
+			msgs:       []slack.Message{},
+			selfUserID: "UBOT",
+			want:       false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := botParticipated(tt.msgs, tt.selfUserID)
+			if got != tt.want {
+				t.Errorf("botParticipated() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestFormatThreadContext(t *testing.T) {
 	msgs := []slack.Message{
 		{Msg: slack.Msg{User: "U001", Text: "add me to codeowners"}},

@@ -164,16 +164,21 @@ func (s *SlackSource) handleEventsAPI(sm *socketmode.Client, evt socketmode.Even
 	}
 
 	// For thread replies, fetch the full conversation history so the
-	// follow-up task has complete context.
+	// follow-up task has complete context. Only process threads where the
+	// bot has already participated to avoid spawning tasks from unrelated
+	// conversations.
 	if innerEvent.ThreadTimeStamp != "" {
-		msgs, _, _, err := s.api.GetConversationRepliesContext(enrichCtx,
+		threadCtx, threadCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer threadCancel()
+		msgs, _, _, err := s.api.GetConversationRepliesContext(threadCtx,
 			&slack.GetConversationRepliesParameters{
 				ChannelID: innerEvent.Channel,
 				Timestamp: innerEvent.ThreadTimeStamp,
 			})
-		if err == nil && len(msgs) > 0 {
-			body = formatThreadContext(msgs, s.selfUserID)
+		if err != nil || !botParticipated(msgs, s.selfUserID) {
+			return
 		}
+		body = formatThreadContext(msgs, s.selfUserID)
 	}
 
 	s.mu.Lock()
@@ -280,6 +285,18 @@ func matchesUser(userID string, allowed []string) bool {
 	}
 	for _, id := range allowed {
 		if id == userID {
+			return true
+		}
+	}
+	return false
+}
+
+// botParticipated returns true if any message in the thread was sent by the
+// given bot user ID. This prevents processing thread replies in conversations
+// the bot never participated in.
+func botParticipated(msgs []slack.Message, selfUserID string) bool {
+	for _, m := range msgs {
+		if m.User == selfUserID {
 			return true
 		}
 	}
