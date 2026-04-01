@@ -463,6 +463,405 @@ func TestMatchesLinearEvent_NoFilters(t *testing.T) {
 	}
 }
 
+func TestMatchesLinearEvent_CommentLabelsFilter(t *testing.T) {
+	spawner := &v1alpha1.LinearWebhook{
+		Types: []string{"Comment"},
+		Filters: []v1alpha1.LinearWebhookFilter{
+			{
+				Type:   "Comment",
+				Labels: []string{"bug", "priority:high"},
+			},
+		},
+	}
+
+	tests := []struct {
+		name    string
+		payload string
+		want    bool
+	}{
+		{
+			name: "comment with issue having all required labels",
+			payload: `{
+				"type":"Comment",
+				"action":"create",
+				"data":{
+					"id":"comment-123",
+					"body":"Test comment",
+					"issue":{
+						"id":"issue-456",
+						"title":"Parent issue",
+						"labels":[
+							{"name":"bug"},
+							{"name":"priority:high"},
+							{"name":"frontend"}
+						]
+					}
+				}
+			}`,
+			want: true,
+		},
+		{
+			name: "comment with issue missing required label",
+			payload: `{
+				"type":"Comment",
+				"action":"create",
+				"data":{
+					"id":"comment-123",
+					"body":"Test comment",
+					"issue":{
+						"id":"issue-456",
+						"title":"Parent issue",
+						"labels":[
+							{"name":"bug"},
+							{"name":"frontend"}
+						]
+					}
+				}
+			}`,
+			want: false,
+		},
+		{
+			name: "comment with issue having no labels",
+			payload: `{
+				"type":"Comment",
+				"action":"create",
+				"data":{
+					"id":"comment-123",
+					"body":"Test comment",
+					"issue":{
+						"id":"issue-456",
+						"title":"Parent issue",
+						"labels":[]
+					}
+				}
+			}`,
+			want: false,
+		},
+		{
+			name: "comment with issue.labels field missing",
+			payload: `{
+				"type":"Comment",
+				"action":"create",
+				"data":{
+					"id":"comment-123",
+					"body":"Test comment",
+					"issue":{
+						"id":"issue-456",
+						"title":"Parent issue"
+					}
+				}
+			}`,
+			want: false,
+		},
+		{
+			name: "comment with issue field missing entirely",
+			payload: `{
+				"type":"Comment",
+				"action":"create",
+				"data":{
+					"id":"comment-123",
+					"body":"Test comment"
+				}
+			}`,
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := MatchesLinearEvent(spawner, []byte(tt.payload))
+			if err != nil {
+				t.Errorf("MatchesLinearEvent() error = %v", err)
+				return
+			}
+			if got != tt.want {
+				t.Errorf("MatchesLinearEvent() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMatchesLinearEvent_CommentExcludeLabelsFilter(t *testing.T) {
+	spawner := &v1alpha1.LinearWebhook{
+		Types: []string{"Comment"},
+		Filters: []v1alpha1.LinearWebhookFilter{
+			{
+				Type:          "Comment",
+				ExcludeLabels: []string{"wontfix", "duplicate"},
+			},
+		},
+	}
+
+	tests := []struct {
+		name    string
+		payload string
+		want    bool
+	}{
+		{
+			name: "comment with issue having no excluded labels",
+			payload: `{
+				"type":"Comment",
+				"action":"create",
+				"data":{
+					"id":"comment-123",
+					"body":"Test comment",
+					"issue":{
+						"id":"issue-456",
+						"title":"Parent issue",
+						"labels":[
+							{"name":"bug"},
+							{"name":"frontend"}
+						]
+					}
+				}
+			}`,
+			want: true,
+		},
+		{
+			name: "comment with issue having excluded label",
+			payload: `{
+				"type":"Comment",
+				"action":"create",
+				"data":{
+					"id":"comment-123",
+					"body":"Test comment",
+					"issue":{
+						"id":"issue-456",
+						"title":"Parent issue",
+						"labels":[
+							{"name":"bug"},
+							{"name":"wontfix"}
+						]
+					}
+				}
+			}`,
+			want: false,
+		},
+		{
+			name: "comment with issue having another excluded label",
+			payload: `{
+				"type":"Comment",
+				"action":"create",
+				"data":{
+					"id":"comment-123",
+					"body":"Test comment",
+					"issue":{
+						"id":"issue-456",
+						"title":"Parent issue",
+						"labels":[
+							{"name":"duplicate"},
+							{"name":"frontend"}
+						]
+					}
+				}
+			}`,
+			want: false,
+		},
+		{
+			name: "comment with issue having empty labels array",
+			payload: `{
+				"type":"Comment",
+				"action":"create",
+				"data":{
+					"id":"comment-123",
+					"body":"Test comment",
+					"issue":{
+						"id":"issue-456",
+						"title":"Parent issue",
+						"labels":[]
+					}
+				}
+			}`,
+			want: true,
+		},
+		{
+			name: "comment with issue.labels field missing",
+			payload: `{
+				"type":"Comment",
+				"action":"create",
+				"data":{
+					"id":"comment-123",
+					"body":"Test comment",
+					"issue":{
+						"id":"issue-456",
+						"title":"Parent issue"
+					}
+				}
+			}`,
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := MatchesLinearEvent(spawner, []byte(tt.payload))
+			if err != nil {
+				t.Errorf("MatchesLinearEvent() error = %v", err)
+				return
+			}
+			if got != tt.want {
+				t.Errorf("MatchesLinearEvent() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMatchesLinearEvent_IssueLabelsRegression(t *testing.T) {
+	// Regression test: ensure Issue events still use data.labels (not data.issue.labels)
+	spawner := &v1alpha1.LinearWebhook{
+		Types: []string{"Issue"},
+		Filters: []v1alpha1.LinearWebhookFilter{
+			{
+				Type:   "Issue",
+				Labels: []string{"bug"},
+			},
+		},
+	}
+
+	tests := []struct {
+		name    string
+		payload string
+		want    bool
+	}{
+		{
+			name: "issue with labels at data.labels",
+			payload: `{
+				"type":"Issue",
+				"action":"create",
+				"data":{
+					"id":"issue-123",
+					"title":"Test issue",
+					"labels":[
+						{"name":"bug"},
+						{"name":"frontend"}
+					]
+				}
+			}`,
+			want: true,
+		},
+		{
+			name: "issue without required label",
+			payload: `{
+				"type":"Issue",
+				"action":"create",
+				"data":{
+					"id":"issue-123",
+					"title":"Test issue",
+					"labels":[
+						{"name":"frontend"}
+					]
+				}
+			}`,
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := MatchesLinearEvent(spawner, []byte(tt.payload))
+			if err != nil {
+				t.Errorf("MatchesLinearEvent() error = %v", err)
+				return
+			}
+			if got != tt.want {
+				t.Errorf("MatchesLinearEvent() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExtractLinearWorkItem_CommentIssueID(t *testing.T) {
+	tests := []struct {
+		name        string
+		payload     string
+		wantIssueID string
+		hasIssueID  bool
+	}{
+		{
+			name: "comment event with string issue ID",
+			payload: `{
+				"type":"Comment",
+				"action":"create",
+				"data":{
+					"id":"comment-123",
+					"body":"Test comment",
+					"issue":{
+						"id":"issue-456",
+						"title":"Parent issue"
+					}
+				}
+			}`,
+			wantIssueID: "issue-456",
+			hasIssueID:  true,
+		},
+		{
+			name: "comment event with numeric issue ID",
+			payload: `{
+				"type":"Comment",
+				"action":"create",
+				"data":{
+					"id":"comment-123",
+					"body":"Test comment",
+					"issue":{
+						"id":789,
+						"title":"Parent issue"
+					}
+				}
+			}`,
+			wantIssueID: "789",
+			hasIssueID:  true,
+		},
+		{
+			name: "comment event without issue",
+			payload: `{
+				"type":"Comment",
+				"action":"create",
+				"data":{
+					"id":"comment-123",
+					"body":"Test comment"
+				}
+			}`,
+			hasIssueID: false,
+		},
+		{
+			name: "issue event should not have IssueID",
+			payload: `{
+				"type":"Issue",
+				"action":"create",
+				"data":{
+					"id":"issue-123",
+					"title":"Test issue"
+				}
+			}`,
+			hasIssueID: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			eventData, err := ParseLinearWebhook([]byte(tt.payload))
+			if err != nil {
+				t.Errorf("ParseLinearWebhook() error = %v", err)
+				return
+			}
+
+			vars := ExtractLinearWorkItem(eventData)
+
+			issueID, hasIssueID := vars["IssueID"]
+			if hasIssueID != tt.hasIssueID {
+				t.Errorf("ExtractLinearWorkItem() has IssueID = %v, want %v", hasIssueID, tt.hasIssueID)
+				return
+			}
+
+			if tt.hasIssueID {
+				if issueIDStr, ok := issueID.(string); !ok || issueIDStr != tt.wantIssueID {
+					t.Errorf("ExtractLinearWorkItem() IssueID = %v, want %v", issueID, tt.wantIssueID)
+				}
+			}
+		})
+	}
+}
+
 func TestParseLinearWebhook(t *testing.T) {
 	tests := []struct {
 		name     string
