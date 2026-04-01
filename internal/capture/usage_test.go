@@ -132,16 +132,17 @@ func TestParseUsage(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			path := writeTempFile(t, tt.content)
-			got := ParseUsage(tt.agentType, path)
+			lines := readLines(path)
+			got := parseUsage(tt.agentType, lines)
 			assertMapEqual(t, tt.want, got)
 		})
 	}
 }
 
-func TestParseUsageMissingFile(t *testing.T) {
-	got := ParseUsage("claude-code", "/nonexistent/path/file.jsonl")
-	if got != nil {
-		t.Errorf("expected nil for missing file, got %v", got)
+func TestReadLinesMissingFile(t *testing.T) {
+	lines := readLines("/nonexistent/path/file.jsonl")
+	if lines != nil {
+		t.Errorf("expected nil for missing file, got %v", lines)
 	}
 }
 
@@ -156,10 +157,11 @@ func writeTempFile(t *testing.T, content string) string {
 
 func TestParseResponse(t *testing.T) {
 	tests := []struct {
-		name      string
-		agentType string
-		content   string
-		want      string
+		name               string
+		agentType          string
+		content            string
+		useNonExistentPath bool
+		want               string
 	}{
 		{
 			name:      "claude-code result with response",
@@ -202,24 +204,31 @@ func TestParseResponse(t *testing.T) {
 			want:      "",
 		},
 		{
-			name:      "missing file returns empty",
-			agentType: "claude-code",
-			content:   "",
+			name:      "unknown agent type returns empty",
+			agentType: "unknown-agent",
+			content:   `{"type":"result","result":"hello"}` + "\n",
 			want:      "",
+		},
+		{
+			name:               "missing file returns empty",
+			agentType:          "claude-code",
+			useNonExistentPath: true,
+			want:               "",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var path string
-			if tt.content == "" && tt.name == "missing file returns empty" {
-				path = "/nonexistent/path/file.jsonl"
+			var lines [][]byte
+			if tt.useNonExistentPath {
+				lines = readLines("/nonexistent/path/file.jsonl")
 			} else {
-				path = writeTempFile(t, tt.content)
+				path := writeTempFile(t, tt.content)
+				lines = readLines(path)
 			}
-			got := ParseResponse(tt.agentType, path)
+			got := parseResponse(tt.agentType, lines)
 			if got != tt.want {
-				t.Errorf("ParseResponse() = %q, want %q", got, tt.want)
+				t.Errorf("parseResponse() = %q, want %q", got, tt.want)
 			}
 		})
 	}

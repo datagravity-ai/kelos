@@ -84,15 +84,17 @@ func captureOutputs(r runner, usageFile string) []string {
 	}
 
 	agentType := os.Getenv("KELOS_AGENT_TYPE")
-	usage := ParseUsage(agentType, usageFile)
-	for _, key := range []string{"cost-usd", "input-tokens", "output-tokens"} {
-		if v, ok := usage[key]; ok {
-			outputs = append(outputs, key+": "+v)
+	if agentType != "" {
+		lines := readLines(usageFile)
+		usage := parseUsage(agentType, lines)
+		for _, key := range []string{"cost-usd", "input-tokens", "output-tokens"} {
+			if v, ok := usage[key]; ok {
+				outputs = append(outputs, key+": "+v)
+			}
 		}
-	}
-
-	if resp := ParseResponse(agentType, usageFile); resp != "" {
-		outputs = append(outputs, "response: "+base64.StdEncoding.EncodeToString([]byte(resp)))
+		if resp := parseResponse(agentType, lines); resp != "" {
+			outputs = append(outputs, "response: "+base64.StdEncoding.EncodeToString([]byte(resp)))
+		}
 	}
 
 	return outputs
