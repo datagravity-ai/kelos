@@ -567,7 +567,7 @@ type TaskTemplate struct {
 	// GitHub issue/Jira sources: {{.Number}}, {{.Body}}, {{.URL}}, {{.Labels}}, {{.Comments}}
 	// GitHub pull request sources additionally expose: {{.Branch}}, {{.ReviewState}}, {{.ReviewComments}}, {{.ChangedFiles}}
 	// GitHub webhook sources: {{.Event}}, {{.Action}}, {{.Sender}}, {{.Ref}}, {{.Repository}}, {{.Payload}} (full payload access), {{.ChangedFiles}}
-	// Linear webhook sources: {{.Type}}, {{.Action}}, {{.State}}, {{.Labels}}, {{.IssueID}}, {{.Payload}} (full payload access)
+	// Linear webhook sources: {{.Type}}, {{.Action}}, {{.State}}, {{.Labels}}, {{.IssueID}}, {{.Payload}}
 	// Cron sources: {{.Time}}, {{.Schedule}}
 	// +optional
 	Branch string `json:"branch,omitempty"`

@@ -34,7 +34,15 @@ In your Linear workspace settings:
 4. Select the resource types you want to receive (Issues, Comments, etc.)
 5. Enable the webhook
 
-### 3. Deploy TaskSpawner
+- `{{.ID}}` - Linear issue/resource ID
+- `{{.Title}}` - Issue title
+- `{{.Kind}}` - Always "LinearWebhook"
+- `{{.Type}}` - Resource type (e.g., "Issue", "Comment")
+- `{{.Action}}` - Webhook action (e.g., "create", "update", "remove")
+- `{{.State}}` - Current workflow state name
+- `{{.Labels}}` - Comma-separated list of labels
+- `{{.IssueID}}` - Parent issue ID (Comment events only)
+- `{{.Payload}}` - Full webhook payload for advanced templating
 
 Apply the TaskSpawner configuration:
 

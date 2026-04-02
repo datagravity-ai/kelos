@@ -195,19 +195,19 @@ func matchesLinearFilter(filter v1alpha1.LinearWebhookFilter, eventData *LinearE
 			return false
 		}
 
-		// Build set of present label names
+		// Build set of present label names (lowercased for case-insensitive comparison)
 		presentLabels := make(map[string]bool)
 		for _, label := range labels {
 			if labelObj, ok := label.(map[string]interface{}); ok {
 				if labelName, ok := labelObj["name"].(string); ok {
-					presentLabels[labelName] = true
+					presentLabels[strings.ToLower(labelName)] = true
 				}
 			}
 		}
 
 		// Check all required labels are present
 		for _, requiredLabel := range filter.Labels {
-			if !presentLabels[requiredLabel] {
+			if !presentLabels[strings.ToLower(requiredLabel)] {
 				return false
 			}
 		}
@@ -217,19 +217,19 @@ func matchesLinearFilter(filter v1alpha1.LinearWebhookFilter, eventData *LinearE
 	if len(filter.ExcludeLabels) > 0 {
 		labels := extractLabels(dataObj)
 		if labels != nil {
-			// Build set of present label names
+			// Build set of present label names (lowercased for case-insensitive comparison)
 			presentLabels := make(map[string]bool)
 			for _, label := range labels {
 				if labelObj, ok := label.(map[string]interface{}); ok {
 					if labelName, ok := labelObj["name"].(string); ok {
-						presentLabels[labelName] = true
+						presentLabels[strings.ToLower(labelName)] = true
 					}
 				}
 			}
 
 			// Check that none of the excluded labels are present
 			for _, excludeLabel := range filter.ExcludeLabels {
-				if presentLabels[excludeLabel] {
+				if presentLabels[strings.ToLower(excludeLabel)] {
 					return false
 				}
 			}
@@ -310,7 +310,10 @@ func enrichLinearCommentLabels(ctx context.Context, log logr.Logger, eventData *
 		return
 	}
 	if labels == nil {
-		// LINEAR_API_KEY not set — nothing to enrich
+		// LINEAR_API_KEY not set — label-based filtering on Comment events will
+		// not work because Linear does not include issue labels in Comment
+		// webhook payloads.
+		log.Info("LINEAR_API_KEY not set, cannot enrich Comment event with issue labels from Linear API")
 		return
 	}
 
