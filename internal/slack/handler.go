@@ -19,7 +19,7 @@ import (
 	"github.com/kelos-dev/kelos/internal/taskbuilder"
 )
 
-const enrichTimeout = 5 * time.Second
+const enrichCallTimeout = 5 * time.Second
 
 // SlackHandler handles Slack messages via Socket Mode and routes them to
 // matching TaskSpawners. It is the centralized equivalent of the per-TaskSpawner
@@ -119,7 +119,11 @@ func (h *SlackHandler) handleEventsAPI(ctx context.Context, evt socketmode.Event
 
 	// For thread replies, fetch full thread context
 	if innerEvent.ThreadTimeStamp != "" {
-		body, ok := FetchThreadContext(ctx, h.api, innerEvent.Channel, innerEvent.ThreadTimeStamp, h.botUserID)
+		body, ok, err := FetchThreadContext(ctx, h.api, innerEvent.Channel, innerEvent.ThreadTimeStamp, h.botUserID)
+		if err != nil {
+			h.log.Error(err, "Failed to fetch thread context", "channel", innerEvent.Channel, "threadTS", innerEvent.ThreadTimeStamp)
+			return
+		}
 		if !ok {
 			return
 		}
@@ -199,8 +203,13 @@ func (h *SlackHandler) routeMessage(ctx context.Context, msg *SlackMessageData) 
 			continue
 		}
 
-		// Check trigger command (per-spawner, since each TaskSpawner can have a different trigger)
+		// Check trigger command (per-spawner, since each TaskSpawner can have a different trigger).
+		// Slash commands skip the trigger check — the command name itself acts as the trigger,
+		// and cmd.Text only contains the arguments after the command name.
 		body, ok := ProcessTriggerCommand(msg.Text, msg.ThreadTS, slackCfg.TriggerCommand)
+		if msg.IsSlashCommand {
+			body, ok = msg.Body, true
+		}
 		if !ok {
 			continue
 		}
@@ -304,31 +313,34 @@ func (h *SlackHandler) createTask(ctx context.Context, spawner *v1alpha1.TaskSpa
 // enrichMessage builds a SlackMessageData from a raw Slack message event,
 // enriching it with user info, permalink, and channel name.
 func (h *SlackHandler) enrichMessage(ctx context.Context, event *slackevents.MessageEvent) *SlackMessageData {
-	enrichCtx, cancel := context.WithTimeout(ctx, enrichTimeout)
-	defer cancel()
-
 	userName := event.User
-	if info, err := h.api.GetUserInfoContext(enrichCtx, event.User); err == nil {
+	userCtx, userCancel := context.WithTimeout(ctx, enrichCallTimeout)
+	if info, err := h.api.GetUserInfoContext(userCtx, event.User); err == nil {
 		userName = info.RealName
 		if userName == "" {
 			userName = info.Name
 		}
 	}
+	userCancel()
 
 	permalink := ""
-	if link, err := h.api.GetPermalinkContext(enrichCtx, &goslack.PermalinkParameters{
+	linkCtx, linkCancel := context.WithTimeout(ctx, enrichCallTimeout)
+	if link, err := h.api.GetPermalinkContext(linkCtx, &goslack.PermalinkParameters{
 		Channel: event.Channel,
 		Ts:      event.TimeStamp,
 	}); err == nil {
 		permalink = link
 	}
+	linkCancel()
 
 	channelName := event.Channel
-	if info, err := h.api.GetConversationInfoContext(enrichCtx, &goslack.GetConversationInfoInput{
+	chanCtx, chanCancel := context.WithTimeout(ctx, enrichCallTimeout)
+	if info, err := h.api.GetConversationInfoContext(chanCtx, &goslack.GetConversationInfoInput{
 		ChannelID: event.Channel,
 	}); err == nil {
 		channelName = info.Name
 	}
+	chanCancel()
 
 	return &SlackMessageData{
 		UserID:      event.User,
