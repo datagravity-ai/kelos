@@ -33,7 +33,7 @@ type SlackMessageData struct {
 	SlashCommandID string
 }
 
-// MatchesSpawner checks whether a Slack message matches the given agent's
+// MatchesSpawner checks whether a Slack message matches the given TaskSpawner's
 // Slack configuration (channels and allowed users). Trigger command matching
 // is handled separately during message preprocessing.
 func MatchesSpawner(slackCfg *v1alpha1.Slack, msg *SlackMessageData) bool {
@@ -49,7 +49,7 @@ func MatchesSpawner(slackCfg *v1alpha1.Slack, msg *SlackMessageData) bool {
 	return true
 }
 
-// ProcessTriggerCommand checks whether the message text matches the agent's
+// ProcessTriggerCommand checks whether the message text matches the TaskSpawner's
 // trigger command prefix. For thread replies, the trigger is not required.
 // Returns the processed body and true if the message should be processed.
 func ProcessTriggerCommand(text, threadTS, triggerCmd string) (string, bool) {

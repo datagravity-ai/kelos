@@ -135,8 +135,8 @@ func main() {
 }
 
 // runReportingLoop periodically reports Slack task status for ALL Slack-annotated
-// Tasks cluster-wide. This replaces the per-agent reporting that previously ran
-// in each spawner pod.
+// Tasks cluster-wide. This replaces the per-TaskSpawner reporting that previously
+// ran in each spawner pod.
 func runReportingLoop(ctx context.Context, cl client.Client, botToken string, interval time.Duration) {
 	log := ctrl.Log.WithName("slack-reporter")
 	slackReporter := &reporting.SlackTaskReporter{

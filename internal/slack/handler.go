@@ -22,7 +22,7 @@ import (
 const enrichTimeout = 5 * time.Second
 
 // SlackHandler handles Slack messages via Socket Mode and routes them to
-// matching TaskSpawners. It is the centralized equivalent of the per-agent
+// matching TaskSpawners. It is the centralized equivalent of the per-TaskSpawner
 // SlackSource that previously ran in each spawner pod.
 type SlackHandler struct {
 	client      client.Client
@@ -160,7 +160,7 @@ func (h *SlackHandler) handleSlashCommand(ctx context.Context, evt socketmode.Ev
 	h.routeMessage(ctx, msg)
 }
 
-// routeMessage finds all matching agents and creates tasks for each.
+// routeMessage finds all matching TaskSpawners and creates tasks for each.
 func (h *SlackHandler) routeMessage(ctx context.Context, msg *SlackMessageData) {
 	spawners, err := h.getMatchingSpawners(ctx)
 	if err != nil {
@@ -169,7 +169,7 @@ func (h *SlackHandler) routeMessage(ctx context.Context, msg *SlackMessageData) 
 	}
 
 	if len(spawners) == 0 {
-		h.log.V(1).Info("No matching agents for Slack message", "channel", msg.ChannelID)
+		h.log.V(1).Info("No matching TaskSpawners for Slack message", "channel", msg.ChannelID)
 		return
 	}
 
@@ -178,7 +178,7 @@ func (h *SlackHandler) routeMessage(ctx context.Context, msg *SlackMessageData) 
 
 		// Check if suspended
 		if spawner.Spec.Suspend != nil && *spawner.Spec.Suspend {
-			spawnerLog.V(1).Info("Skipping suspended agent")
+			spawnerLog.V(1).Info("Skipping suspended TaskSpawner")
 			continue
 		}
 
@@ -199,7 +199,7 @@ func (h *SlackHandler) routeMessage(ctx context.Context, msg *SlackMessageData) 
 			continue
 		}
 
-		// Check trigger command (per-agent, since each agent can have a different trigger)
+		// Check trigger command (per-spawner, since each TaskSpawner can have a different trigger)
 		body, ok := ProcessTriggerCommand(msg.Text, msg.ThreadTS, slackCfg.TriggerCommand)
 		if !ok {
 			continue
@@ -211,7 +211,7 @@ func (h *SlackHandler) routeMessage(ctx context.Context, msg *SlackMessageData) 
 			taskMsg.Body = body
 		}
 
-		spawnerLog.Info("Message matches agent — creating task", "channel", msg.ChannelID, "user", msg.UserID)
+		spawnerLog.Info("Message matches TaskSpawner — creating task", "channel", msg.ChannelID, "user", msg.UserID)
 
 		if err := h.createTask(ctx, spawner, &taskMsg); err != nil {
 			spawnerLog.Error(err, "Failed to create task")
@@ -238,7 +238,7 @@ func (h *SlackHandler) getMatchingSpawners(ctx context.Context) ([]*v1alpha1.Tas
 	return matching, nil
 }
 
-// createTask creates a Task for the given agent from a Slack message.
+// createTask creates a Task for the given TaskSpawner from a Slack message.
 func (h *SlackHandler) createTask(ctx context.Context, spawner *v1alpha1.TaskSpawner, msg *SlackMessageData) error {
 	templateVars := ExtractSlackWorkItem(msg)
 
