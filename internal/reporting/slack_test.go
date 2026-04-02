@@ -204,4 +204,3 @@ func assertContextContains(t *testing.T, block slack.Block, substr string) {
 	}
 	t.Errorf("context block does not contain %q", substr)
 }
-
