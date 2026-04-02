@@ -90,33 +90,22 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Start Socket Mode listener in background
-	go func() {
-		setupLog.Info("Starting Slack Socket Mode listener")
-		if err := handler.Start(ctx); err != nil && ctx.Err() == nil {
-			setupLog.Error(err, "Slack handler failed")
-			os.Exit(1)
-		}
-	}()
+	// Register Socket Mode listener as a leader-elected runnable so that only
+	// one replica opens the single-connection Socket Mode WebSocket.
+	if err := mgr.Add(&slackRunnable{handler: handler}); err != nil {
+		setupLog.Error(err, "Unable to register Slack handler with manager")
+		os.Exit(1)
+	}
 
-	// Start reporting loop in background
-	go func() {
-		// Wait for cache sync before reporting
-		if !mgr.GetCache().WaitForCacheSync(ctx) {
-			setupLog.Error(fmt.Errorf("cache sync failed"), "Unable to sync cache for reporting")
-			return
-		}
-
-		setupLog.Info("Starting Slack reporting loop", "interval", reportingInterval)
-		runReportingLoop(ctx, mgr.GetClient(), botToken, reportingInterval)
-	}()
-
-	// Graceful shutdown of Slack handler
-	go func() {
-		<-ctx.Done()
-		setupLog.Info("Shutting down Slack handler")
-		handler.Stop()
-	}()
+	// Register reporting loop as a leader-elected runnable.
+	if err := mgr.Add(&reportingRunnable{
+		client:   mgr.GetClient(),
+		botToken: botToken,
+		interval: reportingInterval,
+	}); err != nil {
+		setupLog.Error(err, "Unable to register reporting loop with manager")
+		os.Exit(1)
+	}
 
 	// Health checks
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
@@ -134,6 +123,38 @@ func main() {
 		os.Exit(1)
 	}
 }
+
+// slackRunnable wraps the SlackHandler as a leader-elected manager.Runnable.
+// This ensures only the leader replica opens the Socket Mode connection.
+type slackRunnable struct {
+	handler *kelosslack.SlackHandler
+}
+
+func (r *slackRunnable) Start(ctx context.Context) error {
+	setupLog.Info("Starting Slack Socket Mode listener")
+	err := r.handler.Start(ctx)
+	if err != nil && ctx.Err() == nil {
+		return err
+	}
+	return nil
+}
+
+func (r *slackRunnable) NeedLeaderElection() bool { return true }
+
+// reportingRunnable wraps the reporting loop as a leader-elected manager.Runnable.
+type reportingRunnable struct {
+	client   client.Client
+	botToken string
+	interval time.Duration
+}
+
+func (r *reportingRunnable) Start(ctx context.Context) error {
+	setupLog.Info("Starting Slack reporting loop", "interval", r.interval)
+	runReportingLoop(ctx, r.client, r.botToken, r.interval)
+	return nil
+}
+
+func (r *reportingRunnable) NeedLeaderElection() bool { return true }
 
 // runReportingLoop periodically reports Slack task status for ALL Slack-annotated
 // Tasks cluster-wide. This replaces the per-TaskSpawner reporting that previously
