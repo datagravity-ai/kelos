@@ -315,32 +315,32 @@ func (h *SlackHandler) createTask(ctx context.Context, spawner *v1alpha1.TaskSpa
 func (h *SlackHandler) enrichMessage(ctx context.Context, event *slackevents.MessageEvent) *SlackMessageData {
 	userName := event.User
 	userCtx, userCancel := context.WithTimeout(ctx, enrichCallTimeout)
+	defer userCancel()
 	if info, err := h.api.GetUserInfoContext(userCtx, event.User); err == nil {
 		userName = info.RealName
 		if userName == "" {
 			userName = info.Name
 		}
 	}
-	userCancel()
 
 	permalink := ""
 	linkCtx, linkCancel := context.WithTimeout(ctx, enrichCallTimeout)
+	defer linkCancel()
 	if link, err := h.api.GetPermalinkContext(linkCtx, &goslack.PermalinkParameters{
 		Channel: event.Channel,
 		Ts:      event.TimeStamp,
 	}); err == nil {
 		permalink = link
 	}
-	linkCancel()
 
 	channelName := event.Channel
 	chanCtx, chanCancel := context.WithTimeout(ctx, enrichCallTimeout)
+	defer chanCancel()
 	if info, err := h.api.GetConversationInfoContext(chanCtx, &goslack.GetConversationInfoInput{
 		ChannelID: event.Channel,
 	}); err == nil {
 		channelName = info.Name
 	}
-	chanCancel()
 
 	return &SlackMessageData{
 		UserID:      event.User,

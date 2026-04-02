@@ -72,7 +72,7 @@ func TestFormatThreadContext(t *testing.T) {
 		t.Error("Expected follow-up user message")
 	}
 	// Empty text message should be skipped
-	if strings.Count(result, "User:") != 2 && strings.Count(result, "Agent:") != 1 {
+	if strings.Count(result, "User:") != 2 || strings.Count(result, "Agent:") != 1 {
 		t.Errorf("Unexpected message count in output:\n%s", result)
 	}
 }
