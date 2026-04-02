@@ -42,10 +42,12 @@ webhookServer:
       enabled: false
       replicas: 1
       secretName: ""
+      env: []
     linear:
       enabled: false
       replicas: 1
       secretName: ""
+      env: []
   resources:
     limits:
       cpu: 500m
