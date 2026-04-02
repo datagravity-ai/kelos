@@ -1,8 +1,13 @@
 package webhook
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
+	"github.com/go-logr/logr"
 	"github.com/kelos-dev/kelos/api/v1alpha1"
 )
 
@@ -1016,5 +1021,278 @@ func TestParseLinearWebhook_StateAndLabels(t *testing.T) {
 	}
 	if len(got.Labels) != 2 || got.Labels[0] != "bug" || got.Labels[1] != "urgent" {
 		t.Errorf("ParseLinearWebhook() Labels = %v, want [bug urgent]", got.Labels)
+	}
+}
+
+func TestSpawnerNeedsLinearLabels(t *testing.T) {
+	tests := []struct {
+		name    string
+		spawner *v1alpha1.TaskSpawner
+		payload string
+		want    bool
+	}{
+		{
+			name: "comment event with label filter and no labels in payload",
+			spawner: &v1alpha1.TaskSpawner{
+				Spec: v1alpha1.TaskSpawnerSpec{
+					When: v1alpha1.When{
+						LinearWebhook: &v1alpha1.LinearWebhook{
+							Types: []string{"Comment"},
+							Filters: []v1alpha1.LinearWebhookFilter{
+								{Type: "Comment", Labels: []string{"bug"}},
+							},
+						},
+					},
+				},
+			},
+			payload: `{"type":"Comment","action":"create","data":{"id":"c1","issue":{"id":"i1","title":"Test"}}}`,
+			want:    true,
+		},
+		{
+			name: "comment event with excludeLabels filter and no labels in payload",
+			spawner: &v1alpha1.TaskSpawner{
+				Spec: v1alpha1.TaskSpawnerSpec{
+					When: v1alpha1.When{
+						LinearWebhook: &v1alpha1.LinearWebhook{
+							Types: []string{"Comment"},
+							Filters: []v1alpha1.LinearWebhookFilter{
+								{Type: "Comment", ExcludeLabels: []string{"wontfix"}},
+							},
+						},
+					},
+				},
+			},
+			payload: `{"type":"Comment","action":"create","data":{"id":"c1","issue":{"id":"i1","title":"Test"}}}`,
+			want:    true,
+		},
+		{
+			name: "comment event with labels already in payload",
+			spawner: &v1alpha1.TaskSpawner{
+				Spec: v1alpha1.TaskSpawnerSpec{
+					When: v1alpha1.When{
+						LinearWebhook: &v1alpha1.LinearWebhook{
+							Types: []string{"Comment"},
+							Filters: []v1alpha1.LinearWebhookFilter{
+								{Type: "Comment", Labels: []string{"bug"}},
+							},
+						},
+					},
+				},
+			},
+			payload: `{"type":"Comment","action":"create","data":{"id":"c1","issue":{"id":"i1","labels":[{"name":"bug"}]}}}`,
+			want:    false,
+		},
+		{
+			name: "comment event with no label filter",
+			spawner: &v1alpha1.TaskSpawner{
+				Spec: v1alpha1.TaskSpawnerSpec{
+					When: v1alpha1.When{
+						LinearWebhook: &v1alpha1.LinearWebhook{
+							Types: []string{"Comment"},
+							Filters: []v1alpha1.LinearWebhookFilter{
+								{Type: "Comment", Action: "create"},
+							},
+						},
+					},
+				},
+			},
+			payload: `{"type":"Comment","action":"create","data":{"id":"c1","issue":{"id":"i1"}}}`,
+			want:    false,
+		},
+		{
+			name: "issue event is not enriched",
+			spawner: &v1alpha1.TaskSpawner{
+				Spec: v1alpha1.TaskSpawnerSpec{
+					When: v1alpha1.When{
+						LinearWebhook: &v1alpha1.LinearWebhook{
+							Types: []string{"Issue"},
+							Filters: []v1alpha1.LinearWebhookFilter{
+								{Type: "Issue", Labels: []string{"bug"}},
+							},
+						},
+					},
+				},
+			},
+			payload: `{"type":"Issue","action":"create","data":{"id":"i1","title":"Test"}}`,
+			want:    false,
+		},
+		{
+			name: "label filter on Issue type does not trigger enrichment for Comment",
+			spawner: &v1alpha1.TaskSpawner{
+				Spec: v1alpha1.TaskSpawnerSpec{
+					When: v1alpha1.When{
+						LinearWebhook: &v1alpha1.LinearWebhook{
+							Types: []string{"Issue", "Comment"},
+							Filters: []v1alpha1.LinearWebhookFilter{
+								{Type: "Issue", Labels: []string{"bug"}},
+								{Type: "Comment", Action: "create"},
+							},
+						},
+					},
+				},
+			},
+			payload: `{"type":"Comment","action":"create","data":{"id":"c1","issue":{"id":"i1"}}}`,
+			want:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			eventData, err := ParseLinearWebhook([]byte(tt.payload))
+			if err != nil {
+				t.Fatalf("ParseLinearWebhook() error = %v", err)
+			}
+			got := spawnerNeedsLinearLabels(tt.spawner, eventData)
+			if got != tt.want {
+				t.Errorf("spawnerNeedsLinearLabels() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestEnrichLinearCommentLabels(t *testing.T) {
+	// Set up a mock Linear API server that returns labels for the issue
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req linearGraphQLRequest
+		json.NewDecoder(r.Body).Decode(&req)
+
+		resp := map[string]interface{}{
+			"data": map[string]interface{}{
+				"issue": map[string]interface{}{
+					"labels": map[string]interface{}{
+						"nodes": []map[string]interface{}{
+							{"name": "bug"},
+							{"name": "priority:high"},
+						},
+					},
+				},
+			},
+		}
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	// Override fetchLinearIssueLabels for this test by using a payload
+	// that enrichLinearCommentLabels will process, and swap in a test
+	// fetcher.
+	origFetcher := linearLabelFetcher
+	linearLabelFetcher = func(ctx context.Context, issueID string) ([]string, error) {
+		return fetchLinearIssueLabelsFromURL(ctx, server.URL, "test-key", issueID)
+	}
+	defer func() { linearLabelFetcher = origFetcher }()
+
+	payload := `{
+		"type":"Comment",
+		"action":"create",
+		"data":{
+			"id":"comment-123",
+			"body":"Test comment",
+			"issue":{
+				"id":"issue-456",
+				"title":"Parent issue"
+			}
+		}
+	}`
+
+	eventData, err := ParseLinearWebhook([]byte(payload))
+	if err != nil {
+		t.Fatalf("ParseLinearWebhook() error = %v", err)
+	}
+
+	enrichLinearCommentLabels(context.Background(), logr.Discard(), eventData)
+
+	// Check that labels were injected into the payload
+	dataObj := eventData.Payload["data"].(map[string]interface{})
+	issue := dataObj["issue"].(map[string]interface{})
+	labels, ok := issue["labels"].([]interface{})
+	if !ok {
+		t.Fatal("Expected labels to be injected into issue")
+	}
+	if len(labels) != 2 {
+		t.Fatalf("Expected 2 labels, got %d", len(labels))
+	}
+
+	label0 := labels[0].(map[string]interface{})
+	if label0["name"] != "bug" {
+		t.Errorf("Expected first label 'bug', got %v", label0["name"])
+	}
+	label1 := labels[1].(map[string]interface{})
+	if label1["name"] != "priority:high" {
+		t.Errorf("Expected second label 'priority:high', got %v", label1["name"])
+	}
+
+	// Check convenience field was also updated
+	if len(eventData.Labels) != 2 || eventData.Labels[0] != "bug" || eventData.Labels[1] != "priority:high" {
+		t.Errorf("Expected eventData.Labels = [bug priority:high], got %v", eventData.Labels)
+	}
+}
+
+func TestEnrichLinearCommentLabels_MatchesFilterAfterEnrichment(t *testing.T) {
+	// End-to-end test: Comment payload without labels -> enrich -> filter matches
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := map[string]interface{}{
+			"data": map[string]interface{}{
+				"issue": map[string]interface{}{
+					"labels": map[string]interface{}{
+						"nodes": []map[string]interface{}{
+							{"name": "bug"},
+							{"name": "priority:high"},
+						},
+					},
+				},
+			},
+		}
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	origFetcher := linearLabelFetcher
+	linearLabelFetcher = func(ctx context.Context, issueID string) ([]string, error) {
+		return fetchLinearIssueLabelsFromURL(ctx, server.URL, "test-key", issueID)
+	}
+	defer func() { linearLabelFetcher = origFetcher }()
+
+	config := &v1alpha1.LinearWebhook{
+		Types: []string{"Comment"},
+		Filters: []v1alpha1.LinearWebhookFilter{
+			{Type: "Comment", Labels: []string{"bug"}},
+		},
+	}
+
+	// Comment payload without labels — should NOT match before enrichment
+	payload := `{
+		"type":"Comment",
+		"action":"create",
+		"data":{
+			"id":"comment-123",
+			"body":"Test comment",
+			"issue":{"id":"issue-456","title":"Parent issue"}
+		}
+	}`
+
+	eventData, err := ParseLinearWebhook([]byte(payload))
+	if err != nil {
+		t.Fatalf("ParseLinearWebhook() error = %v", err)
+	}
+
+	// Before enrichment — filter should not match
+	matched, err := MatchesLinearEvent(config, eventData)
+	if err != nil {
+		t.Fatalf("MatchesLinearEvent() error = %v", err)
+	}
+	if matched {
+		t.Error("Expected no match before enrichment")
+	}
+
+	// Enrich
+	enrichLinearCommentLabels(context.Background(), logr.Discard(), eventData)
+
+	// After enrichment — filter should match
+	matched, err = MatchesLinearEvent(config, eventData)
+	if err != nil {
+		t.Fatalf("MatchesLinearEvent() error = %v", err)
+	}
+	if !matched {
+		t.Error("Expected match after enrichment")
 	}
 }
