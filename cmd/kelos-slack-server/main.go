@@ -7,6 +7,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -152,7 +153,7 @@ func runReportingLoop(ctx context.Context, cl client.Client, botToken string, in
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := runSlackReportingCycle(ctx, cl, slackReporter); err != nil {
+			if err := runSlackReportingCycle(ctx, cl, slackReporter, log); err != nil {
 				log.Error(err, "Reporting cycle failed")
 			}
 		}
@@ -162,7 +163,7 @@ func runReportingLoop(ctx context.Context, cl client.Client, botToken string, in
 // runSlackReportingCycle lists all Tasks with Slack reporting enabled and
 // reports their status. Unlike the spawner version, this is not scoped to
 // a single TaskSpawner.
-func runSlackReportingCycle(ctx context.Context, cl client.Client, reporter *reporting.SlackTaskReporter) error {
+func runSlackReportingCycle(ctx context.Context, cl client.Client, reporter *reporting.SlackTaskReporter, log logr.Logger) error {
 	var taskList kelosv1alpha1.TaskList
 	if err := cl.List(ctx, &taskList, &client.ListOptions{}); err != nil {
 		return fmt.Errorf("Listing tasks for Slack reporting: %w", err)
@@ -171,7 +172,8 @@ func runSlackReportingCycle(ctx context.Context, cl client.Client, reporter *rep
 	for i := range taskList.Items {
 		task := &taskList.Items[i]
 		if err := reporter.ReportTaskStatus(ctx, task); err != nil {
-			ctrl.Log.WithName("slack-reporter").Error(err, "Failed to report task status", "task", task.Name)
+			log.Error(err, "Failed to report task status",
+				"task", task.Name, "namespace", task.Namespace)
 		}
 	}
 

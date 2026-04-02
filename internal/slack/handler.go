@@ -242,8 +242,12 @@ func (h *SlackHandler) getMatchingSpawners(ctx context.Context) ([]*v1alpha1.Tas
 func (h *SlackHandler) createTask(ctx context.Context, spawner *v1alpha1.TaskSpawner, msg *SlackMessageData) error {
 	templateVars := ExtractSlackWorkItem(msg)
 
-	// Build unique task name using a hash of the message timestamp
-	sum := sha256.Sum256([]byte(fmt.Sprintf("%s-%s", msg.ChannelID, msg.Timestamp)))
+	// Build unique task name using a hash of the message identifier
+	hashInput := fmt.Sprintf("%s-%s", msg.ChannelID, msg.Timestamp)
+	if msg.IsSlashCommand {
+		hashInput = msg.SlashCommandID
+	}
+	sum := sha256.Sum256([]byte(hashInput))
 	shortHash := hex.EncodeToString(sum[:])[:12]
 	taskName := fmt.Sprintf("%s-slack-%s", spawner.Name, shortHash)
 	if len(taskName) > 63 {
