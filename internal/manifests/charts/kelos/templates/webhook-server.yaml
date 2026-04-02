@@ -40,6 +40,9 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.webhookServer.sources.github.secretName }}
                   key: WEBHOOK_SECRET
+            {{- with .Values.webhookServer.sources.github.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           ports:
             - name: webhook
               containerPort: 8443
@@ -141,6 +144,9 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.webhookServer.sources.linear.secretName }}
                   key: WEBHOOK_SECRET
+            {{- with .Values.webhookServer.sources.linear.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           ports:
             - name: webhook
               containerPort: 8443
