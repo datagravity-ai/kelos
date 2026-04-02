@@ -266,6 +266,11 @@ func (in *GitHubIssues) DeepCopyInto(out *GitHubIssues) {
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}
+	if in.ExcludeAuthors != nil {
+		in, out := &in.ExcludeAuthors, &out.ExcludeAuthors
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	if in.PriorityLabels != nil {
 		in, out := &in.PriorityLabels, &out.PriorityLabels
 		*out = make([]string, len(*in))
@@ -308,6 +313,11 @@ func (in *GitHubPullRequests) DeepCopyInto(out *GitHubPullRequests) {
 	}
 	if in.ExcludeComments != nil {
 		in, out := &in.ExcludeComments, &out.ExcludeComments
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
+	if in.ExcludeAuthors != nil {
+		in, out := &in.ExcludeAuthors, &out.ExcludeAuthors
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}
@@ -366,6 +376,11 @@ func (in *GitHubWebhook) DeepCopyInto(out *GitHubWebhook) {
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}
+	if in.ExcludeAuthors != nil {
+		in, out := &in.ExcludeAuthors, &out.ExcludeAuthors
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	if in.Filters != nil {
 		in, out := &in.Filters, &out.Filters
 		*out = make([]GitHubWebhookFilter, len(*in))
@@ -403,6 +418,11 @@ func (in *GitHubWebhookFilter) DeepCopyInto(out *GitHubWebhookFilter) {
 		*out = new(bool)
 		**out = **in
 	}
+	if in.ExcludeAuthors != nil {
+		in, out := &in.ExcludeAuthors, &out.ExcludeAuthors
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+  }
 	if in.FilePatterns != nil {
 		in, out := &in.FilePatterns, &out.FilePatterns
 		*out = new(FilePatternFilter)

@@ -169,6 +169,11 @@ type GitHubIssues struct {
 	// +optional
 	Author string `json:"author,omitempty"`
 
+	// ExcludeAuthors filters out issues created by any of these usernames
+	// (client-side). When empty, no author exclusion is applied.
+	// +optional
+	ExcludeAuthors []string `json:"excludeAuthors,omitempty"`
+
 	// PriorityLabels defines a label-based priority order for discovered items.
 	// When maxConcurrency limits how many tasks are created per cycle,
 	// items are sorted by the first matching label before task creation.
@@ -250,6 +255,11 @@ type GitHubPullRequests struct {
 	// When empty, no author filtering is applied.
 	// +optional
 	Author string `json:"author,omitempty"`
+
+	// ExcludeAuthors filters out pull requests opened by any of these usernames
+	// (client-side). When empty, no author exclusion is applied.
+	// +optional
+	ExcludeAuthors []string `json:"excludeAuthors,omitempty"`
 
 	// Draft filters pull requests by draft state. When unset, both draft and
 	// ready-for-review pull requests are included.
@@ -353,6 +363,12 @@ type GitHubWebhook struct {
 	// +optional
 	Repository string `json:"repository,omitempty"`
 
+	// ExcludeAuthors excludes webhook events sent by any of these usernames.
+	// This is applied before filter evaluation and takes precedence over
+	// filter-level Author matches.
+	// +optional
+	ExcludeAuthors []string `json:"excludeAuthors,omitempty"`
+
 	// Filters refine which events trigger tasks. If multiple filters match
 	// the same event type, any match triggers a task (OR semantics).
 	// If empty, all events in the Events list trigger tasks.
@@ -398,6 +414,9 @@ type GitHubWebhookFilter struct {
 	// +optional
 	Author string `json:"author,omitempty"`
 
+	// ExcludeAuthors excludes events sent by any of these usernames.
+	// +optional
+	ExcludeAuthors []string `json:"excludeAuthors,omitempty"`
 	// FilePatterns filters events by changed file paths.
 	// For push events, file paths are extracted directly from the payload.
 	// For pull_request events, the file list is fetched from the GitHub API
