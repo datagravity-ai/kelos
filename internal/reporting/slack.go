@@ -106,9 +106,9 @@ func FormatSlackSucceeded(taskName string, results map[string]string) SlackMessa
 
 	resp := results["response"]
 	pr := results["pr"]
+	decoded := decodeResponse(resp)
 
 	if resp != "" {
-		decoded := decodeResponse(resp)
 		fallbackText = fmt.Sprintf("%s (Task: %s)", decoded, taskName)
 		blocks = append(blocks, slack.NewSectionBlock(
 			slack.NewTextBlockObject(slack.MarkdownType, decoded, false, false),
@@ -118,7 +118,7 @@ func FormatSlackSucceeded(taskName string, results map[string]string) SlackMessa
 
 	if pr != "" {
 		if resp != "" {
-			fallbackText = fmt.Sprintf("%s\nPR: %s (Task: %s)", decodeResponse(resp), pr, taskName)
+			fallbackText = fmt.Sprintf("%s\nPR: %s (Task: %s)", decoded, pr, taskName)
 		} else {
 			fallbackText = fmt.Sprintf("PR: %s (Task: %s)", pr, taskName)
 		}
@@ -151,9 +151,9 @@ func FormatSlackFailed(taskName, message string, results map[string]string) Slac
 	if results != nil {
 		resp = results["response"]
 	}
+	decoded := decodeResponse(resp)
 
 	if resp != "" {
-		decoded := decodeResponse(resp)
 		fallbackText = fmt.Sprintf("%s (Task: %s)", decoded, taskName)
 		blocks = append(blocks, slack.NewSectionBlock(
 			slack.NewTextBlockObject(slack.MarkdownType, decoded, false, false),
@@ -163,7 +163,7 @@ func FormatSlackFailed(taskName, message string, results map[string]string) Slac
 
 	if message != "" {
 		if resp != "" {
-			fallbackText = fmt.Sprintf("%s\nError: %s (Task: %s)", decodeResponse(resp), message, taskName)
+			fallbackText = fmt.Sprintf("%s\nError: %s (Task: %s)", decoded, message, taskName)
 		} else {
 			fallbackText = fmt.Sprintf("Error: %s (Task: %s)", message, taskName)
 		}

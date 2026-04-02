@@ -3,6 +3,7 @@ package reporting
 import (
 	"context"
 	"encoding/base64"
+	"strings"
 	"testing"
 
 	"github.com/slack-go/slack"
@@ -181,7 +182,7 @@ func assertSectionContains(t *testing.T, block slack.Block, substr string) {
 		t.Errorf("section text is nil, want to contain %q", substr)
 		return
 	}
-	if !contains(section.Text.Text, substr) {
+	if !strings.Contains(section.Text.Text, substr) {
 		t.Errorf("section text %q does not contain %q", section.Text.Text, substr)
 	}
 }
@@ -196,7 +197,7 @@ func assertContextContains(t *testing.T, block slack.Block, substr string) {
 	}
 	for _, elem := range ctx.ContextElements.Elements {
 		if txt, ok := elem.(*slack.TextBlockObject); ok {
-			if contains(txt.Text, substr) {
+			if strings.Contains(txt.Text, substr) {
 				return
 			}
 		}
@@ -204,16 +205,3 @@ func assertContextContains(t *testing.T, block slack.Block, substr string) {
 	t.Errorf("context block does not contain %q", substr)
 }
 
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
-		containsString(s, substr))
-}
-
-func containsString(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
-}
