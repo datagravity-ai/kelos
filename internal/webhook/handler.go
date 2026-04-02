@@ -294,6 +294,7 @@ func (h *WebhookHandler) processWebhook(ctx context.Context, eventType string, p
 	log.Info("Found matching TaskSpawners", "count", len(spawners))
 
 	tasksCreated := 0
+	linearLabelsEnriched := false
 
 	for _, spawner := range spawners {
 		spawnerLog := log.WithValues("spawner", spawner.Name, "namespace", spawner.Namespace)
@@ -328,6 +329,14 @@ func (h *WebhookHandler) processWebhook(ctx context.Context, eventType string, p
 			} else {
 				parsed.GitHub.ChangedFiles = files
 			}
+		}
+
+		// Lazily enrich labels for Linear Comment events. Linear does not
+		// include issue labels in Comment webhook payloads, so when a
+		// spawner filters Comments by labels we fetch them from the API.
+		if parsed.Linear != nil && !linearLabelsEnriched && spawnerNeedsLinearLabels(spawner, parsed.Linear) {
+			linearLabelsEnriched = true
+			enrichLinearCommentLabels(ctx, spawnerLog, parsed.Linear)
 		}
 
 		// Check if this webhook matches the spawner's filters
