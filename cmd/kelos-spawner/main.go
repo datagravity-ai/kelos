@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -749,10 +750,15 @@ func buildSourceWithProxy(ctx context.Context, ts *kelosv1alpha1.TaskSpawner, ow
 	if ts.Spec.When.Slack != nil {
 		botToken := os.Getenv("SLACK_BOT_TOKEN")
 		appToken := os.Getenv("SLACK_APP_TOKEN")
+		triggers, err := compileSlackTriggers(ts.Spec.When.Slack.Triggers)
+		if err != nil {
+			return nil, fmt.Errorf("compiling Slack triggers: %w", err)
+		}
 		return &source.SlackSource{
 			BotToken: botToken,
 			AppToken: appToken,
 			Channels: parseCSV(slackChannels),
+			Triggers: triggers,
 		}, nil
 	}
 
@@ -891,6 +897,30 @@ func isSlackTimestamp(s string) bool {
 		}
 	}
 	return true
+}
+
+// compileSlackTriggers converts CRD SlackTrigger specs into compiled
+// source.SlackTrigger values with pre-compiled regexes.
+func compileSlackTriggers(crdTriggers []kelosv1alpha1.SlackTrigger) ([]source.SlackTrigger, error) {
+	if len(crdTriggers) == 0 {
+		return nil, nil
+	}
+	triggers := make([]source.SlackTrigger, 0, len(crdTriggers))
+	for _, t := range crdTriggers {
+		if t.Pattern == "" {
+			continue
+		}
+		re, err := regexp.Compile(t.Pattern)
+		if err != nil {
+			return nil, fmt.Errorf("invalid trigger pattern %q: %w", t.Pattern, err)
+		}
+		mentionOptional := t.MentionOptional != nil && *t.MentionOptional
+		triggers = append(triggers, source.SlackTrigger{
+			Pattern:         re,
+			MentionOptional: mentionOptional,
+		})
+	}
+	return triggers, nil
 }
 
 func parsePollInterval(s string) time.Duration {

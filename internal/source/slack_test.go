@@ -2,7 +2,11 @@ package source
 
 import (
 	"context"
+	"regexp"
+	"strings"
 	"testing"
+
+	"github.com/slack-go/slack"
 )
 
 func TestShouldProcess(t *testing.T) {
@@ -25,13 +29,13 @@ func TestShouldProcess(t *testing.T) {
 			wantOK:     true,
 		},
 		{
-			name:       "threaded message ignored",
+			name:       "threaded message accepted as follow-up",
 			userID:     "U001",
 			text:       "this is a reply",
 			selfUserID: "UBOT",
 			threadTS:   "1234567890.123456",
-			wantBody:   "",
-			wantOK:     false,
+			wantBody:   "this is a reply",
+			wantOK:     true,
 		},
 		{
 			name:       "message from self ignored",
@@ -100,6 +104,78 @@ func TestShouldProcess(t *testing.T) {
 	}
 }
 
+func TestMatchesTriggers(t *testing.T) {
+	triage := regexp.MustCompile(`^/triage`)
+	help := regexp.MustCompile(`help`)
+
+	tests := []struct {
+		name       string
+		text       string
+		triggers   []SlackTrigger
+		selfUserID string
+		want       bool
+	}{
+		{
+			name:       "no triggers, with mention",
+			text:       "hey <@UBOT> fix this",
+			triggers:   nil,
+			selfUserID: "UBOT",
+			want:       true,
+		},
+		{
+			name:       "no triggers, no mention",
+			text:       "fix this",
+			triggers:   nil,
+			selfUserID: "UBOT",
+			want:       false,
+		},
+		{
+			name:       "trigger matches with mention",
+			text:       "<@UBOT> /triage this issue",
+			triggers:   []SlackTrigger{{Pattern: triage}},
+			selfUserID: "UBOT",
+			want:       false, // /triage not at start because mention prefix
+		},
+		{
+			name:       "trigger matches mentionOptional",
+			text:       "/triage this issue",
+			triggers:   []SlackTrigger{{Pattern: triage, MentionOptional: true}},
+			selfUserID: "UBOT",
+			want:       true,
+		},
+		{
+			name:       "trigger no match",
+			text:       "unrelated message <@UBOT>",
+			triggers:   []SlackTrigger{{Pattern: triage}},
+			selfUserID: "UBOT",
+			want:       false,
+		},
+		{
+			name:       "multiple triggers OR semantics",
+			text:       "I need help <@UBOT>",
+			triggers:   []SlackTrigger{{Pattern: triage}, {Pattern: help}},
+			selfUserID: "UBOT",
+			want:       true,
+		},
+		{
+			name:       "trigger matches but no mention and not optional",
+			text:       "/triage this issue",
+			triggers:   []SlackTrigger{{Pattern: triage}},
+			selfUserID: "UBOT",
+			want:       false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := matchesTriggers(tt.text, tt.triggers, tt.selfUserID)
+			if got != tt.want {
+				t.Errorf("matchesTriggers(%q) = %v, want %v", tt.text, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestMatchesChannel(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -160,6 +236,96 @@ func TestBuildWorkItem(t *testing.T) {
 	}
 	if item.Kind != "SlackMessage" {
 		t.Errorf("expected Kind %q, got %q", "SlackMessage", item.Kind)
+	}
+}
+
+func TestBotParticipated(t *testing.T) {
+	tests := []struct {
+		name       string
+		msgs       []slack.Message
+		selfUserID string
+		want       bool
+	}{
+		{
+			name: "bot present",
+			msgs: []slack.Message{
+				{Msg: slack.Msg{User: "U001", Text: "hello"}},
+				{Msg: slack.Msg{User: "UBOT", Text: "hi back"}},
+			},
+			selfUserID: "UBOT",
+			want:       true,
+		},
+		{
+			name: "bot absent",
+			msgs: []slack.Message{
+				{Msg: slack.Msg{User: "U001", Text: "hello"}},
+				{Msg: slack.Msg{User: "U002", Text: "hi"}},
+			},
+			selfUserID: "UBOT",
+			want:       false,
+		},
+		{
+			name:       "empty messages",
+			msgs:       []slack.Message{},
+			selfUserID: "UBOT",
+			want:       false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := botParticipated(tt.msgs, tt.selfUserID)
+			if got != tt.want {
+				t.Errorf("botParticipated() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFormatThreadContext(t *testing.T) {
+	msgs := []slack.Message{
+		{Msg: slack.Msg{User: "U001", Text: "add me to codeowners"}},
+		{Msg: slack.Msg{User: "UBOT", Text: "What is your GitHub handle?"}},
+		{Msg: slack.Msg{User: "U001", Text: "my handle is jdoe"}},
+	}
+
+	got := formatThreadContext(msgs, "UBOT")
+
+	if !strings.Contains(got, "User: add me to codeowners") {
+		t.Errorf("expected user message, got %q", got)
+	}
+	if !strings.Contains(got, "Agent: What is your GitHub handle?") {
+		t.Errorf("expected agent message, got %q", got)
+	}
+	if !strings.Contains(got, "User: my handle is jdoe") {
+		t.Errorf("expected user reply, got %q", got)
+	}
+}
+
+func TestFormatThreadContext_SkipsEmptyMessages(t *testing.T) {
+	msgs := []slack.Message{
+		{Msg: slack.Msg{User: "U001", Text: "hello"}},
+		{Msg: slack.Msg{User: "U001", Text: ""}},
+		{Msg: slack.Msg{User: "U001", Text: "world"}},
+	}
+
+	got := formatThreadContext(msgs, "UBOT")
+
+	if strings.Count(got, "User:") != 2 {
+		t.Errorf("expected 2 user messages, got %q", got)
+	}
+}
+
+func TestFormatThreadContext_BotIDAsAgent(t *testing.T) {
+	msgs := []slack.Message{
+		{Msg: slack.Msg{User: "U001", Text: "hello"}},
+		{Msg: slack.Msg{BotID: "B123", Text: "I am a bot"}},
+	}
+
+	got := formatThreadContext(msgs, "UBOT")
+
+	if !strings.Contains(got, "Agent: I am a bot") {
+		t.Errorf("expected bot message labeled as Agent, got %q", got)
 	}
 }
 
