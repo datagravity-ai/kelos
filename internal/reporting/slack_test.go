@@ -129,10 +129,13 @@ func TestConvertMarkdownToSlack(t *testing.T) {
 		{"h3", "### Notes", "*Notes*"},
 		{"bold", "this is **important**", "this is *important*"},
 		{"link", "see [docs](https://example.com)", "see <https://example.com|docs>"},
+		{"link with parens", "see [Go](https://en.wikipedia.org/wiki/Go_(language))", "see <https://en.wikipedia.org/wiki/Go_(language)|Go>"},
+		{"link with rfc parens", "[RFC](https://tools.ietf.org/html/rfc3986_(URI))", "<https://tools.ietf.org/html/rfc3986_(URI)|RFC>"},
 		{"strikethrough", "~~removed~~", "~removed~"},
 		{"heading mid-text", "intro\n## Section\nbody", "intro\n*Section*\nbody"},
 		{"multiple headings", "## One\ntext\n## Two", "*One*\ntext\n*Two*"},
 		{"collapsed newlines", "a\n\n\n\nb", "a\n\nb"},
+		{"bold inside heading", "## **Important Update**", "*Important Update*"},
 		{"mixed", "## Summary\n**Bold** and [link](https://x.com)\n~~old~~", "*Summary*\n*Bold* and <https://x.com|link>\n~old~"},
 	}
 	for _, tt := range tests {

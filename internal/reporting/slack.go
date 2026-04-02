@@ -15,8 +15,9 @@ var (
 	reHeading = regexp.MustCompile(`(?m)^#{1,6}\s+(.+)$`)
 	// reBold matches **bold** syntax.
 	reBold = regexp.MustCompile(`\*\*(.+?)\*\*`)
-	// reLink matches [text](url) syntax.
-	reLink = regexp.MustCompile(`\[([^\]]+)\]\(([^)]+)\)`)
+	// reLink matches [text](url) syntax, allowing one level of balanced parentheses
+	// in the URL (e.g. Wikipedia/RFC links like https://en.wikipedia.org/wiki/Go_(language)).
+	reLink = regexp.MustCompile(`\[([^\]]+)\]\(([^)]*(?:\([^)]*\))[^)]*|[^)]+)\)`)
 	// reStrikethrough matches ~~text~~ syntax.
 	reStrikethrough = regexp.MustCompile(`~~(.+?)~~`)
 )
@@ -24,9 +25,13 @@ var (
 // convertMarkdownToSlack converts standard Markdown to Slack mrkdwn format.
 func convertMarkdownToSlack(md string) string {
 	s := md
-	// Convert headings to bold text.
-	s = reHeading.ReplaceAllString(s, "*$1*")
-	// Convert **bold** to *bold* (must come after headings to avoid conflicts).
+	// Convert headings to bold text, stripping any inner ** markers.
+	s = reHeading.ReplaceAllStringFunc(s, func(m string) string {
+		inner := reHeading.FindStringSubmatch(m)[1]
+		inner = reBold.ReplaceAllString(inner, "$1") // strip ** before wrapping
+		return "*" + inner + "*"
+	})
+	// Convert remaining **bold** outside headings.
 	s = reBold.ReplaceAllString(s, "*$1*")
 	// Convert [text](url) to <url|text>.
 	s = reLink.ReplaceAllString(s, "<$2|$1>")
