@@ -605,6 +605,8 @@ func buildSourceWithProxy(ts *kelosv1alpha1.TaskSpawner, owner, repo, ghProxyURL
 			MinimumPermission: commentPolicy.MinimumPermission,
 			Draft:             gh.Draft,
 			PriorityLabels:    gh.PriorityLabels,
+			FilePatterns:      convertFilePatterns(gh.FilePatterns),
+			NeedsChangedFiles: templateReferencesChangedFiles(ts),
 		}, nil
 	}
 
@@ -715,6 +717,42 @@ func parseOwnerRepo(repoURL string) (string, string) {
 		return parts[len(parts)-2], parts[len(parts)-1]
 	}
 	return "", ""
+}
+
+// convertFilePatterns converts the API FilePatternFilter type to the source
+// package's equivalent. Returns nil when the input is nil (no file filtering).
+func convertFilePatterns(api *kelosv1alpha1.FilePatternFilter) *source.FilePatternFilter {
+	if api == nil {
+		return nil
+	}
+	return &source.FilePatternFilter{
+		Include:     append([]string(nil), api.Include...),
+		Exclude:     append([]string(nil), api.Exclude...),
+		ExcludeOnly: api.ExcludeOnly,
+	}
+}
+
+// templateReferencesChangedFiles returns true when any template field in the
+// TaskSpawner's taskTemplate references {{.ChangedFiles}}.
+func templateReferencesChangedFiles(ts *kelosv1alpha1.TaskSpawner) bool {
+	tmpl := ts.Spec.TaskTemplate
+	if strings.Contains(tmpl.PromptTemplate, "ChangedFiles") ||
+		strings.Contains(tmpl.Branch, "ChangedFiles") {
+		return true
+	}
+	if tmpl.Metadata != nil {
+		for _, v := range tmpl.Metadata.Labels {
+			if strings.Contains(v, "ChangedFiles") {
+				return true
+			}
+		}
+		for _, v := range tmpl.Metadata.Annotations {
+			if strings.Contains(v, "ChangedFiles") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func parsePollInterval(s string) time.Duration {
