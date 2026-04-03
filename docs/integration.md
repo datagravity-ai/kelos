@@ -106,6 +106,56 @@ spec:
 
 **Additional filters:** `reviewState`, `author`, `draft`.
 
+### GitHub Webhooks
+
+React to GitHub webhook events in real time — issues, pull requests, pushes, reviews, and more. Unlike the polling-based GitHub Issues and Pull Requests sources, webhooks provide instant response to repository events.
+
+```yaml
+apiVersion: kelos.dev/v1alpha1
+kind: TaskSpawner
+metadata:
+  name: webhook-responder
+spec:
+  when:
+    githubWebhook:
+      events:
+        - "issues"
+        - "pull_request"
+        - "issue_comment"
+      excludeAuthors:
+        - "dependabot[bot]"
+      filters:
+        - event: "issues"
+          action: "opened"
+          labels: ["bug"]
+        - event: "issue_comment"
+          action: "created"
+          bodyContains: "/kelos"
+  taskTemplate:
+    type: claude-code
+    workspaceRef:
+      name: my-workspace
+    credentials:
+      type: oauth
+      secretRef:
+        name: claude-oauth-token
+    promptTemplate: |
+      A {{.Event}} event ({{.Action}}) was triggered by @{{.Sender}}.
+
+      {{if .Title}}Title: {{.Title}}{{end}}
+      {{if .URL}}URL: {{.URL}}{{end}}
+
+      Please investigate and take appropriate action.
+    branch: "webhook-{{.Event}}-{{.ID}}"
+  maxConcurrency: 3
+```
+
+**Setup:** Configure your GitHub repository to send webhooks to your Kelos instance and create a secret with the webhook signing secret. See [example 10](../examples/10-taskspawner-github-webhook/) for full setup instructions.
+
+**Filtering options:** `events` (required), `repository`, `excludeAuthors`, and per-filter fields: `action`, `labels`, `excludeLabels`, `state`, `branch`, `draft`, `author`, `bodyContains`.
+
+**Webhook-specific variables:** `{{.Event}}`, `{{.Action}}`, `{{.Sender}}`, `{{.Ref}}`, `{{.Repository}}`, `{{.Payload}}` (full payload access).
+
 ### Jira
 
 React to Jira issues. The spawner polls the Jira API (Cloud or Data Center/Server) using JQL.
@@ -186,20 +236,28 @@ spec:
 
 All `promptTemplate` and `branch` fields support Go `text/template` syntax. Available variables depend on the source:
 
-| Variable | GitHub Issues | GitHub PRs | Jira | Cron |
-|----------|--------------|------------|------|------|
-| `{{.ID}}` | Issue number (string) | PR number (string) | Issue key (e.g., `ENG-42`) | Date-time string |
-| `{{.Number}}` | Issue number (int) | PR number (int) | `0` | `0` |
-| `{{.Title}}` | Issue title | PR title | Issue summary | Trigger time (RFC3339) |
-| `{{.Body}}` | Issue body | PR body | Issue description | Empty |
-| `{{.URL}}` | Issue URL | PR URL | Issue URL | Empty |
-| `{{.Labels}}` | Comma-separated | Comma-separated | Comma-separated | Empty |
-| `{{.Comments}}` | Issue comments | PR comments | Issue comments | Empty |
-| `{{.Kind}}` | `"Issue"` | `"PR"` | Jira issue type | `"Issue"` |
-| `{{.Branch}}` | Empty | PR head branch | Empty | Empty |
-| `{{.ReviewState}}` | Empty | `approved` / `changes_requested` | Empty | Empty |
-| `{{.ReviewComments}}` | Empty | Inline review comments | Empty | Empty |
-| `{{.Time}}` | Empty | Empty | Empty | Trigger time (RFC3339) |
+| Variable | GitHub Issues | GitHub PRs | GitHub Webhook | Jira | Cron |
+|----------|--------------|------------|----------------|------|------|
+| `{{.ID}}` | Issue number (string) | PR number (string) | Issue/PR number or commit ID | Issue key (e.g., `ENG-42`) | Date-time string |
+| `{{.Number}}` | Issue number (int) | PR number (int) | Issue/PR number | `0` | `0` |
+| `{{.Title}}` | Issue title | PR title | Issue/PR title | Issue summary | Trigger time (RFC3339) |
+| `{{.Body}}` | Issue body | PR body | Issue/PR/comment body | Issue description | Empty |
+| `{{.URL}}` | Issue URL | PR URL | Issue/PR URL | Issue URL | Empty |
+| `{{.Labels}}` | Comma-separated | Comma-separated | Empty | Comma-separated | Empty |
+| `{{.Comments}}` | Issue comments | PR comments | Empty | Issue comments | Empty |
+| `{{.Kind}}` | `"Issue"` | `"PR"` | `"webhook"` | Jira issue type | `"Issue"` |
+| `{{.Event}}` | Empty | Empty | Event type (e.g., `"issues"`) | Empty | Empty |
+| `{{.Action}}` | Empty | Empty | Action (e.g., `"opened"`) | Empty | Empty |
+| `{{.Sender}}` | Empty | Empty | Event sender username | Empty | Empty |
+| `{{.Branch}}` | Empty | PR head branch | PR/push branch | Empty | Empty |
+| `{{.Ref}}` | Empty | Empty | Git ref (e.g., `"refs/heads/main"`) | Empty | Empty |
+| `{{.Repository}}` | Empty | Empty | `owner/repo` format | Empty | Empty |
+| `{{.RepositoryOwner}}` | Empty | Empty | Repository owner login | Empty | Empty |
+| `{{.RepositoryName}}` | Empty | Empty | Repository name only | Empty | Empty |
+| `{{.Payload}}` | Empty | Empty | Full webhook payload | Empty | Empty |
+| `{{.ReviewState}}` | Empty | `approved` / `changes_requested` | Empty | Empty | Empty |
+| `{{.ReviewComments}}` | Empty | Inline review comments | Empty | Empty | Empty |
+| `{{.Time}}` | Empty | Empty | Empty | Empty | Trigger time (RFC3339) |
 
 ## Direct Task Creation: Workflow Integration
 

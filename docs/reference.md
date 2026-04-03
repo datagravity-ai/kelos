@@ -151,6 +151,19 @@ GitHub Apps are preferred over PATs for production use because they offer fine-g
 | `spec.when.githubPullRequests.priorityLabels` | Priority-order labels for task selection when `maxConcurrency` is set; index 0 is highest priority | No |
 | `spec.when.githubPullRequests.reporting.enabled` | Post status comments (started, succeeded, failed) back to the GitHub pull request | No |
 | `spec.when.githubPullRequests.pollInterval` | Per-source poll interval override (e.g., `"30s"`, `"5m"`); takes precedence over `spec.pollInterval` | No |
+| `spec.when.githubWebhook.events` | GitHub event types to listen for (e.g., `"issues"`, `"pull_request"`, `"push"`, `"issue_comment"`) | Yes (when using githubWebhook) |
+| `spec.when.githubWebhook.repository` | Restrict webhooks to a specific repository (`owner/repo` format); if empty, webhooks from any repository are accepted | No |
+| `spec.when.githubWebhook.excludeAuthors` | Exclude webhook events sent by any of these usernames; applied before filter evaluation | No |
+| `spec.when.githubWebhook.filters[].event` | GitHub event type this filter applies to | Yes (per filter) |
+| `spec.when.githubWebhook.filters[].action` | Filter by webhook action (e.g., `"opened"`, `"created"`, `"submitted"`) | No |
+| `spec.when.githubWebhook.filters[].labels` | Require the issue/PR to have all of these labels | No |
+| `spec.when.githubWebhook.filters[].excludeLabels` | Exclude issues/PRs with any of these labels | No |
+| `spec.when.githubWebhook.filters[].state` | Filter by issue/PR state (`"open"`, `"closed"`) | No |
+| `spec.when.githubWebhook.filters[].branch` | Filter push events by branch name (exact match or glob) | No |
+| `spec.when.githubWebhook.filters[].draft` | Filter PRs by draft status | No |
+| `spec.when.githubWebhook.filters[].author` | Filter by the event sender's username | No |
+| `spec.when.githubWebhook.filters[].excludeAuthors` | Exclude events sent by any of these usernames | No |
+| `spec.when.githubWebhook.filters[].bodyContains` | Filter by substring match on the comment/review body | No |
 | `spec.when.jira.pollInterval` | Per-source poll interval override (e.g., `"30s"`, `"5m"`); takes precedence over `spec.pollInterval` | No |
 | `spec.when.cron.schedule` | Cron schedule expression (e.g., `"0 * * * *"`) | Yes (when using cron) |
 | `spec.taskTemplate.type` | Agent type (`claude-code`, `codex`, `gemini`, `opencode`, or `cursor`) | Yes |
@@ -174,21 +187,29 @@ GitHub Apps are preferred over PATs for production use because they offer fine-g
 
 The `promptTemplate` field uses Go `text/template` syntax. Available variables depend on the source type:
 
-| Variable | Description | GitHub Issues | GitHub Pull Requests | Cron |
-|----------|-------------|---------------|----------------------|------|
-| `{{.ID}}` | Unique identifier | Issue/PR number as string (e.g., `"42"`) | Pull request number as string | Date-time string (e.g., `"20260207-0900"`) |
-| `{{.Number}}` | Issue or PR number | Issue/PR number (e.g., `42`) | Pull request number | `0` |
-| `{{.Title}}` | Title of the work item | Issue/PR title | Pull request title | Trigger time (RFC3339) |
-| `{{.Body}}` | Body text | Issue/PR body | Pull request body | Empty |
-| `{{.URL}}` | URL to the source item | GitHub HTML URL | GitHub PR URL | Empty |
-| `{{.Labels}}` | Comma-separated labels | Issue/PR labels | Pull request labels | Empty |
-| `{{.Comments}}` | Concatenated comments | Issue/PR comments | PR conversation comments | Empty |
-| `{{.Kind}}` | Type of work item | `"Issue"` or `"PR"` | `"PR"` | `"Issue"` |
-| `{{.Branch}}` | Git branch to update | Empty | PR head branch (e.g., `"kelos-task-42"`) | Empty |
-| `{{.ReviewState}}` | Aggregated review state | Empty | `approved`, `changes_requested`, or empty | Empty |
-| `{{.ReviewComments}}` | Formatted inline review comments | Empty | Inline PR review comments | Empty |
-| `{{.Time}}` | Trigger time (RFC3339) | Empty | Empty | Cron tick time (e.g., `"2026-02-07T09:00:00Z"`) |
-| `{{.Schedule}}` | Cron schedule expression | Empty | Empty | Schedule string (e.g., `"0 * * * *"`) |
+| Variable | Description | GitHub Issues | GitHub Pull Requests | GitHub Webhook | Cron |
+|----------|-------------|---------------|----------------------|----------------|------|
+| `{{.ID}}` | Unique identifier | Issue/PR number as string (e.g., `"42"`) | Pull request number as string | Issue/PR number or commit ID | Date-time string (e.g., `"20260207-0900"`) |
+| `{{.Number}}` | Issue or PR number | Issue/PR number (e.g., `42`) | Pull request number | Issue/PR number (when available) | `0` |
+| `{{.Title}}` | Title of the work item | Issue/PR title | Pull request title | Issue/PR title or "Push to &lt;branch&gt;" | Trigger time (RFC3339) |
+| `{{.Body}}` | Body text | Issue/PR body | Pull request body | Issue/PR/comment body | Empty |
+| `{{.URL}}` | URL to the source item | GitHub HTML URL | GitHub PR URL | Issue/PR HTML URL | Empty |
+| `{{.Labels}}` | Comma-separated labels | Issue/PR labels | Pull request labels | Empty | Empty |
+| `{{.Comments}}` | Concatenated comments | Issue/PR comments | PR conversation comments | Empty | Empty |
+| `{{.Kind}}` | Type of work item | `"Issue"` or `"PR"` | `"PR"` | `"webhook"` | `"Issue"` |
+| `{{.Event}}` | GitHub event type | Empty | Empty | Event type (e.g., `"issues"`, `"pull_request"`, `"push"`) | Empty |
+| `{{.Action}}` | Webhook action | Empty | Empty | Action (e.g., `"opened"`, `"created"`, `"submitted"`) | Empty |
+| `{{.Sender}}` | Event sender username | Empty | Empty | Username of person who triggered the event | Empty |
+| `{{.Branch}}` | Git branch to update | Empty | PR head branch (e.g., `"kelos-task-42"`) | PR source branch or push branch | Empty |
+| `{{.Ref}}` | Git ref | Empty | Empty | Git ref for push events (e.g., `"refs/heads/main"`) | Empty |
+| `{{.Repository}}` | Full repository name | Empty | Empty | Repository in `owner/repo` format | Empty |
+| `{{.RepositoryOwner}}` | Repository owner | Empty | Empty | Repository owner login | Empty |
+| `{{.RepositoryName}}` | Repository name | Empty | Empty | Repository name only | Empty |
+| `{{.Payload}}` | Raw event payload | Empty | Empty | Full parsed GitHub webhook payload | Empty |
+| `{{.ReviewState}}` | Aggregated review state | Empty | `approved`, `changes_requested`, or empty | Empty | Empty |
+| `{{.ReviewComments}}` | Formatted inline review comments | Empty | Inline PR review comments | Empty | Empty |
+| `{{.Time}}` | Trigger time (RFC3339) | Empty | Empty | Empty | Cron tick time (e.g., `"2026-02-07T09:00:00Z"`) |
+| `{{.Schedule}}` | Cron schedule expression | Empty | Empty | Empty | Schedule string (e.g., `"0 * * * *"`) |
 
 ## Task Status
 
