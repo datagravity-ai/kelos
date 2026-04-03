@@ -171,7 +171,6 @@ func runReportingCycle(ctx context.Context, cl client.Client, key types.Namespac
 	return nil
 }
 
-
 func runCycle(ctx context.Context, cl client.Client, key types.NamespacedName, githubOwner, githubRepo, githubAPIBaseURL, githubTokenFile, jiraBaseURL, jiraProject, jiraJQL string, httpClient *http.Client) error {
 	return runCycleWithProxy(ctx, cl, key, githubOwner, githubRepo, "", githubAPIBaseURL, githubTokenFile, jiraBaseURL, jiraProject, jiraJQL, httpClient)
 }
@@ -640,7 +639,6 @@ func buildSourceWithProxy(ts *kelosv1alpha1.TaskSpawner, owner, repo, ghProxyURL
 
 	return nil, fmt.Errorf("no source configured in TaskSpawner %s/%s", ts.Namespace, ts.Name)
 }
-
 
 func readGitHubToken(tokenFile string) (string, error) {
 	token := os.Getenv("GITHUB_TOKEN")
