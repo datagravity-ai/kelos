@@ -52,7 +52,16 @@ spec:
 
 **Filtering options:** `labels`, `excludeLabels`, `state`, `assignee`, `author`, `types` (issues, pulls, or both).
 
-**Comment-based control:** Use `triggerComment` and `excludeComments` to let users trigger or exclude agents via issue comments. Combine with authorization rules (user, team, or permission) to control who can invoke agents.
+**Comment-based control:** Use `commentPolicy` to let users trigger or exclude agents via issue comments. Combine with authorization rules (`allowedUsers`, `allowedTeams`, or `minimumPermission`) to control who can invoke agents:
+
+```yaml
+commentPolicy:
+  triggerComment: "/kelos run"
+  excludeComments: ["/kelos stop"]
+  minimumPermission: write   # only repo collaborators can trigger
+```
+
+> **Note:** The top-level `triggerComment` and `excludeComments` fields are deprecated. Use `commentPolicy.triggerComment` and `commentPolicy.excludeComments` instead.
 
 **Status reporting:** Set `reporting.enabled: true` to post status updates (started, succeeded, failed) back to the issue as comments.
 

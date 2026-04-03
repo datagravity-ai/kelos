@@ -120,22 +120,36 @@ GitHub Apps are preferred over PATs for production use because they offer fine-g
 | `spec.when.githubIssues.excludeLabels` | Exclude issues with these labels | No |
 | `spec.when.githubIssues.state` | Filter by state: `open`, `closed`, `all` (default: `open`) | No |
 | `spec.when.githubIssues.types` | Filter by type: `issues`, `pulls` (default: `issues`) | No |
-| `spec.when.githubIssues.triggerComment` | Requires a matching command in the issue body or comments to include the issue. When combined with `excludeComments`, the latest matching command wins | No |
-| `spec.when.githubIssues.excludeComments` | Exclude issues whose most recent matching command is an exclude comment. When combined with `triggerComment`, the latest matching command wins | No |
+| `spec.when.githubIssues.triggerComment` | **Deprecated: use `commentPolicy.triggerComment` instead.** Requires a matching command in the issue body or comments to include the issue. When combined with `excludeComments`, the latest matching command wins | No |
+| `spec.when.githubIssues.excludeComments` | **Deprecated: use `commentPolicy.excludeComments` instead.** Exclude issues whose most recent matching command is an exclude comment. When combined with `triggerComment`, the latest matching command wins | No |
+| `spec.when.githubIssues.commentPolicy.triggerComment` | Requires a matching command in the issue body or comments to include the issue. Replaces deprecated top-level `triggerComment` | No |
+| `spec.when.githubIssues.commentPolicy.excludeComments` | Blocks items whose most recent matching command is an exclude comment. Replaces deprecated top-level `excludeComments` | No |
+| `spec.when.githubIssues.commentPolicy.allowedUsers` | Restrict comment control to specific GitHub usernames | No |
+| `spec.when.githubIssues.commentPolicy.allowedTeams` | Restrict comment control to specific GitHub teams in `org/team-slug` format | No |
+| `spec.when.githubIssues.commentPolicy.minimumPermission` | Minimum repo permission required for comment control: `read`, `triage`, `write`, `maintain`, or `admin` | No |
 | `spec.when.githubIssues.assignee` | Filter by assignee username; use `"*"` for any assignee or `"none"` for unassigned | No |
 | `spec.when.githubIssues.author` | Filter by issue author username | No |
+| `spec.when.githubIssues.excludeAuthors` | Exclude issues created by any of these usernames (client-side) | No |
 | `spec.when.githubIssues.priorityLabels` | Priority-order labels for task selection when `maxConcurrency` is set; index 0 is highest priority | No |
+| `spec.when.githubIssues.reporting.enabled` | Post status comments (started, succeeded, failed) back to the GitHub issue | No |
 | `spec.when.githubIssues.pollInterval` | Per-source poll interval override (e.g., `"30s"`, `"5m"`); takes precedence over `spec.pollInterval` | No |
 | `spec.when.githubPullRequests.repo` | Override repository to poll for PRs (in `owner/repo` format or full URL); defaults to workspace repo URL | No |
 | `spec.when.githubPullRequests.labels` | Filter pull requests by labels | No |
 | `spec.when.githubPullRequests.excludeLabels` | Exclude pull requests with these labels | No |
 | `spec.when.githubPullRequests.state` | Filter by state: `open`, `closed`, `all` (default: `open`) | No |
 | `spec.when.githubPullRequests.reviewState` | Filter by aggregated review state: `approved`, `changes_requested`, `any` (default: `any`) | No |
-| `spec.when.githubPullRequests.triggerComment` | Requires a matching command in the PR body or comments to include the PR. When combined with `excludeComments`, the latest matching command wins | No |
-| `spec.when.githubPullRequests.excludeComments` | Exclude PRs whose most recent matching command is an exclude comment. When combined with `triggerComment`, the latest matching command wins | No |
+| `spec.when.githubPullRequests.triggerComment` | **Deprecated: use `commentPolicy.triggerComment` instead.** Requires a matching command in the PR body or comments to include the PR. When combined with `excludeComments`, the latest matching command wins | No |
+| `spec.when.githubPullRequests.excludeComments` | **Deprecated: use `commentPolicy.excludeComments` instead.** Exclude PRs whose most recent matching command is an exclude comment. When combined with `triggerComment`, the latest matching command wins | No |
+| `spec.when.githubPullRequests.commentPolicy.triggerComment` | Requires a matching command in the PR body or comments to include the PR. Replaces deprecated top-level `triggerComment` | No |
+| `spec.when.githubPullRequests.commentPolicy.excludeComments` | Blocks PRs whose most recent matching command is an exclude comment. Replaces deprecated top-level `excludeComments` | No |
+| `spec.when.githubPullRequests.commentPolicy.allowedUsers` | Restrict comment control to specific GitHub usernames | No |
+| `spec.when.githubPullRequests.commentPolicy.allowedTeams` | Restrict comment control to specific GitHub teams in `org/team-slug` format | No |
+| `spec.when.githubPullRequests.commentPolicy.minimumPermission` | Minimum repo permission required for comment control: `read`, `triage`, `write`, `maintain`, or `admin` | No |
 | `spec.when.githubPullRequests.author` | Filter by PR author username | No |
+| `spec.when.githubPullRequests.excludeAuthors` | Exclude PRs opened by any of these usernames (client-side) | No |
 | `spec.when.githubPullRequests.draft` | Filter by draft state | No |
 | `spec.when.githubPullRequests.priorityLabels` | Priority-order labels for task selection when `maxConcurrency` is set; index 0 is highest priority | No |
+| `spec.when.githubPullRequests.reporting.enabled` | Post status comments (started, succeeded, failed) back to the GitHub pull request | No |
 | `spec.when.githubPullRequests.pollInterval` | Per-source poll interval override (e.g., `"30s"`, `"5m"`); takes precedence over `spec.pollInterval` | No |
 | `spec.when.jira.pollInterval` | Per-source poll interval override (e.g., `"30s"`, `"5m"`); takes precedence over `spec.pollInterval` | No |
 | `spec.when.cron.schedule` | Cron schedule expression (e.g., `"0 * * * *"`) | Yes (when using cron) |
