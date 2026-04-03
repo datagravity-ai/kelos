@@ -115,6 +115,63 @@ func TestFormatSlackMessages(t *testing.T) {
 		assertSectionContains(t, got.Blocks[1], "Could not find the file.")
 		assertSectionContains(t, got.Blocks[2], "Task failed")
 	})
+
+	t.Run("succeeded with table response", func(t *testing.T) {
+		resp := "| Name | Age |\n| --- | --- |\n| Alice | 30 |"
+		results := map[string]string{"response": b64(resp)}
+		got := FormatSlackSucceeded("spawner-1234567890.123456", results)
+		// header (Done!) + table + context
+		assertBlockCount(t, got.Blocks, 3)
+		assertSectionText(t, got.Blocks[0], ":white_check_mark: *Done!*")
+		if _, ok := got.Blocks[1].(*slack.TableBlock); !ok {
+			t.Errorf("block 1: expected *TableBlock, got %T", got.Blocks[1])
+		}
+	})
+
+	t.Run("succeeded with list response", func(t *testing.T) {
+		resp := "- item one\n- item two\n- item three"
+		results := map[string]string{"response": b64(resp)}
+		got := FormatSlackSucceeded("spawner-1234567890.123456", results)
+		// header (Done!) + rich_text list + context
+		assertBlockCount(t, got.Blocks, 3)
+		if _, ok := got.Blocks[1].(*slack.RichTextBlock); !ok {
+			t.Errorf("block 1: expected *RichTextBlock, got %T", got.Blocks[1])
+		}
+	})
+
+	t.Run("succeeded with header response", func(t *testing.T) {
+		resp := "# Summary\nEverything looks good."
+		results := map[string]string{"response": b64(resp)}
+		got := FormatSlackSucceeded("spawner-1234567890.123456", results)
+		// header (Done!) + HeaderBlock + SectionBlock + context
+		assertBlockCount(t, got.Blocks, 4)
+		if hdr, ok := got.Blocks[1].(*slack.HeaderBlock); !ok {
+			t.Errorf("block 1: expected *HeaderBlock, got %T", got.Blocks[1])
+		} else if hdr.Text.Text != "Summary" {
+			t.Errorf("header text = %q, want %q", hdr.Text.Text, "Summary")
+		}
+		assertSectionContains(t, got.Blocks[2], "Everything looks good.")
+	})
+
+	t.Run("succeeded with mixed rich content", func(t *testing.T) {
+		resp := "## Report\nResults below:\n\n| Col | Val |\n| --- | --- |\n| a | 1 |\n\n- note 1\n- note 2"
+		results := map[string]string{"response": b64(resp)}
+		got := FormatSlackSucceeded("spawner-1234567890.123456", results)
+		// Done! + header + section + table + list + context
+		assertBlockCount(t, got.Blocks, 6)
+		if _, ok := got.Blocks[1].(*slack.HeaderBlock); !ok {
+			t.Errorf("block 1: expected *HeaderBlock, got %T", got.Blocks[1])
+		}
+		if _, ok := got.Blocks[2].(*slack.SectionBlock); !ok {
+			t.Errorf("block 2: expected *SectionBlock, got %T", got.Blocks[2])
+		}
+		if _, ok := got.Blocks[3].(*slack.TableBlock); !ok {
+			t.Errorf("block 3: expected *TableBlock, got %T", got.Blocks[3])
+		}
+		if _, ok := got.Blocks[4].(*slack.RichTextBlock); !ok {
+			t.Errorf("block 4: expected *RichTextBlock, got %T", got.Blocks[4])
+		}
+	})
 }
 
 func TestConvertMarkdownToSlack(t *testing.T) {
