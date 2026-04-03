@@ -5,17 +5,21 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"time"
 
+	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	kelosv1alpha1 "github.com/kelos-dev/kelos/api/v1alpha1"
 	"github.com/kelos-dev/kelos/internal/logging"
+	"github.com/kelos-dev/kelos/internal/reporting"
 	kelosslack "github.com/kelos-dev/kelos/internal/slack"
 )
 
@@ -34,11 +38,13 @@ func main() {
 		metricsAddr          string
 		probeAddr            string
 		enableLeaderElection bool
+		reportingInterval    time.Duration
 	)
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false, "Enable leader election for controller manager.")
+	flag.DurationVar(&reportingInterval, "reporting-interval", 30*time.Second, "How often to run the Slack reporting cycle.")
 
 	opts, applyVerbosity := logging.SetupZapOptions(flag.CommandLine)
 	flag.Parse()
@@ -91,6 +97,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Register reporting loop as a leader-elected runnable.
+	if err := mgr.Add(&reportingRunnable{
+		client:   mgr.GetClient(),
+		botToken: botToken,
+		interval: reportingInterval,
+	}); err != nil {
+		setupLog.Error(err, "Unable to register reporting loop with manager")
+		os.Exit(1)
+	}
+
 	// Health checks
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "Unable to set up health check")
@@ -124,3 +140,63 @@ func (r *slackRunnable) Start(ctx context.Context) error {
 }
 
 func (r *slackRunnable) NeedLeaderElection() bool { return true }
+
+// reportingRunnable wraps the reporting loop as a leader-elected manager.Runnable.
+type reportingRunnable struct {
+	client   client.Client
+	botToken string
+	interval time.Duration
+}
+
+func (r *reportingRunnable) Start(ctx context.Context) error {
+	setupLog.Info("Starting Slack reporting loop", "interval", r.interval)
+	runReportingLoop(ctx, r.client, r.botToken, r.interval)
+	return nil
+}
+
+func (r *reportingRunnable) NeedLeaderElection() bool { return true }
+
+// runReportingLoop periodically reports Slack task status for ALL Slack-annotated
+// Tasks cluster-wide. This replaces the per-TaskSpawner reporting that previously
+// ran in each spawner pod.
+func runReportingLoop(ctx context.Context, cl client.Client, botToken string, interval time.Duration) {
+	log := ctrl.Log.WithName("slack-reporter")
+	slackReporter := &reporting.SlackTaskReporter{
+		Client:   cl,
+		Reporter: &reporting.SlackReporter{BotToken: botToken},
+	}
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := runSlackReportingCycle(ctx, cl, slackReporter, log); err != nil {
+				log.Error(err, "Reporting cycle failed")
+			}
+		}
+	}
+}
+
+// runSlackReportingCycle lists all Tasks with Slack reporting enabled and
+// reports their status. Unlike the spawner version, this is not scoped to
+// a single TaskSpawner.
+func runSlackReportingCycle(ctx context.Context, cl client.Client, reporter *reporting.SlackTaskReporter, log logr.Logger) error {
+	var taskList kelosv1alpha1.TaskList
+	if err := cl.List(ctx, &taskList, &client.ListOptions{}); err != nil {
+		return fmt.Errorf("Listing tasks for Slack reporting: %w", err)
+	}
+
+	for i := range taskList.Items {
+		task := &taskList.Items[i]
+		if err := reporter.ReportTaskStatus(ctx, task); err != nil {
+			log.Error(err, "Failed to report task status",
+				"task", task.Name, "namespace", task.Namespace)
+		}
+	}
+
+	return nil
+}

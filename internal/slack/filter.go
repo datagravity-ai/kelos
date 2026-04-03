@@ -1,10 +1,8 @@
 package slack
 
 import (
-	"fmt"
 	"regexp"
 	"strings"
-	"sync"
 
 	"github.com/kelos-dev/kelos/api/v1alpha1"
 )
@@ -16,6 +14,8 @@ type SlackMessageData struct {
 	UserID string
 	// ChannelID is the Slack channel ID where the message was posted.
 	ChannelID string
+	// ChannelName is the human-readable channel name.
+	ChannelName string
 	// UserName is the display name of the message author.
 	UserName string
 	// Text is the raw message text.
@@ -28,48 +28,53 @@ type SlackMessageData struct {
 	Permalink string
 	// Body is the processed message body (trigger prefix stripped, or full thread context).
 	Body string
-	// HasThreadContext indicates that Body contains full thread context
-	// rather than the raw message text.
-	HasThreadContext bool
 	// IsSlashCommand indicates this came from a slash command rather than a message event.
 	IsSlashCommand bool
 	// SlashCommandID is the composite ID for slash commands (channelID:command:triggerID).
 	SlashCommandID string
 }
 
-var triggerRegexpCache sync.Map
-
-func getOrCompileTriggerRegexp(pattern string) (*regexp.Regexp, error) {
-	if cached, ok := triggerRegexpCache.Load(pattern); ok {
-		return cached.(*regexp.Regexp), nil
-	}
-	re, err := regexp.Compile(pattern)
-	if err != nil {
-		return nil, err
-	}
-	triggerRegexpCache.Store(pattern, re)
-	return re, nil
-}
-
 // MatchesSpawner checks whether a Slack message matches the given TaskSpawner's
-// Slack configuration (channels, bot mention, and trigger patterns).
-func MatchesSpawner(slackCfg *v1alpha1.Slack, msg *SlackMessageData, botUserID string) bool {
+// Slack configuration (channels and allowed users). Trigger command matching
+// is handled separately during message preprocessing.
+func MatchesSpawner(slackCfg *v1alpha1.Slack, msg *SlackMessageData) bool {
 	if slackCfg == nil {
 		return false
 	}
 	if !matchesChannel(msg.ChannelID, slackCfg.Channels) {
 		return false
 	}
-	// Slash commands bypass mention and trigger filters.
-	if msg.IsSlashCommand {
+	return true
+}
+
+// MatchesTriggers checks whether a message should fire based on configured
+// triggers and bot mention. When triggers is empty, every message is accepted.
+// When triggers are set, a message fires if at least one trigger matches
+// (pattern matches AND (mention present OR MentionOptional)).
+// botUserID is the Slack user ID of the bot (used for mention detection).
+func MatchesTriggers(text string, triggers []v1alpha1.SlackTrigger, botUserID string) bool {
+	if len(triggers) == 0 {
 		return true
 	}
-	// No triggers: fire on any bot mention.
-	if len(slackCfg.Triggers) == 0 {
-		return hasBotMention(msg.Text, botUserID)
+
+	mentioned := strings.Contains(text, "<@"+botUserID+">")
+
+	for _, t := range triggers {
+		if t.Pattern == "" {
+			continue
+		}
+		matched, err := regexp.MatchString(t.Pattern, text)
+		if err != nil || !matched {
+			continue
+		}
+		if t.MentionOptional != nil && *t.MentionOptional {
+			return true
+		}
+		if mentioned {
+			return true
+		}
 	}
-	// With triggers: OR across triggers.
-	return matchesTriggers(msg.Text, slackCfg.Triggers, botUserID)
+	return false
 }
 
 // ExtractSlackWorkItem builds the template variables map from a Slack message
@@ -81,14 +86,9 @@ func ExtractSlackWorkItem(msg *SlackMessageData) map[string]interface{} {
 		id = msg.SlashCommandID
 	}
 
-	title := msg.Text
-	if idx := strings.Index(title, "\n"); idx != -1 {
-		title = title[:idx]
-	}
-
 	return map[string]interface{}{
 		"ID":    id,
-		"Title": title,
+		"Title": msg.UserName,
 		"Body":  msg.Body,
 		"URL":   msg.Permalink,
 		"Kind":  "SlackMessage",
@@ -109,35 +109,3 @@ func matchesChannel(channelID string, allowed []string) bool {
 	return false
 }
 
-// hasBotMention returns true if the message text contains an @-mention of
-// the bot user ID. Slack encodes mentions as <@USER_ID> or <@USER_ID|name>.
-func hasBotMention(text string, botUserID string) bool {
-	if botUserID == "" {
-		return false
-	}
-	return strings.Contains(text, fmt.Sprintf("<@%s>", botUserID)) ||
-		strings.Contains(text, fmt.Sprintf("<@%s|", botUserID))
-}
-
-// matchesTriggers evaluates trigger patterns against message text with OR
-// semantics. Each trigger requires pattern match AND bot mention, unless
-// MentionOptional is true on that trigger.
-func matchesTriggers(text string, triggers []v1alpha1.SlackTrigger, botUserID string) bool {
-	mentioned := hasBotMention(text, botUserID)
-	for _, t := range triggers {
-		re, err := getOrCompileTriggerRegexp(t.Pattern)
-		if err != nil {
-			continue
-		}
-		if !re.MatchString(text) {
-			continue
-		}
-		if t.MentionOptional != nil && *t.MentionOptional {
-			return true
-		}
-		if mentioned {
-			return true
-		}
-	}
-	return false
-}

@@ -32,7 +32,6 @@ type spawnerRuntimeConfig struct {
 	JiraBaseURL      string
 	JiraProject      string
 	JiraJQL          string
-	SlackChannels    string
 	HTTPClient       *http.Client
 }
 
@@ -42,8 +41,6 @@ type spawnerReconciler struct {
 	Config spawnerRuntimeConfig
 
 	// persistentSource holds a source that survives across reconcile cycles.
-	// Used for Slack (Socket Mode), where a long-lived WebSocket must persist
-	// so events can accumulate between Discover() calls.
 	persistentSource source.Source
 }
 
@@ -78,12 +75,10 @@ func (r *spawnerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 func runOnce(ctx context.Context, cl client.Client, key types.NamespacedName, cfg spawnerRuntimeConfig, persistentSource source.Source) (time.Duration, error) {
 	if persistentSource != nil {
-		// Reuse the persistent source so its connection survives across
-		// cycles and accumulated events are preserved (e.g. Slack Socket Mode).
 		if err := runCycleWithSource(ctx, cl, key, persistentSource); err != nil {
 			return 0, err
 		}
-	} else if err := runCycleWithProxy(ctx, cl, key, cfg.GitHubOwner, cfg.GitHubRepo, cfg.GHProxyURL, cfg.GitHubAPIBaseURL, cfg.TokenResolver, cfg.JiraBaseURL, cfg.JiraProject, cfg.JiraJQL, cfg.SlackChannels, cfg.HTTPClient); err != nil {
+	} else if err := runCycleWithProxy(ctx, cl, key, cfg.GitHubOwner, cfg.GitHubRepo, cfg.GHProxyURL, cfg.GitHubAPIBaseURL, cfg.TokenResolver, cfg.JiraBaseURL, cfg.JiraProject, cfg.JiraJQL, cfg.HTTPClient); err != nil {
 		return 0, err
 	}
 

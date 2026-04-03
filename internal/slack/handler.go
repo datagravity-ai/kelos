@@ -5,8 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	stdlog "log"
-	"os"
 	"strings"
 	"time"
 
@@ -14,25 +12,11 @@ import (
 	goslack "github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"
 	"github.com/slack-go/slack/socketmode"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/kelos-dev/kelos/api/v1alpha1"
+	"github.com/kelos-dev/kelos/internal/reporting"
 	"github.com/kelos-dev/kelos/internal/taskbuilder"
-)
-
-const (
-	// AnnotationSlackReporting indicates that Slack reporting is enabled
-	// for this Task.
-	AnnotationSlackReporting = "kelos.dev/slack-reporting"
-
-	// AnnotationSlackChannel records the Slack channel ID where the
-	// originating message was posted.
-	AnnotationSlackChannel = "kelos.dev/slack-channel"
-
-	// AnnotationSlackThreadTS records the originating message timestamp,
-	// used as thread_ts for posting replies.
-	AnnotationSlackThreadTS = "kelos.dev/slack-thread-ts"
 )
 
 const enrichCallTimeout = 5 * time.Second
@@ -71,7 +55,7 @@ func NewSlackHandler(ctx context.Context, cl client.Client, botToken, appToken s
 		log:         log,
 		taskBuilder: tb,
 		api:         api,
-		sm:          newSocketModeClient(api),
+		sm:          socketmode.New(api),
 		botUserID:   authResp.UserID,
 	}, nil
 }
@@ -84,9 +68,7 @@ func (h *SlackHandler) Start(ctx context.Context) error {
 
 	go func() {
 		if err := h.sm.RunContext(bgCtx); err != nil {
-			h.log.Error(err, "Socket Mode connection closed with error")
-		} else {
-			h.log.Info("Socket Mode connection closed cleanly")
+			h.log.Error(err, "Socket Mode connection closed")
 		}
 	}()
 
@@ -96,16 +78,13 @@ func (h *SlackHandler) Start(ctx context.Context) error {
 			return bgCtx.Err()
 		case evt, ok := <-h.sm.Events:
 			if !ok {
-				h.log.Info("Socket Mode events channel closed, exiting listener")
-				return fmt.Errorf("Socket Mode events channel closed unexpectedly")
+				return nil
 			}
 			switch evt.Type {
 			case socketmode.EventTypeEventsAPI:
 				h.handleEventsAPI(bgCtx, evt)
 			case socketmode.EventTypeSlashCommand:
 				h.handleSlashCommand(bgCtx, evt)
-			default:
-				h.log.V(1).Info("Unhandled Socket Mode event type", "type", evt.Type)
 			}
 		}
 	}
@@ -131,31 +110,24 @@ func (h *SlackHandler) handleEventsAPI(ctx context.Context, evt socketmode.Event
 		return
 	}
 
-	// MessageEvent.UnmarshalJSON always populates Message, even for regular
-	// (non-subtype) messages, by re-unmarshaling top-level JSON into Message.
-	hasContent := innerEvent.Text != "" ||
-		(innerEvent.Message != nil && len(innerEvent.Message.Attachments) > 0)
-	if !shouldProcess(innerEvent.User, innerEvent.SubType, hasContent, h.botUserID) {
-		h.log.V(1).Info("Message filtered by shouldProcess",
-			"user", innerEvent.User, "subtype", innerEvent.SubType, "channel", innerEvent.Channel)
+	if !shouldProcess(innerEvent.User, innerEvent.SubType, innerEvent.Text, h.botUserID) {
 		return
 	}
 
 	// Enrich message with user info, permalink, channel name
 	msg := h.enrichMessage(ctx, innerEvent)
 
-	// For thread replies, fetch full thread context so the agent sees
-	// the entire conversation. Spawner filters (mention + triggers)
-	// decide whether to process the message.
+	// For thread replies, fetch full thread context
 	if innerEvent.ThreadTimeStamp != "" {
-		body, err := FetchThreadContext(ctx, h.api, innerEvent.Channel, innerEvent.ThreadTimeStamp, h.botUserID)
+		body, ok, err := FetchThreadContext(ctx, h.api, innerEvent.Channel, innerEvent.ThreadTimeStamp, h.botUserID)
 		if err != nil {
-			h.log.Error(err, "Failed to fetch thread context, falling back to message text",
-				"channel", innerEvent.Channel, "threadTS", innerEvent.ThreadTimeStamp)
-		} else {
-			msg.Body = body
-			msg.HasThreadContext = true
+			h.log.Error(err, "Failed to fetch thread context", "channel", innerEvent.Channel, "threadTS", innerEvent.ThreadTimeStamp)
+			return
 		}
+		if !ok {
+			return
+		}
+		msg.Body = body
 	}
 
 	h.routeMessage(ctx, msg)
@@ -181,6 +153,7 @@ func (h *SlackHandler) handleSlashCommand(ctx context.Context, evt socketmode.Ev
 	msg := &SlackMessageData{
 		UserID:         cmd.UserID,
 		ChannelID:      cmd.ChannelID,
+		ChannelName:    cmd.ChannelName,
 		UserName:       cmd.UserName,
 		Text:           cmd.Text,
 		Body:           body,
@@ -225,10 +198,14 @@ func (h *SlackHandler) routeMessage(ctx context.Context, msg *SlackMessageData) 
 
 		slackCfg := spawner.Spec.When.Slack
 
-		// Check channel, mention, and trigger filters
-		if !MatchesSpawner(slackCfg, msg, h.botUserID) {
-			spawnerLog.V(1).Info("Message did not match spawner filters",
-				"channel", msg.ChannelID, "triggerCount", len(slackCfg.Triggers))
+		// Check channel and user filters
+		if !MatchesSpawner(slackCfg, msg) {
+			continue
+		}
+
+		// Check trigger patterns (per-spawner, since each TaskSpawner can have different triggers).
+		// Slash commands skip the trigger check — the command name itself acts as the trigger.
+		if !msg.IsSlashCommand && !MatchesTriggers(msg.Text, slackCfg.Triggers, h.botUserID) {
 			continue
 		}
 
@@ -274,8 +251,7 @@ func (h *SlackHandler) createTask(ctx context.Context, spawner *v1alpha1.TaskSpa
 	shortHash := hex.EncodeToString(sum[:])[:12]
 	taskName := fmt.Sprintf("%s-slack-%s", spawner.Name, shortHash)
 	if len(taskName) > 63 {
-		fullSum := sha256.Sum256([]byte(taskName))
-		taskName = fmt.Sprintf("slack-%s", hex.EncodeToString(fullSum[:])[:12])
+		taskName = strings.TrimRight(taskName[:63], "-.")
 	}
 
 	// Resolve GVK for owner reference
@@ -305,24 +281,19 @@ func (h *SlackHandler) createTask(ctx context.Context, spawner *v1alpha1.TaskSpa
 	if task.Annotations == nil {
 		task.Annotations = make(map[string]string)
 	}
-	task.Annotations[AnnotationSlackReporting] = "enabled"
-	task.Annotations[AnnotationSlackChannel] = msg.ChannelID
+	task.Annotations[reporting.AnnotationSlackReporting] = "enabled"
+	task.Annotations[reporting.AnnotationSlackChannel] = msg.ChannelID
 
-	// Only set thread_ts for real message timestamps (not slash command composite IDs).
-	// Slash commands intentionally skip status reporting — there is no thread to reply to.
+	// Only set thread_ts for real message timestamps (not slash command composite IDs)
 	if !msg.IsSlashCommand {
 		threadTS := msg.Timestamp
 		if msg.ThreadTS != "" {
 			threadTS = msg.ThreadTS
 		}
-		task.Annotations[AnnotationSlackThreadTS] = threadTS
+		task.Annotations[reporting.AnnotationSlackThreadTS] = threadTS
 	}
 
 	if err := h.client.Create(ctx, task); err != nil {
-		if apierrors.IsAlreadyExists(err) {
-			h.log.Info("Task already exists, skipping", "task", taskName)
-			return nil
-		}
 		return fmt.Errorf("Creating task: %w", err)
 	}
 
@@ -331,7 +302,7 @@ func (h *SlackHandler) createTask(ctx context.Context, spawner *v1alpha1.TaskSpa
 }
 
 // enrichMessage builds a SlackMessageData from a raw Slack message event,
-// enriching it with user info and permalink.
+// enriching it with user info, permalink, and channel name.
 func (h *SlackHandler) enrichMessage(ctx context.Context, event *slackevents.MessageEvent) *SlackMessageData {
 	userName := event.User
 	userCtx, userCancel := context.WithTimeout(ctx, enrichCallTimeout)
@@ -353,46 +324,31 @@ func (h *SlackHandler) enrichMessage(ctx context.Context, event *slackevents.Mes
 		permalink = link
 	}
 
-	body := event.Text
-	// Message is always non-nil after UnmarshalJSON (see MessageEvent docs).
-	if event.Message != nil && len(event.Message.Attachments) > 0 {
-		if attachText := formatAttachments(event.Message.Attachments); attachText != "" {
-			if body != "" {
-				body = body + "\n" + attachText
-			} else {
-				body = attachText
-			}
-		}
+	channelName := event.Channel
+	chanCtx, chanCancel := context.WithTimeout(ctx, enrichCallTimeout)
+	defer chanCancel()
+	if info, err := h.api.GetConversationInfoContext(chanCtx, &goslack.GetConversationInfoInput{
+		ChannelID: event.Channel,
+	}); err == nil {
+		channelName = info.Name
 	}
 
 	return &SlackMessageData{
-		UserID:    event.User,
-		ChannelID: event.Channel,
-		UserName:  userName,
-		Text:      event.Text,
-		Body:      body,
-		ThreadTS:  event.ThreadTimeStamp,
-		Timestamp: event.TimeStamp,
-		Permalink: permalink,
+		UserID:      event.User,
+		ChannelID:   event.Channel,
+		ChannelName: channelName,
+		UserName:    userName,
+		Text:        event.Text,
+		Body:        event.Text,
+		ThreadTS:    event.ThreadTimeStamp,
+		Timestamp:   event.TimeStamp,
+		Permalink:   permalink,
 	}
-}
-
-// newSocketModeClient creates a Socket Mode client with an stderr logger.
-// Set SLACK_SOCKET_DEBUG=1 to enable verbose WebSocket frame logging.
-func newSocketModeClient(api *goslack.Client) *socketmode.Client {
-	opts := []socketmode.Option{
-		socketmode.OptionLog(stdlog.New(os.Stderr, "socketmode: ", stdlog.LstdFlags|stdlog.Lshortfile)),
-	}
-	if os.Getenv("SLACK_SOCKET_DEBUG") == "1" {
-		opts = append(opts, socketmode.OptionDebug(true))
-	}
-	return socketmode.New(api, opts...)
 }
 
 // shouldProcess decides whether a Slack message should be processed.
 // It filters out bot messages, self-messages, and message subtypes we don't handle.
-// hasContent should be true when the message has text or attachments.
-func shouldProcess(userID, subtype string, hasContent bool, selfUserID string) bool {
+func shouldProcess(userID, subtype, text, selfUserID string) bool {
 	if userID == selfUserID {
 		return false
 	}
@@ -400,5 +356,5 @@ func shouldProcess(userID, subtype string, hasContent bool, selfUserID string) b
 	case "bot_message", "message_changed", "message_deleted", "message_replied":
 		return false
 	}
-	return hasContent
+	return text != ""
 }

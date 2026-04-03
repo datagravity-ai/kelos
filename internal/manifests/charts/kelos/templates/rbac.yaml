@@ -300,6 +300,7 @@ rules:
       - create
       - get
       - list
+      - update
   - apiGroups:
       - kelos.dev
     resources:
