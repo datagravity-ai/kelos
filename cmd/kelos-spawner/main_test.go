@@ -623,7 +623,7 @@ func TestRunCycle_BuildSourceFailureCountsDiscoveryErrorAndDuration(t *testing.T
 	beforeErrors := testutil.ToFloat64(discoveryErrorsTotal)
 	beforeDurationCount := histogramSampleCount(t, discoveryDurationSeconds)
 
-	err := runCycle(context.Background(), cl, key, "owner", "repo", "", "", "", "", "", nil)
+	err := runCycle(context.Background(), cl, key, "owner", "repo", "", "", "", "", "", "", "", "", nil)
 	if err == nil {
 		t.Fatal("Expected buildSource error")
 	}
