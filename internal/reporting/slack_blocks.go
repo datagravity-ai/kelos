@@ -7,6 +7,26 @@ import (
 	"github.com/slack-go/slack"
 )
 
+var (
+	// reBold matches **bold** syntax.
+	reBold = regexp.MustCompile(`\*\*(.+?)\*\*`)
+	// reLink matches [text](url) syntax, allowing one level of balanced parentheses
+	// in the URL (e.g. Wikipedia/RFC links like https://en.wikipedia.org/wiki/Go_(language)).
+	reLink = regexp.MustCompile(`\[([^\]]+)\]\(([^)]*(?:\([^)]*\))[^)]*|[^)]+)\)`)
+	// reStrikethrough matches ~~text~~ syntax.
+	reStrikethrough = regexp.MustCompile(`~~(.+?)~~`)
+)
+
+// convertInlineMarkdown converts standard inline Markdown (bold, links,
+// strikethrough) to Slack mrkdwn format. Headings are handled separately
+// as HeaderBlocks, so they are not converted here.
+func convertInlineMarkdown(s string) string {
+	s = reBold.ReplaceAllString(s, "*$1*")
+	s = reLink.ReplaceAllString(s, "<$2|$1>")
+	s = reStrikethrough.ReplaceAllString(s, "~$1~")
+	return s
+}
+
 // segmentType identifies a markdown content segment.
 type segmentType int
 
@@ -155,7 +175,7 @@ func responseToBlocks(text string) []slack.Block {
 			joined := strings.Join(seg.lines, "\n")
 			if strings.TrimSpace(joined) != "" {
 				blocks = append(blocks, slack.NewSectionBlock(
-					slack.NewTextBlockObject(slack.MarkdownType, joined, false, false),
+					slack.NewTextBlockObject(slack.MarkdownType, convertInlineMarkdown(joined), false, false),
 					nil, nil,
 				))
 			}
