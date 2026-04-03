@@ -23,8 +23,9 @@ import (
 type WebhookSource string
 
 const (
-	GitHubSource WebhookSource = "github"
-	LinearSource WebhookSource = "linear"
+	GitHubSource  WebhookSource = "github"
+	LinearSource  WebhookSource = "linear"
+	GenericSource WebhookSource = "generic"
 
 	// GitHub webhook headers
 	GitHubEventHeader     = "X-GitHub-Event"
@@ -36,10 +37,11 @@ const (
 	LinearDeliveryHeader  = "Linear-Delivery"
 )
 
-// ParsedWebhook holds parsed webhook data for either GitHub or Linear sources.
+// ParsedWebhook holds parsed webhook data for GitHub, Linear, or generic sources.
 type ParsedWebhook struct {
-	GitHub *GitHubEventData
-	Linear *LinearEventData
+	GitHub  *GitHubEventData
+	Linear  *LinearEventData
+	Generic *GenericEventData
 	// Common fields for logging and task naming
 	ID    string
 	Title string
@@ -111,10 +113,15 @@ func (d *DeliveryCache) cleanup() {
 }
 
 // NewWebhookHandler creates a new webhook handler for the specified source.
+// For GenericSource, the HMAC secret is looked up per-request from
+// <SOURCE>_WEBHOOK_SECRET env vars, so WEBHOOK_SECRET is not required.
 func NewWebhookHandler(ctx context.Context, client client.Client, source WebhookSource, log logr.Logger) (*WebhookHandler, error) {
-	secret := []byte(os.Getenv("WEBHOOK_SECRET"))
-	if len(secret) == 0 {
-		return nil, fmt.Errorf("WEBHOOK_SECRET environment variable is required")
+	var secret []byte
+	if source != GenericSource {
+		secret = []byte(os.Getenv("WEBHOOK_SECRET"))
+		if len(secret) == 0 {
+			return nil, fmt.Errorf("WEBHOOK_SECRET environment variable is required")
+		}
 	}
 
 	taskBuilder, err := taskbuilder.NewTaskBuilder(client)
@@ -198,6 +205,48 @@ func (h *WebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+	case GenericSource:
+		sourceName := extractSourceFromPath(r.URL.Path)
+		if sourceName == "" {
+			log.Info("Missing source in path", "path", r.URL.Path)
+			http.Error(w, "Missing source in path, expected /webhook/<source>", http.StatusBadRequest)
+			return
+		}
+
+		eventType = sourceName
+
+		// Look up per-source secret from env: <SOURCE>_WEBHOOK_SECRET.
+		// When no secret is configured, signature validation is skipped
+		// (useful for sources that don't support HMAC signing).
+		envKey := strings.ToUpper(strings.ReplaceAll(sourceName, "-", "_")) + "_WEBHOOK_SECRET"
+		secretStr := os.Getenv(envKey)
+
+		// Find matching spawner config to determine signature and delivery
+		// headers. Single API call for all three values.
+		sigHeader, sigPrefix, deliveryIDHeader := h.getGenericWebhookConfig(ctx, sourceName)
+
+		if secretStr != "" {
+			signature = r.Header.Get(sigHeader)
+			if err := validateGenericSignature(body, signature, []byte(secretStr), sigPrefix); err != nil {
+				log.Error(err, "Generic webhook signature validation failed", "source", sourceName)
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
+			}
+		} else {
+			log.Info("No webhook secret configured, skipping signature validation", "envVar", envKey, "source", sourceName)
+		}
+
+		// Derive delivery ID from header or body hash
+		if deliveryIDHeader != "" {
+			deliveryID = r.Header.Get(deliveryIDHeader)
+		}
+		if deliveryID == "" {
+			sum := sha256.Sum256(body)
+			deliveryID = "generic-" + sourceName + "-" + hex.EncodeToString(sum[:])
+		}
+
+		log.Info("Processing generic webhook", "source", sourceName, "deliveryID", deliveryID, "payloadSize", len(body))
+
 	default:
 		log.Error(fmt.Errorf("unsupported source: %s", h.source), "Unsupported webhook source")
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
@@ -276,6 +325,15 @@ func (h *WebhookHandler) processWebhook(ctx context.Context, eventType string, p
 				log = log.WithValues("linearTitle", parsed.Title)
 			}
 		}
+
+	case GenericSource:
+		eventData, err := ParseGenericWebhook(payload)
+		if err != nil {
+			return false, fmt.Errorf("failed to parse generic webhook: %w", err)
+		}
+		parsed.Generic = eventData
+		// ID and Title are extracted per-spawner via fieldMapping in matchesSpawner
+		log = log.WithValues("genericSource", eventType)
 	}
 
 	log.Info("Processing webhook event", "resourceID", parsed.ID, "title", parsed.Title)
@@ -379,6 +437,10 @@ func (h *WebhookHandler) getMatchingSpawners(ctx context.Context) ([]*v1alpha1.T
 			if spawner.Spec.When.LinearWebhook != nil {
 				matching = append(matching, spawner)
 			}
+		case GenericSource:
+			if spawner.Spec.When.Webhook != nil {
+				matching = append(matching, spawner)
+			}
 		}
 	}
 
@@ -408,6 +470,22 @@ func (h *WebhookHandler) matchesSpawner(spawner *v1alpha1.TaskSpawner, eventType
 		}
 		return MatchesLinearEvent(spawner.Spec.When.LinearWebhook, parsed.Linear)
 
+	case GenericSource:
+		if spawner.Spec.When.Webhook == nil {
+			return false, nil
+		}
+		// Check source name matches the URL path segment
+		if spawner.Spec.When.Webhook.Source != eventType {
+			return false, nil
+		}
+		// Extract fields for this spawner's fieldMapping
+		if err := parsed.Generic.ExtractFields(spawner.Spec.When.Webhook.FieldMapping); err != nil {
+			return false, err
+		}
+		parsed.ID = parsed.Generic.Fields["id"]
+		parsed.Title = parsed.Generic.Fields["title"]
+		return MatchesGenericFilters(spawner.Spec.When.Webhook.Filters, parsed.Generic.Payload)
+
 	default:
 		return false, fmt.Errorf("unsupported source: %s", h.source)
 	}
@@ -426,6 +504,9 @@ func (h *WebhookHandler) createTask(ctx context.Context, spawner *v1alpha1.TaskS
 
 	case LinearSource:
 		templateVars = ExtractLinearWorkItem(parsed.Linear)
+
+	case GenericSource:
+		templateVars = ExtractGenericWorkItem(parsed.Generic)
 
 	default:
 		return fmt.Errorf("unsupported source: %s", h.source)
@@ -473,4 +554,46 @@ func (h *WebhookHandler) createTask(ctx context.Context, spawner *v1alpha1.TaskS
 	}
 
 	return nil
+}
+
+// getGenericWebhookConfig finds the signature header, signature prefix, and
+// delivery ID header for a generic webhook source by checking spawner configs.
+// A single API list call provides all three values. Returns defaults if no
+// matching spawner is found.
+func (h *WebhookHandler) getGenericWebhookConfig(ctx context.Context, sourceName string) (sigHeader, sigPrefix, deliveryIDHeader string) {
+	var spawnerList v1alpha1.TaskSpawnerList
+	if err := h.client.List(ctx, &spawnerList, &client.ListOptions{}); err != nil {
+		return "X-Webhook-Signature-256", "sha256=", ""
+	}
+
+	for i := range spawnerList.Items {
+		wh := spawnerList.Items[i].Spec.When.Webhook
+		if wh != nil && wh.Source == sourceName {
+			sigHeader = wh.SignatureHeader
+			if sigHeader == "" {
+				sigHeader = "X-Webhook-Signature-256"
+			}
+			return sigHeader, wh.SignaturePrefix, wh.DeliveryIDHeader
+		}
+	}
+
+	return "X-Webhook-Signature-256", "sha256=", ""
+}
+
+// validateGenericSignature validates an HMAC-SHA256 signature with a
+// configurable prefix (e.g., "sha256=" or empty for raw hex digest).
+func validateGenericSignature(payload []byte, signature string, secret []byte, prefix string) error {
+	if signature == "" {
+		return fmt.Errorf("missing signature")
+	}
+
+	sig := signature
+	if prefix != "" {
+		if !strings.HasPrefix(signature, prefix) {
+			return fmt.Errorf("invalid signature format: expected %s prefix", prefix)
+		}
+		sig = signature[len(prefix):]
+	}
+
+	return validateHMACSignature(payload, sig, secret)
 }
