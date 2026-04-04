@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"reflect"
 	"strings"
@@ -35,6 +36,7 @@ func resolveCredentialValue(v string) string {
 func newRunCommand(cfg *ClientConfig) *cobra.Command {
 	var (
 		prompt         string
+		promptFile     string
 		agentType      string
 		secret         string
 		credentialType string
@@ -74,6 +76,28 @@ func newRunCommand(cfg *ClientConfig) *cobra.Command {
 				}
 				if !cmd.Flags().Changed("agent-config") && c.AgentConfig != "" {
 					agentConfigRef = c.AgentConfig
+				}
+			}
+
+			if !cmd.Flags().Changed("prompt") && !cmd.Flags().Changed("prompt-file") {
+				return fmt.Errorf("either --prompt or --prompt-file is required")
+			}
+			if cmd.Flags().Changed("prompt-file") {
+				var err error
+				if promptFile == "-" {
+					data, readErr := io.ReadAll(os.Stdin)
+					if readErr != nil {
+						return fmt.Errorf("reading prompt from stdin: %w", readErr)
+					}
+					prompt = strings.TrimRight(string(data), "\n")
+				} else {
+					prompt, err = resolveContent("@" + promptFile)
+					if err != nil {
+						return fmt.Errorf("resolving prompt file: %w", err)
+					}
+				}
+				if prompt == "" {
+					return fmt.Errorf("prompt file is empty")
 				}
 			}
 
@@ -294,7 +318,8 @@ func newRunCommand(cfg *ClientConfig) *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVarP(&prompt, "prompt", "p", "", "task prompt (required)")
+	cmd.Flags().StringVarP(&prompt, "prompt", "p", "", "task prompt (required unless --prompt-file is set)")
+	cmd.Flags().StringVar(&promptFile, "prompt-file", "", "read task prompt from a file (use - for stdin)")
 	cmd.Flags().StringVarP(&agentType, "type", "t", "claude-code", "agent type (claude-code, codex, gemini, opencode, cursor)")
 	cmd.Flags().StringVar(&secret, "secret", "", "secret name with credentials (overrides oauthToken/apiKey in config)")
 	cmd.Flags().StringVar(&credentialType, "credential-type", "api-key", "credential type (api-key, oauth, none)")
@@ -311,7 +336,7 @@ func newRunCommand(cfg *ClientConfig) *cobra.Command {
 	cmd.Flags().StringArrayVar(&dependsOn, "depends-on", nil, "Task names this task depends on (repeatable)")
 	cmd.Flags().StringVar(&branch, "branch", "", "Git branch to work on")
 
-	cmd.MarkFlagRequired("prompt")
+	cmd.MarkFlagsMutuallyExclusive("prompt", "prompt-file")
 
 	_ = cmd.RegisterFlagCompletionFunc("credential-type", cobra.FixedCompletions([]string{"api-key", "oauth", "none"}, cobra.ShellCompDirectiveNoFileComp))
 	_ = cmd.RegisterFlagCompletionFunc("type", cobra.FixedCompletions([]string{"claude-code", "codex", "gemini", "opencode", "cursor"}, cobra.ShellCompDirectiveNoFileComp))

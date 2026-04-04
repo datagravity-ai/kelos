@@ -963,6 +963,185 @@ func TestRunCommand_DryRun_NoneCredentialType_ConfigFile(t *testing.T) {
 	}
 }
 
+func TestRunCommand_DryRun_PromptFile(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte("secret: my-secret\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	promptPath := filepath.Join(dir, "prompt.md")
+	if err := os.WriteFile(promptPath, []byte("multi-line\nprompt content\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{
+		"run",
+		"--config", cfgPath,
+		"--dry-run",
+		"--prompt-file", promptPath,
+		"--name", "prompt-file-task",
+		"--namespace", "test-ns",
+	})
+
+	output := captureStdout(t, func() {
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	if !strings.Contains(output, "kind: Task") {
+		t.Errorf("expected 'kind: Task' in output, got:\n%s", output)
+	}
+	if !strings.Contains(output, "multi-line") {
+		t.Errorf("expected prompt content in output, got:\n%s", output)
+	}
+	if !strings.Contains(output, "prompt content") {
+		t.Errorf("expected prompt content in output, got:\n%s", output)
+	}
+}
+
+func TestRunCommand_DryRun_PromptFile_Missing(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte("secret: my-secret\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{
+		"run",
+		"--config", cfgPath,
+		"--dry-run",
+		"--prompt-file", filepath.Join(dir, "nonexistent.md"),
+		"--name", "missing-file-task",
+		"--namespace", "test-ns",
+	})
+
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("expected error for missing prompt file")
+	}
+}
+
+func TestRunCommand_DryRun_PromptFile_Empty(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte("secret: my-secret\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	promptPath := filepath.Join(dir, "empty.md")
+	if err := os.WriteFile(promptPath, []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{
+		"run",
+		"--config", cfgPath,
+		"--dry-run",
+		"--prompt-file", promptPath,
+		"--name", "empty-file-task",
+		"--namespace", "test-ns",
+	})
+
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("expected error for empty prompt file")
+	}
+}
+
+func TestRunCommand_DryRun_PromptAndPromptFile_MutuallyExclusive(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte("secret: my-secret\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	promptPath := filepath.Join(dir, "prompt.md")
+	if err := os.WriteFile(promptPath, []byte("file prompt"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{
+		"run",
+		"--config", cfgPath,
+		"--dry-run",
+		"--prompt", "inline prompt",
+		"--prompt-file", promptPath,
+		"--name", "both-flags-task",
+		"--namespace", "test-ns",
+	})
+
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("expected error when both --prompt and --prompt-file are set")
+	}
+}
+
+func TestRunCommand_DryRun_NeitherPromptNorPromptFile(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte("secret: my-secret\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{
+		"run",
+		"--config", cfgPath,
+		"--dry-run",
+		"--name", "no-prompt-task",
+		"--namespace", "test-ns",
+	})
+
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("expected error when neither --prompt nor --prompt-file is set")
+	}
+}
+
+func TestRunCommand_DryRun_PromptFile_Stdin(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte("secret: my-secret\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a pipe to simulate stdin.
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldStdin := os.Stdin
+	os.Stdin = r
+	defer func() { os.Stdin = oldStdin }()
+
+	go func() {
+		w.Write([]byte("stdin prompt content\n"))
+		w.Close()
+	}()
+
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{
+		"run",
+		"--config", cfgPath,
+		"--dry-run",
+		"--prompt-file", "-",
+		"--name", "stdin-task",
+		"--namespace", "test-ns",
+	})
+
+	output := captureStdout(t, func() {
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	if !strings.Contains(output, "stdin prompt content") {
+		t.Errorf("expected stdin prompt content in output, got:\n%s", output)
+	}
+}
+
 func TestResolveContent(t *testing.T) {
 	t.Run("empty", func(t *testing.T) {
 		got, err := resolveContent("")
