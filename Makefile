@@ -1,7 +1,8 @@
 # Image configuration
 REGISTRY ?= ghcr.io/kelos-dev
 VERSION ?= latest
-IMAGE_DIRS ?= cmd/kelos-controller cmd/kelos-spawner cmd/kelos-token-refresher cmd/kelos-webhook-server cmd/ghproxy claude-code codex gemini opencode cursor
+IMAGE_DIRS ?= cmd/kelos-controller cmd/kelos-spawner cmd/kelos-token-refresher cmd/ghproxy cmd/kelos-webhook-server claude-code codex gemini opencode cursor
+LOCAL_ARCH ?= $(shell go env GOARCH)
 
 # Version injection for the kelos CLI – only set ldflags when an explicit
 # version is given so that dev builds fall through to runtime/debug info.
@@ -79,20 +80,39 @@ build: ## Build binaries (use WHAT=cmd/kelos to build specific binary).
 run: ## Run a controller from your host.
 	go run ./cmd/kelos-controller
 
+IMAGE_PLATFORMS ?= linux/$(LOCAL_ARCH)
+IMAGE_ARCHES = $(shell echo "$(IMAGE_PLATFORMS)" | tr ',' '\n' | cut -d'/' -f2 | tr '\n' ' ')
+PUSH ?= false
+
 .PHONY: image
-image: ## Build docker images (use WHAT to build specific image).
+image: ## Build docker images (use WHAT, IMAGE_PLATFORMS, PUSH=true to customize).
 	@for dir in $(filter cmd/%,$(or $(WHAT),$(IMAGE_DIRS))); do \
-		GOOS=linux GOARCH=amd64 $(MAKE) build WHAT=$$dir; \
+		name=$$(basename $$dir); \
+		for arch in $(IMAGE_ARCHES); do \
+			GOOS=linux GOARCH=$$arch $(MAKE) build WHAT=$$dir; \
+			mv bin/$$name bin/$${name}-linux-$$arch; \
+		done; \
 	done
-	@GOOS=linux GOARCH=amd64 $(MAKE) build WHAT=cmd/kelos-capture
+	@for arch in $(IMAGE_ARCHES); do \
+		GOOS=linux GOARCH=$$arch $(MAKE) build WHAT=cmd/kelos-capture; \
+		mv bin/kelos-capture bin/kelos-capture-linux-$$arch; \
+	done
 	@for dir in $(or $(WHAT),$(IMAGE_DIRS)); do \
-		docker build -t $(REGISTRY)/$$(basename $$dir):$(VERSION) -f $$dir/Dockerfile .; \
+		docker buildx build --platform $(IMAGE_PLATFORMS) \
+			$(if $(filter true,$(PUSH)),--push,--load) \
+			-t $(REGISTRY)/$$(basename $$dir):$(VERSION) \
+			-f $$dir/Dockerfile .; \
 	done
 
-.PHONY: push
-push: ## Push docker images (use WHAT to push specific image).
+.PHONY: manifest
+SOURCE_VERSION ?= $(VERSION)
+
+manifest: ## Create and push multi-arch manifest from per-arch images (use WHAT, IMAGE_PLATFORMS, SOURCE_VERSION).
 	@for dir in $(or $(WHAT),$(IMAGE_DIRS)); do \
-		docker push $(REGISTRY)/$$(basename $$dir):$(VERSION); \
+		name=$$(basename $$dir); \
+		docker buildx imagetools create \
+			-t $(REGISTRY)/$$name:$(VERSION) \
+			$(foreach arch,$(IMAGE_ARCHES),$(REGISTRY)/$$name:$(SOURCE_VERSION)-$(arch) ); \
 	done
 
 RELEASE_PLATFORMS ?= linux/amd64 linux/arm64 darwin/amd64 darwin/arm64
