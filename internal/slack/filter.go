@@ -108,4 +108,3 @@ func matchesChannel(channelID string, allowed []string) bool {
 	}
 	return false
 }
-

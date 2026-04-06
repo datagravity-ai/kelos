@@ -694,7 +694,6 @@ func buildSourceWithProxy(ctx context.Context, ts *kelosv1alpha1.TaskSpawner, ow
 		}, nil
 	}
 
-
 	if ts.Spec.When.Cron != nil {
 		var lastDiscovery time.Time
 		if ts.Status.LastDiscoveryTime != nil {
