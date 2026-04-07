@@ -379,6 +379,177 @@ func TestPrintTaskSpawnerTableJira(t *testing.T) {
 	}
 }
 
+func TestPrintTaskSpawnerTableGitHubWebhook(t *testing.T) {
+	spawners := []kelosv1alpha1.TaskSpawner{
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:              "webhook-spawner",
+				CreationTimestamp: metav1.NewTime(time.Now().Add(-1 * time.Hour)),
+			},
+			Spec: kelosv1alpha1.TaskSpawnerSpec{
+				When: kelosv1alpha1.When{
+					GitHubWebhook: &kelosv1alpha1.GitHubWebhook{
+						Events:     []string{"issue_comment", "push"},
+						Repository: "org/repo",
+					},
+				},
+			},
+			Status: kelosv1alpha1.TaskSpawnerStatus{
+				Phase: kelosv1alpha1.TaskSpawnerPhaseRunning,
+			},
+		},
+	}
+
+	var buf bytes.Buffer
+	printTaskSpawnerTable(&buf, spawners, false)
+	output := buf.String()
+
+	if !strings.Contains(output, "GitHub Webhook (org/repo)") {
+		t.Errorf("expected 'GitHub Webhook (org/repo)' as source in output, got %q", output)
+	}
+}
+
+func TestPrintTaskSpawnerTableGitHubWebhookNoRepo(t *testing.T) {
+	spawners := []kelosv1alpha1.TaskSpawner{
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:              "webhook-spawner",
+				CreationTimestamp: metav1.NewTime(time.Now().Add(-1 * time.Hour)),
+			},
+			Spec: kelosv1alpha1.TaskSpawnerSpec{
+				When: kelosv1alpha1.When{
+					GitHubWebhook: &kelosv1alpha1.GitHubWebhook{
+						Events: []string{"push"},
+					},
+				},
+			},
+			Status: kelosv1alpha1.TaskSpawnerStatus{
+				Phase: kelosv1alpha1.TaskSpawnerPhaseRunning,
+			},
+		},
+	}
+
+	var buf bytes.Buffer
+	printTaskSpawnerTable(&buf, spawners, false)
+	output := buf.String()
+
+	if !strings.Contains(output, "GitHub Webhook") {
+		t.Errorf("expected 'GitHub Webhook' as source in output, got %q", output)
+	}
+	if strings.Contains(output, "(") {
+		t.Errorf("expected no repository in source when repository is empty, got %q", output)
+	}
+}
+
+func TestPrintTaskSpawnerTableLinearWebhook(t *testing.T) {
+	spawners := []kelosv1alpha1.TaskSpawner{
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:              "linear-spawner",
+				CreationTimestamp: metav1.NewTime(time.Now().Add(-1 * time.Hour)),
+			},
+			Spec: kelosv1alpha1.TaskSpawnerSpec{
+				When: kelosv1alpha1.When{
+					LinearWebhook: &kelosv1alpha1.LinearWebhook{
+						Types: []string{"Issue", "Comment"},
+					},
+				},
+			},
+			Status: kelosv1alpha1.TaskSpawnerStatus{
+				Phase: kelosv1alpha1.TaskSpawnerPhaseRunning,
+			},
+		},
+	}
+
+	var buf bytes.Buffer
+	printTaskSpawnerTable(&buf, spawners, false)
+	output := buf.String()
+
+	if !strings.Contains(output, "Linear Webhook") {
+		t.Errorf("expected 'Linear Webhook' as source in output, got %q", output)
+	}
+}
+
+func TestPrintTaskSpawnerDetailGitHubWebhook(t *testing.T) {
+	spawner := &kelosv1alpha1.TaskSpawner{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "webhook-spawner",
+			Namespace: "default",
+		},
+		Spec: kelosv1alpha1.TaskSpawnerSpec{
+			When: kelosv1alpha1.When{
+				GitHubWebhook: &kelosv1alpha1.GitHubWebhook{
+					Events:         []string{"issue_comment", "push"},
+					Repository:     "org/repo",
+					ExcludeAuthors: []string{"bot-user"},
+				},
+			},
+			TaskTemplate: kelosv1alpha1.TaskTemplate{
+				Type: "claude-code",
+			},
+			PollInterval: "5m",
+		},
+		Status: kelosv1alpha1.TaskSpawnerStatus{
+			Phase:             kelosv1alpha1.TaskSpawnerPhaseRunning,
+			TotalDiscovered:   3,
+			TotalTasksCreated: 2,
+		},
+	}
+
+	var buf bytes.Buffer
+	printTaskSpawnerDetail(&buf, spawner)
+	output := buf.String()
+
+	for _, expected := range []string{
+		"Source:", "GitHub Webhook",
+		"Events:", "[issue_comment push]",
+		"Repository:", "org/repo",
+		"Exclude Authors:", "[bot-user]",
+	} {
+		if !strings.Contains(output, expected) {
+			t.Errorf("expected %q in detail output, got %q", expected, output)
+		}
+	}
+}
+
+func TestPrintTaskSpawnerDetailLinearWebhook(t *testing.T) {
+	spawner := &kelosv1alpha1.TaskSpawner{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "linear-spawner",
+			Namespace: "default",
+		},
+		Spec: kelosv1alpha1.TaskSpawnerSpec{
+			When: kelosv1alpha1.When{
+				LinearWebhook: &kelosv1alpha1.LinearWebhook{
+					Types: []string{"Issue", "Comment"},
+				},
+			},
+			TaskTemplate: kelosv1alpha1.TaskTemplate{
+				Type: "claude-code",
+			},
+			PollInterval: "5m",
+		},
+		Status: kelosv1alpha1.TaskSpawnerStatus{
+			Phase:             kelosv1alpha1.TaskSpawnerPhaseRunning,
+			TotalDiscovered:   1,
+			TotalTasksCreated: 1,
+		},
+	}
+
+	var buf bytes.Buffer
+	printTaskSpawnerDetail(&buf, spawner)
+	output := buf.String()
+
+	for _, expected := range []string{
+		"Source:", "Linear Webhook",
+		"Types:", "[Issue Comment]",
+	} {
+		if !strings.Contains(output, expected) {
+			t.Errorf("expected %q in detail output, got %q", expected, output)
+		}
+	}
+}
+
 func TestPrintTaskSpawnerDetailGitHubPullRequests(t *testing.T) {
 	spawner := &kelosv1alpha1.TaskSpawner{
 		ObjectMeta: metav1.ObjectMeta{

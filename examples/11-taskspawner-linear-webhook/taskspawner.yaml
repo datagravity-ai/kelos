@@ -51,9 +51,6 @@ spec:
       type: api-key
       secretRef:
         name: claude-credentials
-        key: api-key
-
-    # Reference the repository workspace
     workspaceRef:
       name: my-repo-workspace
 

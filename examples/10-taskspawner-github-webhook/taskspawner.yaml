@@ -61,7 +61,6 @@ spec:
       type: api-key
       secretRef:
         name: claude-credentials
-        key: api-key
 
     # Reference the repository workspace
     workspaceRef:
@@ -138,4 +137,3 @@ spec:
     # Optional: reference secret for private repos
     # secretRef:
     #   name: github-token
-    #   key: token
