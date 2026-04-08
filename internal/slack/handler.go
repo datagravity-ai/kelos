@@ -12,6 +12,7 @@ import (
 	goslack "github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"
 	"github.com/slack-go/slack/socketmode"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/kelos-dev/kelos/api/v1alpha1"
@@ -303,6 +304,10 @@ func (h *SlackHandler) createTask(ctx context.Context, spawner *v1alpha1.TaskSpa
 	}
 
 	if err := h.client.Create(ctx, task); err != nil {
+		if apierrors.IsAlreadyExists(err) {
+			h.log.Info("Task already exists, skipping", "task", taskName)
+			return nil
+		}
 		return fmt.Errorf("Creating task: %w", err)
 	}
 
