@@ -207,7 +207,7 @@ The `promptTemplate` field uses Go `text/template` syntax. Available variables d
 | `{{.ID}}` | Unique identifier | Issue/PR number as string (e.g., `"42"`) | Pull request number as string | Issue/PR number or commit ID | Linear resource ID | Mapped `id` field (required) | Date-time string (e.g., `"20260207-0900"`) |
 | `{{.Number}}` | Issue or PR number | Issue/PR number (e.g., `42`) | Pull request number | Issue/PR number (when available) | Empty | Empty | `0` |
 | `{{.Title}}` | Title of the work item | Issue/PR title | Pull request title | Issue/PR title or "Push to &lt;branch&gt;" | Resource title | Mapped `title` field (if present) | Trigger time (RFC3339) |
-| `{{.Body}}` | Body text | Issue/PR body | Pull request body | Issue/PR/comment body | Empty | Mapped `body` field (if present) | Empty |
+| `{{.Body}}` | Body text | Issue/PR body | Pull request body | Issue/PR body | Empty | Mapped `body` field (if present) | Empty |
 | `{{.URL}}` | URL to the source item | GitHub HTML URL | GitHub PR URL | Issue/PR HTML URL | Empty | Mapped `url` field (if present) | Empty |
 | `{{.Labels}}` | Comma-separated labels | Issue/PR labels | Pull request labels | Empty | Issue labels | Empty | Empty |
 | `{{.Comments}}` | Concatenated comments | Issue/PR comments | PR conversation comments | Empty | Empty | Empty | Empty |
@@ -226,6 +226,8 @@ The `promptTemplate` field uses Go `text/template` syntax. Available variables d
 | `{{.Type}}` | Resource type | Empty | Empty | Empty | Resource type (e.g., `"Issue"`, `"Comment"`) | Empty | Empty |
 | `{{.State}}` | Workflow state | Empty | Empty | Empty | Current state name (e.g., `"Todo"`, `"In Progress"`) | Empty | Empty |
 | `{{.IssueID}}` | Parent issue ID | Empty | Empty | Empty | Parent issue ID (Comment events only) | Empty | Empty |
+| `{{.CommentBody}}` | Comment or review body | Empty | Empty | Comment/review body (`issue_comment`, `pull_request_review`, `pull_request_review_comment` events) | Empty | Empty | Empty |
+| `{{.CommentURL}}` | Comment or review URL | Empty | Empty | Comment/review HTML URL (`issue_comment`, `pull_request_review`, `pull_request_review_comment` events) | Empty | Empty | Empty |
 | `{{.Time}}` | Trigger time (RFC3339) | Empty | Empty | Empty | Empty | Empty | Cron tick time (e.g., `"2026-02-07T09:00:00Z"`) |
 | `{{.Schedule}}` | Cron schedule expression | Empty | Empty | Empty | Empty | Empty | Schedule string (e.g., `"0 * * * *"`) |
 

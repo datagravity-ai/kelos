@@ -383,7 +383,7 @@ All `promptTemplate` and `branch` fields support Go `text/template` syntax. Avai
 | `{{.ID}}` | Issue number (string) | PR number (string) | Issue/PR number or commit ID | Issue key (e.g., `ENG-42`) | Linear resource ID | Mapped `id` field (required) | Date-time string |
 | `{{.Number}}` | Issue number (int) | PR number (int) | Issue/PR number | `0` | Empty | Empty | `0` |
 | `{{.Title}}` | Issue title | PR title | Issue/PR title | Issue summary | Resource title | Mapped `title` field (if present) | Trigger time (RFC3339) |
-| `{{.Body}}` | Issue body | PR body | Issue/PR/comment body | Issue description | Empty | Mapped `body` field (if present) | Empty |
+| `{{.Body}}` | Issue body | PR body | Issue/PR body | Issue description | Empty | Mapped `body` field (if present) | Empty |
 | `{{.URL}}` | Issue URL | PR URL | Issue/PR URL | Issue URL | Empty | Mapped `url` field (if present) | Empty |
 | `{{.Labels}}` | Comma-separated | Comma-separated | Empty | Comma-separated | Comma-separated | Empty | Empty |
 | `{{.Comments}}` | Issue comments | PR comments | Empty | Issue comments | Empty | Empty | Empty |
@@ -402,6 +402,8 @@ All `promptTemplate` and `branch` fields support Go `text/template` syntax. Avai
 | `{{.Type}}` | Empty | Empty | Empty | Empty | Resource type (e.g., `"Issue"`, `"Comment"`) | Empty | Empty |
 | `{{.State}}` | Empty | Empty | Empty | Empty | Workflow state (e.g., `"Todo"`, `"In Progress"`) | Empty | Empty |
 | `{{.IssueID}}` | Empty | Empty | Empty | Empty | Parent issue ID (Comment events only) | Empty | Empty |
+| `{{.CommentBody}}` | Empty | Empty | Comment/review body (`issue_comment`, `pull_request_review`, `pull_request_review_comment`) | Empty | Empty | Empty | Empty |
+| `{{.CommentURL}}` | Empty | Empty | Comment/review HTML URL (`issue_comment`, `pull_request_review`, `pull_request_review_comment`) | Empty | Empty | Empty | Empty |
 | `{{.Time}}` | Empty | Empty | Empty | Empty | Empty | Empty | Trigger time (RFC3339) |
 
 > **Generic Webhook only:** any additional keys you declare in `fieldMapping` are also exposed as top-level variables. For example, `fieldMapping: {severity: "$.level"}` makes `{{.severity}}` available in templates.
