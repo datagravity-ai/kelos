@@ -75,15 +75,14 @@ func TestRouteMessageThreadContextBody(t *testing.T) {
 		{
 			name: "thread reply with context preserves thread body",
 			msg: &SlackMessageData{
-				UserID:           "U1",
-				ChannelID:        "C1",
-				Text:             "<@UBOT> can you take a look",
-				Body:             "Slack thread conversation:\n\nUser: original question\n\nUser: <@UBOT> can you take a look\n",
-				ThreadTS:         "1111111111.000000",
-				Timestamp:        "2222222222.222222",
-				HasThreadContext: true,
+				UserID:    "U1",
+				ChannelID: "C1",
+				Text:      "<@UBOT> can you take a look",
+				Body:      "Slack thread conversation:\n\nUser: original question\n\nUser: <@UBOT> can you take a look\n",
+				ThreadTS:  "1111111111.000000",
+				Timestamp: "2222222222.222222",
 			},
-			// HasThreadContext=true means the thread body is preserved as-is
+			// Thread reply with context body — the body is preserved as-is
 			wantBody: "Slack thread conversation:\n\nUser: original question\n\nUser: <@UBOT> can you take a look\n",
 		},
 	}
