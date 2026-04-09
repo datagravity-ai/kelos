@@ -501,6 +501,13 @@ type Slack struct {
 	// in the channel can trigger tasks.
 	// +optional
 	AllowedUsers []string `json:"allowedUsers,omitempty"`
+
+	// MentionUserIDs optionally requires that the message @-mentions at least
+	// one of the specified Slack user IDs (e.g., "U0123456789"). In Slack,
+	// mentions appear as <@USER_ID> in the message text. When empty, no mention
+	// is required. This filter is bypassed for thread replies and slash commands.
+	// +optional
+	MentionUserIDs []string `json:"mentionUserIDs,omitempty"`
 }
 
 // GenericWebhook configures webhook-driven task spawning from arbitrary HTTP

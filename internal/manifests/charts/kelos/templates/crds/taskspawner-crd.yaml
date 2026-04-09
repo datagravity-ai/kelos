@@ -1082,6 +1082,15 @@ spec:
                         items:
                           type: string
                         type: array
+                      mentionUserIDs:
+                        description: |-
+                          MentionUserIDs optionally requires that the message @-mentions at least
+                          one of the specified Slack user IDs (e.g., "U0123456789"). In Slack,
+                          mentions appear as <@USER_ID> in the message text. When empty, no mention
+                          is required. This filter is bypassed for thread replies and slash commands.
+                        items:
+                          type: string
+                        type: array
                       triggerCommand:
                         description: |-
                           TriggerCommand is an optional slash command or message prefix that

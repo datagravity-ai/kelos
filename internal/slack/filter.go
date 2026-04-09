@@ -1,6 +1,7 @@
 package slack
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/kelos-dev/kelos/api/v1alpha1"
@@ -45,6 +46,13 @@ func MatchesSpawner(slackCfg *v1alpha1.Slack, msg *SlackMessageData) bool {
 	}
 	if !matchesUser(msg.UserID, slackCfg.AllowedUsers) {
 		return false
+	}
+	// Mention filter: bypassed for thread replies (follow-ups in existing
+	// conversations) and slash commands (the command name acts as the trigger).
+	if msg.ThreadTS == "" && !msg.IsSlashCommand {
+		if !matchesMention(msg.Text, slackCfg.MentionUserIDs) {
+			return false
+		}
 	}
 	return true
 }
@@ -112,6 +120,21 @@ func matchesUser(userID string, allowed []string) bool {
 	}
 	for _, id := range allowed {
 		if id == userID {
+			return true
+		}
+	}
+	return false
+}
+
+// matchesMention returns true if the message text contains an @-mention of
+// at least one of the specified user IDs. Slack encodes mentions as <@USER_ID>.
+// If mentionUserIDs is empty, no mention is required and the function returns true.
+func matchesMention(text string, mentionUserIDs []string) bool {
+	if len(mentionUserIDs) == 0 {
+		return true
+	}
+	for _, uid := range mentionUserIDs {
+		if strings.Contains(text, fmt.Sprintf("<@%s>", uid)) {
 			return true
 		}
 	}
