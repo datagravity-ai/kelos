@@ -137,6 +137,7 @@ func (h *SlackHandler) handleEventsAPI(ctx context.Context, evt socketmode.Event
 			return
 		}
 		msg.Body = body
+		msg.HasThreadContext = true
 	}
 
 	h.routeMessage(ctx, msg)
@@ -231,7 +232,7 @@ func (h *SlackHandler) routeMessage(ctx context.Context, msg *SlackMessageData) 
 
 		// Use thread context body if available (thread replies), otherwise use trigger-processed body
 		taskMsg := *msg
-		if msg.ThreadTS == "" || msg.Body == msg.Text {
+		if !msg.HasThreadContext {
 			taskMsg.Body = body
 		}
 
