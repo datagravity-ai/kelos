@@ -192,16 +192,14 @@ func TestMatchesSpawner(t *testing.T) {
 
 func TestProcessTriggerCommand(t *testing.T) {
 	tests := []struct {
-		name                   string
-		text                   string
-		threadTS               string
-		triggerCmd             string
-		enforceTriggerInThread bool
-		wantBody               string
-		wantOK                 bool
+		name       string
+		text       string
+		triggerCmd string
+		wantBody   string
+		wantOK     bool
 	}{
 		{
-			name:       "no trigger command, top-level message",
+			name:       "no trigger command",
 			text:       "hello world",
 			triggerCmd: "",
 			wantBody:   "hello world",
@@ -236,22 +234,6 @@ func TestProcessTriggerCommand(t *testing.T) {
 			wantOK:     false,
 		},
 		{
-			name:       "thread reply bypasses trigger",
-			text:       "follow up message",
-			threadTS:   "1234567890.123456",
-			triggerCmd: "/kelos",
-			wantBody:   "follow up message",
-			wantOK:     true,
-		},
-		{
-			name:       "thread reply with no trigger configured",
-			text:       "follow up",
-			threadTS:   "1234567890.123456",
-			triggerCmd: "",
-			wantBody:   "follow up",
-			wantOK:     true,
-		},
-		{
 			name:       "mention before trigger command",
 			text:       "<@UBOT1> /kelos fix the bug",
 			triggerCmd: "/kelos",
@@ -272,38 +254,11 @@ func TestProcessTriggerCommand(t *testing.T) {
 			wantBody:   "fix the bug",
 			wantOK:     true,
 		},
-		{
-			name:                   "thread reply enforces trigger when set",
-			text:                   "follow up message",
-			threadTS:               "1234567890.123456",
-			triggerCmd:             "/solve",
-			enforceTriggerInThread: true,
-			wantBody:               "",
-			wantOK:                 false,
-		},
-		{
-			name:                   "thread reply with trigger passes when enforced",
-			text:                   "<@UBOT1> /solve fix it",
-			threadTS:               "1234567890.123456",
-			triggerCmd:             "/solve",
-			enforceTriggerInThread: true,
-			wantBody:               "fix it",
-			wantOK:                 true,
-		},
-		{
-			name:                   "thread reply no trigger configured, enforce=true",
-			text:                   "follow up",
-			threadTS:               "1234567890.123456",
-			triggerCmd:             "",
-			enforceTriggerInThread: true,
-			wantBody:               "follow up",
-			wantOK:                 true,
-		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotBody, gotOK := ProcessTriggerCommand(tt.text, tt.threadTS, tt.triggerCmd, tt.enforceTriggerInThread)
+			gotBody, gotOK := ProcessTriggerCommand(tt.text, tt.triggerCmd)
 			if gotBody != tt.wantBody || gotOK != tt.wantOK {
 				t.Errorf("ProcessTriggerCommand() = (%q, %v), want (%q, %v)",
 					gotBody, gotOK, tt.wantBody, tt.wantOK)
@@ -609,14 +564,12 @@ func TestTriageSolverRouting(t *testing.T) {
 		t.Run(sc.name, func(t *testing.T) {
 			triageMatch := MatchesSpawner(triageCfg, sc.msg)
 			if triageMatch {
-				enforceTriage := len(triageCfg.MentionUserIDs) > 0
-				_, triageMatch = ProcessTriggerCommand(sc.msg.Text, sc.msg.ThreadTS, triageCfg.TriggerCommand, enforceTriage)
+				_, triageMatch = ProcessTriggerCommand(sc.msg.Text, triageCfg.TriggerCommand)
 			}
 
 			solverMatch := MatchesSpawner(solverCfg, sc.msg)
 			if solverMatch {
-				enforceSolver := len(solverCfg.MentionUserIDs) > 0
-				_, solverMatch = ProcessTriggerCommand(sc.msg.Text, sc.msg.ThreadTS, solverCfg.TriggerCommand, enforceSolver)
+				_, solverMatch = ProcessTriggerCommand(sc.msg.Text, solverCfg.TriggerCommand)
 			}
 
 			if triageMatch != sc.wantTriage {

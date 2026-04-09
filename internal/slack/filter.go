@@ -63,17 +63,10 @@ func MatchesSpawner(slackCfg *v1alpha1.Slack, msg *SlackMessageData) bool {
 }
 
 // ProcessTriggerCommand checks whether the message text matches the TaskSpawner's
-// trigger command prefix. For thread replies, the trigger is normally not required.
-// However, when enforceTriggerInThread is true (typically because mentionUserIDs is
-// set, making the mention the primary gate), the trigger is enforced even in threads.
-// Returns the processed body and true if the message should be processed.
-func ProcessTriggerCommand(text, threadTS, triggerCmd string, enforceTriggerInThread bool) (string, bool) {
-	// Thread replies are follow-ups — no trigger required, unless the
-	// spawner uses mention-based gating where the trigger acts as a router.
-	if threadTS != "" && !enforceTriggerInThread {
-		return text, true
-	}
-
+// trigger command prefix. Leading @-mentions are stripped before matching so that
+// "@bot /cmd args" works the same as "/cmd args". Returns the processed body
+// (with prefix removed) and true if the message should be processed.
+func ProcessTriggerCommand(text, triggerCmd string) (string, bool) {
 	if triggerCmd != "" {
 		// Strip leading Slack mentions so "@bot /cmd args" works like "/cmd args"
 		cleaned := stripLeadingMentions(text)

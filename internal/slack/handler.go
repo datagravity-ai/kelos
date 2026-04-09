@@ -207,10 +207,7 @@ func (h *SlackHandler) routeMessage(ctx context.Context, msg *SlackMessageData) 
 		// Check trigger command (per-spawner, since each TaskSpawner can have a different trigger).
 		// Slash commands skip the trigger check — the command name itself acts as the trigger,
 		// and cmd.Text only contains the arguments after the command name.
-		// When mentionUserIDs is set, the @-mention is the primary gate and
-		// triggerCommand acts as a router — enforce it even in thread replies.
-		enforceTrigger := len(slackCfg.MentionUserIDs) > 0
-		body, ok := ProcessTriggerCommand(msg.Text, msg.ThreadTS, slackCfg.TriggerCommand, enforceTrigger)
+		body, ok := ProcessTriggerCommand(msg.Text, slackCfg.TriggerCommand)
 		if msg.IsSlashCommand {
 			body, ok = msg.Body, true
 		}
