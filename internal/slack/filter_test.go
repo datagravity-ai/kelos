@@ -206,6 +206,27 @@ func TestProcessTriggerCommand(t *testing.T) {
 			wantBody:   "follow up",
 			wantOK:     true,
 		},
+		{
+			name:       "mention before trigger command",
+			text:       "<@UBOT1> /kelos fix the bug",
+			triggerCmd: "/kelos",
+			wantBody:   "fix the bug",
+			wantOK:     true,
+		},
+		{
+			name:       "mention with display name before trigger command",
+			text:       "<@UBOT1|gravity> /kelos fix the bug",
+			triggerCmd: "/kelos",
+			wantBody:   "fix the bug",
+			wantOK:     true,
+		},
+		{
+			name:       "multiple mentions before trigger command",
+			text:       "<@UBOT1> <@UBOT2> /kelos fix the bug",
+			triggerCmd: "/kelos",
+			wantBody:   "fix the bug",
+			wantOK:     true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -402,6 +423,31 @@ func TestMatchesMention(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := matchesMention(tt.text, tt.mentionUserIDs); got != tt.want {
 				t.Errorf("matchesMention() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStripLeadingMentions(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+		want string
+	}{
+		{"no mentions", "/kelos fix", "/kelos fix"},
+		{"single mention", "<@UBOT1> /kelos fix", "/kelos fix"},
+		{"mention with display name", "<@UBOT1|gravity> /kelos fix", "/kelos fix"},
+		{"multiple mentions", "<@UBOT1> <@UBOT2> /kelos fix", "/kelos fix"},
+		{"mention only", "<@UBOT1>", ""},
+		{"empty string", "", ""},
+		{"no closing bracket", "<@UBOT1 broken", "<@UBOT1 broken"},
+		{"non-mention angle bracket", "<#C123> hello", "<#C123> hello"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := stripLeadingMentions(tt.text); got != tt.want {
+				t.Errorf("stripLeadingMentions() = %q, want %q", got, tt.want)
 			}
 		})
 	}
