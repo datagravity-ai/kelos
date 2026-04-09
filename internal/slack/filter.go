@@ -1,6 +1,7 @@
 package slack
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/kelos-dev/kelos/api/v1alpha1"
@@ -46,6 +47,13 @@ func MatchesSpawner(slackCfg *v1alpha1.Slack, msg *SlackMessageData) bool {
 	if !matchesUser(msg.UserID, slackCfg.AllowedUsers) {
 		return false
 	}
+	// Mention filter: bypassed for slash commands (the command name acts as
+	// the trigger), but still required for thread replies.
+	if !msg.IsSlashCommand {
+		if !matchesMention(msg.Text, slackCfg.MentionUserIDs) {
+			return false
+		}
+	}
 	return true
 }
 
@@ -59,10 +67,12 @@ func ProcessTriggerCommand(text, threadTS, triggerCmd string) (string, bool) {
 	}
 
 	if triggerCmd != "" {
-		if !strings.HasPrefix(text, triggerCmd) {
+		// Strip leading Slack mentions so "@bot /cmd args" works like "/cmd args"
+		cleaned := stripLeadingMentions(text)
+		if !strings.HasPrefix(cleaned, triggerCmd) {
 			return "", false
 		}
-		body := strings.TrimSpace(strings.TrimPrefix(text, triggerCmd))
+		body := strings.TrimSpace(strings.TrimPrefix(cleaned, triggerCmd))
 		if body == "" {
 			return "", false
 		}
@@ -112,6 +122,41 @@ func matchesUser(userID string, allowed []string) bool {
 	}
 	for _, id := range allowed {
 		if id == userID {
+			return true
+		}
+	}
+	return false
+}
+
+// stripLeadingMentions removes Slack mention tokens (<@USERID> or
+// <@USERID|display-name>) from the beginning of text so that trigger
+// command matching works regardless of mention placement.
+func stripLeadingMentions(text string) string {
+	s := text
+	for {
+		s = strings.TrimSpace(s)
+		if !strings.HasPrefix(s, "<@") {
+			return s
+		}
+		end := strings.Index(s, ">")
+		if end == -1 {
+			return s
+		}
+		s = s[end+1:]
+	}
+}
+
+// matchesMention returns true if the message text contains an @-mention of
+// at least one of the specified user IDs. Slack encodes mentions as <@USER_ID>.
+// If mentionUserIDs is empty, no mention is required and the function returns true.
+func matchesMention(text string, mentionUserIDs []string) bool {
+	if len(mentionUserIDs) == 0 {
+		return true
+	}
+	for _, uid := range mentionUserIDs {
+		// Slack encodes mentions as <@USERID> or <@USERID|display-name>
+		if strings.Contains(text, fmt.Sprintf("<@%s>", uid)) ||
+			strings.Contains(text, fmt.Sprintf("<@%s|", uid)) {
 			return true
 		}
 	}
