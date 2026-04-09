@@ -1,7 +1,6 @@
 package slack
 
 import (
-	"fmt"
 	"regexp"
 	"strings"
 
@@ -36,21 +35,14 @@ type SlackMessageData struct {
 }
 
 // MatchesSpawner checks whether a Slack message matches the given TaskSpawner's
-// Slack configuration (channels and allowed users). Trigger command matching
-// is handled separately during message preprocessing.
+// Slack configuration (channels). Trigger pattern matching is handled
+// separately via MatchesTriggers.
 func MatchesSpawner(slackCfg *v1alpha1.Slack, msg *SlackMessageData) bool {
 	if slackCfg == nil {
 		return false
 	}
 	if !matchesChannel(msg.ChannelID, slackCfg.Channels) {
 		return false
-	}
-	// Mention filter: bypassed for slash commands (the command name acts as
-	// the trigger), but still required for thread replies.
-	if !msg.IsSlashCommand {
-		if !matchesMention(msg.Text, slackCfg.MentionUserIDs) {
-			return false
-		}
 	}
 	return true
 }
@@ -111,23 +103,6 @@ func matchesChannel(channelID string, allowed []string) bool {
 	}
 	for _, id := range allowed {
 		if id == channelID {
-			return true
-		}
-	}
-	return false
-}
-
-// matchesMention returns true if the message text contains an @-mention of
-// at least one of the specified user IDs. Slack encodes mentions as <@USER_ID>.
-// If mentionUserIDs is empty, no mention is required and the function returns true.
-func matchesMention(text string, mentionUserIDs []string) bool {
-	if len(mentionUserIDs) == 0 {
-		return true
-	}
-	for _, uid := range mentionUserIDs {
-		// Slack encodes mentions as <@USERID> or <@USERID|display-name>
-		if strings.Contains(text, fmt.Sprintf("<@%s>", uid)) ||
-			strings.Contains(text, fmt.Sprintf("<@%s|", uid)) {
 			return true
 		}
 	}
