@@ -100,11 +100,19 @@ func TestMatchesSpawner(t *testing.T) {
 			want: true,
 		},
 		{
-			name: "mention filter bypassed for thread replies",
+			name: "mention filter required for thread replies",
 			slackCfg: &v1alpha1.Slack{
 				MentionUserIDs: []string{"UBOT1"},
 			},
 			msg:  &SlackMessageData{UserID: "U1", ChannelID: "C1", Text: "follow up no mention", ThreadTS: "1234567890.123456"},
+			want: false,
+		},
+		{
+			name: "mention filter passes for thread reply with mention",
+			slackCfg: &v1alpha1.Slack{
+				MentionUserIDs: []string{"UBOT1"},
+			},
+			msg:  &SlackMessageData{UserID: "U1", ChannelID: "C1", Text: "<@UBOT1> follow up", ThreadTS: "1234567890.123456"},
 			want: true,
 		},
 		{

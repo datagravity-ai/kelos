@@ -47,9 +47,9 @@ func MatchesSpawner(slackCfg *v1alpha1.Slack, msg *SlackMessageData) bool {
 	if !matchesUser(msg.UserID, slackCfg.AllowedUsers) {
 		return false
 	}
-	// Mention filter: bypassed for thread replies (follow-ups in existing
-	// conversations) and slash commands (the command name acts as the trigger).
-	if msg.ThreadTS == "" && !msg.IsSlashCommand {
+	// Mention filter: bypassed for slash commands (the command name acts as
+	// the trigger), but still required for thread replies.
+	if !msg.IsSlashCommand {
 		if !matchesMention(msg.Text, slackCfg.MentionUserIDs) {
 			return false
 		}
