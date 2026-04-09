@@ -91,6 +91,13 @@ func (r *TaskReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{Requeue: true}, nil
 	}
 
+	// Persistent-mode tasks are handled by the SessionReconciler for
+	// assignment. The TaskReconciler only sets the initial Queued phase
+	// and handles dependency/branch checks before queuing.
+	if isPersistentMode(&task) {
+		return r.reconcilePersistentTask(ctx, &task)
+	}
+
 	// Check if Job already exists
 	var job batchv1.Job
 	jobExists := true
@@ -825,7 +832,7 @@ func (r *TaskReconciler) checkBranchLock(ctx context.Context, task *kelosv1alpha
 			continue
 		}
 		switch t.Status.Phase {
-		case kelosv1alpha1.TaskPhaseRunning, kelosv1alpha1.TaskPhasePending:
+		case kelosv1alpha1.TaskPhaseRunning, kelosv1alpha1.TaskPhasePending, kelosv1alpha1.TaskPhaseQueued:
 			logger.Info("Branch locked by another task", "branch", task.Spec.Branch, "lockedBy", t.Name)
 			r.setWaitingPhase(ctx, task, fmt.Sprintf("Waiting for branch %q (locked by %s)", task.Spec.Branch, t.Name))
 			return true, ctrl.Result{RequeueAfter: 10 * time.Second}, nil
@@ -839,6 +846,88 @@ func (r *TaskReconciler) checkBranchLock(ctx context.Context, task *kelosv1alpha
 	}
 
 	return false, ctrl.Result{}, nil
+}
+
+// isPersistentMode returns true if the task is part of a persistent-mode TaskSpawner.
+func isPersistentMode(task *kelosv1alpha1.Task) bool {
+	return task.Labels[LabelExecutionMode] == string(kelosv1alpha1.ExecutionModePersistent)
+}
+
+// reconcilePersistentTask handles the lifecycle of a Task that belongs to a
+// persistent-mode TaskSpawner. Instead of creating a Job, it transitions the
+// task to the Queued phase after dependency and branch lock checks. The
+// SessionReconciler handles pod assignment and completion monitoring.
+func (r *TaskReconciler) reconcilePersistentTask(ctx context.Context, task *kelosv1alpha1.Task) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+
+	// Terminal tasks: nothing to do (cleanup handled by SessionReconciler).
+	if task.Status.Phase == kelosv1alpha1.TaskPhaseSucceeded || task.Status.Phase == kelosv1alpha1.TaskPhaseFailed {
+		// Release branch lock if held.
+		if task.Spec.Branch != "" {
+			lockKey := branchLockKey(task)
+			r.BranchLocker.Release(lockKey, task.Name)
+		}
+
+		// Check TTL expiration.
+		if expired, _ := r.ttlExpired(task); expired {
+			logger.Info("Deleting persistent Task due to TTL expiration", "task", task.Name)
+			if err := r.Delete(ctx, task); err != nil && !apierrors.IsNotFound(err) {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, nil
+	}
+
+	// Tasks already assigned to a pod are managed by SessionReconciler.
+	if task.Status.SessionPodName != "" {
+		return ctrl.Result{}, nil
+	}
+
+	// Check dependencies.
+	if len(task.Spec.DependsOn) > 0 {
+		ready, result, err := r.checkDependencies(ctx, task)
+		if err != nil || !ready {
+			return result, err
+		}
+	}
+
+	// Check branch lock.
+	if task.Spec.Branch != "" {
+		if task.Spec.WorkspaceRef == nil {
+			logger.Info("Branch is set without workspaceRef for persistent task", "task", task.Name)
+		}
+		lockKey := branchLockKey(task)
+		acquired, holder := r.BranchLocker.TryAcquire(lockKey, task.Name)
+		if !acquired {
+			logger.Info("Branch locked by another task", "branch", task.Spec.Branch, "lockedBy", holder)
+			r.setWaitingPhase(ctx, task, fmt.Sprintf("Waiting for branch %q (locked by %s)", task.Spec.Branch, holder))
+			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+		}
+		locked, result, err := r.checkBranchLock(ctx, task)
+		if err != nil || locked {
+			r.BranchLocker.Release(lockKey, task.Name)
+			return result, err
+		}
+	}
+
+	// Transition to Queued phase.
+	if task.Status.Phase != kelosv1alpha1.TaskPhaseQueued {
+		logger.Info("Queuing persistent task for session assignment", "task", task.Name)
+		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			if getErr := r.Get(ctx, client.ObjectKeyFromObject(task), task); getErr != nil {
+				return getErr
+			}
+			task.Status.Phase = kelosv1alpha1.TaskPhaseQueued
+			task.Status.Message = "Waiting for session pod assignment"
+			return r.Status().Update(ctx, task)
+		}); err != nil {
+			return ctrl.Result{}, err
+		}
+		r.recordEvent(task, corev1.EventTypeNormal, "TaskQueued", "Task queued for persistent session assignment")
+	}
+
+	return ctrl.Result{}, nil
 }
 
 // setWaitingPhase updates the task phase to Waiting with the given message.

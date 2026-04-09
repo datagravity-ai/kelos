@@ -227,12 +227,21 @@ func main() {
 		os.Exit(1)
 	}
 	if err = (&controller.TaskSpawnerReconciler{
-		Client:            mgr.GetClient(),
-		Scheme:            mgr.GetScheme(),
-		DeploymentBuilder: deploymentBuilder,
-		Recorder:          mgr.GetEventRecorderFor("kelos-controller"),
+		Client:                    mgr.GetClient(),
+		Scheme:                    mgr.GetScheme(),
+		DeploymentBuilder:         deploymentBuilder,
+		SessionStatefulSetBuilder: controller.NewSessionStatefulSetBuilder(),
+		Recorder:                  mgr.GetEventRecorderFor("kelos-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "TaskSpawner")
+		os.Exit(1)
+	}
+	if err = (&controller.SessionReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("kelos-controller"),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "Session")
 		os.Exit(1)
 	}
 

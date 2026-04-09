@@ -36,9 +36,10 @@ const (
 // TaskSpawnerReconciler reconciles a TaskSpawner object.
 type TaskSpawnerReconciler struct {
 	client.Client
-	Scheme            *runtime.Scheme
-	DeploymentBuilder *DeploymentBuilder
-	Recorder          record.EventRecorder
+	Scheme                    *runtime.Scheme
+	DeploymentBuilder         *DeploymentBuilder
+	SessionStatefulSetBuilder *SessionStatefulSetBuilder
+	Recorder                  record.EventRecorder
 }
 
 // +kubebuilder:rbac:groups=kelos.dev,resources=taskspawners,verbs=get;list;watch;create;update;patch;delete
@@ -51,6 +52,9 @@ type TaskSpawnerReconciler struct {
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=rolebindings,verbs=get;list;watch;create
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;delete
 
 // isCronBased returns true if the TaskSpawner uses a cron schedule.
 func isCronBased(ts *kelosv1alpha1.TaskSpawner) bool {
@@ -100,6 +104,14 @@ func (r *TaskSpawnerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	isSuspended := ts.Spec.Suspend != nil && *ts.Spec.Suspend
+
+	// Persistent-mode TaskSpawners manage a StatefulSet for session pods
+	// in addition to the normal discovery mechanism (Deployment/CronJob/Webhook).
+	if ts.Spec.ExecutionMode == kelosv1alpha1.ExecutionModePersistent {
+		if result, err := r.reconcileSessionStatefulSet(ctx, req, &ts, isSuspended); err != nil {
+			return result, err
+		}
+	}
 
 	// Cron-based TaskSpawners use a CronJob instead of a Deployment.
 	if isCronBased(&ts) {
@@ -469,6 +481,146 @@ func (r *TaskSpawnerReconciler) reconcileCronJob(ctx context.Context, req ctrl.R
 }
 
 // handleDeletion handles TaskSpawner deletion.
+// reconcileSessionStatefulSet manages the StatefulSet and headless Service for
+// persistent-mode TaskSpawners.
+func (r *TaskSpawnerReconciler) reconcileSessionStatefulSet(ctx context.Context, req ctrl.Request, ts *kelosv1alpha1.TaskSpawner, isSuspended bool) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+
+	// Resolve workspace.
+	var workspace *kelosv1alpha1.WorkspaceSpec
+	if ts.Spec.TaskTemplate.WorkspaceRef != nil {
+		var ws kelosv1alpha1.Workspace
+		if err := r.Get(ctx, client.ObjectKey{
+			Namespace: ts.Namespace,
+			Name:      ts.Spec.TaskTemplate.WorkspaceRef.Name,
+		}, &ws); err != nil {
+			if apierrors.IsNotFound(err) {
+				logger.Info("Workspace not found yet for session StatefulSet, requeuing", "workspace", ts.Spec.TaskTemplate.WorkspaceRef.Name)
+				return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+			}
+			return ctrl.Result{}, err
+		}
+		workspace = &ws.Spec
+	}
+
+	// Resolve AgentConfig if referenced.
+	var agentConfig *kelosv1alpha1.AgentConfigSpec
+	if ts.Spec.TaskTemplate.AgentConfigRef != nil {
+		var ac kelosv1alpha1.AgentConfig
+		if err := r.Get(ctx, client.ObjectKey{
+			Namespace: ts.Namespace,
+			Name:      ts.Spec.TaskTemplate.AgentConfigRef.Name,
+		}, &ac); err != nil {
+			if apierrors.IsNotFound(err) {
+				logger.Info("AgentConfig not found yet for session StatefulSet, requeuing", "agentConfig", ts.Spec.TaskTemplate.AgentConfigRef.Name)
+				return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+			}
+			return ctrl.Result{}, err
+		}
+		agentConfig = &ac.Spec
+	}
+
+	// Build desired StatefulSet and Service.
+	desiredSts, desiredSvc, err := r.SessionStatefulSetBuilder.Build(SessionStatefulSetInput{
+		TaskSpawner: ts,
+		Workspace:   workspace,
+		AgentConfig: agentConfig,
+	})
+	if err != nil {
+		logger.Error(err, "Unable to build session StatefulSet")
+		return ctrl.Result{}, err
+	}
+
+	// Suspend: scale to 0.
+	if isSuspended {
+		zero := int32(0)
+		desiredSts.Spec.Replicas = &zero
+	}
+
+	// Ensure headless Service.
+	var existingSvc corev1.Service
+	if err := r.Get(ctx, client.ObjectKey{Namespace: desiredSvc.Namespace, Name: desiredSvc.Name}, &existingSvc); err != nil {
+		if apierrors.IsNotFound(err) {
+			if err := controllerutil.SetControllerReference(ts, desiredSvc, r.Scheme); err != nil {
+				return ctrl.Result{}, err
+			}
+			if err := r.Create(ctx, desiredSvc); err != nil {
+				if !apierrors.IsAlreadyExists(err) {
+					logger.Error(err, "Unable to create headless Service for session StatefulSet")
+					return ctrl.Result{}, err
+				}
+			} else {
+				logger.Info("Created headless Service for session StatefulSet", "service", desiredSvc.Name)
+			}
+		} else {
+			return ctrl.Result{}, err
+		}
+	}
+
+	// Ensure StatefulSet.
+	stsName := sessionStatefulSetName(ts.Name)
+	var existingSts appsv1.StatefulSet
+	stsExists := true
+	if err := r.Get(ctx, client.ObjectKey{Namespace: ts.Namespace, Name: stsName}, &existingSts); err != nil {
+		if apierrors.IsNotFound(err) {
+			stsExists = false
+		} else {
+			return ctrl.Result{}, err
+		}
+	}
+
+	if !stsExists {
+		if err := controllerutil.SetControllerReference(ts, desiredSts, r.Scheme); err != nil {
+			return ctrl.Result{}, err
+		}
+		if err := r.Create(ctx, desiredSts); err != nil {
+			if apierrors.IsAlreadyExists(err) {
+				return ctrl.Result{Requeue: true}, nil
+			}
+			logger.Error(err, "Unable to create session StatefulSet")
+			return ctrl.Result{}, err
+		}
+		logger.Info("Created session StatefulSet", "statefulset", stsName, "replicas", *desiredSts.Spec.Replicas)
+		r.recordEvent(ts, corev1.EventTypeNormal, "StatefulSetCreated", "Created session StatefulSet %s with %d replicas", stsName, *desiredSts.Spec.Replicas)
+	} else {
+		// Update replicas if changed.
+		needsUpdate := false
+		if existingSts.Spec.Replicas == nil || *existingSts.Spec.Replicas != *desiredSts.Spec.Replicas {
+			existingSts.Spec.Replicas = desiredSts.Spec.Replicas
+			needsUpdate = true
+		}
+		// Update pod template (env vars, images, etc.) but not VolumeClaimTemplates (immutable).
+		if !reflect.DeepEqual(existingSts.Spec.Template.Spec.Containers, desiredSts.Spec.Template.Spec.Containers) ||
+			!reflect.DeepEqual(existingSts.Spec.Template.Spec.InitContainers, desiredSts.Spec.Template.Spec.InitContainers) {
+			existingSts.Spec.Template = desiredSts.Spec.Template
+			needsUpdate = true
+		}
+		if needsUpdate {
+			if err := r.Update(ctx, &existingSts); err != nil {
+				logger.Error(err, "Unable to update session StatefulSet")
+				return ctrl.Result{}, err
+			}
+			logger.Info("Updated session StatefulSet", "statefulset", stsName)
+		}
+	}
+
+	// Update status with StatefulSet name.
+	if ts.Status.StatefulSetName != stsName {
+		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			if getErr := r.Get(ctx, req.NamespacedName, ts); getErr != nil {
+				return getErr
+			}
+			ts.Status.StatefulSetName = stsName
+			return r.Status().Update(ctx, ts)
+		}); err != nil {
+			logger.Error(err, "Unable to update TaskSpawner status with StatefulSet name")
+			return ctrl.Result{}, err
+		}
+	}
+
+	return ctrl.Result{}, nil
+}
+
 func (r *TaskSpawnerReconciler) handleDeletion(ctx context.Context, ts *kelosv1alpha1.TaskSpawner) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
@@ -853,6 +1005,8 @@ func (r *TaskSpawnerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&kelosv1alpha1.TaskSpawner{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&batchv1.CronJob{}).
+		Owns(&appsv1.StatefulSet{}).
+		Owns(&corev1.Service{}).
 		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.findTaskSpawnersForSecret)).
 		Watches(&kelosv1alpha1.Workspace{}, handler.EnqueueRequestsFromMapFunc(r.findTaskSpawnersForWorkspace)).
 		Watches(&kelosv1alpha1.Task{}, handler.EnqueueRequestsFromMapFunc(r.findTaskSpawnersForTask),
