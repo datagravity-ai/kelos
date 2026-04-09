@@ -394,6 +394,7 @@ func TestMatchesMention(t *testing.T) {
 		{"partial user ID does not match", "hey <@UBOT10> fix", []string{"UBOT1"}, false},
 		{"any of multiple mentions matches", "hey <@UBOT2>", []string{"UBOT1", "UBOT2"}, true},
 		{"none of multiple mentions rejects", "hey there", []string{"UBOT1", "UBOT2"}, false},
+		{"mention with display name matches", "hey <@UBOT1|kelos-bot> fix", []string{"UBOT1"}, true},
 		{"mention without angle brackets does not match", "hey @UBOT1 fix", []string{"UBOT1"}, false},
 	}
 

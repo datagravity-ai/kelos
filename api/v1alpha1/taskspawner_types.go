@@ -504,8 +504,11 @@ type Slack struct {
 
 	// MentionUserIDs optionally requires that the message @-mentions at least
 	// one of the specified Slack user IDs (e.g., "U0123456789"). In Slack,
-	// mentions appear as <@USER_ID> in the message text. When empty, no mention
-	// is required. This filter is bypassed for thread replies and slash commands.
+	// mentions appear as <@USER_ID> or <@USER_ID|display-name> in the message
+	// text. When empty, no mention is required. This filter is bypassed for
+	// thread replies and slash commands. Note: when combined with TriggerCommand,
+	// both filters must pass independently — the trigger prefix must appear at
+	// the start of the message text, before any mention.
 	// +optional
 	MentionUserIDs []string `json:"mentionUserIDs,omitempty"`
 }

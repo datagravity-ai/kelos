@@ -134,7 +134,9 @@ func matchesMention(text string, mentionUserIDs []string) bool {
 		return true
 	}
 	for _, uid := range mentionUserIDs {
-		if strings.Contains(text, fmt.Sprintf("<@%s>", uid)) {
+		// Slack encodes mentions as <@USERID> or <@USERID|display-name>
+		if strings.Contains(text, fmt.Sprintf("<@%s>", uid)) ||
+			strings.Contains(text, fmt.Sprintf("<@%s|", uid)) {
 			return true
 		}
 	}
