@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	stdlog "log"
+	"os"
 	"strings"
 	"time"
 
@@ -56,8 +58,11 @@ func NewSlackHandler(ctx context.Context, cl client.Client, botToken, appToken s
 		log:         log,
 		taskBuilder: tb,
 		api:         api,
-		sm:          socketmode.New(api),
-		botUserID:   authResp.UserID,
+		sm: socketmode.New(api,
+			socketmode.OptionDebug(true),
+			socketmode.OptionLog(stdlog.New(os.Stderr, "socketmode: ", stdlog.LstdFlags|stdlog.Lshortfile)),
+		),
+		botUserID: authResp.UserID,
 	}, nil
 }
 
@@ -69,7 +74,9 @@ func (h *SlackHandler) Start(ctx context.Context) error {
 
 	go func() {
 		if err := h.sm.RunContext(bgCtx); err != nil {
-			h.log.Error(err, "Socket Mode connection closed")
+			h.log.Error(err, "Socket Mode connection closed with error")
+		} else {
+			h.log.Info("Socket Mode connection closed cleanly")
 		}
 	}()
 
@@ -79,13 +86,16 @@ func (h *SlackHandler) Start(ctx context.Context) error {
 			return bgCtx.Err()
 		case evt, ok := <-h.sm.Events:
 			if !ok {
-				return nil
+				h.log.Info("Socket Mode events channel closed, exiting listener")
+				return fmt.Errorf("Socket Mode events channel closed unexpectedly")
 			}
 			switch evt.Type {
 			case socketmode.EventTypeEventsAPI:
 				h.handleEventsAPI(bgCtx, evt)
 			case socketmode.EventTypeSlashCommand:
 				h.handleSlashCommand(bgCtx, evt)
+			default:
+				h.log.V(1).Info("Unhandled Socket Mode event type", "type", evt.Type)
 			}
 		}
 	}
@@ -112,6 +122,8 @@ func (h *SlackHandler) handleEventsAPI(ctx context.Context, evt socketmode.Event
 	}
 
 	if !shouldProcess(innerEvent.User, innerEvent.SubType, innerEvent.Text, h.botUserID) {
+		h.log.V(1).Info("Message filtered by shouldProcess",
+			"user", innerEvent.User, "subtype", innerEvent.SubType, "channel", innerEvent.Channel)
 		return
 	}
 
@@ -201,6 +213,8 @@ func (h *SlackHandler) routeMessage(ctx context.Context, msg *SlackMessageData) 
 
 		// Check channel and user filters
 		if !MatchesSpawner(slackCfg, msg) {
+			spawnerLog.V(1).Info("Message did not match spawner filters",
+				"channel", msg.ChannelID, "mentionRequired", len(slackCfg.MentionUserIDs) > 0)
 			continue
 		}
 
@@ -214,6 +228,8 @@ func (h *SlackHandler) routeMessage(ctx context.Context, msg *SlackMessageData) 
 			body, ok = ProcessTriggerCommand(msg.Text, slackCfg.TriggerCommand)
 		}
 		if !ok {
+			spawnerLog.V(1).Info("Message did not match trigger command",
+				"triggerCommand", slackCfg.TriggerCommand)
 			continue
 		}
 
