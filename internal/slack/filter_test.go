@@ -75,6 +75,73 @@ func TestMatchesSpawner(t *testing.T) {
 			msg:  &SlackMessageData{UserID: "U1", ChannelID: "C1"},
 			want: false,
 		},
+		{
+			name: "mention filter matches",
+			slackCfg: &v1alpha1.Slack{
+				MentionUserIDs: []string{"UBOT1"},
+			},
+			msg:  &SlackMessageData{UserID: "U1", ChannelID: "C1", Text: "hey <@UBOT1> fix this"},
+			want: true,
+		},
+		{
+			name: "mention filter rejects when no mention present",
+			slackCfg: &v1alpha1.Slack{
+				MentionUserIDs: []string{"UBOT1"},
+			},
+			msg:  &SlackMessageData{UserID: "U1", ChannelID: "C1", Text: "hey fix this"},
+			want: false,
+		},
+		{
+			name: "mention filter matches any of multiple IDs",
+			slackCfg: &v1alpha1.Slack{
+				MentionUserIDs: []string{"UBOT1", "UBOT2"},
+			},
+			msg:  &SlackMessageData{UserID: "U1", ChannelID: "C1", Text: "hey <@UBOT2> help"},
+			want: true,
+		},
+		{
+			name: "mention filter required for thread replies",
+			slackCfg: &v1alpha1.Slack{
+				MentionUserIDs: []string{"UBOT1"},
+			},
+			msg:  &SlackMessageData{UserID: "U1", ChannelID: "C1", Text: "follow up no mention", ThreadTS: "1234567890.123456"},
+			want: false,
+		},
+		{
+			name: "mention filter passes for thread reply with mention",
+			slackCfg: &v1alpha1.Slack{
+				MentionUserIDs: []string{"UBOT1"},
+			},
+			msg:  &SlackMessageData{UserID: "U1", ChannelID: "C1", Text: "<@UBOT1> follow up", ThreadTS: "1234567890.123456"},
+			want: true,
+		},
+		{
+			name: "mention filter bypassed for slash commands",
+			slackCfg: &v1alpha1.Slack{
+				MentionUserIDs: []string{"UBOT1"},
+			},
+			msg:  &SlackMessageData{UserID: "U1", ChannelID: "C1", Text: "fix this", IsSlashCommand: true},
+			want: true,
+		},
+		{
+			name: "mention filter with channel and user filters all match",
+			slackCfg: &v1alpha1.Slack{
+				Channels:       []string{"C1"},
+				AllowedUsers:   []string{"U1"},
+				MentionUserIDs: []string{"UBOT1"},
+			},
+			msg:  &SlackMessageData{UserID: "U1", ChannelID: "C1", Text: "<@UBOT1> do the thing"},
+			want: true,
+		},
+		{
+			name: "mention filter passes but channel rejects",
+			slackCfg: &v1alpha1.Slack{
+				Channels:       []string{"C2"},
+				MentionUserIDs: []string{"UBOT1"},
+			},
+			msg:  &SlackMessageData{UserID: "U1", ChannelID: "C1", Text: "<@UBOT1> help"},
+			want: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -145,6 +212,27 @@ func TestProcessTriggerCommand(t *testing.T) {
 			threadTS:   "1234567890.123456",
 			triggerCmd: "",
 			wantBody:   "follow up",
+			wantOK:     true,
+		},
+		{
+			name:       "mention before trigger command",
+			text:       "<@UBOT1> /kelos fix the bug",
+			triggerCmd: "/kelos",
+			wantBody:   "fix the bug",
+			wantOK:     true,
+		},
+		{
+			name:       "mention with display name before trigger command",
+			text:       "<@UBOT1|gravity> /kelos fix the bug",
+			triggerCmd: "/kelos",
+			wantBody:   "fix the bug",
+			wantOK:     true,
+		},
+		{
+			name:       "multiple mentions before trigger command",
+			text:       "<@UBOT1> <@UBOT2> /kelos fix the bug",
+			triggerCmd: "/kelos",
+			wantBody:   "fix the bug",
 			wantOK:     true,
 		},
 	}
@@ -317,6 +405,57 @@ func TestMatchesUser(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := matchesUser(tt.userID, tt.allowed); got != tt.want {
 				t.Errorf("matchesUser() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMatchesMention(t *testing.T) {
+	tests := []struct {
+		name           string
+		text           string
+		mentionUserIDs []string
+		want           bool
+	}{
+		{"empty mention list matches all", "hello", nil, true},
+		{"mention present matches", "hey <@UBOT1> fix", []string{"UBOT1"}, true},
+		{"mention absent rejects", "hey fix this", []string{"UBOT1"}, false},
+		{"partial user ID does not match", "hey <@UBOT10> fix", []string{"UBOT1"}, false},
+		{"any of multiple mentions matches", "hey <@UBOT2>", []string{"UBOT1", "UBOT2"}, true},
+		{"none of multiple mentions rejects", "hey there", []string{"UBOT1", "UBOT2"}, false},
+		{"mention with display name matches", "hey <@UBOT1|kelos-bot> fix", []string{"UBOT1"}, true},
+		{"mention without angle brackets does not match", "hey @UBOT1 fix", []string{"UBOT1"}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := matchesMention(tt.text, tt.mentionUserIDs); got != tt.want {
+				t.Errorf("matchesMention() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStripLeadingMentions(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+		want string
+	}{
+		{"no mentions", "/kelos fix", "/kelos fix"},
+		{"single mention", "<@UBOT1> /kelos fix", "/kelos fix"},
+		{"mention with display name", "<@UBOT1|gravity> /kelos fix", "/kelos fix"},
+		{"multiple mentions", "<@UBOT1> <@UBOT2> /kelos fix", "/kelos fix"},
+		{"mention only", "<@UBOT1>", ""},
+		{"empty string", "", ""},
+		{"no closing bracket", "<@UBOT1 broken", "<@UBOT1 broken"},
+		{"non-mention angle bracket", "<#C123> hello", "<#C123> hello"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := stripLeadingMentions(tt.text); got != tt.want {
+				t.Errorf("stripLeadingMentions() = %q, want %q", got, tt.want)
 			}
 		})
 	}
