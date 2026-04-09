@@ -1777,6 +1777,16 @@ spec:
                         items:
                           type: string
                         type: array
+                      excludeCommands:
+                        description: |-
+                          ExcludeCommands optionally rejects messages whose text (after stripping
+                          leading @-mentions) starts with any of these prefixes. This provides
+                          negative routing so a spawner can avoid firing on messages intended for
+                          another spawner. Unlike TriggerCommand, this is NOT bypassed for thread
+                          replies.
+                        items:
+                          type: string
+                        type: array
                       mentionUserIDs:
                         description: |-
                           MentionUserIDs optionally requires that the message @-mentions at least

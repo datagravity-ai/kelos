@@ -54,15 +54,23 @@ func MatchesSpawner(slackCfg *v1alpha1.Slack, msg *SlackMessageData) bool {
 			return false
 		}
 	}
+	// ExcludeCommands filter: reject messages matching any excluded prefix.
+	// Applied consistently for all message types including thread replies.
+	if matchesExcludeCommands(msg.Text, slackCfg.ExcludeCommands) {
+		return false
+	}
 	return true
 }
 
 // ProcessTriggerCommand checks whether the message text matches the TaskSpawner's
-// trigger command prefix. For thread replies, the trigger is not required.
+// trigger command prefix. For thread replies, the trigger is normally not required.
+// However, when enforceTriggerInThread is true (typically because mentionUserIDs is
+// set, making the mention the primary gate), the trigger is enforced even in threads.
 // Returns the processed body and true if the message should be processed.
-func ProcessTriggerCommand(text, threadTS, triggerCmd string) (string, bool) {
-	// Thread replies are follow-ups — no trigger required
-	if threadTS != "" {
+func ProcessTriggerCommand(text, threadTS, triggerCmd string, enforceTriggerInThread bool) (string, bool) {
+	// Thread replies are follow-ups — no trigger required, unless the
+	// spawner uses mention-based gating where the trigger acts as a router.
+	if threadTS != "" && !enforceTriggerInThread {
 		return text, true
 	}
 
@@ -144,6 +152,22 @@ func stripLeadingMentions(text string) string {
 		}
 		s = s[end+1:]
 	}
+}
+
+// matchesExcludeCommands returns true if the message text (after stripping
+// leading @-mentions) starts with any of the exclude command prefixes.
+// When it returns true, the spawner should NOT process this message.
+func matchesExcludeCommands(text string, excludeCommands []string) bool {
+	if len(excludeCommands) == 0 {
+		return false
+	}
+	cleaned := stripLeadingMentions(text)
+	for _, prefix := range excludeCommands {
+		if strings.HasPrefix(cleaned, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // matchesMention returns true if the message text contains an @-mention of

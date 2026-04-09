@@ -509,6 +509,14 @@ type Slack struct {
 	// slash commands but still required for thread replies.
 	// +optional
 	MentionUserIDs []string `json:"mentionUserIDs,omitempty"`
+
+	// ExcludeCommands optionally rejects messages whose text (after stripping
+	// leading @-mentions) starts with any of these prefixes. This provides
+	// negative routing so a spawner can avoid firing on messages intended for
+	// another spawner. Unlike TriggerCommand, this is NOT bypassed for thread
+	// replies.
+	// +optional
+	ExcludeCommands []string `json:"excludeCommands,omitempty"`
 }
 
 // GenericWebhook configures webhook-driven task spawning from arbitrary HTTP
