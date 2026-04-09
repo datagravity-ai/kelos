@@ -58,11 +58,8 @@ func NewSlackHandler(ctx context.Context, cl client.Client, botToken, appToken s
 		log:         log,
 		taskBuilder: tb,
 		api:         api,
-		sm: socketmode.New(api,
-			socketmode.OptionDebug(true),
-			socketmode.OptionLog(stdlog.New(os.Stderr, "socketmode: ", stdlog.LstdFlags|stdlog.Lshortfile)),
-		),
-		botUserID: authResp.UserID,
+		sm:          newSocketModeClient(api),
+		botUserID:   authResp.UserID,
 	}, nil
 }
 
@@ -376,6 +373,18 @@ func (h *SlackHandler) enrichMessage(ctx context.Context, event *slackevents.Mes
 		Timestamp:   event.TimeStamp,
 		Permalink:   permalink,
 	}
+}
+
+// newSocketModeClient creates a Socket Mode client with an stderr logger.
+// Set SLACK_SOCKET_DEBUG=1 to enable verbose WebSocket frame logging.
+func newSocketModeClient(api *goslack.Client) *socketmode.Client {
+	opts := []socketmode.Option{
+		socketmode.OptionLog(stdlog.New(os.Stderr, "socketmode: ", stdlog.LstdFlags|stdlog.Lshortfile)),
+	}
+	if os.Getenv("SLACK_SOCKET_DEBUG") == "1" {
+		opts = append(opts, socketmode.OptionDebug(true))
+	}
+	return socketmode.New(api, opts...)
 }
 
 // shouldProcess decides whether a Slack message should be processed.
