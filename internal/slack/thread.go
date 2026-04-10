@@ -66,7 +66,7 @@ func formatAttachments(attachments []goslack.Attachment) string {
 			lines = append(lines, "> "+strings.ReplaceAll(a.Text, "\n", "\n> "))
 		}
 		if a.Fallback != "" && a.Text == "" {
-			lines = append(lines, "> "+a.Fallback)
+			lines = append(lines, "> "+strings.ReplaceAll(a.Fallback, "\n", "\n> "))
 		}
 		if len(lines) > 0 {
 			parts = append(parts, strings.Join(lines, "\n"))

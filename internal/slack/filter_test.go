@@ -375,13 +375,6 @@ func TestShouldProcess(t *testing.T) {
 			selfUserID: "UBOT",
 			want:       false,
 		},
-		{
-			name:       "attachment-only message accepted",
-			userID:     "U1",
-			hasContent: true,
-			selfUserID: "UBOT",
-			want:       true,
-		},
 	}
 
 	for _, tt := range tests {

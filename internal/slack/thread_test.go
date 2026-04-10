@@ -218,6 +218,15 @@ func TestFormatAttachments(t *testing.T) {
 		}
 	})
 
+	t.Run("multiline fallback blockquoted", func(t *testing.T) {
+		result := formatAttachments([]goslack.Attachment{
+			{Fallback: "line one\nline two"},
+		})
+		if result != "> line one\n> line two" {
+			t.Errorf("Expected each fallback line blockquoted, got: %q", result)
+		}
+	})
+
 	t.Run("attachment with no text fields", func(t *testing.T) {
 		result := formatAttachments([]goslack.Attachment{
 			{Color: "danger"},
