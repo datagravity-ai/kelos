@@ -127,6 +127,11 @@ release-binaries: ## Cross-compile CLI binaries for release and generate checksu
 	done
 	@cd bin && sha256sum kelos-* > checksums.txt
 
+.PHONY: install-claude-commands
+install-claude-commands: ## Install Claude Code custom commands to user-level directory.
+	mkdir -p $(HOME)/.claude/commands
+	cp hack/claude-commands/*.md $(HOME)/.claude/commands/
+
 .PHONY: clean
 clean: ## Clean build artifacts.
 	rm -rf bin/
