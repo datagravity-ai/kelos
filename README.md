@@ -22,7 +22,7 @@
 
 Kelos lets you **define your development workflow as Kubernetes resources** and run it continuously. Declare what triggers agents, what they do, and how they hand off — Kelos handles the rest.
 
-Kelos develops Kelos through seven TaskSpawners run 24/7: triaging issues, planning implementations, fixing bugs, responding to PR feedback, testing DX, brainstorming improvements, and tuning their own prompts. [See the full pipeline below.](#kelos-developing-kelos)
+Kelos develops Kelos through TaskSpawners running 24/7: triaging issues, planning implementations, fixing bugs, responding to PR feedback, reviewing code, squashing commits, updating agent images, testing DX, brainstorming improvements, and tuning their own prompts and configs. [See the full pipeline below.](#kelos-developing-kelos)
 
 Supports **Claude Code**, **OpenAI Codex**, **Google Gemini**, **OpenCode**, **Cursor**, and [custom agent images](docs/agent-image-interface.md).
 
@@ -61,7 +61,7 @@ TaskSpawner watches external sources (e.g., GitHub Issues) and automatically cre
 
 ## Kelos Developing Kelos
 
-Kelos develops itself. Seven TaskSpawners run 24/7, each handling a different part of the development lifecycle — fully autonomous.
+Kelos develops itself. TaskSpawners run 24/7, each handling a different part of the development lifecycle — fully autonomous.
 
 <img width="2694" height="1966" alt="kelos-self-development" src="https://github.com/user-attachments/assets/a205f0c6-9eb4-4001-8ee6-5c8ab187fbea" />
 
@@ -74,6 +74,10 @@ Kelos develops itself. Seven TaskSpawners run 24/7, each handling a different pa
 | **kelos-fake-user** | Cron (daily 09:00 UTC) | Sonnet | Tests DX as a new user — follows docs, tries CLI workflows, files issues for problems found |
 | **kelos-fake-strategist** | Cron (every 12 hours) | Opus | Explores new use cases, workflow improvements, and integration opportunities |
 | **kelos-self-update** | Cron (daily 06:00 UTC) | Opus | Reviews and tunes prompts, configs, and workflow files — the pipeline improves itself |
+| **kelos-config-update** | Cron (daily 18:00 UTC) | Opus | Reviews recent PR feedback and updates agent configuration (conventions, prompts, configs) accordingly |
+| **kelos-image-update** | Cron (daily 03:00 UTC) | Sonnet | Checks for newer agent image versions (Claude Code, Codex, Gemini, etc.) and creates PRs to update them |
+| **kelos-reviewer** | GitHub Pull Requests (`/kelos review` comment) | Opus | Reviews PRs on demand — analyzes code, checks conventions, and submits structured reviews |
+| **kelos-squash-commits** | GitHub Pull Requests (`/kelos squash-commits` comment) | Sonnet | Rebases and squashes PR branch commits into a single clean commit |
 
 Here's a trimmed snippet of `kelos-workers.yaml` — enough to show the pattern:
 
