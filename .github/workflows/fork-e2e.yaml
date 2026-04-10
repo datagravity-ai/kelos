@@ -43,6 +43,7 @@ jobs:
       expected-head-sha: ${{ github.event.pull_request.head.sha }}
       use-environment-secrets: true
       environment-name: ok-to-test
+    secrets: inherit
 
   report-pr-e2e-status:
     if: >-

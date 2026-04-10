@@ -27,11 +27,7 @@ on:
         description: GitHub environment name to use when loading environment secrets
         type: string
         default: ''
-    secrets:
-      CLAUDE_CODE_OAUTH_TOKEN:
-        required: false
-      CODEX_AUTH_JSON:
-        required: false
+
 
 jobs:
   e2e:
