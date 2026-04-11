@@ -4,17 +4,32 @@ metadata:
   name: kelos-triage
 spec:
   when:
-    githubIssues:
-      types:
+    githubWebhook:
+      repository: kelos-dev/kelos
+      events:
         - issues
-      state: open
-      labels:
-        - needs-actor
-      excludeLabels:
-        - triage-accepted
-      reporting:
-        enabled: true
-      pollInterval: 1m
+      filters:
+        - event: issues
+          action: opened
+          labels:
+            - needs-actor
+          excludeLabels:
+            - triage-accepted
+          state: open
+        - event: issues
+          action: labeled
+          labels:
+            - needs-actor
+          excludeLabels:
+            - triage-accepted
+          state: open
+        - event: issues
+          action: reopened
+          labels:
+            - needs-actor
+          excludeLabels:
+            - triage-accepted
+          state: open
   maxConcurrency: 8
   taskTemplate:
     workspaceRef:
@@ -45,12 +60,14 @@ spec:
       assess priority, recommend an actor, and post a single triage comment using `gh`.
 
       ---
+      Webhook:
+      - Event: {{.Event}}
+      - Action: {{.Action}}
+      - Sender: {{.Sender}}
+      - URL: {{.URL}}
+
       Issue #{{.Number}}: {{.Title}}
       {{.Body}}
-      {{if .Comments}}
-      Comments:
-      {{.Comments}}
-      {{end}}
       ---
 
       ## Your tasks
