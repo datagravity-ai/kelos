@@ -45,6 +45,9 @@ func main() {
 		githubAppInstallationID string
 		githubAppPrivateKey     string
 		githubAPIBaseURL        string
+		githubOwner             string
+		githubRepo              string
+		githubTokenFile         string
 	)
 
 	flag.StringVar(&source, "source", "", "Webhook source type (github or linear)")
@@ -57,6 +60,9 @@ func main() {
 	flag.StringVar(&githubAppInstallationID, "github-app-installation-id", "", "GitHub App installation ID (env: GITHUB_APP_INSTALLATION_ID)")
 	flag.StringVar(&githubAppPrivateKey, "github-app-private-key", "", "GitHub App private key in PEM format (env: GITHUB_APP_PRIVATE_KEY)")
 	flag.StringVar(&githubAPIBaseURL, "github-api-base-url", "", "GitHub API base URL for enterprise servers (env: GITHUB_API_BASE_URL)")
+	flag.StringVar(&githubOwner, "github-owner", "", "GitHub repository owner for reporting.")
+	flag.StringVar(&githubRepo, "github-repo", "", "GitHub repository name for reporting.")
+	flag.StringVar(&githubTokenFile, "github-token-file", "", "Path to file containing GitHub token for reporting.")
 
 	opts, applyVerbosity := logging.SetupZapOptions(flag.CommandLine)
 	flag.Parse()
@@ -174,6 +180,24 @@ func main() {
 			os.Exit(1)
 		}
 	}()
+
+	// Set up reporting reconciler when GitHub credentials are provided
+	if githubOwner != "" && githubRepo != "" {
+		reportingReconciler := &reportingReconciler{
+			Client: mgr.GetClient(),
+			config: reportingConfig{
+				GitHubOwner:      githubOwner,
+				GitHubRepo:       githubRepo,
+				GitHubTokenFile:  githubTokenFile,
+				GitHubAPIBaseURL: githubAPIBaseURL,
+			},
+		}
+		if err := reportingReconciler.SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "Unable to create reporting controller")
+			os.Exit(1)
+		}
+		setupLog.Info("Reporting controller enabled", "owner", githubOwner, "repo", githubRepo)
+	}
 
 	// Add health checks
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
