@@ -172,6 +172,16 @@ kelos install
 
 This installs the Kelos controller and CRDs into the `kelos-system` namespace.
 
+For chart-native customization, pass Helm values to `kelos install`:
+
+```bash
+kelos install -f values.yaml
+kelos install --set webhookServer.sources.github.enabled=true
+```
+
+`kelos install` manages CRDs separately, so `crds.install` must be omitted or set to `false`.
+For the full values schema and advanced examples, see [the Helm chart README](internal/manifests/charts/kelos/README.md).
+
 Verify the installation:
 
 ```bash

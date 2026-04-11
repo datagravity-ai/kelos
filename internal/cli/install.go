@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"helm.sh/helm/v3/pkg/chartutil"
+	"helm.sh/helm/v3/pkg/strvals"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -31,9 +33,38 @@ import (
 
 const fieldManager = "kelos"
 
+type helmValuesOptions struct {
+	imageTag                       *string
+	pullPolicy                     string
+	disableHeartbeat               bool
+	spawnerResourceRequests        string
+	spawnerResourceLimits          string
+	ghproxyResourceRequests        string
+	ghproxyResourceLimits          string
+	tokenRefresherResourceRequests string
+	tokenRefresherResourceLimits   string
+	controllerResourceRequests     string
+	controllerResourceLimits       string
+	ghproxyAllowedUpstreams        string
+	ghproxyCacheTTL                string
+}
+
+type installValuesOptions struct {
+	defaultImageTag string
+	valuesFiles     []string
+	setValues       []string
+	setStringValues []string
+	setFileValues   []string
+	flagValues      helmValuesOptions
+}
+
 func newInstallCommand(cfg *ClientConfig) *cobra.Command {
 	var dryRun bool
 	var flagVersion string
+	var valuesFiles []string
+	var setValues []string
+	var setStringValues []string
+	var setFileValues []string
 	var imagePullPolicy string
 	var disableHeartbeat bool
 	var spawnerResourceRequests string
@@ -52,25 +83,37 @@ func newInstallCommand(cfg *ClientConfig) *cobra.Command {
 		Short: "Install kelos CRDs and controller into the cluster",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			installVersion := version.Version
 			if flagVersion != "" {
-				version.Version = flagVersion
+				installVersion = flagVersion
 			}
 
-			vals := disableChartCRDs(buildHelmValuesWithGHProxyResources(
-				version.Version,
-				imagePullPolicy,
-				disableHeartbeat,
-				spawnerResourceRequests,
-				spawnerResourceLimits,
-				ghproxyResourceRequests,
-				ghproxyResourceLimits,
-				tokenRefresherResourceRequests,
-				tokenRefresherResourceLimits,
-				controllerResourceRequests,
-				controllerResourceLimits,
-				ghproxyAllowedUpstreams,
-				ghproxyCacheTTL,
-			))
+			vals, err := buildInstallValues(cmd.InOrStdin(), installValuesOptions{
+				defaultImageTag: installVersion,
+				valuesFiles:     valuesFiles,
+				setValues:       setValues,
+				setStringValues: setStringValues,
+				setFileValues:   setFileValues,
+				flagValues: helmValuesOptions{
+					imageTag:                       nonEmptyStringPtr(flagVersion),
+					pullPolicy:                     imagePullPolicy,
+					disableHeartbeat:               disableHeartbeat,
+					spawnerResourceRequests:        spawnerResourceRequests,
+					spawnerResourceLimits:          spawnerResourceLimits,
+					ghproxyResourceRequests:        ghproxyResourceRequests,
+					ghproxyResourceLimits:          ghproxyResourceLimits,
+					tokenRefresherResourceRequests: tokenRefresherResourceRequests,
+					tokenRefresherResourceLimits:   tokenRefresherResourceLimits,
+					controllerResourceRequests:     controllerResourceRequests,
+					controllerResourceLimits:       controllerResourceLimits,
+					ghproxyAllowedUpstreams:        ghproxyAllowedUpstreams,
+					ghproxyCacheTTL:                ghproxyCacheTTL,
+				},
+			})
+			if err != nil {
+				return err
+			}
+
 			controllerManifest, err := helmchart.Render(manifests.ChartFS, vals)
 			if err != nil {
 				return fmt.Errorf("rendering chart: %w", err)
@@ -106,7 +149,7 @@ func newInstallCommand(cfg *ClientConfig) *cobra.Command {
 				return fmt.Errorf("installing CRDs: %w", err)
 			}
 
-			fmt.Fprintf(os.Stdout, "Installing kelos controller (version: %s)\n", version.Version)
+			fmt.Fprintf(os.Stdout, "Installing kelos controller (version: %s)\n", installVersion)
 			if err := applyManifests(ctx, dc, dyn, controllerManifest); err != nil {
 				return fmt.Errorf("installing controller: %w", err)
 			}
@@ -117,6 +160,10 @@ func newInstallCommand(cfg *ClientConfig) *cobra.Command {
 	}
 
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print the manifests that would be applied without installing")
+	cmd.Flags().StringArrayVarP(&valuesFiles, "values", "f", nil, "specify values in a YAML file (use '-' to read from stdin)")
+	cmd.Flags().StringArrayVar(&setValues, "set", nil, "set chart values on the command line (key1=val1,key2=val2)")
+	cmd.Flags().StringArrayVar(&setStringValues, "set-string", nil, "set string chart values on the command line (key1=val1,key2=val2)")
+	cmd.Flags().StringArrayVar(&setFileValues, "set-file", nil, "set chart values from files (key1=path1,key2=path2)")
 	cmd.Flags().StringVar(&flagVersion, "version", "", "override the version used for image tags (defaults to the binary version)")
 	cmd.Flags().StringVar(&imagePullPolicy, "image-pull-policy", "", "set imagePullPolicy on controller containers (e.g. Always, IfNotPresent, Never)")
 	cmd.Flags().BoolVar(&disableHeartbeat, "disable-heartbeat", false, "do not install the telemetry heartbeat CronJob")
@@ -140,38 +187,62 @@ func buildHelmValues(ver string, pullPolicy string, disableHeartbeat bool, spawn
 }
 
 func buildHelmValuesWithGHProxyResources(ver string, pullPolicy string, disableHeartbeat bool, spawnerResourceRequests string, spawnerResourceLimits string, ghproxyResourceRequests string, ghproxyResourceLimits string, tokenRefresherResourceRequests string, tokenRefresherResourceLimits string, controllerResourceRequests string, controllerResourceLimits string, ghproxyAllowedUpstreams string, ghproxyCacheTTL string) map[string]interface{} {
-	imageVals := map[string]interface{}{
-		"tag": ver,
+	return buildHelmValuesFromOptions(helmValuesOptions{
+		imageTag:                       ptr.To(ver),
+		pullPolicy:                     pullPolicy,
+		disableHeartbeat:               disableHeartbeat,
+		spawnerResourceRequests:        spawnerResourceRequests,
+		spawnerResourceLimits:          spawnerResourceLimits,
+		ghproxyResourceRequests:        ghproxyResourceRequests,
+		ghproxyResourceLimits:          ghproxyResourceLimits,
+		tokenRefresherResourceRequests: tokenRefresherResourceRequests,
+		tokenRefresherResourceLimits:   tokenRefresherResourceLimits,
+		controllerResourceRequests:     controllerResourceRequests,
+		controllerResourceLimits:       controllerResourceLimits,
+		ghproxyAllowedUpstreams:        ghproxyAllowedUpstreams,
+		ghproxyCacheTTL:                ghproxyCacheTTL,
+	})
+}
+
+func buildHelmValuesFromOptions(opts helmValuesOptions) map[string]interface{} {
+	vals := map[string]interface{}{}
+
+	imageVals := map[string]interface{}{}
+	if opts.imageTag != nil {
+		imageVals["tag"] = *opts.imageTag
 	}
-	if pullPolicy != "" {
-		imageVals["pullPolicy"] = pullPolicy
+	if opts.pullPolicy != "" {
+		imageVals["pullPolicy"] = opts.pullPolicy
 	}
-	vals := map[string]interface{}{
-		"image": imageVals,
+	if len(imageVals) > 0 {
+		vals["image"] = imageVals
 	}
-	if disableHeartbeat {
+
+	if opts.disableHeartbeat {
 		vals["telemetry"] = map[string]interface{}{
 			"enabled": false,
 		}
 	}
+
 	spawnerResources := map[string]interface{}{}
-	if spawnerResourceRequests != "" {
-		spawnerResources["requests"] = spawnerResourceRequests
+	if opts.spawnerResourceRequests != "" {
+		spawnerResources["requests"] = opts.spawnerResourceRequests
 	}
-	if spawnerResourceLimits != "" {
-		spawnerResources["limits"] = spawnerResourceLimits
+	if opts.spawnerResourceLimits != "" {
+		spawnerResources["limits"] = opts.spawnerResourceLimits
 	}
 	if len(spawnerResources) > 0 {
 		vals["spawner"] = map[string]interface{}{
 			"resources": spawnerResources,
 		}
 	}
+
 	ghproxyResources := map[string]interface{}{}
-	if ghproxyResourceRequests != "" {
-		ghproxyResources["requests"] = ghproxyResourceRequests
+	if opts.ghproxyResourceRequests != "" {
+		ghproxyResources["requests"] = opts.ghproxyResourceRequests
 	}
-	if ghproxyResourceLimits != "" {
-		ghproxyResources["limits"] = ghproxyResourceLimits
+	if opts.ghproxyResourceLimits != "" {
+		ghproxyResources["limits"] = opts.ghproxyResourceLimits
 	}
 	if len(ghproxyResources) > 0 {
 		ghproxyVals, _ := vals["ghproxy"].(map[string]interface{})
@@ -182,11 +253,11 @@ func buildHelmValuesWithGHProxyResources(ver string, pullPolicy string, disableH
 		vals["ghproxy"] = ghproxyVals
 	}
 	tokenRefresherResources := map[string]interface{}{}
-	if tokenRefresherResourceRequests != "" {
-		tokenRefresherResources["requests"] = tokenRefresherResourceRequests
+	if opts.tokenRefresherResourceRequests != "" {
+		tokenRefresherResources["requests"] = opts.tokenRefresherResourceRequests
 	}
-	if tokenRefresherResourceLimits != "" {
-		tokenRefresherResources["limits"] = tokenRefresherResourceLimits
+	if opts.tokenRefresherResourceLimits != "" {
+		tokenRefresherResources["limits"] = opts.tokenRefresherResourceLimits
 	}
 	if len(tokenRefresherResources) > 0 {
 		vals["tokenRefresher"] = map[string]interface{}{
@@ -194,34 +265,163 @@ func buildHelmValuesWithGHProxyResources(ver string, pullPolicy string, disableH
 		}
 	}
 	controllerResources := map[string]interface{}{}
-	if controllerResourceRequests != "" {
-		controllerResources["requests"] = parseResourceString(controllerResourceRequests)
+	if opts.controllerResourceRequests != "" {
+		controllerResources["requests"] = parseResourceString(opts.controllerResourceRequests)
 	}
-	if controllerResourceLimits != "" {
-		controllerResources["limits"] = parseResourceString(controllerResourceLimits)
+	if opts.controllerResourceLimits != "" {
+		controllerResources["limits"] = parseResourceString(opts.controllerResourceLimits)
 	}
 	if len(controllerResources) > 0 {
 		vals["controller"] = map[string]interface{}{
 			"resources": controllerResources,
 		}
 	}
-	if ghproxyAllowedUpstreams != "" {
+	if opts.ghproxyAllowedUpstreams != "" {
 		ghproxyVals, _ := vals["ghproxy"].(map[string]interface{})
 		if ghproxyVals == nil {
 			ghproxyVals = map[string]interface{}{}
 		}
-		ghproxyVals["allowedUpstreams"] = ghproxyAllowedUpstreams
+		ghproxyVals["allowedUpstreams"] = opts.ghproxyAllowedUpstreams
 		vals["ghproxy"] = ghproxyVals
 	}
-	if ghproxyCacheTTL != "" {
+	if opts.ghproxyCacheTTL != "" {
 		ghproxyVals, _ := vals["ghproxy"].(map[string]interface{})
 		if ghproxyVals == nil {
 			ghproxyVals = map[string]interface{}{}
 		}
-		ghproxyVals["cacheTTL"] = ghproxyCacheTTL
+		ghproxyVals["cacheTTL"] = opts.ghproxyCacheTTL
 		vals["ghproxy"] = ghproxyVals
 	}
 	return vals
+}
+
+func buildInstallValues(stdin io.Reader, opts installValuesOptions) (map[string]interface{}, error) {
+	vals := map[string]interface{}{}
+	stdinConsumed := false
+
+	for _, path := range opts.valuesFiles {
+		fileVals, err := loadValuesFile(path, stdin, &stdinConsumed)
+		if err != nil {
+			return nil, err
+		}
+		vals = chartutil.MergeTables(fileVals, vals)
+	}
+
+	vals = chartutil.MergeTables(buildHelmValuesFromOptions(opts.flagValues), vals)
+
+	for _, setArg := range opts.setValues {
+		if err := strvals.ParseInto(setArg, vals); err != nil {
+			return nil, fmt.Errorf("parsing --set %q: %w", setArg, err)
+		}
+	}
+
+	for _, setStringArg := range opts.setStringValues {
+		if err := strvals.ParseIntoString(setStringArg, vals); err != nil {
+			return nil, fmt.Errorf("parsing --set-string %q: %w", setStringArg, err)
+		}
+	}
+
+	for _, setFileArg := range opts.setFileValues {
+		if err := strvals.ParseIntoFile(setFileArg, vals, readSetFileValue); err != nil {
+			return nil, fmt.Errorf("parsing --set-file %q: %w", setFileArg, err)
+		}
+	}
+
+	if opts.defaultImageTag != "" && !hasNestedKey(vals, "image", "tag") {
+		vals = chartutil.MergeTables(map[string]interface{}{
+			"image": map[string]interface{}{
+				"tag": opts.defaultImageTag,
+			},
+		}, vals)
+	}
+
+	if err := validateInstallValues(vals); err != nil {
+		return nil, err
+	}
+
+	return disableChartCRDs(vals), nil
+}
+
+func loadValuesFile(path string, stdin io.Reader, stdinConsumed *bool) (map[string]interface{}, error) {
+	if path == "-" {
+		if *stdinConsumed {
+			return nil, fmt.Errorf("reading values from stdin: '-' can only be used once")
+		}
+		*stdinConsumed = true
+
+		data, err := io.ReadAll(stdin)
+		if err != nil {
+			return nil, fmt.Errorf("reading values from stdin: %w", err)
+		}
+		if len(bytes.TrimSpace(data)) == 0 {
+			return map[string]interface{}{}, nil
+		}
+
+		vals, err := chartutil.ReadValues(data)
+		if err != nil {
+			return nil, fmt.Errorf("parsing values from stdin: %w", err)
+		}
+		return vals, nil
+	}
+
+	vals, err := chartutil.ReadValuesFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading values file %q: %w", path, err)
+	}
+	return vals, nil
+}
+
+func readSetFileValue(path []rune) (interface{}, error) {
+	data, err := os.ReadFile(string(path))
+	if err != nil {
+		return nil, err
+	}
+	return string(data), nil
+}
+
+func hasNestedKey(vals map[string]interface{}, path ...string) bool {
+	current := vals
+	for i, key := range path {
+		value, ok := current[key]
+		if !ok {
+			return false
+		}
+		if i == len(path)-1 {
+			return true
+		}
+		next, ok := value.(map[string]interface{})
+		if !ok {
+			return false
+		}
+		current = next
+	}
+	return false
+}
+
+func validateInstallValues(vals map[string]interface{}) error {
+	crds, ok := vals["crds"]
+	if !ok {
+		return nil
+	}
+
+	crdMap, ok := crds.(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("crds must be a map, got %T", crds)
+	}
+
+	installValue, ok := crdMap["install"]
+	if !ok {
+		return nil
+	}
+
+	installEnabled, ok := installValue.(bool)
+	if !ok {
+		return fmt.Errorf("crds.install must be a boolean, got %T", installValue)
+	}
+	if installEnabled {
+		return fmt.Errorf("kelos install manages CRDs separately; crds.install must be omitted or false")
+	}
+	return nil
 }
 
 func disableChartCRDs(vals map[string]interface{}) map[string]interface{} {
@@ -249,6 +449,17 @@ func parseResourceString(s string) map[string]interface{} {
 		}
 	}
 	return result
+}
+
+// nonEmptyStringPtr returns a pointer to s, or nil if s is empty. The nil
+// signal is load-bearing: it lets buildHelmValuesFromOptions distinguish
+// "user did not pass --version" (leave image.tag alone) from "user passed
+// --version with an explicit value" (override image.tag).
+func nonEmptyStringPtr(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }
 
 // kelosGVRs lists the kelos custom resource GVRs that need to be cleaned up
@@ -286,12 +497,32 @@ func newUninstallCommand(cfg *ClientConfig) *cobra.Command {
 				return fmt.Errorf("creating dynamic client: %w", err)
 			}
 
-			// Render the chart with CRDs disabled to identify controller
-			// resources to delete. Resource names and kinds do not change
-			// with values, so defaults suffice. This still renders optional
-			// resources like the telemetry CronJob, which is safe because
-			// deleteManifests ignores not-found errors.
-			controllerManifest, err := helmchart.Render(manifests.ChartFS, disableChartCRDs(nil))
+			// Render the chart with CRDs disabled to identify resources to
+			// delete. Uninstall does not persist install values, so we force
+			// optional webhookServer.sources.*.enabled on here to ensure any
+			// webhook-related RBAC and namespaced resources are included in
+			// cleanup. Only webhookServer.sources.*.enabled currently gates
+			// cluster-scoped resources; other optional flags (ingress,
+			// gateway) produce only namespaced resources that the namespace
+			// cascade reclaims when the kelos-system namespace is deleted.
+			// Any future optional feature that adds a cluster-scoped resource
+			// must be forced on here too. Deleting resources that were never
+			// installed is safe because deleteManifests ignores not-found
+			// errors.
+			controllerManifest, err := helmchart.Render(manifests.ChartFS, disableChartCRDs(map[string]interface{}{
+				"webhookServer": map[string]interface{}{
+					"sources": map[string]interface{}{
+						"github": map[string]interface{}{
+							"enabled":    true,
+							"secretName": "kelos-uninstall-placeholder",
+						},
+						"linear": map[string]interface{}{
+							"enabled":    true,
+							"secretName": "kelos-uninstall-placeholder",
+						},
+					},
+				},
+			}))
 			if err != nil {
 				return fmt.Errorf("rendering chart for uninstall: %w", err)
 			}
