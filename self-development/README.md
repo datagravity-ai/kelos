@@ -177,12 +177,12 @@ Picks up open GitHub issues labeled `needs-actor` and performs automated triage.
 | **Concurrency** | 8 |
 
 **For each issue, the agent:**
-1. Classifies with exactly one `kind/*` label (`kind/bug`, `kind/feature`, `kind/api`, `kind/docs`)
+1. Classifies with exactly one `kind/*` label (`kind/bug`, `kind/feature`, `kind/api`, `kind/docs`). `kind/api` covers any change that introduces or modifies a user-facing API surface — CRD fields, CLI commands or flags, webhooks, etc.
 2. Checks if the issue has already been fixed by a merged PR or recent commit
 3. Checks if the issue references outdated APIs, flags, or features
 4. Detects duplicate issues
 5. Assesses priority (`priority/important-soon`, `priority/important-longterm`, `priority/backlog`)
-6. Recommends an actor — assigns `actor/kelos` if the issue has clear scope and verifiable criteria, otherwise leaves `needs-actor` for human decision
+6. Recommends an actor — assigns `actor/kelos` if the issue has clear scope and verifiable criteria, otherwise assigns `actor/human`. `kind/api` issues always get `actor/human` because new user-facing APIs must be reviewed and discussed with a maintainer before any PR is opened.
 
 Posts a single triage comment with its findings, adds the `kelos/needs-input` label (to prevent re-triage), and posts a `/kelos needs-input` comment (to prevent workers from picking up the issue before maintainer review).
 
