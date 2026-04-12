@@ -40,7 +40,6 @@ spec:
       repository: kelos-dev/kelos
       events:
         - issue_comment
-        - issues
       filters:
         - event: issue_comment
           action: created
@@ -56,16 +55,6 @@ spec:
             - actor/kelos
           state: open
           author: kelos-bot[bot]
-        - event: issues
-          action: labeled
-          labels:
-            - actor/kelos
-          state: open
-        - event: issues
-          action: reopened
-          labels:
-            - actor/kelos
-          state: open
   maxConcurrency: 3
   taskTemplate:
     workspaceRef:

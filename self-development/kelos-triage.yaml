@@ -17,13 +17,6 @@ spec:
             - triage-accepted
           state: open
         - event: issues
-          action: labeled
-          labels:
-            - needs-actor
-          excludeLabels:
-            - triage-accepted
-          state: open
-        - event: issues
           action: reopened
           labels:
             - needs-actor
