@@ -34,19 +34,17 @@ import (
 const fieldManager = "kelos"
 
 type helmValuesOptions struct {
-	imageTag                       *string
-	pullPolicy                     string
-	disableHeartbeat               bool
-	spawnerResourceRequests        string
-	spawnerResourceLimits          string
-	ghproxyResourceRequests        string
-	ghproxyResourceLimits          string
-	tokenRefresherResourceRequests string
-	tokenRefresherResourceLimits   string
-	controllerResourceRequests     string
-	controllerResourceLimits       string
-	ghproxyAllowedUpstreams        string
-	ghproxyCacheTTL                string
+	imageTag                   *string
+	pullPolicy                 string
+	disableHeartbeat           bool
+	spawnerResourceRequests    string
+	spawnerResourceLimits      string
+	ghproxyResourceRequests    string
+	ghproxyResourceLimits      string
+	controllerResourceRequests string
+	controllerResourceLimits   string
+	ghproxyAllowedUpstreams    string
+	ghproxyCacheTTL            string
 }
 
 type installValuesOptions struct {
@@ -71,8 +69,6 @@ func newInstallCommand(cfg *ClientConfig) *cobra.Command {
 	var spawnerResourceLimits string
 	var ghproxyResourceRequests string
 	var ghproxyResourceLimits string
-	var tokenRefresherResourceRequests string
-	var tokenRefresherResourceLimits string
 	var controllerResourceRequests string
 	var controllerResourceLimits string
 	var ghproxyAllowedUpstreams string
@@ -95,19 +91,17 @@ func newInstallCommand(cfg *ClientConfig) *cobra.Command {
 				setStringValues: setStringValues,
 				setFileValues:   setFileValues,
 				flagValues: helmValuesOptions{
-					imageTag:                       nonEmptyStringPtr(flagVersion),
-					pullPolicy:                     imagePullPolicy,
-					disableHeartbeat:               disableHeartbeat,
-					spawnerResourceRequests:        spawnerResourceRequests,
-					spawnerResourceLimits:          spawnerResourceLimits,
-					ghproxyResourceRequests:        ghproxyResourceRequests,
-					ghproxyResourceLimits:          ghproxyResourceLimits,
-					tokenRefresherResourceRequests: tokenRefresherResourceRequests,
-					tokenRefresherResourceLimits:   tokenRefresherResourceLimits,
-					controllerResourceRequests:     controllerResourceRequests,
-					controllerResourceLimits:       controllerResourceLimits,
-					ghproxyAllowedUpstreams:        ghproxyAllowedUpstreams,
-					ghproxyCacheTTL:                ghproxyCacheTTL,
+					imageTag:                   nonEmptyStringPtr(flagVersion),
+					pullPolicy:                 imagePullPolicy,
+					disableHeartbeat:           disableHeartbeat,
+					spawnerResourceRequests:    spawnerResourceRequests,
+					spawnerResourceLimits:      spawnerResourceLimits,
+					ghproxyResourceRequests:    ghproxyResourceRequests,
+					ghproxyResourceLimits:      ghproxyResourceLimits,
+					controllerResourceRequests: controllerResourceRequests,
+					controllerResourceLimits:   controllerResourceLimits,
+					ghproxyAllowedUpstreams:    ghproxyAllowedUpstreams,
+					ghproxyCacheTTL:            ghproxyCacheTTL,
 				},
 			})
 			if err != nil {
@@ -171,8 +165,6 @@ func newInstallCommand(cfg *ClientConfig) *cobra.Command {
 	cmd.Flags().StringVar(&spawnerResourceLimits, "spawner-resource-limits", "", "resource limits for spawner containers (e.g., cpu=1,memory=1Gi)")
 	cmd.Flags().StringVar(&ghproxyResourceRequests, "ghproxy-resource-requests", "", "resource requests for workspace ghproxy containers (e.g., cpu=50m,memory=64Mi)")
 	cmd.Flags().StringVar(&ghproxyResourceLimits, "ghproxy-resource-limits", "", "resource limits for workspace ghproxy containers (e.g., cpu=200m,memory=128Mi)")
-	cmd.Flags().StringVar(&tokenRefresherResourceRequests, "token-refresher-resource-requests", "", "resource requests for token refresher sidecars (e.g., cpu=100m,memory=128Mi)")
-	cmd.Flags().StringVar(&tokenRefresherResourceLimits, "token-refresher-resource-limits", "", "resource limits for token refresher sidecars (e.g., cpu=200m,memory=256Mi)")
 	cmd.Flags().StringVar(&controllerResourceRequests, "controller-resource-requests", "", "resource requests for the controller container (e.g., cpu=10m,memory=64Mi)")
 	cmd.Flags().StringVar(&controllerResourceLimits, "controller-resource-limits", "", "resource limits for the controller container (e.g., cpu=500m,memory=128Mi)")
 	cmd.Flags().StringVar(&ghproxyAllowedUpstreams, "ghproxy-allowed-upstreams", "", "comma-separated list of allowed upstream base URLs for ghproxy (e.g., https://api.github.com,https://github.example.com/api/v3)")
@@ -182,25 +174,23 @@ func newInstallCommand(cfg *ClientConfig) *cobra.Command {
 }
 
 // buildHelmValues constructs the values map for Helm chart rendering from CLI flags.
-func buildHelmValues(ver string, pullPolicy string, disableHeartbeat bool, spawnerResourceRequests string, spawnerResourceLimits string, tokenRefresherResourceRequests string, tokenRefresherResourceLimits string, controllerResourceRequests string, controllerResourceLimits string, ghproxyAllowedUpstreams string) map[string]interface{} {
-	return buildHelmValuesWithGHProxyResources(ver, pullPolicy, disableHeartbeat, spawnerResourceRequests, spawnerResourceLimits, "", "", tokenRefresherResourceRequests, tokenRefresherResourceLimits, controllerResourceRequests, controllerResourceLimits, ghproxyAllowedUpstreams, "")
+func buildHelmValues(ver string, pullPolicy string, disableHeartbeat bool, spawnerResourceRequests string, spawnerResourceLimits string, controllerResourceRequests string, controllerResourceLimits string, ghproxyAllowedUpstreams string) map[string]interface{} {
+	return buildHelmValuesWithGHProxyResources(ver, pullPolicy, disableHeartbeat, spawnerResourceRequests, spawnerResourceLimits, "", "", controllerResourceRequests, controllerResourceLimits, ghproxyAllowedUpstreams, "")
 }
 
-func buildHelmValuesWithGHProxyResources(ver string, pullPolicy string, disableHeartbeat bool, spawnerResourceRequests string, spawnerResourceLimits string, ghproxyResourceRequests string, ghproxyResourceLimits string, tokenRefresherResourceRequests string, tokenRefresherResourceLimits string, controllerResourceRequests string, controllerResourceLimits string, ghproxyAllowedUpstreams string, ghproxyCacheTTL string) map[string]interface{} {
+func buildHelmValuesWithGHProxyResources(ver string, pullPolicy string, disableHeartbeat bool, spawnerResourceRequests string, spawnerResourceLimits string, ghproxyResourceRequests string, ghproxyResourceLimits string, controllerResourceRequests string, controllerResourceLimits string, ghproxyAllowedUpstreams string, ghproxyCacheTTL string) map[string]interface{} {
 	return buildHelmValuesFromOptions(helmValuesOptions{
-		imageTag:                       ptr.To(ver),
-		pullPolicy:                     pullPolicy,
-		disableHeartbeat:               disableHeartbeat,
-		spawnerResourceRequests:        spawnerResourceRequests,
-		spawnerResourceLimits:          spawnerResourceLimits,
-		ghproxyResourceRequests:        ghproxyResourceRequests,
-		ghproxyResourceLimits:          ghproxyResourceLimits,
-		tokenRefresherResourceRequests: tokenRefresherResourceRequests,
-		tokenRefresherResourceLimits:   tokenRefresherResourceLimits,
-		controllerResourceRequests:     controllerResourceRequests,
-		controllerResourceLimits:       controllerResourceLimits,
-		ghproxyAllowedUpstreams:        ghproxyAllowedUpstreams,
-		ghproxyCacheTTL:                ghproxyCacheTTL,
+		imageTag:                   ptr.To(ver),
+		pullPolicy:                 pullPolicy,
+		disableHeartbeat:           disableHeartbeat,
+		spawnerResourceRequests:    spawnerResourceRequests,
+		spawnerResourceLimits:      spawnerResourceLimits,
+		ghproxyResourceRequests:    ghproxyResourceRequests,
+		ghproxyResourceLimits:      ghproxyResourceLimits,
+		controllerResourceRequests: controllerResourceRequests,
+		controllerResourceLimits:   controllerResourceLimits,
+		ghproxyAllowedUpstreams:    ghproxyAllowedUpstreams,
+		ghproxyCacheTTL:            ghproxyCacheTTL,
 	})
 }
 
@@ -251,18 +241,6 @@ func buildHelmValuesFromOptions(opts helmValuesOptions) map[string]interface{} {
 		}
 		ghproxyVals["resources"] = ghproxyResources
 		vals["ghproxy"] = ghproxyVals
-	}
-	tokenRefresherResources := map[string]interface{}{}
-	if opts.tokenRefresherResourceRequests != "" {
-		tokenRefresherResources["requests"] = opts.tokenRefresherResourceRequests
-	}
-	if opts.tokenRefresherResourceLimits != "" {
-		tokenRefresherResources["limits"] = opts.tokenRefresherResourceLimits
-	}
-	if len(tokenRefresherResources) > 0 {
-		vals["tokenRefresher"] = map[string]interface{}{
-			"resources": tokenRefresherResources,
-		}
 	}
 	controllerResources := map[string]interface{}{}
 	if opts.controllerResourceRequests != "" {

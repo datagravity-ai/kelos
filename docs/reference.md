@@ -364,8 +364,6 @@ The `kelos` CLI lets you manage the full lifecycle without writing YAML.
 - `--ghproxy-resource-limits`: Resource limits for workspace ghproxy containers as comma-separated `name=value` pairs
 - `--ghproxy-allowed-upstreams`: Comma-separated list of allowed upstream base URLs for ghproxy
 - `--ghproxy-cache-ttl`: Cache TTL for workspace ghproxy instances
-- `--token-refresher-resource-requests`: Resource requests for token refresher sidecars as comma-separated `name=value` pairs, for example `cpu=100m,memory=128Mi`
-- `--token-refresher-resource-limits`: Resource limits for token refresher sidecars as comma-separated `name=value` pairs, for example `cpu=200m,memory=256Mi`
 - `--controller-resource-requests`: Resource requests for the controller container as comma-separated `name=value` pairs, for example `cpu=10m,memory=64Mi`
 - `--controller-resource-limits`: Resource limits for the controller container as comma-separated `name=value` pairs, for example `cpu=500m,memory=128Mi`
 

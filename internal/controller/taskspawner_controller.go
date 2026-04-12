@@ -558,13 +558,11 @@ func (r *TaskSpawnerReconciler) updateDeployment(ctx context.Context, ts *kelosv
 		}
 	}
 
-	// Compare init containers (token-refresher sidecar)
+	// Clean up stale init containers and volumes (e.g. from removed token-refresher sidecar)
 	if !reflect.DeepEqual(deploy.Spec.Template.Spec.InitContainers, desired.Spec.Template.Spec.InitContainers) {
 		deploy.Spec.Template.Spec.InitContainers = desired.Spec.Template.Spec.InitContainers
 		needsUpdate = true
 	}
-
-	// Compare volumes (shared token emptyDir, github-app-secret)
 	if !reflect.DeepEqual(deploy.Spec.Template.Spec.Volumes, desired.Spec.Template.Spec.Volumes) {
 		deploy.Spec.Template.Spec.Volumes = desired.Spec.Template.Spec.Volumes
 		needsUpdate = true
@@ -674,13 +672,11 @@ func (r *TaskSpawnerReconciler) updateCronJob(ctx context.Context, ts *kelosv1al
 		}
 	}
 
-	// Update init containers if changed
+	// Clean up stale init containers and volumes (e.g. from removed token-refresher sidecar)
 	if !reflect.DeepEqual(currentPodSpec.InitContainers, desiredPodSpec.InitContainers) {
 		currentPodSpec.InitContainers = desiredPodSpec.InitContainers
 		needsUpdate = true
 	}
-
-	// Update volumes if changed
 	if !reflect.DeepEqual(currentPodSpec.Volumes, desiredPodSpec.Volumes) {
 		currentPodSpec.Volumes = desiredPodSpec.Volumes
 		needsUpdate = true
