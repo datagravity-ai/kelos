@@ -161,6 +161,35 @@ Reviews open pull requests on demand when a maintainer posts `/kelos review`.
 kubectl apply -f self-development/kelos-reviewer.yaml
 ```
 
+### kelos-api-reviewer.yaml
+
+Reviews issues and pull requests for Kubernetes API design conventions, compatibility, and best practices when a maintainer posts `/kelos api-review`.
+
+| | |
+|---|---|
+| **Trigger** | GitHub issue/PR comment webhook with `/kelos api-review` |
+| **Model** | Opus |
+| **Concurrency** | 3 |
+
+**Key features:**
+- Works on both issues (API design proposals) and pull requests (API implementation review)
+- Focused on Kubernetes API design concerns (field naming, primitive types, compatibility, CRD validation, naming/docs, defaulting/conversion)
+- References upstream Kubernetes API conventions and API review process documentation
+- Checks for correct use of `resource.Quantity`, `metav1.Time`, `metav1.Duration`
+- Verifies additive-only changes and forwards compatibility
+- For PRs: submits a structured review via `gh pr review` (approve, request changes, or comment)
+- For issues: posts a structured comment with API design guidance
+- Read-only agent — does not push code or modify files
+
+**Handoff flow:**
+1. `/kelos api-review` — requests an API design review on a PR or issue
+2. `/kelos api-review` — maintainer can retrigger review after changes or further discussion
+
+**Deploy:**
+```bash
+kubectl apply -f self-development/kelos-api-reviewer.yaml
+```
+
 ### kelos-pr-responder.yaml
 
 Picks up open GitHub pull requests labeled `generated-by-kelos` when a reviewer requests changes.
@@ -385,7 +414,7 @@ The key pattern in these examples is webhook-triggered handoff plus runtime re-v
 2. The matching TaskSpawner creates a Task immediately from that event
 3. The agent re-reads the latest issue or PR state with `gh` before acting, so asynchronous label updates are respected
 4. If the agent needs human input, it posts a plain-English status comment describing what happened
-5. A fresh `/kelos pick-up`, `/kelos plan`, `/kelos review`, or relabel event retriggers automation later
+5. A fresh `/kelos pick-up`, `/kelos plan`, `/kelos review`, `/kelos api-review`, or relabel event retriggers automation later
 
 Each run is a discrete webhook event, so no "pause" comment is needed to prevent re-pickup of stale state — the bot's own replies don't match the trigger substrings and cannot retrigger the spawner.
 
