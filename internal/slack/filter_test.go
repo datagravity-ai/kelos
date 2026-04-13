@@ -171,21 +171,21 @@ func TestShouldProcess(t *testing.T) {
 		name       string
 		userID     string
 		subtype    string
-		text       string
+		hasContent bool
 		selfUserID string
 		want       bool
 	}{
 		{
 			name:       "normal message",
 			userID:     "U1",
-			text:       "hello",
+			hasContent: true,
 			selfUserID: "UBOT",
 			want:       true,
 		},
 		{
 			name:       "self message filtered",
 			userID:     "UBOT",
-			text:       "hello",
+			hasContent: true,
 			selfUserID: "UBOT",
 			want:       false,
 		},
@@ -193,7 +193,7 @@ func TestShouldProcess(t *testing.T) {
 			name:       "bot_message subtype filtered",
 			userID:     "U1",
 			subtype:    "bot_message",
-			text:       "hello",
+			hasContent: true,
 			selfUserID: "UBOT",
 			want:       false,
 		},
@@ -201,7 +201,7 @@ func TestShouldProcess(t *testing.T) {
 			name:       "message_changed subtype filtered",
 			userID:     "U1",
 			subtype:    "message_changed",
-			text:       "hello",
+			hasContent: true,
 			selfUserID: "UBOT",
 			want:       false,
 		},
@@ -209,7 +209,7 @@ func TestShouldProcess(t *testing.T) {
 			name:       "message_deleted subtype filtered",
 			userID:     "U1",
 			subtype:    "message_deleted",
-			text:       "hello",
+			hasContent: true,
 			selfUserID: "UBOT",
 			want:       false,
 		},
@@ -217,14 +217,14 @@ func TestShouldProcess(t *testing.T) {
 			name:       "message_replied subtype filtered",
 			userID:     "U1",
 			subtype:    "message_replied",
-			text:       "hello",
+			hasContent: true,
 			selfUserID: "UBOT",
 			want:       false,
 		},
 		{
-			name:       "empty text filtered",
+			name:       "no content filtered",
 			userID:     "U1",
-			text:       "",
+			hasContent: false,
 			selfUserID: "UBOT",
 			want:       false,
 		},
@@ -232,7 +232,7 @@ func TestShouldProcess(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := shouldProcess(tt.userID, tt.subtype, tt.text, tt.selfUserID)
+			got := shouldProcess(tt.userID, tt.subtype, tt.hasContent, tt.selfUserID)
 			if got != tt.want {
 				t.Errorf("shouldProcess() = %v, want %v", got, tt.want)
 			}
