@@ -31,7 +31,7 @@ type DefaultProgressReader struct {
 func (r *DefaultProgressReader) ReadProgress(ctx context.Context, namespace, podName, container, agentType string) string {
 	log := ctrl.Log.WithName("progress-reader")
 
-	var tailLines int64 = 100
+	var tailLines int64 = 300
 	stream, err := r.Clientset.CoreV1().Pods(namespace).GetLogs(podName, &corev1.PodLogOptions{
 		Container: container,
 		TailLines: &tailLines,

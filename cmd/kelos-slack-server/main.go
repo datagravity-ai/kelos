@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -200,13 +201,17 @@ func runSlackReportingCycle(ctx context.Context, cl client.Client, reporter *rep
 		return fmt.Errorf("Listing tasks for Slack reporting: %w", err)
 	}
 
+	activeUIDs := make(map[types.UID]bool, len(taskList.Items))
 	for i := range taskList.Items {
 		task := &taskList.Items[i]
+		activeUIDs[task.UID] = true
 		if err := reporter.ReportTaskStatus(ctx, task); err != nil {
 			log.Error(err, "Failed to report task status",
 				"task", task.Name, "namespace", task.Namespace)
 		}
 	}
+
+	reporter.SweepProgressCache(activeUIDs)
 
 	return nil
 }

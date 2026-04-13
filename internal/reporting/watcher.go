@@ -370,3 +370,16 @@ func (tr *SlackTaskReporter) clearProgressCache(uid types.UID) {
 	defer tr.mu.Unlock()
 	delete(tr.lastProgress, uid)
 }
+
+// SweepProgressCache removes entries for tasks that are no longer active.
+// Call this after each reporting cycle with the set of UIDs seen in the
+// current task list to prevent leaked entries from deleted tasks.
+func (tr *SlackTaskReporter) SweepProgressCache(activeUIDs map[types.UID]bool) {
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	for uid := range tr.lastProgress {
+		if !activeUIDs[uid] {
+			delete(tr.lastProgress, uid)
+		}
+	}
+}

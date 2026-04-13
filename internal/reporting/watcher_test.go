@@ -14,6 +14,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -1271,4 +1272,36 @@ func TestSlackTaskReporter_ClearsProgressCacheOnTerminal(t *testing.T) {
 		t.Error("expected progress cache to be cleared after terminal phase")
 	}
 	tr.mu.Unlock()
+}
+
+func TestSlackTaskReporter_SweepsStaleProgressEntries(t *testing.T) {
+	reporter := &fakeSlackReporter{
+		postFn: func(ctx context.Context, channel, threadTS string, msg SlackMessage) (string, error) {
+			return "fake-ts", nil
+		},
+	}
+
+	tr := &SlackTaskReporter{
+		Reporter: reporter,
+	}
+
+	// Seed cache with entries for two tasks
+	tr.setLastProgress("uid-active", "some text")
+	tr.setLastProgress("uid-deleted", "other text")
+
+	// Sweep with only the active UID
+	activeUIDs := map[types.UID]bool{
+		"uid-active": true,
+	}
+	tr.SweepProgressCache(activeUIDs)
+
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+
+	if _, ok := tr.lastProgress["uid-active"]; !ok {
+		t.Error("expected active UID to remain in cache")
+	}
+	if _, ok := tr.lastProgress["uid-deleted"]; ok {
+		t.Error("expected deleted UID to be swept from cache")
+	}
 }
