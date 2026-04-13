@@ -10,6 +10,7 @@ import (
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -44,7 +45,7 @@ func main() {
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false, "Enable leader election for controller manager.")
-	flag.DurationVar(&reportingInterval, "reporting-interval", 30*time.Second, "How often to run the Slack reporting cycle.")
+	flag.DurationVar(&reportingInterval, "reporting-interval", 15*time.Second, "How often to run the Slack reporting cycle.")
 
 	opts, applyVerbosity := logging.SetupZapOptions(flag.CommandLine)
 	flag.Parse()
@@ -75,6 +76,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	clientset, err := kubernetes.NewForConfig(mgr.GetConfig())
+	if err != nil {
+		setupLog.Error(err, "Unable to create Kubernetes clientset")
+		os.Exit(1)
+	}
+
 	ctx := ctrl.SetupSignalHandler()
 
 	// Create the Slack handler
@@ -99,9 +106,10 @@ func main() {
 
 	// Register reporting loop as a leader-elected runnable.
 	if err := mgr.Add(&reportingRunnable{
-		client:   mgr.GetClient(),
-		botToken: botToken,
-		interval: reportingInterval,
+		client:    mgr.GetClient(),
+		clientset: clientset,
+		botToken:  botToken,
+		interval:  reportingInterval,
 	}); err != nil {
 		setupLog.Error(err, "Unable to register reporting loop with manager")
 		os.Exit(1)
@@ -143,14 +151,15 @@ func (r *slackRunnable) NeedLeaderElection() bool { return true }
 
 // reportingRunnable wraps the reporting loop as a leader-elected manager.Runnable.
 type reportingRunnable struct {
-	client   client.Client
-	botToken string
-	interval time.Duration
+	client    client.Client
+	clientset kubernetes.Interface
+	botToken  string
+	interval  time.Duration
 }
 
 func (r *reportingRunnable) Start(ctx context.Context) error {
 	setupLog.Info("Starting Slack reporting loop", "interval", r.interval)
-	runReportingLoop(ctx, r.client, r.botToken, r.interval)
+	runReportingLoop(ctx, r.client, r.clientset, r.botToken, r.interval)
 	return nil
 }
 
@@ -159,11 +168,12 @@ func (r *reportingRunnable) NeedLeaderElection() bool { return true }
 // runReportingLoop periodically reports Slack task status for ALL Slack-annotated
 // Tasks cluster-wide. This replaces the per-TaskSpawner reporting that previously
 // ran in each spawner pod.
-func runReportingLoop(ctx context.Context, cl client.Client, botToken string, interval time.Duration) {
+func runReportingLoop(ctx context.Context, cl client.Client, cs kubernetes.Interface, botToken string, interval time.Duration) {
 	log := ctrl.Log.WithName("slack-reporter")
 	slackReporter := &reporting.SlackTaskReporter{
-		Client:   cl,
-		Reporter: &reporting.SlackReporter{BotToken: botToken},
+		Client:         cl,
+		Reporter:       &reporting.SlackReporter{BotToken: botToken},
+		ProgressReader: &reporting.DefaultProgressReader{Clientset: cs},
 	}
 
 	ticker := time.NewTicker(interval)
