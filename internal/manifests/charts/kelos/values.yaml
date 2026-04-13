@@ -27,11 +27,6 @@ spawner:
   resources:
     requests: ""
     limits: ""
-tokenRefresher:
-  image: ghcr.io/kelos-dev/kelos-token-refresher
-  resources:
-    requests: ""
-    limits: ""
 controller:
   resources:
     requests: {}
