@@ -26,7 +26,7 @@ Push the current `-prod` branch and open a PR against `prod` for the Anomalo for
 
 5. Create the PR using `gh pr create`. The body must follow the template from `.github/PULL_REQUEST_TEMPLATE.md`:
 
-   ```
+   `````
    gh pr create --base prod --title "<title>" --body "$(cat <<'EOF'
    #### What type of PR is this?
 
@@ -51,6 +51,6 @@ Push the current `-prod` branch and open a PR against `prod` for the Anomalo for
    ```
    EOF
    )"
-   ```
+   `````
 
 6. Show the PR URL to the user.

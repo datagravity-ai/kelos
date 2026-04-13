@@ -31,7 +31,7 @@ Cherry-pick commits from the current feature branch onto a new `-prod` branch fo
    ```
 
 8. Cherry-pick the commits:
-   - If the user chose to squash: first go back to the feature branch, run `git rebase -i` is not available so instead create a squashed commit. Use `git diff origin/main...<feature-branch> | git apply` on the prod branch and create a single commit with a summary message. Alternatively, cherry-pick all and then squash with `git reset --soft` to the branch point and recommit.
+   - If the user chose to squash: cherry-pick all commits in order, then run `git reset --soft <first-cherry-pick-parent>` to collapse them into staged changes, and create a single commit with a summary message.
    - If the user chose range: cherry-pick each commit in order:
      ```
      git cherry-pick <first-commit>^..<last-commit>

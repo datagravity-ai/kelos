@@ -11,7 +11,7 @@ Cherry-pick new commits onto an existing `-prod` branch after upstream change re
 
 3. Identify new commits on the feature branch that are not on the `-prod` branch:
    ```
-   git log --oneline <prod-branch>..<feature-branch>
+   git log --oneline --cherry-pick --right-only <prod-branch>...<feature-branch>
    ```
    Show these commits to the user.
 
