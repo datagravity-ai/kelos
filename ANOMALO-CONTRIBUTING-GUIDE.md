@@ -15,3 +15,20 @@ In order to make this process as smooth as possible the following should be done
 If changes are requested to the upstream branch simply continue to cherry-pick and push new PRs to `prod` branch
 
 The key benefit here is minimizing the git merge conflicts that are needed while not removing the changes that we have applied to `prod` (as we are ahead of the upstream)
+
+## Claude Code Commands
+
+The workflow above can be automated using Claude Code slash commands. Install them with:
+
+```
+make install-claude-commands
+```
+
+Available commands:
+
+| Command | Description |
+|---------|-------------|
+| `/kelos-new-branch` | Create a new feature branch from `main` (step 1) |
+| `/kelos-cherry-pick-to-prod` | Cherry-pick feature commits onto a new `-prod` branch from `prod` (steps 4-6) |
+| `/kelos-open-prod-pr` | Push the `-prod` branch and open a PR against `prod` (steps 7-8) |
+| `/kelos-update-prod-pr` | Cherry-pick new commits onto an existing `-prod` branch after change requests |
