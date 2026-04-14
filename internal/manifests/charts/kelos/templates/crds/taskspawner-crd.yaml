@@ -1003,6 +1003,58 @@ spec:
                     required:
                     - types
                     type: object
+                  slack:
+                    description: |-
+                      Slack discovers work items from Slack messages via Socket Mode.
+                      The centralized kelos-slack-server connects to Slack via an outbound
+                      WebSocket (no ingress required) and routes messages to matching agents.
+                    properties:
+                      allowedUsers:
+                        description: |-
+                          AllowedUsers optionally restricts which Slack users can trigger tasks.
+                          Values are Slack user IDs (e.g., "U0123456789"). When empty, any user
+                          in the channel can trigger tasks.
+                        items:
+                          type: string
+                        type: array
+                      channels:
+                        description: |-
+                          Channels optionally restricts which Slack channels the bot listens in.
+                          Values are channel IDs (e.g., "C0123456789"). When empty, the bot
+                          listens in every channel it has been invited to.
+                        items:
+                          type: string
+                        type: array
+                      excludeCommands:
+                        description: |-
+                          ExcludeCommands optionally rejects messages whose text (after stripping
+                          leading @-mentions) starts with any of these prefixes. This provides
+                          negative routing so a spawner can avoid firing on messages intended for
+                          another spawner. This filter applies to all message events including
+                          thread replies, but does NOT apply to slash commands (Slack strips the
+                          command name from the payload before delivery).
+                        items:
+                          type: string
+                        type: array
+                      mentionUserIDs:
+                        description: |-
+                          MentionUserIDs optionally requires that the message @-mentions at least
+                          one of the specified Slack user IDs (e.g., "U0123456789"). In Slack,
+                          mentions appear as <@USER_ID> or <@USER_ID|display-name> in the message
+                          text. When empty, no mention is required. This filter is bypassed for
+                          slash commands but still required for thread replies.
+                        items:
+                          type: string
+                        type: array
+                      triggerCommand:
+                        description: |-
+                          TriggerCommand is an optional slash command or message prefix that
+                          triggers task creation (e.g., "/kelos", "!fix"). When set, only
+                          messages starting with this prefix trigger tasks and the prefix is
+                          stripped from the prompt. When empty, every non-threaded message in
+                          the channel triggers a task.
+                        type: string
+                    type: object
                 type: object
             required:
             - taskTemplate

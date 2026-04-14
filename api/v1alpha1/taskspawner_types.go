@@ -44,6 +44,12 @@ type When struct {
 	// LinearWebhook triggers task spawning on Linear webhook events.
 	// +optional
 	LinearWebhook *LinearWebhook `json:"linearWebhook,omitempty"`
+
+	// Slack discovers work items from Slack messages via Socket Mode.
+	// The centralized kelos-slack-server connects to Slack via an outbound
+	// WebSocket (no ingress required) and routes messages to matching agents.
+	// +optional
+	Slack *Slack `json:"slack,omitempty"`
 }
 
 // Cron triggers task spawning on a cron schedule.
@@ -422,6 +428,52 @@ type LinearWebhookFilter struct {
 	// ExcludeLabels excludes issues with any of these labels.
 	// +optional
 	ExcludeLabels []string `json:"excludeLabels,omitempty"`
+}
+
+// Slack triggers task spawning from Slack messages via the centralized
+// kelos-slack-server. The server connects to Slack via Socket Mode (outbound
+// WebSocket — no ingress required) and routes messages to matching
+// TaskSpawners. Authentication tokens (SLACK_BOT_TOKEN, SLACK_APP_TOKEN)
+// are configured on the server, not per-TaskSpawner.
+//
+// The bot must be invited to each channel it should listen in.
+type Slack struct {
+	// TriggerCommand is an optional slash command or message prefix that
+	// triggers task creation (e.g., "/kelos", "!fix"). When set, only
+	// messages starting with this prefix trigger tasks and the prefix is
+	// stripped from the prompt. When empty, every non-threaded message in
+	// the channel triggers a task.
+	// +optional
+	TriggerCommand string `json:"triggerCommand,omitempty"`
+
+	// Channels optionally restricts which Slack channels the bot listens in.
+	// Values are channel IDs (e.g., "C0123456789"). When empty, the bot
+	// listens in every channel it has been invited to.
+	// +optional
+	Channels []string `json:"channels,omitempty"`
+
+	// AllowedUsers optionally restricts which Slack users can trigger tasks.
+	// Values are Slack user IDs (e.g., "U0123456789"). When empty, any user
+	// in the channel can trigger tasks.
+	// +optional
+	AllowedUsers []string `json:"allowedUsers,omitempty"`
+
+	// MentionUserIDs optionally requires that the message @-mentions at least
+	// one of the specified Slack user IDs (e.g., "U0123456789"). In Slack,
+	// mentions appear as <@USER_ID> or <@USER_ID|display-name> in the message
+	// text. When empty, no mention is required. This filter is bypassed for
+	// slash commands but still required for thread replies.
+	// +optional
+	MentionUserIDs []string `json:"mentionUserIDs,omitempty"`
+
+	// ExcludeCommands optionally rejects messages whose text (after stripping
+	// leading @-mentions) starts with any of these prefixes. This provides
+	// negative routing so a spawner can avoid firing on messages intended for
+	// another spawner. This filter applies to all message events including
+	// thread replies, but does NOT apply to slash commands (Slack strips the
+	// command name from the payload before delivery).
+	// +optional
+	ExcludeCommands []string `json:"excludeCommands,omitempty"`
 }
 
 // TaskTemplateMetadata holds optional labels and annotations for spawned Tasks.
