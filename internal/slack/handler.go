@@ -333,7 +333,7 @@ func (h *SlackHandler) createTask(ctx context.Context, spawner *v1alpha1.TaskSpa
 }
 
 // enrichMessage builds a SlackMessageData from a raw Slack message event,
-// enriching it with user info, permalink, and channel name.
+// enriching it with user info and permalink.
 func (h *SlackHandler) enrichMessage(ctx context.Context, event *slackevents.MessageEvent) *SlackMessageData {
 	userName := event.User
 	userCtx, userCancel := context.WithTimeout(ctx, enrichCallTimeout)
