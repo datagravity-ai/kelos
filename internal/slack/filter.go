@@ -14,8 +14,6 @@ type SlackMessageData struct {
 	UserID string
 	// ChannelID is the Slack channel ID where the message was posted.
 	ChannelID string
-	// ChannelName is the human-readable channel name.
-	ChannelName string
 	// UserName is the display name of the message author.
 	UserName string
 	// Text is the raw message text.
