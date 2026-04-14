@@ -38,15 +38,13 @@ func FormatThreadContext(msgs []goslack.Message, botUserID string) string {
 		if m.User == botUserID || m.BotID != "" {
 			role = "Agent"
 		}
-		if m.Text != "" {
+		switch {
+		case m.Text != "" && attachText != "":
+			fmt.Fprintf(&b, "\n%s: %s\n%s\n", role, m.Text, attachText)
+		case m.Text != "":
 			fmt.Fprintf(&b, "\n%s: %s\n", role, m.Text)
-		}
-		if attachText != "" {
-			if m.Text == "" {
-				fmt.Fprintf(&b, "\n%s: [attachment]\n%s\n", role, attachText)
-			} else {
-				fmt.Fprintf(&b, "%s\n", attachText)
-			}
+		default:
+			fmt.Fprintf(&b, "\n%s: [attachment]\n%s\n", role, attachText)
 		}
 	}
 	return b.String()
