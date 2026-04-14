@@ -126,7 +126,7 @@ func FormatSlackTransitionMessage(phase, taskName, message string, results map[s
 		))
 	}
 
-	if message != "" {
+	if message != "" && phase == "failed" {
 		if resp != "" {
 			fallbackText = fmt.Sprintf("%s\nError: %s (Task: %s)", decoded, message, taskName)
 		} else {

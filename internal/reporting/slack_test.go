@@ -46,6 +46,14 @@ func TestFormatSlackTransitionMessages(t *testing.T) {
 		assertBlockCount(t, got.Blocks, 1) // context only
 	})
 
+	t.Run("succeeded ignores status message", func(t *testing.T) {
+		got := FormatSlackTransitionMessage("succeeded", "spawner-1234567890.123456", "Task completed successfully", nil)
+		if got.Text != "Done! (Task: spawner-1234567890.123456)" {
+			t.Errorf("fallback text = %q", got.Text)
+		}
+		assertBlockCount(t, got.Blocks, 1) // context only, no error block
+	})
+
 	t.Run("succeeded with response", func(t *testing.T) {
 		results := map[string]string{"response": b64("I need your GitHub username to proceed.")}
 		got := FormatSlackTransitionMessage("succeeded", "spawner-1234567890.123456", "", results)
