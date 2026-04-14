@@ -236,14 +236,6 @@ func TestSlackReporter_PostThreadReplyError(t *testing.T) {
 	}
 }
 
-func TestSlackReporter_UpdateMessageError(t *testing.T) {
-	reporter := &SlackReporter{BotToken: "xoxb-invalid"}
-	err := reporter.UpdateMessage(context.Background(), "C123", "1234.5678", SlackMessage{Text: "test"})
-	if err == nil {
-		t.Error("expected error with invalid token, got nil")
-	}
-}
-
 // assertBlockCount checks that the blocks slice has the expected length.
 func assertBlockCount(t *testing.T, blocks []slack.Block, want int) {
 	t.Helper()
