@@ -1368,9 +1368,6 @@ func TestSlackTaskReporter_PostsThreadReply(t *testing.T) {
 	if updated.Annotations[AnnotationSlackReportPhase] != "accepted" {
 		t.Errorf("report phase = %q, want accepted", updated.Annotations[AnnotationSlackReportPhase])
 	}
-	if updated.Annotations[AnnotationSlackReplyTS] != "1234567890.999999" {
-		t.Errorf("reply ts = %q, want 1234567890.999999", updated.Annotations[AnnotationSlackReplyTS])
-	}
 }
 
 func TestSlackTaskReporter_PostsNewReplyOnPhaseChange(t *testing.T) {
@@ -1382,7 +1379,7 @@ func TestSlackTaskReporter_PostsNewReplyOnPhaseChange(t *testing.T) {
 				AnnotationSlackReporting:   "enabled",
 				AnnotationSlackChannel:     "C123ABC",
 				AnnotationSlackThreadTS:    "1234567890.123456",
-				AnnotationSlackReplyTS:     "1234567890.999999",
+
 				AnnotationSlackReportPhase: "accepted",
 			},
 		},
@@ -1403,15 +1400,10 @@ func TestSlackTaskReporter_PostsNewReplyOnPhaseChange(t *testing.T) {
 	cl := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(task).Build()
 
 	var posted []slackReplyRecord
-	updateCalled := false
 	reporter := &fakeSlackReporter{
 		postFn: func(ctx context.Context, channel, threadTS string, msg SlackMessage) (string, error) {
 			posted = append(posted, slackReplyRecord{method: "post", channel: channel, threadTS: threadTS, msg: msg})
 			return "1234567890.888888", nil
-		},
-		updateFn: func(ctx context.Context, channel, messageTS string, msg SlackMessage) error {
-			updateCalled = true
-			return nil
 		},
 	}
 
@@ -1421,9 +1413,6 @@ func TestSlackTaskReporter_PostsNewReplyOnPhaseChange(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if updateCalled {
-		t.Error("UpdateMessage should never be called, expected PostThreadReply only")
-	}
 	if len(posted) != 1 {
 		t.Fatalf("expected 1 post, got %d", len(posted))
 	}
@@ -1436,14 +1425,6 @@ func TestSlackTaskReporter_PostsNewReplyOnPhaseChange(t *testing.T) {
 		t.Errorf("text = %q, want %q", posted[0].msg.Text, wantMsg.Text)
 	}
 
-	// Verify the new reply TS is persisted (overwrites old one)
-	var updated kelosv1alpha1.Task
-	if err := cl.Get(context.Background(), client.ObjectKeyFromObject(task), &updated); err != nil {
-		t.Fatalf("getting updated task: %v", err)
-	}
-	if updated.Annotations[AnnotationSlackReplyTS] != "1234567890.888888" {
-		t.Errorf("reply ts = %q, want 1234567890.888888", updated.Annotations[AnnotationSlackReplyTS])
-	}
 }
 
 func TestSlackTaskReporter_SkipPaths(t *testing.T) {
@@ -1532,8 +1513,7 @@ type slackReplyRecord struct {
 }
 
 type fakeSlackReporter struct {
-	postFn   func(ctx context.Context, channel, threadTS string, msg SlackMessage) (string, error)
-	updateFn func(ctx context.Context, channel, messageTS string, msg SlackMessage) error
+	postFn func(ctx context.Context, channel, threadTS string, msg SlackMessage) (string, error)
 }
 
 func (f *fakeSlackReporter) PostThreadReply(ctx context.Context, channel, threadTS string, msg SlackMessage) (string, error) {
@@ -1541,13 +1521,6 @@ func (f *fakeSlackReporter) PostThreadReply(ctx context.Context, channel, thread
 		return f.postFn(ctx, channel, threadTS, msg)
 	}
 	return "fake-reply-ts", nil
-}
-
-func (f *fakeSlackReporter) UpdateMessage(ctx context.Context, channel, messageTS string, msg SlackMessage) error {
-	if f.updateFn != nil {
-		return f.updateFn(ctx, channel, messageTS, msg)
-	}
-	return nil
 }
 
 func TestSlackTaskReporter_PhaseMapping(t *testing.T) {
@@ -1616,7 +1589,7 @@ func TestSlackTaskReporter_PostsProgressReply(t *testing.T) {
 				AnnotationSlackReporting:   "enabled",
 				AnnotationSlackChannel:     "C123ABC",
 				AnnotationSlackThreadTS:    "1234567890.123456",
-				AnnotationSlackReplyTS:     "1234567890.999999",
+
 				AnnotationSlackReportPhase: "accepted",
 			},
 		},
@@ -1637,15 +1610,10 @@ func TestSlackTaskReporter_PostsProgressReply(t *testing.T) {
 	cl := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(task).Build()
 
 	var posted []slackReplyRecord
-	updateCalled := false
 	reporter := &fakeSlackReporter{
 		postFn: func(ctx context.Context, channel, threadTS string, msg SlackMessage) (string, error) {
 			posted = append(posted, slackReplyRecord{method: "post", channel: channel, threadTS: threadTS, msg: msg})
 			return "1234567890.111111", nil
-		},
-		updateFn: func(ctx context.Context, channel, messageTS string, msg SlackMessage) error {
-			updateCalled = true
-			return nil
 		},
 	}
 
@@ -1659,9 +1627,6 @@ func TestSlackTaskReporter_PostsProgressReply(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if updateCalled {
-		t.Error("UpdateMessage should not be called for progress updates")
-	}
 	if len(posted) != 1 {
 		t.Fatalf("expected 1 post, got %d", len(posted))
 	}
@@ -1809,7 +1774,7 @@ func TestSlackTaskReporter_DeduplicatesProgress(t *testing.T) {
 				AnnotationSlackReporting:   "enabled",
 				AnnotationSlackChannel:     "C123ABC",
 				AnnotationSlackThreadTS:    "1234567890.123456",
-				AnnotationSlackReplyTS:     "1234567890.999999",
+
 				AnnotationSlackReportPhase: "accepted",
 			},
 		},
@@ -1870,7 +1835,7 @@ func TestSlackTaskReporter_PostsOnNewText(t *testing.T) {
 				AnnotationSlackReporting:   "enabled",
 				AnnotationSlackChannel:     "C123ABC",
 				AnnotationSlackThreadTS:    "1234567890.123456",
-				AnnotationSlackReplyTS:     "1234567890.999999",
+
 				AnnotationSlackReportPhase: "accepted",
 			},
 		},
@@ -1941,7 +1906,7 @@ func TestSlackTaskReporter_ClearsProgressCacheOnTerminal(t *testing.T) {
 				AnnotationSlackReporting:   "enabled",
 				AnnotationSlackChannel:     "C123ABC",
 				AnnotationSlackThreadTS:    "1234567890.123456",
-				AnnotationSlackReplyTS:     "1234567890.999999",
+
 				AnnotationSlackReportPhase: "accepted",
 			},
 		},
