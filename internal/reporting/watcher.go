@@ -239,7 +239,7 @@ func (tr *SlackTaskReporter) ReportTaskStatus(ctx context.Context, task *kelosv1
 		return nil
 	}
 
-	msg := FormatSlackMessage(desiredPhase, task.Name, task.Status.Message, task.Status.Results)
+	msg := FormatSlackTransitionMessage(desiredPhase, task.Name, task.Status.Message, task.Status.Results)
 
 	log.Info("Posting Slack thread reply", "task", task.Name, "channel", channel, "phase", desiredPhase)
 	replyTS, err := tr.Reporter.PostThreadReply(ctx, channel, threadTS, msg)

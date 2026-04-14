@@ -699,7 +699,7 @@ func TestSlackTaskReporter_PostsNewReplyOnPhaseChange(t *testing.T) {
 		t.Errorf("channel = %q, want C123ABC", posted[0].channel)
 	}
 	// Verify the message includes the PR URL
-	wantMsg := FormatSlackMessage("succeeded", task.Name, task.Status.Message, task.Status.Results)
+	wantMsg := FormatSlackTransitionMessage("succeeded", task.Name, task.Status.Message, task.Status.Results)
 	if posted[0].msg.Text != wantMsg.Text {
 		t.Errorf("text = %q, want %q", posted[0].msg.Text, wantMsg.Text)
 	}

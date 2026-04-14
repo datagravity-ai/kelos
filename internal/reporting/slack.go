@@ -81,25 +81,25 @@ func contextBlock(taskName string) *slack.ContextBlock {
 
 // phaseHeaders maps each phase to its leading Block Kit section text.
 // Phases without an entry (e.g. "succeeded") get no header block.
-var phaseHeaders = map[string]string{
+var phaseHeaderText = map[string]string{
 	"accepted": ":hourglass_flowing_sand: *Working on your request...*",
 	"failed":   ":x: *Something went wrong*",
 }
 
 // phaseDefaults maps each phase to its default fallback text (before the
 // "(Task: ...)" suffix) when no richer content is available.
-var phaseDefaults = map[string]string{
+var phaseFallbackText = map[string]string{
 	"accepted":  "Working on your request...",
 	"succeeded": "Done!",
 	"failed":    "Failed.",
 }
 
-// FormatSlackMessage returns a rich Slack message for a task phase transition.
-func FormatSlackMessage(phase, taskName, message string, results map[string]string) SlackMessage {
-	fallbackText := fmt.Sprintf("%s (Task: %s)", phaseDefaults[phase], taskName)
+// FormatSlackTransitionMessage returns a rich Slack message for a task phase transition.
+func FormatSlackTransitionMessage(phase, taskName, message string, results map[string]string) SlackMessage {
+	fallbackText := fmt.Sprintf("%s (Task: %s)", phaseFallbackText[phase], taskName)
 	var blocks []slack.Block
 
-	if header, ok := phaseHeaders[phase]; ok {
+	if header, ok := phaseHeaderText[phase]; ok {
 		blocks = append(blocks, slack.NewSectionBlock(
 			slack.NewTextBlockObject(slack.MarkdownType, header, false, false),
 			nil, nil,
