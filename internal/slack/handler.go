@@ -165,7 +165,6 @@ func (h *SlackHandler) handleSlashCommand(ctx context.Context, evt socketmode.Ev
 	msg := &SlackMessageData{
 		UserID:         cmd.UserID,
 		ChannelID:      cmd.ChannelID,
-		ChannelName:    cmd.ChannelName,
 		UserName:       cmd.UserName,
 		Text:           cmd.Text,
 		Body:           body,
@@ -311,7 +310,8 @@ func (h *SlackHandler) createTask(ctx context.Context, spawner *v1alpha1.TaskSpa
 	task.Annotations[reporting.AnnotationSlackReporting] = "enabled"
 	task.Annotations[reporting.AnnotationSlackChannel] = msg.ChannelID
 
-	// Only set thread_ts for real message timestamps (not slash command composite IDs)
+	// Only set thread_ts for real message timestamps (not slash command composite IDs).
+	// Slash commands intentionally skip status reporting — there is no thread to reply to.
 	if !msg.IsSlashCommand {
 		threadTS := msg.Timestamp
 		if msg.ThreadTS != "" {
@@ -333,7 +333,7 @@ func (h *SlackHandler) createTask(ctx context.Context, spawner *v1alpha1.TaskSpa
 }
 
 // enrichMessage builds a SlackMessageData from a raw Slack message event,
-// enriching it with user info, permalink, and channel name.
+// enriching it with user info and permalink.
 func (h *SlackHandler) enrichMessage(ctx context.Context, event *slackevents.MessageEvent) *SlackMessageData {
 	userName := event.User
 	userCtx, userCancel := context.WithTimeout(ctx, enrichCallTimeout)
@@ -355,15 +355,6 @@ func (h *SlackHandler) enrichMessage(ctx context.Context, event *slackevents.Mes
 		permalink = link
 	}
 
-	channelName := event.Channel
-	chanCtx, chanCancel := context.WithTimeout(ctx, enrichCallTimeout)
-	defer chanCancel()
-	if info, err := h.api.GetConversationInfoContext(chanCtx, &goslack.GetConversationInfoInput{
-		ChannelID: event.Channel,
-	}); err == nil {
-		channelName = info.Name
-	}
-
 	body := event.Text
 	if event.Message != nil && len(event.Message.Attachments) > 0 {
 		if attachText := formatAttachments(event.Message.Attachments); attachText != "" {
@@ -376,10 +367,9 @@ func (h *SlackHandler) enrichMessage(ctx context.Context, event *slackevents.Mes
 	}
 
 	return &SlackMessageData{
-		UserID:      event.User,
-		ChannelID:   event.Channel,
-		ChannelName: channelName,
-		UserName:    userName,
+		UserID:    event.User,
+		ChannelID: event.Channel,
+		UserName:  userName,
 		Text:        event.Text,
 		Body:        body,
 		ThreadTS:    event.ThreadTimeStamp,
