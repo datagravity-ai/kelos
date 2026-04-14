@@ -239,15 +239,7 @@ func (tr *SlackTaskReporter) ReportTaskStatus(ctx context.Context, task *kelosv1
 		return nil
 	}
 
-	var msg SlackMessage
-	switch desiredPhase {
-	case "accepted":
-		msg = FormatSlackAccepted(task.Name)
-	case "succeeded":
-		msg = FormatSlackSucceeded(task.Name, task.Status.Results)
-	case "failed":
-		msg = FormatSlackFailed(task.Name, task.Status.Message, task.Status.Results)
-	}
+	msg := FormatSlackMessage(desiredPhase, task.Name, task.Status.Message, task.Status.Results)
 
 	log.Info("Posting Slack thread reply", "task", task.Name, "channel", channel, "phase", desiredPhase)
 	replyTS, err := tr.Reporter.PostThreadReply(ctx, channel, threadTS, msg)
