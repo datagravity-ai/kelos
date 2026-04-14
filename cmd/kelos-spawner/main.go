@@ -134,7 +134,7 @@ func main() {
 	}
 
 	if oneShot {
-		if _, err := runOnce(ctx, cl, key, cfgArgs); err != nil {
+		if _, err := runOnce(ctx, cl, key, cfgArgs, nil); err != nil {
 			log.Error(err, "Cycle failed")
 			os.Exit(1)
 		}
@@ -157,9 +157,10 @@ func main() {
 	}
 
 	if err := (&spawnerReconciler{
-		Client: cl,
-		Key:    key,
-		Config: cfgArgs,
+		Client:           cl,
+		Key:              key,
+		Config:           cfgArgs,
+		persistentSource: nil,
 	}).SetupWithManager(mgr); err != nil {
 		log.Error(err, "Unable to create controller")
 		os.Exit(1)
@@ -470,9 +471,9 @@ func runCycleWithSourceCore(ctx context.Context, cl client.Client, key types.Nam
 	return nil
 }
 
-// sourceAnnotations returns annotations that stamp GitHub source metadata
-// onto a spawned Task. These annotations enable downstream consumers (such
-// as the reporting watcher) to identify the originating issue or PR.
+// sourceAnnotations returns annotations that stamp source metadata onto a
+// spawned Task. These annotations enable downstream consumers (such as the
+// reporting watcher) to identify the originating issue, PR, or Slack message.
 func sourceAnnotations(ts *kelosv1alpha1.TaskSpawner, item source.WorkItem) map[string]string {
 	if ts.Spec.When.GitHubIssues == nil && ts.Spec.When.GitHubPullRequests == nil {
 		return nil
@@ -495,7 +496,7 @@ func sourceAnnotations(ts *kelosv1alpha1.TaskSpawner, item source.WorkItem) map[
 	return annotations
 }
 
-// reportingEnabled returns true when GitHub reporting is configured and enabled
+// reportingEnabled returns true when reporting is configured and enabled
 // on the TaskSpawner.
 func reportingEnabled(ts *kelosv1alpha1.TaskSpawner) bool {
 	if ts.Spec.When.GitHubIssues != nil && ts.Spec.When.GitHubIssues.Reporting != nil {

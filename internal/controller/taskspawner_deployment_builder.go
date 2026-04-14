@@ -179,6 +179,9 @@ func (b *DeploymentBuilder) buildPodParts(ts *kelosv1alpha1.TaskSpawner, workspa
 		)
 	}
 
+	// Slack TaskSpawners are handled by the centralized kelos-slack-server
+	// and do not need spawner-pod args or env vars.
+
 	labels := map[string]string{
 		"kelos.dev/name":        "kelos",
 		"kelos.dev/component":   "spawner",

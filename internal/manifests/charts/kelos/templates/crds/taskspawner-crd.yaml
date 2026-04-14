@@ -1003,6 +1003,37 @@ spec:
                     required:
                     - types
                     type: object
+                  slack:
+                    description: |-
+                      Slack discovers work items from Slack messages via Socket Mode.
+                      The centralized kelos-slack-server connects to Slack via an outbound
+                      WebSocket (no ingress required) and routes messages to matching agents.
+                    properties:
+                      allowedUsers:
+                        description: |-
+                          AllowedUsers optionally restricts which Slack users can trigger tasks.
+                          Values are Slack user IDs (e.g., "U0123456789"). When empty, any user
+                          in the channel can trigger tasks.
+                        items:
+                          type: string
+                        type: array
+                      channels:
+                        description: |-
+                          Channels optionally restricts which Slack channels the bot listens in.
+                          Values are channel IDs (e.g., "C0123456789"). When empty, the bot
+                          listens in every channel it has been invited to.
+                        items:
+                          type: string
+                        type: array
+                      triggerCommand:
+                        description: |-
+                          TriggerCommand is an optional slash command or message prefix that
+                          triggers task creation (e.g., "/kelos", "!fix"). When set, only
+                          messages starting with this prefix trigger tasks and the prefix is
+                          stripped from the prompt. When empty, every non-threaded message in
+                          the channel triggers a task.
+                        type: string
+                    type: object
                 type: object
             required:
             - taskTemplate
