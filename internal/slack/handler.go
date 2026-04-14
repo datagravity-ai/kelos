@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	stdlog "log"
+	"os"
 	"strings"
 	"time"
 
@@ -12,6 +14,7 @@ import (
 	goslack "github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"
 	"github.com/slack-go/slack/socketmode"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/kelos-dev/kelos/api/v1alpha1"
@@ -55,7 +58,7 @@ func NewSlackHandler(ctx context.Context, cl client.Client, botToken, appToken s
 		log:         log,
 		taskBuilder: tb,
 		api:         api,
-		sm:          socketmode.New(api),
+		sm:          newSocketModeClient(api),
 		botUserID:   authResp.UserID,
 	}, nil
 }
@@ -68,7 +71,9 @@ func (h *SlackHandler) Start(ctx context.Context) error {
 
 	go func() {
 		if err := h.sm.RunContext(bgCtx); err != nil {
-			h.log.Error(err, "Socket Mode connection closed")
+			h.log.Error(err, "Socket Mode connection closed with error")
+		} else {
+			h.log.Info("Socket Mode connection closed cleanly")
 		}
 	}()
 
@@ -78,13 +83,16 @@ func (h *SlackHandler) Start(ctx context.Context) error {
 			return bgCtx.Err()
 		case evt, ok := <-h.sm.Events:
 			if !ok {
-				return nil
+				h.log.Info("Socket Mode events channel closed, exiting listener")
+				return fmt.Errorf("Socket Mode events channel closed unexpectedly")
 			}
 			switch evt.Type {
 			case socketmode.EventTypeEventsAPI:
 				h.handleEventsAPI(bgCtx, evt)
 			case socketmode.EventTypeSlashCommand:
 				h.handleSlashCommand(bgCtx, evt)
+			default:
+				h.log.V(1).Info("Unhandled Socket Mode event type", "type", evt.Type)
 			}
 		}
 	}
@@ -110,24 +118,28 @@ func (h *SlackHandler) handleEventsAPI(ctx context.Context, evt socketmode.Event
 		return
 	}
 
-	if !shouldProcess(innerEvent.User, innerEvent.SubType, innerEvent.Text, h.botUserID) {
+	hasContent := innerEvent.Text != "" ||
+		(innerEvent.Message != nil && len(innerEvent.Message.Attachments) > 0)
+	if !shouldProcess(innerEvent.User, innerEvent.SubType, hasContent, h.botUserID) {
+		h.log.V(1).Info("Message filtered by shouldProcess",
+			"user", innerEvent.User, "subtype", innerEvent.SubType, "channel", innerEvent.Channel)
 		return
 	}
 
 	// Enrich message with user info, permalink, channel name
 	msg := h.enrichMessage(ctx, innerEvent)
 
-	// For thread replies, fetch full thread context
+	// For thread replies, fetch full thread context so the agent sees
+	// the entire conversation. Spawner filters (mentionUserIDs,
+	// triggerCommand) decide whether to process the message.
 	if innerEvent.ThreadTimeStamp != "" {
-		body, ok, err := FetchThreadContext(ctx, h.api, innerEvent.Channel, innerEvent.ThreadTimeStamp, h.botUserID)
+		body, err := FetchThreadContext(ctx, h.api, innerEvent.Channel, innerEvent.ThreadTimeStamp, h.botUserID)
 		if err != nil {
 			h.log.Error(err, "Failed to fetch thread context", "channel", innerEvent.Channel, "threadTS", innerEvent.ThreadTimeStamp)
 			return
 		}
-		if !ok {
-			return
-		}
 		msg.Body = body
+		msg.HasThreadContext = true
 	}
 
 	h.routeMessage(ctx, msg)
@@ -153,7 +165,6 @@ func (h *SlackHandler) handleSlashCommand(ctx context.Context, evt socketmode.Ev
 	msg := &SlackMessageData{
 		UserID:         cmd.UserID,
 		ChannelID:      cmd.ChannelID,
-		ChannelName:    cmd.ChannelName,
 		UserName:       cmd.UserName,
 		Text:           cmd.Text,
 		Body:           body,
@@ -200,23 +211,29 @@ func (h *SlackHandler) routeMessage(ctx context.Context, msg *SlackMessageData) 
 
 		// Check channel and user filters
 		if !MatchesSpawner(slackCfg, msg) {
+			spawnerLog.V(1).Info("Message did not match spawner filters",
+				"channel", msg.ChannelID, "mentionRequired", len(slackCfg.MentionUserIDs) > 0)
 			continue
 		}
 
-		// Check trigger command (per-spawner, since each TaskSpawner can have a different trigger).
-		// Slash commands skip the trigger check — the command name itself acts as the trigger,
-		// and cmd.Text only contains the arguments after the command name.
-		body, ok := ProcessTriggerCommand(msg.Text, msg.ThreadTS, slackCfg.TriggerCommand)
+		// Slash commands skip the trigger check — the command name itself acts
+		// as the trigger and cmd.Text only contains the arguments.
+		var body string
+		var ok bool
 		if msg.IsSlashCommand {
 			body, ok = msg.Body, true
+		} else {
+			body, ok = ProcessTriggerCommand(msg.Text, slackCfg.TriggerCommand)
 		}
 		if !ok {
+			spawnerLog.V(1).Info("Message did not match trigger command",
+				"triggerCommand", slackCfg.TriggerCommand)
 			continue
 		}
 
 		// Use thread context body if available (thread replies), otherwise use trigger-processed body
 		taskMsg := *msg
-		if msg.ThreadTS == "" || msg.Body == msg.Text {
+		if !msg.HasThreadContext {
 			taskMsg.Body = body
 		}
 
@@ -293,7 +310,8 @@ func (h *SlackHandler) createTask(ctx context.Context, spawner *v1alpha1.TaskSpa
 	task.Annotations[reporting.AnnotationSlackReporting] = "enabled"
 	task.Annotations[reporting.AnnotationSlackChannel] = msg.ChannelID
 
-	// Only set thread_ts for real message timestamps (not slash command composite IDs)
+	// Only set thread_ts for real message timestamps (not slash command composite IDs).
+	// Slash commands intentionally skip status reporting — there is no thread to reply to.
 	if !msg.IsSlashCommand {
 		threadTS := msg.Timestamp
 		if msg.ThreadTS != "" {
@@ -303,6 +321,10 @@ func (h *SlackHandler) createTask(ctx context.Context, spawner *v1alpha1.TaskSpa
 	}
 
 	if err := h.client.Create(ctx, task); err != nil {
+		if apierrors.IsAlreadyExists(err) {
+			h.log.Info("Task already exists, skipping", "task", taskName)
+			return nil
+		}
 		return fmt.Errorf("Creating task: %w", err)
 	}
 
@@ -311,7 +333,7 @@ func (h *SlackHandler) createTask(ctx context.Context, spawner *v1alpha1.TaskSpa
 }
 
 // enrichMessage builds a SlackMessageData from a raw Slack message event,
-// enriching it with user info, permalink, and channel name.
+// enriching it with user info and permalink.
 func (h *SlackHandler) enrichMessage(ctx context.Context, event *slackevents.MessageEvent) *SlackMessageData {
 	userName := event.User
 	userCtx, userCancel := context.WithTimeout(ctx, enrichCallTimeout)
@@ -333,31 +355,45 @@ func (h *SlackHandler) enrichMessage(ctx context.Context, event *slackevents.Mes
 		permalink = link
 	}
 
-	channelName := event.Channel
-	chanCtx, chanCancel := context.WithTimeout(ctx, enrichCallTimeout)
-	defer chanCancel()
-	if info, err := h.api.GetConversationInfoContext(chanCtx, &goslack.GetConversationInfoInput{
-		ChannelID: event.Channel,
-	}); err == nil {
-		channelName = info.Name
+	body := event.Text
+	if event.Message != nil && len(event.Message.Attachments) > 0 {
+		if attachText := formatAttachments(event.Message.Attachments); attachText != "" {
+			if body != "" {
+				body = body + "\n" + attachText
+			} else {
+				body = attachText
+			}
+		}
 	}
 
 	return &SlackMessageData{
-		UserID:      event.User,
-		ChannelID:   event.Channel,
-		ChannelName: channelName,
-		UserName:    userName,
-		Text:        event.Text,
-		Body:        event.Text,
-		ThreadTS:    event.ThreadTimeStamp,
-		Timestamp:   event.TimeStamp,
-		Permalink:   permalink,
+		UserID:    event.User,
+		ChannelID: event.Channel,
+		UserName:  userName,
+		Text:      event.Text,
+		Body:      body,
+		ThreadTS:  event.ThreadTimeStamp,
+		Timestamp: event.TimeStamp,
+		Permalink: permalink,
 	}
+}
+
+// newSocketModeClient creates a Socket Mode client with an stderr logger.
+// Set SLACK_SOCKET_DEBUG=1 to enable verbose WebSocket frame logging.
+func newSocketModeClient(api *goslack.Client) *socketmode.Client {
+	opts := []socketmode.Option{
+		socketmode.OptionLog(stdlog.New(os.Stderr, "socketmode: ", stdlog.LstdFlags|stdlog.Lshortfile)),
+	}
+	if os.Getenv("SLACK_SOCKET_DEBUG") == "1" {
+		opts = append(opts, socketmode.OptionDebug(true))
+	}
+	return socketmode.New(api, opts...)
 }
 
 // shouldProcess decides whether a Slack message should be processed.
 // It filters out bot messages, self-messages, and message subtypes we don't handle.
-func shouldProcess(userID, subtype, text, selfUserID string) bool {
+// hasContent should be true when the message has text or attachments.
+func shouldProcess(userID, subtype string, hasContent bool, selfUserID string) bool {
 	if userID == selfUserID {
 		return false
 	}
@@ -365,5 +401,5 @@ func shouldProcess(userID, subtype, text, selfUserID string) bool {
 	case "bot_message", "message_changed", "message_deleted", "message_replied":
 		return false
 	}
-	return text != ""
+	return hasContent
 }

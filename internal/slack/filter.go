@@ -1,6 +1,7 @@
 package slack
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/kelos-dev/kelos/api/v1alpha1"
@@ -13,8 +14,6 @@ type SlackMessageData struct {
 	UserID string
 	// ChannelID is the Slack channel ID where the message was posted.
 	ChannelID string
-	// ChannelName is the human-readable channel name.
-	ChannelName string
 	// UserName is the display name of the message author.
 	UserName string
 	// Text is the raw message text.
@@ -27,6 +26,9 @@ type SlackMessageData struct {
 	Permalink string
 	// Body is the processed message body (trigger prefix stripped, or full thread context).
 	Body string
+	// HasThreadContext indicates that Body contains full thread context
+	// rather than the raw message text.
+	HasThreadContext bool
 	// IsSlashCommand indicates this came from a slash command rather than a message event.
 	IsSlashCommand bool
 	// SlashCommandID is the composite ID for slash commands (channelID:command:triggerID).
@@ -46,23 +48,33 @@ func MatchesSpawner(slackCfg *v1alpha1.Slack, msg *SlackMessageData) bool {
 	if !matchesUser(msg.UserID, slackCfg.AllowedUsers) {
 		return false
 	}
+	// Mention filter: bypassed for slash commands (the command name acts as
+	// the trigger), but still required for thread replies.
+	if !msg.IsSlashCommand {
+		if !matchesMention(msg.Text, slackCfg.MentionUserIDs) {
+			return false
+		}
+	}
+	// ExcludeCommands filter: reject messages matching any excluded prefix.
+	// Applied consistently for all message types including thread replies.
+	if matchesExcludeCommands(msg.Text, slackCfg.ExcludeCommands) {
+		return false
+	}
 	return true
 }
 
 // ProcessTriggerCommand checks whether the message text matches the TaskSpawner's
-// trigger command prefix. For thread replies, the trigger is not required.
-// Returns the processed body and true if the message should be processed.
-func ProcessTriggerCommand(text, threadTS, triggerCmd string) (string, bool) {
-	// Thread replies are follow-ups — no trigger required
-	if threadTS != "" {
-		return text, true
-	}
-
+// trigger command prefix. Leading @-mentions are stripped before matching so that
+// "@bot /cmd args" works the same as "/cmd args". Returns the processed body
+// (with prefix removed) and true if the message should be processed.
+func ProcessTriggerCommand(text, triggerCmd string) (string, bool) {
 	if triggerCmd != "" {
-		if !strings.HasPrefix(text, triggerCmd) {
+		// Strip leading Slack mentions so "@bot /cmd args" works like "/cmd args"
+		cleaned := stripLeadingMentions(text)
+		if !strings.HasPrefix(cleaned, triggerCmd) {
 			return "", false
 		}
-		body := strings.TrimSpace(strings.TrimPrefix(text, triggerCmd))
+		body := strings.TrimSpace(strings.TrimPrefix(cleaned, triggerCmd))
 		if body == "" {
 			return "", false
 		}
@@ -112,6 +124,57 @@ func matchesUser(userID string, allowed []string) bool {
 	}
 	for _, id := range allowed {
 		if id == userID {
+			return true
+		}
+	}
+	return false
+}
+
+// stripLeadingMentions removes Slack mention tokens (<@USERID> or
+// <@USERID|display-name>) from the beginning of text so that trigger
+// command matching works regardless of mention placement.
+func stripLeadingMentions(text string) string {
+	s := text
+	for {
+		s = strings.TrimSpace(s)
+		if !strings.HasPrefix(s, "<@") {
+			return s
+		}
+		end := strings.Index(s, ">")
+		if end == -1 {
+			return s
+		}
+		s = s[end+1:]
+	}
+}
+
+// matchesExcludeCommands returns true if the message text (after stripping
+// leading @-mentions) starts with any of the exclude command prefixes.
+// When it returns true, the spawner should NOT process this message.
+func matchesExcludeCommands(text string, excludeCommands []string) bool {
+	if len(excludeCommands) == 0 {
+		return false
+	}
+	cleaned := stripLeadingMentions(text)
+	for _, prefix := range excludeCommands {
+		if strings.HasPrefix(cleaned, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// matchesMention returns true if the message text contains an @-mention of
+// at least one of the specified user IDs. Slack encodes mentions as <@USER_ID>.
+// If mentionUserIDs is empty, no mention is required and the function returns true.
+func matchesMention(text string, mentionUserIDs []string) bool {
+	if len(mentionUserIDs) == 0 {
+		return true
+	}
+	for _, uid := range mentionUserIDs {
+		// Slack encodes mentions as <@USERID> or <@USERID|display-name>
+		if strings.Contains(text, fmt.Sprintf("<@%s>", uid)) ||
+			strings.Contains(text, fmt.Sprintf("<@%s|", uid)) {
 			return true
 		}
 	}

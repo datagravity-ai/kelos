@@ -57,21 +57,6 @@ func (r *SlackReporter) PostThreadReply(ctx context.Context, channel, threadTS s
 	return ts, nil
 }
 
-// UpdateMessage updates an existing Slack message in place.
-func (r *SlackReporter) UpdateMessage(ctx context.Context, channel, messageTS string, msg SlackMessage) error {
-	opts := []slack.MsgOption{
-		slack.MsgOptionText(msg.Text, false),
-	}
-	if len(msg.Blocks) > 0 {
-		opts = append(opts, slack.MsgOptionBlocks(msg.Blocks...))
-	}
-	_, _, _, err := r.api().UpdateMessageContext(ctx, channel, messageTS, opts...)
-	if err != nil {
-		return fmt.Errorf("updating Slack message: %w", err)
-	}
-	return nil
-}
-
 // contextBlock returns a context block displaying the task name.
 func contextBlock(taskName string) *slack.ContextBlock {
 	return slack.NewContextBlock("",
@@ -79,28 +64,34 @@ func contextBlock(taskName string) *slack.ContextBlock {
 	)
 }
 
-// FormatSlackAccepted returns the Slack message for an accepted task.
-func FormatSlackAccepted(taskName string) SlackMessage {
-	return SlackMessage{
-		Text: fmt.Sprintf("Working on your request... (Task: %s)", taskName),
-		Blocks: []slack.Block{
-			slack.NewSectionBlock(
-				slack.NewTextBlockObject(slack.MarkdownType, ":hourglass_flowing_sand: *Working on your request...*", false, false),
-				nil, nil,
-			),
-			contextBlock(taskName),
-		},
-	}
+// phaseHeaderText maps each phase to its leading Block Kit section text.
+// Phases without an entry (e.g. "succeeded") get no header block.
+var phaseHeaderText = map[string]string{
+	"accepted": ":hourglass_flowing_sand: *Working on your request...*",
+	"failed":   ":x: *Something went wrong*",
 }
 
-// FormatSlackSucceeded returns the Slack message for a succeeded task.
-// When results contain an agent response or PR URL, they are included.
-func FormatSlackSucceeded(taskName string, results map[string]string) SlackMessage {
-	fallbackText := fmt.Sprintf("Done! (Task: %s)", taskName)
+// phaseFallbackText maps each phase to its default fallback text (before the
+// "(Task: ...)" suffix) when no richer content is available.
+var phaseFallbackText = map[string]string{
+	"accepted":  "Working on your request...",
+	"succeeded": "Done!",
+	"failed":    "Failed.",
+}
+
+// FormatSlackTransitionMessage returns a rich Slack message for a task phase transition.
+func FormatSlackTransitionMessage(phase, taskName, message string, results map[string]string) SlackMessage {
+	fallbackText := fmt.Sprintf("%s (Task: %s)", phaseFallbackText[phase], taskName)
 	var blocks []slack.Block
 
+	if header, ok := phaseHeaderText[phase]; ok {
+		blocks = append(blocks, slack.NewSectionBlock(
+			slack.NewTextBlockObject(slack.MarkdownType, header, false, false),
+			nil, nil,
+		))
+	}
+
 	resp := results["response"]
-	pr := results["pr"]
 	decoded := decodeResponse(resp)
 
 	if resp != "" {
@@ -108,7 +99,7 @@ func FormatSlackSucceeded(taskName string, results map[string]string) SlackMessa
 		blocks = append(blocks, responseToBlocks(decoded)...)
 	}
 
-	if pr != "" {
+	if pr := results["pr"]; pr != "" {
 		if resp != "" {
 			fallbackText = fmt.Sprintf("%s\nPR: %s (Task: %s)", decoded, pr, taskName)
 		} else {
@@ -120,37 +111,7 @@ func FormatSlackSucceeded(taskName string, results map[string]string) SlackMessa
 		))
 	}
 
-	blocks = append(blocks, contextBlock(taskName))
-
-	return SlackMessage{
-		Text:   fallbackText,
-		Blocks: blocks,
-	}
-}
-
-// FormatSlackFailed returns the Slack message for a failed task.
-// When a status message or agent response is available, it is included.
-func FormatSlackFailed(taskName, message string, results map[string]string) SlackMessage {
-	fallbackText := fmt.Sprintf("Failed. (Task: %s)", taskName)
-	blocks := []slack.Block{
-		slack.NewSectionBlock(
-			slack.NewTextBlockObject(slack.MarkdownType, ":x: *Something went wrong*", false, false),
-			nil, nil,
-		),
-	}
-
-	resp := ""
-	if results != nil {
-		resp = results["response"]
-	}
-	decoded := decodeResponse(resp)
-
-	if resp != "" {
-		fallbackText = fmt.Sprintf("%s (Task: %s)", decoded, taskName)
-		blocks = append(blocks, responseToBlocks(decoded)...)
-	}
-
-	if message != "" {
+	if message != "" && phase == "failed" {
 		if resp != "" {
 			fallbackText = fmt.Sprintf("%s\nError: %s (Task: %s)", decoded, message, taskName)
 		} else {
