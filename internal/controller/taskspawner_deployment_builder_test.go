@@ -2785,6 +2785,3 @@ func TestReconcileDeployment_KeepsDeploymentWithNewLabels(t *testing.T) {
 		t.Errorf("expected kelos.dev/component label in selector")
 	}
 }
-
-// Slack deployment builder tests removed — Slack TaskSpawners are now handled
-// by the centralized kelos-slack-server and do not create spawner pods.
