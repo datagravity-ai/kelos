@@ -489,6 +489,7 @@ func ExtractGitHubWorkItem(eventData *GitHubEventData) map[string]interface{} {
 	}
 	if len(eventData.ChangedFiles) > 0 {
 		vars["ChangedFiles"] = strings.Join(eventData.ChangedFiles, "\n")
+	}
 	if eventData.CommentAuthor != "" {
 		vars["CommentAuthor"] = eventData.CommentAuthor
 	}
