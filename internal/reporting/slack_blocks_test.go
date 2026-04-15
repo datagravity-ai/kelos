@@ -406,7 +406,10 @@ func TestCellsToRichText_EmptyCellsUseNBSP(t *testing.T) {
 	}
 
 	// The empty cell should contain a non-breaking space, not empty string.
-	b, _ := json.Marshal(cells[1])
+	b, err := json.Marshal(cells[1])
+	if err != nil {
+		t.Fatalf("marshal error: %v", err)
+	}
 	if strings.Contains(string(b), `"text":""`) {
 		t.Error("empty cell produced empty text element; Slack rejects this with invalid_blocks")
 	}
