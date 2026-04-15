@@ -15,9 +15,6 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 )
 
-// maxActivityLen is the maximum number of runes for an activity string.
-const maxActivityLen = 80
-
 // ActivityReader reads a short activity string from a running task's pod logs.
 type ActivityReader interface {
 	ReadActivity(ctx context.Context, namespace, podName, container, agentType string) string
