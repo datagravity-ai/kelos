@@ -57,12 +57,6 @@ type When struct {
 	// WebSocket (no ingress required) and routes messages to matching agents.
 	// +optional
 	Slack *Slack `json:"slack,omitempty"`
-	// Webhook triggers task spawning from arbitrary HTTP POST payloads.
-	// Any system that can send an HTTP POST with a JSON body can trigger
-	// tasks through this source. The URL path is /webhook/<source> and
-	// the HMAC secret is read from the <SOURCE>_WEBHOOK_SECRET env var.
-	// +optional
-	Webhook *GenericWebhook `json:"webhook,omitempty"`
 }
 
 // Cron triggers task spawning on a cron schedule.
