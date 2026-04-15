@@ -43,8 +43,9 @@ var idlePhrases = []string{
 func IdlePhrase(uid string, tick int) string {
 	h := fnv.New32a()
 	h.Write([]byte(uid))
-	offset := int(h.Sum32())
-	return idlePhrases[(offset+tick)%len(idlePhrases)]
+	n := len(idlePhrases)
+	offset := int(h.Sum32() % uint32(n))
+	return idlePhrases[(offset+tick%n)%n]
 }
 
 // ActivityReader reads a short activity string from a running task's pod logs.
