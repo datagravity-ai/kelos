@@ -2133,6 +2133,7 @@ spec:
                       description: MountPath is the absolute path where the volume
                         is mounted.
                       minLength: 1
+                      pattern: ^/
                       type: string
                     name:
                       description: Name is the volume name (must be unique across
@@ -4047,6 +4048,11 @@ spec:
                   - source
                   type: object
                 type: array
+                x-kubernetes-validations:
+                - message: volume names must be unique
+                  rule: self.map(v, v.name).size() == self.size()
+                - message: volume names 'workspace' and 'kelos-plugin' are reserved
+                  rule: self.all(v, v.name != 'workspace' && v.name != 'kelos-plugin')
             required:
             - repo
             type: object

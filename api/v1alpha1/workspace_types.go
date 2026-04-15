@@ -38,6 +38,7 @@ type WorkspaceVolume struct {
 
 	// MountPath is the absolute path where the volume is mounted.
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern="^/"
 	MountPath string `json:"mountPath"`
 
 	// ReadOnly mounts the volume as read-only when true.
@@ -84,6 +85,8 @@ type WorkspaceSpec struct {
 	// They do not replace the workspace volume — they are supplementary
 	// mounts (e.g. a PVC with pre-populated dependencies or shared data).
 	// +optional
+	// +kubebuilder:validation:XValidation:rule="self.map(v, v.name).size() == self.size()",message="volume names must be unique"
+	// +kubebuilder:validation:XValidation:rule="self.all(v, v.name != 'workspace' && v.name != 'kelos-plugin')",message="volume names 'workspace' and 'kelos-plugin' are reserved"
 	Volumes []WorkspaceVolume `json:"volumes,omitempty"`
 }
 
