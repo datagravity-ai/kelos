@@ -43,10 +43,12 @@ type SetupContainer struct {
 
 	// Command is the entrypoint array (passed to the container as the command).
 	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=20
 	Command []string `json:"command"`
 
 	// Env are additional environment variables for the container.
 	// +optional
+	// +kubebuilder:validation:MaxItems=50
 	Env []EnvVar `json:"env,omitempty"`
 }
 
@@ -101,6 +103,7 @@ type WorkspaceSpec struct {
 	// Remotes are additional git remotes to configure after cloning.
 	// The credential from SecretRef applies to all remotes.
 	// +optional
+	// +kubebuilder:validation:MaxItems=10
 	// +kubebuilder:validation:XValidation:rule="self.all(r, r.name != 'origin')",message="remote name 'origin' is reserved for the clone source"
 	// +kubebuilder:validation:XValidation:rule="self.map(r, r.name).size() == self.size()",message="remote names must be unique"
 	Remotes []GitRemote `json:"remotes,omitempty"`
@@ -135,6 +138,7 @@ type WorkspaceSpec struct {
 	// They do not replace the workspace volume — they are supplementary
 	// mounts (e.g. a PVC with pre-populated dependencies or shared data).
 	// +optional
+	// +kubebuilder:validation:MaxItems=10
 	// +kubebuilder:validation:XValidation:rule="self.map(v, v.name).size() == self.size()",message="volume names must be unique"
 	// +kubebuilder:validation:XValidation:rule="self.all(v, v.name != 'workspace' && v.name != 'kelos-plugin')",message="volume names 'workspace' and 'kelos-plugin' are reserved"
 	Volumes []WorkspaceVolume `json:"volumes,omitempty"`
@@ -144,6 +148,7 @@ type WorkspaceSpec struct {
 	// workspace volume and any user-defined volumes.  Use this for dependency
 	// installation, code generation, or other pre-agent setup steps.
 	// +optional
+	// +kubebuilder:validation:MaxItems=10
 	// +kubebuilder:validation:XValidation:rule="self.map(sc, sc.name).size() == self.size()",message="setup container names must be unique"
 	// +kubebuilder:validation:XValidation:rule="self.all(sc, !['git-clone','remote-setup','branch-setup','workspace-files','plugin-setup','skills-install'].exists(r, r == sc.name))",message="setup container names 'git-clone', 'remote-setup', 'branch-setup', 'workspace-files', 'plugin-setup', and 'skills-install' are reserved"
 	Setup []SetupContainer `json:"setup,omitempty"`
