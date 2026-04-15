@@ -7058,6 +7058,7 @@ spec:
                   - name
                   - url
                   type: object
+                maxItems: 10
                 type: array
                 x-kubernetes-validations:
                 - message: remote name 'origin' is reserved for the clone source
@@ -7096,6 +7097,7 @@ spec:
                         container as the command).
                       items:
                         type: string
+                      maxItems: 20
                       minItems: 1
                       type: array
                     env:
@@ -7116,6 +7118,7 @@ spec:
                         - name
                         - value
                         type: object
+                      maxItems: 50
                       type: array
                     image:
                       description: Image is the container image to run.
@@ -7131,6 +7134,7 @@ spec:
                   - image
                   - name
                   type: object
+                maxItems: 10
                 type: array
                 x-kubernetes-validations:
                 - message: setup container names must be unique
@@ -9088,6 +9092,7 @@ spec:
                   - name
                   - source
                   type: object
+                maxItems: 10
                 type: array
                 x-kubernetes-validations:
                 - message: volume names must be unique
