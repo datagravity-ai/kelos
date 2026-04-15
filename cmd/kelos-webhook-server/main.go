@@ -93,9 +93,11 @@ func main() {
 		webhookSource = webhook.GitHubSource
 	case "linear":
 		webhookSource = webhook.LinearSource
+	case "generic":
+		webhookSource = webhook.GenericSource
 	default:
 		setupLog.Error(fmt.Errorf("invalid source: %s", source),
-			"Source must be 'github' or 'linear'")
+			"Source must be 'github', 'linear', or 'generic'")
 		os.Exit(1)
 	}
 
@@ -146,9 +148,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Set up HTTP server for webhooks
+	// Set up HTTP server for webhooks.
+	// Generic source uses /webhook/<source> paths; others use root.
 	mux := http.NewServeMux()
-	mux.Handle("/", handler)
+	if webhookSource == webhook.GenericSource {
+		mux.Handle("/webhook/", handler)
+	} else {
+		mux.Handle("/", handler)
+	}
 
 	webhookServer := &http.Server{
 		Addr:              webhookAddr,

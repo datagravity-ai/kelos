@@ -2206,7 +2206,7 @@ func TestRunOnce_ReturnsPollIntervalForSuspendedTaskSpawner(t *testing.T) {
 
 	cl, key := setupTest(t, ts)
 
-	interval, err := runOnce(context.Background(), cl, key, spawnerRuntimeConfig{})
+	interval, err := runOnce(context.Background(), cl, key, spawnerRuntimeConfig{}, nil)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -2250,7 +2250,7 @@ func TestRunOnce_UsesTokenResolverForReporting(t *testing.T) {
 		GitHubRepo:       "repo",
 		GitHubAPIBaseURL: server.URL,
 		TokenResolver:    newGitHubTokenResolver("pat-token", "", "", "", ""),
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -2469,11 +2469,136 @@ func TestRunOnce_ReturnsSourcePollInterval(t *testing.T) {
 
 	cl, key := setupTest(t, ts)
 
-	interval, err := runOnce(context.Background(), cl, key, spawnerRuntimeConfig{})
+	interval, err := runOnce(context.Background(), cl, key, spawnerRuntimeConfig{}, nil)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	if interval != 15*time.Second {
 		t.Fatalf("Interval = %v, want %v", interval, 15*time.Second)
+	}
+}
+
+func TestRunOnce_UsesPersistentSource(t *testing.T) {
+	ts := newTaskSpawner("persistent-spawner", "default", nil)
+	ts.Spec.PollInterval = "30s"
+
+	cl, key := setupTest(t, ts)
+
+	// Pass a fakeSource as the persistent source. This verifies that runOnce
+	// uses the provided source via runCycleWithSource rather than falling
+	// through to buildSourceWithProxy.
+	persistent := &fakeSource{items: []source.WorkItem{
+		{ID: "item-1", Number: 1, Title: "test item", Body: "hello", Kind: "Issue"},
+	}}
+
+	interval, err := runOnce(context.Background(), cl, key, spawnerRuntimeConfig{}, persistent)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if interval != 30*time.Second {
+		t.Fatalf("Interval = %v, want %v", interval, 30*time.Second)
+	}
+
+	// Verify the work item was discovered and a Task was created.
+	var taskList kelosv1alpha1.TaskList
+	if err := cl.List(context.Background(), &taskList, client.InNamespace("default")); err != nil {
+		t.Fatalf("Listing tasks: %v", err)
+	}
+	if len(taskList.Items) != 1 {
+		t.Fatalf("Expected 1 task, got %d", len(taskList.Items))
+	}
+	if taskList.Items[0].Spec.Prompt != "test item" {
+		t.Fatalf("Task prompt = %q, want %q", taskList.Items[0].Spec.Prompt, "test item")
+	}
+}
+
+func TestTemplateReferencesChangedFiles(t *testing.T) {
+	tests := []struct {
+		name string
+		ts   *kelosv1alpha1.TaskSpawner
+		want bool
+	}{
+		{
+			name: "prompt template references ChangedFiles",
+			ts: &kelosv1alpha1.TaskSpawner{
+				Spec: kelosv1alpha1.TaskSpawnerSpec{
+					TaskTemplate: kelosv1alpha1.TaskTemplate{
+						PromptTemplate: "Review these files:\n{{.ChangedFiles}}",
+					},
+				},
+			},
+			want: true,
+		},
+		{
+			name: "branch references ChangedFiles",
+			ts: &kelosv1alpha1.TaskSpawner{
+				Spec: kelosv1alpha1.TaskSpawnerSpec{
+					TaskTemplate: kelosv1alpha1.TaskTemplate{
+						Branch: "review-{{.ChangedFiles}}",
+					},
+				},
+			},
+			want: true,
+		},
+		{
+			name: "metadata label references ChangedFiles",
+			ts: &kelosv1alpha1.TaskSpawner{
+				Spec: kelosv1alpha1.TaskSpawnerSpec{
+					TaskTemplate: kelosv1alpha1.TaskTemplate{
+						Metadata: &kelosv1alpha1.TaskTemplateMetadata{
+							Labels: map[string]string{
+								"files": "{{.ChangedFiles}}",
+							},
+						},
+					},
+				},
+			},
+			want: true,
+		},
+		{
+			name: "metadata annotation references ChangedFiles",
+			ts: &kelosv1alpha1.TaskSpawner{
+				Spec: kelosv1alpha1.TaskSpawnerSpec{
+					TaskTemplate: kelosv1alpha1.TaskTemplate{
+						Metadata: &kelosv1alpha1.TaskTemplateMetadata{
+							Annotations: map[string]string{
+								"kelos.dev/files": "{{.ChangedFiles}}",
+							},
+						},
+					},
+				},
+			},
+			want: true,
+		},
+		{
+			name: "no reference to ChangedFiles",
+			ts: &kelosv1alpha1.TaskSpawner{
+				Spec: kelosv1alpha1.TaskSpawnerSpec{
+					TaskTemplate: kelosv1alpha1.TaskTemplate{
+						PromptTemplate: "Review PR #{{.Number}}: {{.Title}}",
+						Branch:         "review-{{.Number}}",
+					},
+				},
+			},
+			want: false,
+		},
+		{
+			name: "empty templates",
+			ts: &kelosv1alpha1.TaskSpawner{
+				Spec: kelosv1alpha1.TaskSpawnerSpec{
+					TaskTemplate: kelosv1alpha1.TaskTemplate{},
+				},
+			},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := templateReferencesChangedFiles(tt.ts)
+			if got != tt.want {
+				t.Errorf("templateReferencesChangedFiles() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

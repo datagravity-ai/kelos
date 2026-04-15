@@ -134,7 +134,7 @@ func main() {
 	}
 
 	if oneShot {
-		if _, err := runOnce(ctx, cl, key, cfgArgs); err != nil {
+		if _, err := runOnce(ctx, cl, key, cfgArgs, nil); err != nil {
 			log.Error(err, "Cycle failed")
 			os.Exit(1)
 		}
@@ -157,9 +157,10 @@ func main() {
 	}
 
 	if err := (&spawnerReconciler{
-		Client: cl,
-		Key:    key,
-		Config: cfgArgs,
+		Client:           cl,
+		Key:              key,
+		Config:           cfgArgs,
+		persistentSource: nil,
 	}).SetupWithManager(mgr); err != nil {
 		log.Error(err, "Unable to create controller")
 		os.Exit(1)
@@ -470,9 +471,9 @@ func runCycleWithSourceCore(ctx context.Context, cl client.Client, key types.Nam
 	return nil
 }
 
-// sourceAnnotations returns annotations that stamp GitHub source metadata
-// onto a spawned Task. These annotations enable downstream consumers (such
-// as the reporting watcher) to identify the originating issue or PR.
+// sourceAnnotations returns annotations that stamp source metadata onto a
+// spawned Task. These annotations enable downstream consumers (such as the
+// reporting watcher) to identify the originating issue, PR, or Slack message.
 func sourceAnnotations(ts *kelosv1alpha1.TaskSpawner, item source.WorkItem) map[string]string {
 	if ts.Spec.When.GitHubIssues == nil && ts.Spec.When.GitHubPullRequests == nil {
 		return nil
@@ -495,7 +496,7 @@ func sourceAnnotations(ts *kelosv1alpha1.TaskSpawner, item source.WorkItem) map[
 	return annotations
 }
 
-// reportingEnabled returns true when GitHub reporting is configured and enabled
+// reportingEnabled returns true when reporting is configured and enabled
 // on the TaskSpawner.
 func reportingEnabled(ts *kelosv1alpha1.TaskSpawner) bool {
 	if ts.Spec.When.GitHubIssues != nil && ts.Spec.When.GitHubIssues.Reporting != nil {
@@ -628,6 +629,8 @@ func buildSourceWithProxy(ctx context.Context, ts *kelosv1alpha1.TaskSpawner, ow
 			MinimumPermission: commentPolicy.MinimumPermission,
 			Draft:             gh.Draft,
 			PriorityLabels:    gh.PriorityLabels,
+			FilePatterns:      convertFilePatterns(gh.FilePatterns),
+			NeedsChangedFiles: templateReferencesChangedFiles(ts),
 		}, nil
 	}
 
@@ -747,6 +750,42 @@ func parseOwnerRepo(repoURL string) (string, string) {
 		return parts[len(parts)-2], parts[len(parts)-1]
 	}
 	return "", ""
+}
+
+// convertFilePatterns converts the API FilePatternFilter type to the source
+// package's equivalent. Returns nil when the input is nil (no file filtering).
+func convertFilePatterns(api *kelosv1alpha1.FilePatternFilter) *source.FilePatternFilter {
+	if api == nil {
+		return nil
+	}
+	return &source.FilePatternFilter{
+		Include:     append([]string(nil), api.Include...),
+		Exclude:     append([]string(nil), api.Exclude...),
+		ExcludeOnly: api.ExcludeOnly,
+	}
+}
+
+// templateReferencesChangedFiles returns true when any template field in the
+// TaskSpawner's taskTemplate references {{.ChangedFiles}}.
+func templateReferencesChangedFiles(ts *kelosv1alpha1.TaskSpawner) bool {
+	tmpl := ts.Spec.TaskTemplate
+	if strings.Contains(tmpl.PromptTemplate, "ChangedFiles") ||
+		strings.Contains(tmpl.Branch, "ChangedFiles") {
+		return true
+	}
+	if tmpl.Metadata != nil {
+		for _, v := range tmpl.Metadata.Labels {
+			if strings.Contains(v, "ChangedFiles") {
+				return true
+			}
+		}
+		for _, v := range tmpl.Metadata.Annotations {
+			if strings.Contains(v, "ChangedFiles") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func parsePollInterval(s string) time.Duration {

@@ -289,6 +289,7 @@ func TestMatchesLinearEvent_LabelsCaseInsensitive(t *testing.T) {
 		Types: []string{"Issue"},
 		Filters: []v1alpha1.LinearWebhookFilter{
 			{
+				Type:   "Issue",
 				Labels: []string{"Bug", "Priority:High"},
 			},
 		},
@@ -373,6 +374,7 @@ func TestMatchesLinearEvent_ExcludeLabelsCaseInsensitive(t *testing.T) {
 		Types: []string{"Issue"},
 		Filters: []v1alpha1.LinearWebhookFilter{
 			{
+				Type:          "Issue",
 				ExcludeLabels: []string{"WontFix"},
 			},
 		},

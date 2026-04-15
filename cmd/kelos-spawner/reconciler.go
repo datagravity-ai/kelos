@@ -19,6 +19,7 @@ import (
 
 	kelosv1alpha1 "github.com/kelos-dev/kelos/api/v1alpha1"
 	"github.com/kelos-dev/kelos/internal/reporting"
+	"github.com/kelos-dev/kelos/internal/source"
 )
 
 type spawnerRuntimeConfig struct {
@@ -37,6 +38,9 @@ type spawnerReconciler struct {
 	client.Client
 	Key    types.NamespacedName
 	Config spawnerRuntimeConfig
+
+	// persistentSource holds a source that survives across reconcile cycles.
+	persistentSource source.Source
 }
 
 func (r *spawnerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -44,7 +48,7 @@ func (r *spawnerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, nil
 	}
 
-	interval, err := runOnce(ctx, r.Client, r.Key, r.Config)
+	interval, err := runOnce(ctx, r.Client, r.Key, r.Config, r.persistentSource)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, nil
@@ -68,8 +72,12 @@ func (r *spawnerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-func runOnce(ctx context.Context, cl client.Client, key types.NamespacedName, cfg spawnerRuntimeConfig) (time.Duration, error) {
-	if err := runCycleWithProxy(ctx, cl, key, cfg.GitHubOwner, cfg.GitHubRepo, cfg.GHProxyURL, cfg.GitHubAPIBaseURL, cfg.TokenResolver, cfg.JiraBaseURL, cfg.JiraProject, cfg.JiraJQL, cfg.HTTPClient); err != nil {
+func runOnce(ctx context.Context, cl client.Client, key types.NamespacedName, cfg spawnerRuntimeConfig, persistentSource source.Source) (time.Duration, error) {
+	if persistentSource != nil {
+		if err := runCycleWithSource(ctx, cl, key, persistentSource); err != nil {
+			return 0, err
+		}
+	} else if err := runCycleWithProxy(ctx, cl, key, cfg.GitHubOwner, cfg.GitHubRepo, cfg.GHProxyURL, cfg.GitHubAPIBaseURL, cfg.TokenResolver, cfg.JiraBaseURL, cfg.JiraProject, cfg.JiraJQL, cfg.HTTPClient); err != nil {
 		return 0, err
 	}
 

@@ -31,6 +31,18 @@ controller:
   resources:
     requests: {}
     limits: {}
+slackServer:
+  enabled: false
+  image: ghcr.io/kelos-dev/kelos-slack-server
+  replicas: 1
+  secretName: ""
+  resources:
+    limits:
+      cpu: 500m
+      memory: 128Mi
+    requests:
+      cpu: 10m
+      memory: 64Mi
 webhookServer:
   image: ghcr.io/kelos-dev/kelos-webhook-server
   sources:
@@ -44,6 +56,13 @@ webhookServer:
       replicas: 1
       secretName: ""
       apiKeySecretName: ""
+    generic:
+      enabled: false
+      replicas: 1
+      # Name of a Secret containing per-source HMAC keys as individual keys.
+      # Each key should be named <SOURCE>_WEBHOOK_SECRET (e.g.,
+      # NOTION_WEBHOOK_SECRET, SENTRY_WEBHOOK_SECRET).
+      secretName: ""
   resources:
     limits:
       cpu: 500m

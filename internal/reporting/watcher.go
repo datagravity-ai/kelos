@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"sync"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -32,6 +34,22 @@ const (
 	// AnnotationGitHubReportPhase records the last Task phase that was
 	// reported to GitHub, preventing duplicate API calls on re-list.
 	AnnotationGitHubReportPhase = "kelos.dev/github-report-phase"
+
+	// AnnotationSlackReporting indicates that Slack reporting is enabled
+	// for this Task.
+	AnnotationSlackReporting = "kelos.dev/slack-reporting"
+
+	// AnnotationSlackChannel records the Slack channel ID where the
+	// originating message was posted.
+	AnnotationSlackChannel = "kelos.dev/slack-channel"
+
+	// AnnotationSlackThreadTS records the originating message timestamp,
+	// used as thread_ts for posting replies.
+	AnnotationSlackThreadTS = "kelos.dev/slack-thread-ts"
+
+	// AnnotationSlackReportPhase records the last Task phase that was
+	// reported to Slack, preventing duplicate API calls on re-list.
+	AnnotationSlackReportPhase = "kelos.dev/slack-report-phase"
 )
 
 // TaskReporter watches Tasks and reports status changes to GitHub.
@@ -155,4 +173,198 @@ func (tr *TaskReporter) persistReportingState(ctx context.Context, task *kelosv1
 	}
 
 	return nil
+}
+
+// SlackMessenger is the interface for posting and updating Slack messages.
+type SlackMessenger interface {
+	PostThreadReply(ctx context.Context, channel, threadTS string, msg SlackMessage) (string, error)
+}
+
+// SlackTaskReporter watches Tasks and reports status changes to Slack
+// as thread replies on the originating message. When a ProgressReader is
+// configured, it also posts periodic progress updates extracted from the
+// agent's pod logs while the task is running.
+type SlackTaskReporter struct {
+	Client         client.Client
+	Reporter       SlackMessenger
+	ProgressReader ProgressReader
+
+	mu           sync.Mutex
+	lastProgress map[types.UID]string // taskUID -> last posted text
+}
+
+// ReportTaskStatus checks a Task's current phase against its last reported
+// phase and creates or updates the Slack thread reply as needed.
+func (tr *SlackTaskReporter) ReportTaskStatus(ctx context.Context, task *kelosv1alpha1.Task) error {
+	log := ctrl.Log.WithName("slack-reporter")
+
+	annotations := task.Annotations
+	if annotations == nil {
+		return nil
+	}
+
+	if annotations[AnnotationSlackReporting] != "enabled" {
+		return nil
+	}
+
+	channel := annotations[AnnotationSlackChannel]
+	threadTS := annotations[AnnotationSlackThreadTS]
+	if channel == "" || threadTS == "" {
+		return nil
+	}
+
+	var desiredPhase string
+	switch task.Status.Phase {
+	case kelosv1alpha1.TaskPhasePending, kelosv1alpha1.TaskPhaseRunning, kelosv1alpha1.TaskPhaseWaiting:
+		desiredPhase = "accepted"
+	case kelosv1alpha1.TaskPhaseSucceeded:
+		desiredPhase = "succeeded"
+	case kelosv1alpha1.TaskPhaseFailed:
+		desiredPhase = "failed"
+	default:
+		return nil
+	}
+
+	if annotations[AnnotationSlackReportPhase] == desiredPhase {
+		// Task is still running and we already posted the "accepted" message.
+		// Try to post a progress update from the agent's pod logs.
+		if desiredPhase == "accepted" {
+			return tr.updateProgress(ctx, task)
+		}
+		return nil
+	}
+
+	msg := FormatSlackTransitionMessage(desiredPhase, task.Name, task.Status.Message, task.Status.Results)
+
+	log.Info("Posting Slack thread reply", "task", task.Name, "channel", channel, "phase", desiredPhase)
+	if _, err := tr.Reporter.PostThreadReply(ctx, channel, threadTS, msg); err != nil {
+		return fmt.Errorf("posting Slack reply for task %s: %w", task.Name, err)
+	}
+
+	// Clean up progress cache when reporting a terminal phase.
+	if desiredPhase == "succeeded" || desiredPhase == "failed" {
+		tr.clearProgressCache(task.UID)
+	}
+
+	if err := tr.persistSlackReportingState(ctx, task, desiredPhase); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (tr *SlackTaskReporter) persistSlackReportingState(ctx context.Context, task *kelosv1alpha1.Task, desiredPhase string) error {
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var current kelosv1alpha1.Task
+		if err := tr.Client.Get(ctx, client.ObjectKeyFromObject(task), &current); err != nil {
+			return err
+		}
+
+		if current.Annotations == nil {
+			current.Annotations = make(map[string]string)
+		}
+		current.Annotations[AnnotationSlackReportPhase] = desiredPhase
+
+		if err := tr.Client.Update(ctx, &current); err != nil {
+			return err
+		}
+
+		task.Annotations = current.Annotations
+		return nil
+	}); err != nil {
+		if apierrors.IsNotFound(err) {
+			return fmt.Errorf("persisting Slack reporting annotations on task %s: task no longer exists", task.Name)
+		}
+		return fmt.Errorf("persisting Slack reporting annotations on task %s: %w", task.Name, err)
+	}
+
+	return nil
+}
+
+// updateProgress reads the agent's pod logs and posts a progress update to the
+// Slack thread if the latest assistant text has changed since the last post.
+// All errors are non-fatal — progress updates are best-effort.
+func (tr *SlackTaskReporter) updateProgress(ctx context.Context, task *kelosv1alpha1.Task) error {
+	if tr.ProgressReader == nil {
+		return nil
+	}
+
+	log := ctrl.Log.WithName("slack-reporter")
+
+	podName := task.Status.PodName
+	if podName == "" {
+		return nil
+	}
+
+	annotations := task.Annotations
+	channel := annotations[AnnotationSlackChannel]
+	threadTS := annotations[AnnotationSlackThreadTS]
+	if channel == "" || threadTS == "" {
+		return nil
+	}
+
+	containerName := task.Spec.Type
+	if containerName == "" {
+		containerName = "claude-code"
+	}
+
+	text := tr.ProgressReader.ReadProgress(ctx, task.Namespace, podName, containerName, task.Spec.Type)
+	if text == "" {
+		return nil
+	}
+
+	if !tr.shouldPostProgress(task.UID, text) {
+		return nil
+	}
+
+	msg := SlackMessage{Text: text}
+	log.V(1).Info("Posting Slack progress update", "task", task.Name)
+	if _, err := tr.Reporter.PostThreadReply(ctx, channel, threadTS, msg); err != nil {
+		log.Error(err, "Failed to post Slack progress update", "task", task.Name)
+		return nil
+	}
+
+	tr.setLastProgress(task.UID, text)
+	return nil
+}
+
+// shouldPostProgress returns true if the text differs from the last posted
+// progress for this task.
+func (tr *SlackTaskReporter) shouldPostProgress(uid types.UID, text string) bool {
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	if tr.lastProgress == nil {
+		return true
+	}
+	return tr.lastProgress[uid] != text
+}
+
+// setLastProgress records the most recently posted progress text for a task.
+func (tr *SlackTaskReporter) setLastProgress(uid types.UID, text string) {
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	if tr.lastProgress == nil {
+		tr.lastProgress = make(map[types.UID]string)
+	}
+	tr.lastProgress[uid] = text
+}
+
+// clearProgressCache removes the cached progress for a task.
+func (tr *SlackTaskReporter) clearProgressCache(uid types.UID) {
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	delete(tr.lastProgress, uid)
+}
+
+// SweepProgressCache removes entries for tasks that are no longer active.
+// Call this after each reporting cycle with the set of UIDs seen in the
+// current task list to prevent leaked entries from deleted tasks.
+func (tr *SlackTaskReporter) SweepProgressCache(activeUIDs map[types.UID]bool) {
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	for uid := range tr.lastProgress {
+		if !activeUIDs[uid] {
+			delete(tr.lastProgress, uid)
+		}
+	}
 }

@@ -44,6 +44,18 @@ type When struct {
 	// LinearWebhook triggers task spawning on Linear webhook events.
 	// +optional
 	LinearWebhook *LinearWebhook `json:"linearWebhook,omitempty"`
+
+	// Slack discovers work items from Slack messages via Socket Mode.
+	// The centralized kelos-slack-server connects to Slack via an outbound
+	// WebSocket (no ingress required) and routes messages to matching agents.
+	// +optional
+	Slack *Slack `json:"slack,omitempty"`
+	// Webhook triggers task spawning from arbitrary HTTP POST payloads.
+	// Any system that can send an HTTP POST with a JSON body can trigger
+	// tasks through this source. The URL path is /webhook/<source> and
+	// the HMAC secret is read from the <SOURCE>_WEBHOOK_SECRET env var.
+	// +optional
+	Webhook *GenericWebhook `json:"webhook,omitempty"`
 }
 
 // Cron triggers task spawning on a cron schedule.
@@ -272,10 +284,41 @@ type GitHubPullRequests struct {
 	// +optional
 	Reporting *GitHubReporting `json:"reporting,omitempty"`
 
+	// FilePatterns filters pull requests by changed file paths.
+	// When set, only PRs where at least one changed file matches an include
+	// pattern (and no changed file matches an exclude pattern) are discovered.
+	// Patterns use doublestar syntax (e.g., "*.go", "internal/**", "docs/**/*.md").
+	// When empty, no file-based filtering is applied.
+	// +optional
+	FilePatterns *FilePatternFilter `json:"filePatterns,omitempty"`
+
 	// PollInterval overrides spec.pollInterval for this source (e.g., "30s", "5m").
 	// When empty, spec.pollInterval is used.
 	// +optional
 	PollInterval string `json:"pollInterval,omitempty"`
+}
+
+// FilePatternFilter filters items by changed file paths using glob patterns.
+type FilePatternFilter struct {
+	// Include requires at least one changed file to match any of these glob patterns.
+	// Patterns use doublestar syntax (e.g., "*.go", "internal/**").
+	// When empty, all files are considered matching (only exclude patterns apply).
+	// +optional
+	Include []string `json:"include,omitempty"`
+
+	// Exclude rejects items where any changed file matches any of these glob patterns.
+	// When ExcludeOnly is false (default), any single exclude match rejects the item.
+	// When ExcludeOnly is true, the item is only rejected when ALL changed files
+	// match exclude patterns (i.e., "skip docs-only PRs").
+	// +optional
+	Exclude []string `json:"exclude,omitempty"`
+
+	// ExcludeOnly inverts the exclude logic: instead of rejecting on any single
+	// exclude match, it only rejects items where ALL changed files match exclude
+	// patterns. Useful for filtering out items that only change non-code files.
+	// Defaults to false.
+	// +optional
+	ExcludeOnly bool `json:"excludeOnly,omitempty"`
 }
 
 // Jira discovers issues from a Jira project.
@@ -380,6 +423,13 @@ type GitHubWebhookFilter struct {
 	// ExcludeAuthors excludes events sent by any of these usernames.
 	// +optional
 	ExcludeAuthors []string `json:"excludeAuthors,omitempty"`
+
+	// FilePatterns filters events by changed file paths.
+	// For push events, file paths are extracted directly from the payload.
+	// For pull_request events, the file list is fetched from the GitHub API
+	// using the workspace's secretRef for authentication.
+	// +optional
+	FilePatterns *FilePatternFilter `json:"filePatterns,omitempty"`
 }
 
 // LinearWebhook configures webhook-driven task spawning from Linear events.
@@ -422,6 +472,124 @@ type LinearWebhookFilter struct {
 	// ExcludeLabels excludes issues with any of these labels.
 	// +optional
 	ExcludeLabels []string `json:"excludeLabels,omitempty"`
+}
+
+// Slack triggers task spawning from Slack messages via the centralized
+// kelos-slack-server. The server connects to Slack via Socket Mode (outbound
+// WebSocket — no ingress required) and routes messages to matching
+// TaskSpawners. Authentication tokens (SLACK_BOT_TOKEN, SLACK_APP_TOKEN)
+// are configured on the server, not per-TaskSpawner.
+//
+// The bot must be invited to each channel it should listen in.
+type Slack struct {
+	// TriggerCommand is an optional slash command or message prefix that
+	// triggers task creation (e.g., "/kelos", "!fix"). When set, only
+	// messages starting with this prefix trigger tasks and the prefix is
+	// stripped from the prompt. When empty, every non-threaded message in
+	// the channel triggers a task.
+	// +optional
+	TriggerCommand string `json:"triggerCommand,omitempty"`
+
+	// Channels optionally restricts which Slack channels the bot listens in.
+	// Values are channel IDs (e.g., "C0123456789"). When empty, the bot
+	// listens in every channel it has been invited to.
+	// +optional
+	Channels []string `json:"channels,omitempty"`
+
+	// AllowedUsers optionally restricts which Slack users can trigger tasks.
+	// Values are Slack user IDs (e.g., "U0123456789"). When empty, any user
+	// in the channel can trigger tasks.
+	// +optional
+	AllowedUsers []string `json:"allowedUsers,omitempty"`
+
+	// MentionUserIDs optionally requires that the message @-mentions at least
+	// one of the specified Slack user IDs (e.g., "U0123456789"). In Slack,
+	// mentions appear as <@USER_ID> or <@USER_ID|display-name> in the message
+	// text. When empty, no mention is required. This filter is bypassed for
+	// slash commands but still required for thread replies.
+	// +optional
+	MentionUserIDs []string `json:"mentionUserIDs,omitempty"`
+
+	// ExcludeCommands optionally rejects messages whose text (after stripping
+	// leading @-mentions) starts with any of these prefixes. This provides
+	// negative routing so a spawner can avoid firing on messages intended for
+	// another spawner. This filter applies to all message events including
+	// thread replies, but does NOT apply to slash commands (Slack strips the
+	// command name from the payload before delivery).
+	// +optional
+	ExcludeCommands []string `json:"excludeCommands,omitempty"`
+}
+
+// GenericWebhook configures webhook-driven task spawning from arbitrary HTTP
+// POST payloads with JSON bodies. Any system that can send an HTTP POST can
+// trigger tasks through this source. The URL path is /webhook/<source> and
+// the HMAC secret is read from the <SOURCE>_WEBHOOK_SECRET env var (e.g.,
+// source "notion" uses NOTION_WEBHOOK_SECRET).
+// +kubebuilder:validation:XValidation:rule="'id' in self.fieldMapping",message="fieldMapping must include an 'id' key for deduplication and task naming"
+type GenericWebhook struct {
+	// Source is a short identifier for this webhook source (e.g., "notion",
+	// "sentry", "drata"). It determines:
+	//   - The URL path: /webhook/<source>
+	//   - The env var for HMAC validation: <SOURCE>_WEBHOOK_SECRET
+	// Must be lowercase alphanumeric with optional hyphens.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`
+	Source string `json:"source"`
+
+	// FieldMapping maps JSONPath expressions to WorkItem template variables.
+	// Each key is a template variable name (available as {{.Key}} in
+	// promptTemplate and branch), and each value is a JSONPath expression
+	// evaluated against the request body.
+	// The "id" key is required — it provides the unique identifier used for
+	// deduplication and task naming.
+	// +kubebuilder:validation:Required
+	FieldMapping map[string]string `json:"fieldMapping"`
+
+	// Filters define conditions that must ALL match for a webhook delivery
+	// to trigger a task (AND semantics across filters). Each filter extracts
+	// a field via JSONPath and matches it against an exact value or regex
+	// pattern. If empty, all deliveries trigger tasks.
+	// +optional
+	Filters []GenericWebhookFilter `json:"filters,omitempty"`
+
+	// DeliveryIDHeader is the HTTP header containing a unique delivery
+	// identifier for idempotency. If empty, a SHA-256 hash of the body
+	// is used.
+	// +optional
+	DeliveryIDHeader string `json:"deliveryIDHeader,omitempty"`
+
+	// SignatureHeader is the HTTP header containing the HMAC signature.
+	// Defaults to "X-Webhook-Signature-256".
+	// +kubebuilder:default="X-Webhook-Signature-256"
+	// +optional
+	SignatureHeader string `json:"signatureHeader,omitempty"`
+
+	// SignaturePrefix is the prefix before the hex digest in the signature
+	// header value (e.g., "sha256=" for GitHub-style signatures). Set to
+	// empty string if the header contains the raw hex digest (Linear-style).
+	// Defaults to "sha256=".
+	// +kubebuilder:default="sha256="
+	// +optional
+	SignaturePrefix string `json:"signaturePrefix,omitempty"`
+}
+
+// GenericWebhookFilter defines a condition for filtering generic webhook payloads.
+// Exactly one of Value or Pattern must be set.
+// +kubebuilder:validation:XValidation:rule="has(self.value) != (has(self.pattern) && size(self.pattern) > 0)",message="exactly one of value or pattern must be set"
+type GenericWebhookFilter struct {
+	// Field is a JSONPath expression selecting the payload field to match.
+	// +kubebuilder:validation:Required
+	Field string `json:"field"`
+
+	// Value requires an exact string match against the extracted field value.
+	// Mutually exclusive with Pattern.
+	// +optional
+	Value *string `json:"value,omitempty"`
+
+	// Pattern requires a regex match against the extracted field value.
+	// Mutually exclusive with Value.
+	// +optional
+	Pattern string `json:"pattern,omitempty"`
 }
 
 // TaskTemplateMetadata holds optional labels and annotations for spawned Tasks.
@@ -483,8 +651,8 @@ type TaskTemplate struct {
 	// Supports Go text/template variables from the work item, e.g. "kelos-task-{{.Number}}".
 	// Available variables (all sources): {{.ID}}, {{.Title}}, {{.Kind}}
 	// GitHub issue/Jira sources: {{.Number}}, {{.Body}}, {{.URL}}, {{.Labels}}, {{.Comments}}
-	// GitHub pull request sources additionally expose: {{.Branch}}, {{.ReviewState}}, {{.ReviewComments}}
-	// GitHub webhook sources: {{.Event}}, {{.Action}}, {{.Sender}}, {{.Ref}}, {{.Repository}}, {{.Payload}} (full payload access)
+	// GitHub pull request sources additionally expose: {{.Branch}}, {{.ReviewState}}, {{.ReviewComments}}, {{.ChangedFiles}}
+	// GitHub webhook sources: {{.Event}}, {{.Action}}, {{.Sender}}, {{.Ref}}, {{.Repository}}, {{.Payload}} (full payload access), {{.ChangedFiles}}
 	// Linear webhook sources: {{.Type}}, {{.Action}}, {{.State}}, {{.Labels}}, {{.IssueID}}, {{.Payload}}
 	// Cron sources: {{.Time}}, {{.Schedule}}
 	// +optional
@@ -493,8 +661,8 @@ type TaskTemplate struct {
 	// PromptTemplate is a Go text/template for rendering the task prompt.
 	// Available variables (all sources): {{.ID}}, {{.Title}}, {{.Kind}}
 	// GitHub issue/Jira sources: {{.Number}}, {{.Body}}, {{.URL}}, {{.Labels}}, {{.Comments}}
-	// GitHub pull request sources additionally expose: {{.Branch}}, {{.ReviewState}}, {{.ReviewComments}}
-	// GitHub webhook sources: {{.Event}}, {{.Action}}, {{.Sender}}, {{.Ref}}, {{.Repository}}, {{.Payload}} (full payload access)
+	// GitHub pull request sources additionally expose: {{.Branch}}, {{.ReviewState}}, {{.ReviewComments}}, {{.ChangedFiles}}
+	// GitHub webhook sources: {{.Event}}, {{.Action}}, {{.Sender}}, {{.Ref}}, {{.Repository}}, {{.Payload}} (full payload access), {{.ChangedFiles}}
 	// Linear webhook sources: {{.Type}}, {{.Action}}, {{.State}}, {{.Labels}}, {{.IssueID}}, {{.Payload}}
 	// Cron sources: {{.Time}}, {{.Schedule}}
 	// +optional

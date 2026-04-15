@@ -1,7 +1,7 @@
 # Image configuration
 REGISTRY ?= ghcr.io/kelos-dev
 VERSION ?= latest
-IMAGE_DIRS ?= cmd/kelos-controller cmd/kelos-spawner cmd/ghproxy cmd/kelos-webhook-server claude-code codex gemini opencode cursor
+IMAGE_DIRS ?= cmd/kelos-controller cmd/kelos-spawner cmd/ghproxy cmd/kelos-webhook-server claude-code codex gemini opencode cursor cmd/kelos-slack-server
 LOCAL_ARCH ?= $(shell go env GOARCH)
 
 # Version injection for the kelos CLI – only set ldflags when an explicit
@@ -126,6 +126,11 @@ release-binaries: ## Cross-compile CLI binaries for release and generate checksu
 		mv bin/kelos "bin/kelos-$${os}-$${arch}"; \
 	done
 	@cd bin && sha256sum kelos-* > checksums.txt
+
+.PHONY: install-claude-commands
+install-claude-commands: ## Install Claude Code custom commands to user-level directory.
+	mkdir -p $(HOME)/.claude/commands
+	cp anomalo-claude-commands/*.md $(HOME)/.claude/commands/
 
 .PHONY: clean
 clean: ## Clean build artifacts.
