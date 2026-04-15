@@ -43,74 +43,11 @@ Kelos is built on four resources:
 3. **AgentConfigs** — Reusable bundles of agent instructions (`AGENTS.md`, `CLAUDE.md`), plugins (skills and agents), and MCP servers.
 4. **TaskSpawners** — Orchestration engines that react to external triggers (GitHub, Cron) to automatically manage agent lifecycles.
 
-<details>
-<summary>TaskSpawner — Automatic Task Creation from External Sources</summary>
-
-TaskSpawner watches external sources (e.g., GitHub Issues) and automatically creates Tasks for each discovered item.
-
-```
-                    polls         new issues
- TaskSpawner ─────────────▶ GitHub Issues
-      │        ◀─────────────
-      │
-      ├──creates──▶ Task: fix-bugs-1
-      └──creates──▶ Task: fix-bugs-2
-```
-
-</details>
-
 ## Kelos Developing Kelos
 
 Kelos develops itself. TaskSpawners run 24/7, each handling a different part of the development lifecycle — fully autonomous.
 
-<img width="2694" height="1966" alt="kelos-self-development" src="https://github.com/user-attachments/assets/a205f0c6-9eb4-4001-8ee6-5c8ab187fbea" />
-
-| TaskSpawner | Trigger | Model | Description |
-|---|---|---|---|
-| **kelos-workers** | GitHub Issues (`actor/kelos`) | Opus | Picks up issues, creates or updates PRs, self-reviews, and ensures CI passes |
-| **kelos-pr-responder** | GitHub Pull Requests (`generated-by-kelos`, `changes_requested`) | Opus | Re-engages on PR review feedback and updates the existing branch incrementally |
-| **kelos-planner** | GitHub Issues (`/kelos plan` comment) | Opus | Investigates an issue and posts a structured implementation plan — advisory only, no code changes |
-| **kelos-triage** | GitHub Issues (`needs-actor`) | Opus | Classifies issues by kind/priority, detects duplicates, and recommends an actor |
-| **kelos-fake-user** | Cron (daily 09:00 UTC) | Sonnet | Tests DX as a new user — follows docs, tries CLI workflows, files issues for problems found |
-| **kelos-fake-strategist** | Cron (every 12 hours) | Opus | Explores new use cases, workflow improvements, and integration opportunities |
-| **kelos-self-update** | Cron (daily 06:00 UTC) | Opus | Reviews and tunes prompts, configs, and workflow files — the pipeline improves itself |
-| **kelos-config-update** | Cron (daily 18:00 UTC) | Opus | Reviews recent PR feedback and updates agent configuration (conventions, prompts, configs) accordingly |
-| **kelos-image-update** | Cron (daily 03:00 UTC) | Sonnet | Checks for newer agent image versions (Claude Code, Codex, Gemini, etc.) and creates PRs to update them |
-| **kelos-reviewer** | GitHub Pull Requests (`/kelos review` comment) | Opus | Reviews PRs on demand — analyzes code, checks conventions, and submits structured reviews |
-| **kelos-squash-commits** | GitHub Pull Requests (`/kelos squash-commits` comment) | Sonnet | Rebases and squashes PR branch commits into a single clean commit |
-
-Here's a trimmed snippet of `kelos-workers.yaml` — enough to show the pattern:
-
-```yaml
-apiVersion: kelos.dev/v1alpha1
-kind: TaskSpawner
-metadata:
-  name: kelos-workers
-spec:
-  when:
-    githubIssues:
-      labels: [actor/kelos]
-      excludeLabels: [kelos/needs-input]
-      priorityLabels:
-        - priority/critical-urgent
-        - priority/important-soon
-      pollInterval: 1m
-  maxConcurrency: 3
-  taskTemplate:
-    model: opus
-    type: claude-code
-    branch: "kelos-task-{{.Number}}"
-    promptTemplate: |
-      You are a coding agent. You either
-      - create a PR to fix the issue
-      - update an existing PR to fix the issue
-      - comment on the issue or the PR if you cannot fix it
-      ...
-```
-
-The key pattern is `excludeLabels: [kelos/needs-input]` — this creates a feedback loop where the agent works autonomously until it needs human input, then pauses. Removing the label re-queues the issue on the next poll.
-
-See the full manifest at [`self-development/kelos-workers.yaml`](self-development/kelos-workers.yaml) and the [`self-development/` README](self-development/README.md) for setup instructions.
+See the [`self-development/` README](self-development/README.md) for the full pipeline: manifests, triggers, models, and setup instructions.
 
 ## Why Kelos?
 

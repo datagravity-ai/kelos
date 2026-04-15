@@ -8,84 +8,22 @@ This directory contains real-world orchestration patterns used by the Kelos proj
 
 Each TaskSpawner references an `AgentConfig` that defines git identity, comment signatures, and standard constraints. Some agents (triage, pr-responder, squash-commits, config-update) share the base `agentconfig.yaml` (`kelos-dev-agent`), while others (workers, planner, fake-user, fake-strategist, self-update, image-update) define their own `AgentConfig` inline.
 
-## Prerequisites
-
-Before deploying these examples, you need to create the following resources:
-
-### 1. Workspace Resource
-
-Create a Workspace that points to your repository:
-
-```yaml
-apiVersion: kelos.dev/v1alpha1
-kind: Workspace
-metadata:
-  name: kelos-agent
-spec:
-  repo: https://github.com/your-org/your-repo.git
-  ref: main
-  secretRef:
-    name: github-token  # For pushing branches and creating PRs
-  # Or use GitHub App authentication (recommended for production/org use):
-  # secretRef:
-  #   name: github-app-creds
-  # Create the GitHub App secret with:
-  #   kubectl create secret generic github-app-creds \
-  #     --from-literal=appID=12345 \
-  #     --from-literal=installationID=67890 \
-  #     --from-file=privateKey=my-app.private-key.pem
-```
-
-### 2. GitHub Token Secret
-
-Create a secret with your GitHub token (needed for `gh` CLI and git authentication):
-
-```bash
-kubectl create secret generic github-token \
-  --from-literal=GITHUB_TOKEN=<your-github-token>
-```
-
-The token needs these permissions:
-- `repo` (full control of private repositories)
-- `workflow` (if your repo uses GitHub Actions)
-
-### 3. GitHub Webhook Secret and Delivery
-
-The issue and pull request TaskSpawners in this directory are webhook-driven.
-Create a secret with the shared webhook secret GitHub will use:
-
-```bash
-kubectl create secret generic github-webhook-secret \
-  --from-literal=WEBHOOK_SECRET=<your-github-webhook-secret>
-```
-
-Then:
-- Enable the GitHub webhook server in your Kelos deployment (see `examples/helm-values-webhook.yaml` or `examples/webhook-gateway-values.yaml`)
-- Expose `https://<your-domain>/webhook/github` over HTTPS
-- Configure a repository webhook that uses the same secret
-- Subscribe the repository webhook to `issues`, `issue_comment`, and `pull_request_review`
-
-Webhook TaskSpawners only react to **new** events after deployment. If an issue
-or PR was already in a matching state before the webhook server went live,
-retrigger it with a fresh comment or relabel after deployment.
-
-### 4. Agent Credentials Secret
-
-Create a secret with your AI agent credentials:
-
-**For OAuth (Claude Code):**
-```bash
-kubectl create secret generic kelos-credentials \
-  --from-literal=CLAUDE_CODE_OAUTH_TOKEN=<your-claude-oauth-token>
-```
-
-**For API Key:**
-```bash
-kubectl create secret generic kelos-credentials \
-  --from-literal=ANTHROPIC_API_KEY=<your-api-key>
-```
-
 ## TaskSpawners
+
+| TaskSpawner | Trigger | Model | Description |
+|---|---|---|---|
+| **kelos-workers** | Webhook: issue comment/label (`actor/kelos`) | Opus | Picks up issues, creates or updates PRs, self-reviews, and ensures CI passes |
+| **kelos-planner** | Webhook: issue comment `/kelos plan` | Opus | Investigates an issue and posts a structured implementation plan — advisory only, no code changes |
+| **kelos-reviewer** | Webhook: PR comment `/kelos review` | Opus | Reviews PRs on demand — analyzes code, checks conventions, and submits structured reviews |
+| **kelos-api-reviewer** | Webhook: issue/PR comment `/kelos api-review` | Opus | Reviews Kubernetes API design on issues or PRs — naming, compatibility, CRD validation |
+| **kelos-pr-responder** | Webhook: PR review/comment on `generated-by-kelos` PRs | Opus | Re-engages on PR review feedback and updates the existing branch incrementally |
+| **kelos-triage** | Webhook: issue opened/labeled/reopened (`needs-actor`) | Opus | Classifies issues by kind/priority, detects duplicates, and recommends an actor |
+| **kelos-fake-user** | Cron (daily 09:00 UTC) | Sonnet | Tests DX as a new user — follows docs, tries CLI workflows, files issues for problems found |
+| **kelos-fake-strategist** | Cron (every 12 hours) | Opus | Explores new use cases, workflow improvements, and integration opportunities |
+| **kelos-config-update** | Cron (daily 18:00 UTC) | Opus | Reviews recent PR feedback and updates agent configuration (conventions, prompts, configs) accordingly |
+| **kelos-self-update** | Cron (daily 06:00 UTC) | Opus | Reviews and tunes prompts, configs, and workflow files — the pipeline improves itself |
+| **kelos-image-update** | Cron (daily 03:00 UTC) | Sonnet | Checks for newer agent image versions (Claude Code, Codex, Gemini, etc.) and creates PRs to update them |
+| **kelos-squash-commits** | Webhook: PR comment `/kelos squash-commits` | Sonnet | Rebases and squashes PR branch commits into a single clean commit |
 
 ### kelos-workers.yaml
 
@@ -348,6 +286,106 @@ Creates at most one PR per agent. Skips agents that are already up to date or al
 kubectl apply -f self-development/kelos-image-update.yaml
 ```
 
+### kelos-squash-commits.yaml
+
+Rebases and squashes PR branch commits into a single clean commit when a maintainer posts `/kelos squash-commits`.
+
+| | |
+|---|---|
+| **Trigger** | GitHub PR comment webhook with `/kelos squash-commits` |
+| **Model** | Sonnet |
+| **Concurrency** | 1 |
+
+**Key features:**
+- Rebases the PR branch on `origin/main` and squashes all commits after the merge base into one
+- Amends the squashed commit message based on the linked issue and PR description when needed
+- Force-pushes with `--force-with-lease`
+- Updates the PR description to match the squashed change, preserving the `Closes #N` reference
+- Adds `kelos/needs-input` to the linked issue to signal the PR is ready for re-review
+- Does not start new development work or modify source code
+
+**Deploy:**
+```bash
+kubectl apply -f self-development/kelos-squash-commits.yaml
+```
+
+## Prerequisites
+
+Before deploying these examples, you need to create the following resources:
+
+### 1. Workspace Resource
+
+Create a Workspace that points to your repository:
+
+```yaml
+apiVersion: kelos.dev/v1alpha1
+kind: Workspace
+metadata:
+  name: kelos-agent
+spec:
+  repo: https://github.com/your-org/your-repo.git
+  ref: main
+  secretRef:
+    name: github-token  # For pushing branches and creating PRs
+  # Or use GitHub App authentication (recommended for production/org use):
+  # secretRef:
+  #   name: github-app-creds
+  # Create the GitHub App secret with:
+  #   kubectl create secret generic github-app-creds \
+  #     --from-literal=appID=12345 \
+  #     --from-literal=installationID=67890 \
+  #     --from-file=privateKey=my-app.private-key.pem
+```
+
+### 2. GitHub Token Secret
+
+Create a secret with your GitHub token (needed for `gh` CLI and git authentication):
+
+```bash
+kubectl create secret generic github-token \
+  --from-literal=GITHUB_TOKEN=<your-github-token>
+```
+
+The token needs these permissions:
+- `repo` (full control of private repositories)
+- `workflow` (if your repo uses GitHub Actions)
+
+### 3. GitHub Webhook Secret and Delivery
+
+The issue and pull request TaskSpawners in this directory are webhook-driven.
+Create a secret with the shared webhook secret GitHub will use:
+
+```bash
+kubectl create secret generic github-webhook-secret \
+  --from-literal=WEBHOOK_SECRET=<your-github-webhook-secret>
+```
+
+Then:
+- Enable the GitHub webhook server in your Kelos deployment (see `examples/helm-values-webhook.yaml` or `examples/webhook-gateway-values.yaml`)
+- Expose `https://<your-domain>/webhook/github` over HTTPS
+- Configure a repository webhook that uses the same secret
+- Subscribe the repository webhook to `issues`, `issue_comment`, and `pull_request_review`
+
+Webhook TaskSpawners only react to **new** events after deployment. If an issue
+or PR was already in a matching state before the webhook server went live,
+retrigger it with a fresh comment or relabel after deployment.
+
+### 4. Agent Credentials Secret
+
+Create a secret with your AI agent credentials:
+
+**For OAuth (Claude Code):**
+```bash
+kubectl create secret generic kelos-credentials \
+  --from-literal=CLAUDE_CODE_OAUTH_TOKEN=<your-claude-oauth-token>
+```
+
+**For API Key:**
+```bash
+kubectl create secret generic kelos-credentials \
+  --from-literal=ANTHROPIC_API_KEY=<your-api-key>
+```
+
 ## Customizing for Your Repository
 
 To adapt these examples for your own repository:
@@ -414,7 +452,7 @@ The key pattern in these examples is webhook-triggered handoff plus runtime re-v
 2. The matching TaskSpawner creates a Task immediately from that event
 3. The agent re-reads the latest issue or PR state with `gh` before acting, so asynchronous label updates are respected
 4. If the agent needs human input, it posts a plain-English status comment describing what happened
-5. A fresh `/kelos pick-up`, `/kelos plan`, `/kelos review`, `/kelos api-review`, or relabel event retriggers automation later
+5. A fresh `/kelos pick-up`, `/kelos plan`, `/kelos review`, `/kelos api-review`, `/kelos squash-commits`, or relabel event retriggers automation later
 
 Each run is a discrete webhook event, so no "pause" comment is needed to prevent re-pickup of stale state — the bot's own replies don't match the trigger substrings and cannot retrigger the spawner.
 
