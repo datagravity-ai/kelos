@@ -270,9 +270,14 @@ func parseCells(row string) []string {
 func cellsToRichText(cells []string) []*slack.RichTextBlock {
 	blocks := make([]*slack.RichTextBlock, len(cells))
 	for i, cell := range cells {
+		text := cell
+		if text == "" {
+			// Slack rejects empty text elements with invalid_blocks.
+			text = "\u00a0" // non-breaking space
+		}
 		blocks[i] = slack.NewRichTextBlock("",
 			slack.NewRichTextSection(
-				slack.NewRichTextSectionTextElement(cell, nil),
+				slack.NewRichTextSectionTextElement(text, nil),
 			),
 		)
 	}
