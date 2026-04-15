@@ -781,7 +781,8 @@ type slackReplyRecord struct {
 }
 
 type fakeSlackReporter struct {
-	postFn func(ctx context.Context, channel, threadTS string, msg SlackMessage) (string, error)
+	postFn   func(ctx context.Context, channel, threadTS string, msg SlackMessage) (string, error)
+	updateFn func(ctx context.Context, channel, replyTS string, msg SlackMessage) error
 }
 
 func (f *fakeSlackReporter) PostThreadReply(ctx context.Context, channel, threadTS string, msg SlackMessage) (string, error) {
@@ -789,6 +790,13 @@ func (f *fakeSlackReporter) PostThreadReply(ctx context.Context, channel, thread
 		return f.postFn(ctx, channel, threadTS, msg)
 	}
 	return "fake-reply-ts", nil
+}
+
+func (f *fakeSlackReporter) UpdateThreadReply(ctx context.Context, channel, replyTS string, msg SlackMessage) error {
+	if f.updateFn != nil {
+		return f.updateFn(ctx, channel, replyTS, msg)
+	}
+	return nil
 }
 
 func TestSlackTaskReporter_PhaseMapping(t *testing.T) {
@@ -1093,7 +1101,7 @@ func TestSlackTaskReporter_DeduplicatesProgress(t *testing.T) {
 	}
 }
 
-func TestSlackTaskReporter_PostsOnNewText(t *testing.T) {
+func TestSlackTaskReporter_EditsProgressOnNewText(t *testing.T) {
 	task := &kelosv1alpha1.Task{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-task",
@@ -1124,10 +1132,15 @@ func TestSlackTaskReporter_PostsOnNewText(t *testing.T) {
 	cl := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(task).Build()
 
 	var postedTexts []string
+	var updatedTexts []string
 	reporter := &fakeSlackReporter{
 		postFn: func(ctx context.Context, channel, threadTS string, msg SlackMessage) (string, error) {
 			postedTexts = append(postedTexts, msg.Text)
 			return "1234567890.111111", nil
+		},
+		updateFn: func(ctx context.Context, channel, replyTS string, msg SlackMessage) error {
+			updatedTexts = append(updatedTexts, msg.Text)
+			return nil
 		},
 	}
 
@@ -1139,27 +1152,34 @@ func TestSlackTaskReporter_PostsOnNewText(t *testing.T) {
 		ProgressReader: pr,
 	}
 
-	// First call
+	// First call — posts a new message
 	if err := tr.ReportTaskStatus(context.Background(), task); err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(postedTexts) != 1 {
+		t.Fatalf("expected 1 post, got %d", len(postedTexts))
+	}
+	if postedTexts[0] != "First update" {
+		t.Errorf("first post = %q, want 'First update'", postedTexts[0])
 	}
 
 	// Change the text
 	pr.text = "Second update"
 
-	// Second call with different text should post again
+	// Second call — should edit the existing message, not post a new one
 	if err := tr.ReportTaskStatus(context.Background(), task); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if len(postedTexts) != 2 {
-		t.Fatalf("expected 2 posts, got %d", len(postedTexts))
+	if len(postedTexts) != 1 {
+		t.Errorf("expected still 1 post (edit should not create new), got %d", len(postedTexts))
 	}
-	if postedTexts[0] != "First update" {
-		t.Errorf("first post = %q, want 'First update'", postedTexts[0])
+	if len(updatedTexts) != 1 {
+		t.Fatalf("expected 1 update, got %d", len(updatedTexts))
 	}
-	if postedTexts[1] != "Second update" {
-		t.Errorf("second post = %q, want 'Second update'", postedTexts[1])
+	if updatedTexts[0] != "Second update" {
+		t.Errorf("update text = %q, want 'Second update'", updatedTexts[0])
 	}
 }
 
@@ -1211,10 +1231,13 @@ func TestSlackTaskReporter_ClearsProgressCacheOnTerminal(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Verify cache is populated
+	// Verify caches are populated
 	tr.mu.Lock()
 	if _, ok := tr.lastProgress["uid-clear"]; !ok {
-		t.Error("expected progress cache to be populated")
+		t.Error("expected progress text cache to be populated")
+	}
+	if _, ok := tr.progressTS["uid-clear"]; !ok {
+		t.Error("expected progress timestamp cache to be populated")
 	}
 	tr.mu.Unlock()
 
@@ -1231,10 +1254,13 @@ func TestSlackTaskReporter_ClearsProgressCacheOnTerminal(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Verify cache was cleared
+	// Verify both caches were cleared
 	tr.mu.Lock()
 	if _, ok := tr.lastProgress["uid-clear"]; ok {
-		t.Error("expected progress cache to be cleared after terminal phase")
+		t.Error("expected progress text cache to be cleared after terminal phase")
+	}
+	if _, ok := tr.progressTS["uid-clear"]; ok {
+		t.Error("expected progress timestamp cache to be cleared after terminal phase")
 	}
 	tr.mu.Unlock()
 }
@@ -1250,9 +1276,11 @@ func TestSlackTaskReporter_SweepsStaleProgressEntries(t *testing.T) {
 		Reporter: reporter,
 	}
 
-	// Seed cache with entries for two tasks
+	// Seed caches with entries for two tasks
 	tr.setLastProgress("uid-active", "some text")
+	tr.setProgressTS("uid-active", "1234.5678")
 	tr.setLastProgress("uid-deleted", "other text")
+	tr.setProgressTS("uid-deleted", "1234.9999")
 
 	// Sweep with only the active UID
 	activeUIDs := map[types.UID]bool{
@@ -1264,9 +1292,15 @@ func TestSlackTaskReporter_SweepsStaleProgressEntries(t *testing.T) {
 	defer tr.mu.Unlock()
 
 	if _, ok := tr.lastProgress["uid-active"]; !ok {
-		t.Error("expected active UID to remain in cache")
+		t.Error("expected active UID to remain in lastProgress cache")
+	}
+	if _, ok := tr.progressTS["uid-active"]; !ok {
+		t.Error("expected active UID to remain in progressTS cache")
 	}
 	if _, ok := tr.lastProgress["uid-deleted"]; ok {
-		t.Error("expected deleted UID to be swept from cache")
+		t.Error("expected deleted UID to be swept from lastProgress cache")
+	}
+	if _, ok := tr.progressTS["uid-deleted"]; ok {
+		t.Error("expected deleted UID to be swept from progressTS cache")
 	}
 }

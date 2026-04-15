@@ -178,6 +178,7 @@ func (tr *TaskReporter) persistReportingState(ctx context.Context, task *kelosv1
 // SlackMessenger is the interface for posting and updating Slack messages.
 type SlackMessenger interface {
 	PostThreadReply(ctx context.Context, channel, threadTS string, msg SlackMessage) (string, error)
+	UpdateThreadReply(ctx context.Context, channel, replyTS string, msg SlackMessage) error
 }
 
 // SlackTaskReporter watches Tasks and reports status changes to Slack
@@ -191,6 +192,7 @@ type SlackTaskReporter struct {
 
 	mu           sync.Mutex
 	lastProgress map[types.UID]string // taskUID -> last posted text
+	progressTS   map[types.UID]string // taskUID -> message ts of the progress reply
 }
 
 // ReportTaskStatus checks a Task's current phase against its last reported
@@ -281,9 +283,11 @@ func (tr *SlackTaskReporter) persistSlackReportingState(ctx context.Context, tas
 	return nil
 }
 
-// updateProgress reads the agent's pod logs and posts a progress update to the
-// Slack thread if the latest assistant text has changed since the last post.
-// All errors are non-fatal — progress updates are best-effort.
+// updateProgress reads the agent's pod logs and updates the progress message
+// in the Slack thread. On the first call for a task, it posts a new reply and
+// records the message timestamp. Subsequent calls edit the same message
+// in-place so the thread stays clean. All errors are non-fatal — progress
+// updates are best-effort.
 func (tr *SlackTaskReporter) updateProgress(ctx context.Context, task *kelosv1alpha1.Task) error {
 	if tr.ProgressReader == nil {
 		return nil
@@ -318,13 +322,28 @@ func (tr *SlackTaskReporter) updateProgress(ctx context.Context, task *kelosv1al
 	}
 
 	msg := SlackMessage{Text: text}
+
+	// If we already have a progress message for this task, edit it in-place.
+	if replyTS := tr.getProgressTS(task.UID); replyTS != "" {
+		log.V(1).Info("Updating Slack progress message", "task", task.Name)
+		if err := tr.Reporter.UpdateThreadReply(ctx, channel, replyTS, msg); err != nil {
+			log.Error(err, "Failed to update Slack progress message", "task", task.Name)
+			return nil
+		}
+		tr.setLastProgress(task.UID, text)
+		return nil
+	}
+
+	// First progress update — post a new reply and record its timestamp.
 	log.V(1).Info("Posting Slack progress update", "task", task.Name)
-	if _, err := tr.Reporter.PostThreadReply(ctx, channel, threadTS, msg); err != nil {
+	replyTS, err := tr.Reporter.PostThreadReply(ctx, channel, threadTS, msg)
+	if err != nil {
 		log.Error(err, "Failed to post Slack progress update", "task", task.Name)
 		return nil
 	}
 
 	tr.setLastProgress(task.UID, text)
+	tr.setProgressTS(task.UID, replyTS)
 	return nil
 }
 
@@ -349,11 +368,33 @@ func (tr *SlackTaskReporter) setLastProgress(uid types.UID, text string) {
 	tr.lastProgress[uid] = text
 }
 
+// getProgressTS returns the Slack message timestamp of the progress reply
+// for a task, or empty string if no progress has been posted yet.
+func (tr *SlackTaskReporter) getProgressTS(uid types.UID) string {
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	if tr.progressTS == nil {
+		return ""
+	}
+	return tr.progressTS[uid]
+}
+
+// setProgressTS records the Slack message timestamp for the progress reply.
+func (tr *SlackTaskReporter) setProgressTS(uid types.UID, ts string) {
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	if tr.progressTS == nil {
+		tr.progressTS = make(map[types.UID]string)
+	}
+	tr.progressTS[uid] = ts
+}
+
 // clearProgressCache removes the cached progress for a task.
 func (tr *SlackTaskReporter) clearProgressCache(uid types.UID) {
 	tr.mu.Lock()
 	defer tr.mu.Unlock()
 	delete(tr.lastProgress, uid)
+	delete(tr.progressTS, uid)
 }
 
 // SweepProgressCache removes entries for tasks that are no longer active.
@@ -365,6 +406,13 @@ func (tr *SlackTaskReporter) SweepProgressCache(activeUIDs map[types.UID]bool) {
 	for uid := range tr.lastProgress {
 		if !activeUIDs[uid] {
 			delete(tr.lastProgress, uid)
+			delete(tr.progressTS, uid)
+		}
+	}
+	// Also clean progressTS entries that don't have a lastProgress entry.
+	for uid := range tr.progressTS {
+		if !activeUIDs[uid] {
+			delete(tr.progressTS, uid)
 		}
 	}
 }
