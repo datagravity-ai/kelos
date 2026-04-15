@@ -248,7 +248,7 @@ func geminiToolActivity(toolName string, raw json.RawMessage) string {
 			return fmt.Sprintf("Running `%s`...", truncateActivity(cmd, 50))
 		}
 		return "Running command..."
-	case "ReadFile", "WriteFile", "EditFile":
+	case "ReadFile":
 		p := activityStringField(params, "file_path")
 		if p == "" {
 			p = activityStringField(params, "path")
@@ -257,6 +257,24 @@ func geminiToolActivity(toolName string, raw json.RawMessage) string {
 			return fmt.Sprintf("Reading `%s`...", shortenPath(p))
 		}
 		return "Reading file..."
+	case "WriteFile":
+		p := activityStringField(params, "file_path")
+		if p == "" {
+			p = activityStringField(params, "path")
+		}
+		if p != "" {
+			return fmt.Sprintf("Writing `%s`...", shortenPath(p))
+		}
+		return "Writing file..."
+	case "EditFile":
+		p := activityStringField(params, "file_path")
+		if p == "" {
+			p = activityStringField(params, "path")
+		}
+		if p != "" {
+			return fmt.Sprintf("Editing `%s`...", shortenPath(p))
+		}
+		return "Editing file..."
 	case "Glob", "Grep":
 		if p := activityStringField(params, "pattern"); p != "" {
 			return fmt.Sprintf("Searching for `%s`...", truncateActivity(p, 50))

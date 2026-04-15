@@ -171,6 +171,16 @@ func TestExtractGeminiActivity(t *testing.T) {
 			want:  "Reading `src/app.ts`...",
 		},
 		{
+			name:  "write file",
+			input: `{"type":"tool_use","tool_name":"WriteFile","parameters":{"file_path":"/src/config.yaml"}}`,
+			want:  "Writing `src/config.yaml`...",
+		},
+		{
+			name:  "edit file",
+			input: `{"type":"tool_use","tool_name":"EditFile","parameters":{"file_path":"/src/handler.go"}}`,
+			want:  "Editing `src/handler.go`...",
+		},
+		{
 			name:  "assistant message",
 			input: `{"type":"message","role":"assistant","content":"Let me check."}`,
 			want:  "Thinking...",
