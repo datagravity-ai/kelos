@@ -15,6 +15,24 @@ var (
 	reLink = regexp.MustCompile(`\[([^\]]+)\]\(([^)]*(?:\([^)]*\))[^)]*|[^)]+)\)`)
 	// reStrikethrough matches ~~text~~ syntax.
 	reStrikethrough = regexp.MustCompile(`~~(.+?)~~`)
+
+	// reInlineFormatting matches all inline formatting tokens that need
+	// special handling inside rich-text contexts (tables, lists).
+	// Groups:
+	//   1 — bold content        (**…**)
+	//   2 — strikethrough       (~~…~~)
+	//   3 — inline code         (`…`)
+	//   4 — md link text        [text](url)
+	//   5 — md link url
+	//   6 — slack link url      <url|text>
+	//   7 — slack link text
+	reInlineFormatting = regexp.MustCompile(
+		`\*\*(.+?)\*\*` + // bold
+			`|~~(.+?)~~` + // strikethrough
+			"|`([^`]+)`" + // inline code
+			`|\[([^\]]+)\]\(([^)]*(?:\([^)]*\))[^)]*|[^)]+)\)` + // [text](url)
+			`|<((?:https?://)[^|>]+)\|([^>]+)>`, // <url|text>
+	)
 )
 
 // convertInlineMarkdown converts standard inline Markdown (bold, links,
@@ -267,56 +285,111 @@ func parseCells(row string) []string {
 }
 
 // cellsToRichText converts cell strings to RichTextBlock pointers for table rows.
+// Inline formatting (bold, code, links, strikethrough) is parsed and rendered
+// as styled rich-text elements.
 func cellsToRichText(cells []string) []*slack.RichTextBlock {
 	blocks := make([]*slack.RichTextBlock, len(cells))
 	for i, cell := range cells {
-		text := cell
-		if text == "" {
+		if cell == "" {
 			// Slack rejects empty text elements with invalid_blocks.
-			text = "\u00a0" // non-breaking space
+			blocks[i] = slack.NewRichTextBlock("",
+				slack.NewRichTextSection(
+					slack.NewRichTextSectionTextElement("\u00a0", nil),
+				),
+			)
+			continue
 		}
+		elements := parseRichTextElements(cell)
 		blocks[i] = slack.NewRichTextBlock("",
-			slack.NewRichTextSection(
-				slack.NewRichTextSectionTextElement(text, nil),
-			),
+			slack.NewRichTextSection(elements...),
 		)
 	}
 	return blocks
 }
 
-// parseRichTextElements splits text on inline code spans (`code`) and returns
-// a slice of RichTextSectionElement with appropriate styling.
+// parseRichTextElements parses inline formatting (bold, strikethrough, code,
+// markdown links, slack links) and returns a slice of RichTextSectionElement
+// with appropriate styling. Nested formatting (e.g. **`code`**) is supported
+// by recursively parsing bold/strikethrough content.
 func parseRichTextElements(text string) []slack.RichTextSectionElement {
-	var elements []slack.RichTextSectionElement
-	codeStyle := &slack.RichTextSectionTextStyle{Code: true}
+	return parseRichTextElementsWithStyle(text, nil)
+}
 
-	matches := reInlineCode.FindAllStringIndex(text, -1)
+// parseRichTextElementsWithStyle is the recursive inner function that carries
+// an inherited style from an outer formatting context (e.g. bold wrapping code).
+func parseRichTextElementsWithStyle(text string, inherited *slack.RichTextSectionTextStyle) []slack.RichTextSectionElement {
+	var elements []slack.RichTextSectionElement
+
+	matches := reInlineFormatting.FindAllStringSubmatchIndex(text, -1)
 	if len(matches) == 0 {
-		return []slack.RichTextSectionElement{
-			slack.NewRichTextSectionTextElement(text, nil),
+		if text != "" {
+			elements = append(elements, slack.NewRichTextSectionTextElement(text, inherited))
 		}
+		return elements
 	}
 
 	pos := 0
 	for _, loc := range matches {
-		// Text before the code span.
+		// Plain text before this match.
 		if loc[0] > pos {
 			elements = append(elements,
-				slack.NewRichTextSectionTextElement(text[pos:loc[0]], nil))
+				slack.NewRichTextSectionTextElement(text[pos:loc[0]], inherited))
 		}
-		// The code span content (strip backticks).
-		code := text[loc[0]+1 : loc[1]-1]
-		elements = append(elements,
-			slack.NewRichTextSectionTextElement(code, codeStyle))
+
+		switch {
+		case loc[2] >= 0: // group 1: bold **…**
+			inner := text[loc[2]:loc[3]]
+			style := mergeStyle(inherited, &slack.RichTextSectionTextStyle{Bold: true})
+			elements = append(elements, parseRichTextElementsWithStyle(inner, style)...)
+
+		case loc[4] >= 0: // group 2: strikethrough ~~…~~
+			inner := text[loc[4]:loc[5]]
+			style := mergeStyle(inherited, &slack.RichTextSectionTextStyle{Strike: true})
+			elements = append(elements, parseRichTextElementsWithStyle(inner, style)...)
+
+		case loc[6] >= 0: // group 3: inline code `…`
+			code := text[loc[6]:loc[7]]
+			style := mergeStyle(inherited, &slack.RichTextSectionTextStyle{Code: true})
+			elements = append(elements, slack.NewRichTextSectionTextElement(code, style))
+
+		case loc[8] >= 0: // groups 4,5: markdown link [text](url)
+			linkText := text[loc[8]:loc[9]]
+			linkURL := text[loc[10]:loc[11]]
+			elements = append(elements, slack.NewRichTextSectionLinkElement(linkURL, linkText, inherited))
+
+		case loc[12] >= 0: // groups 6,7: slack link <url|text>
+			linkURL := text[loc[12]:loc[13]]
+			linkText := text[loc[14]:loc[15]]
+			elements = append(elements, slack.NewRichTextSectionLinkElement(linkURL, linkText, inherited))
+		}
+
 		pos = loc[1]
 	}
-	// Trailing text after last code span.
+
+	// Trailing text after last match.
 	if pos < len(text) {
 		elements = append(elements,
-			slack.NewRichTextSectionTextElement(text[pos:], nil))
+			slack.NewRichTextSectionTextElement(text[pos:], inherited))
 	}
 
 	return elements
+}
+
+// mergeStyle combines two RichTextSectionTextStyle values, producing a new
+// style with all flags from both. Either argument may be nil.
+func mergeStyle(a, b *slack.RichTextSectionTextStyle) *slack.RichTextSectionTextStyle {
+	if a == nil {
+		return b
+	}
+	if b == nil {
+		return a
+	}
+	return &slack.RichTextSectionTextStyle{
+		Bold:   a.Bold || b.Bold,
+		Italic: a.Italic || b.Italic,
+		Strike: a.Strike || b.Strike,
+		Code:   a.Code || b.Code,
+	}
 }
 
 // listBlock creates Slack RichTextBlock(s) from markdown list lines.
