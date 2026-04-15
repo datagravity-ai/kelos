@@ -160,6 +160,13 @@ func printTaskSpawnerTable(w io.Writer, spawners []kelosv1alpha1.TaskSpawner, al
 			source = s.Spec.When.Jira.Project
 		} else if s.Spec.When.Cron != nil {
 			source = "cron: " + s.Spec.When.Cron.Schedule
+		} else if s.Spec.When.GitHubWebhook != nil {
+			source = "GitHub Webhook"
+			if s.Spec.When.GitHubWebhook.Repository != "" {
+				source += " (" + s.Spec.When.GitHubWebhook.Repository + ")"
+			}
+		} else if s.Spec.When.LinearWebhook != nil {
+			source = "Linear Webhook"
 		}
 		if allNamespaces {
 			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\t%d\t%s\n",
@@ -215,6 +222,20 @@ func printTaskSpawnerDetail(w io.Writer, ts *kelosv1alpha1.TaskSpawner) {
 	} else if ts.Spec.When.Cron != nil {
 		printField(w, "Source", "Cron")
 		printField(w, "Schedule", ts.Spec.When.Cron.Schedule)
+	} else if ts.Spec.When.GitHubWebhook != nil {
+		gh := ts.Spec.When.GitHubWebhook
+		printField(w, "Source", "GitHub Webhook")
+		printField(w, "Events", fmt.Sprintf("%v", gh.Events))
+		if gh.Repository != "" {
+			printField(w, "Repository", gh.Repository)
+		}
+		if len(gh.ExcludeAuthors) > 0 {
+			printField(w, "Exclude Authors", fmt.Sprintf("%v", gh.ExcludeAuthors))
+		}
+	} else if ts.Spec.When.LinearWebhook != nil {
+		lw := ts.Spec.When.LinearWebhook
+		printField(w, "Source", "Linear Webhook")
+		printField(w, "Types", fmt.Sprintf("%v", lw.Types))
 	}
 	printField(w, "Task Type", ts.Spec.TaskTemplate.Type)
 	if ts.Spec.TaskTemplate.Model != "" {

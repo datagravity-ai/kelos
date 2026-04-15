@@ -35,19 +35,21 @@ metadata:
   name: kelos-reviewer
 spec:
   when:
-    githubPullRequests:
-      state: open
-      commentPolicy:
-        triggerComment: /kelos review
-        excludeComments:
-          - /kelos needs-input
-        allowedUsers:
-          - gjkim42
-          - kelos-bot[bot]
-      draft: false
-      reporting:
-        enabled: true
-      pollInterval: 1m
+    githubWebhook:
+      repository: kelos-dev/kelos
+      events:
+        - issue_comment
+      filters:
+        - event: issue_comment
+          action: created
+          bodyContains: /kelos review
+          state: open
+          author: gjkim42
+        - event: issue_comment
+          action: created
+          bodyContains: /kelos review
+          state: open
+          author: kelos-bot[bot]
   maxConcurrency: 3
   taskTemplate:
     workspaceRef:
@@ -79,39 +81,38 @@ spec:
       using `gh pr review`. You do NOT write code, push changes, or modify any files.
 
       ---
-      PR #{{.Number}}: {{.Title}}
-      URL: {{.URL}}
-      Branch: {{.Branch}}
+      Webhook:
+      - Event: {{.Event}}
+      - Action: {{.Action}}
+      - Sender: {{.Sender}}
+      - URL: {{.URL}}
 
+      PR #{{.Number}}: {{.Title}}
       {{.Body}}
-      {{if .Comments}}
-      PR conversation:
-      {{.Comments}}
-      {{end}}
       ---
 
       ## Your tasks
 
-      ### 0. Set up full history
-      Run this before reviewing:
+      ### 1. Set up full history
+      Kelos has already checked out the PR head branch. Fetch full history before reviewing:
         ```
         git fetch --unshallow || true
         git fetch origin main
         ```
 
-      ### 1. Understand the context
+      ### 2. Understand the context
       - Read the PR description and all comments: `gh pr view {{.Number}} --comments`
       - If the PR references an issue, read the issue and its comments:
         `gh issue view <issue-number> --comments`
       - Understand the motivation and scope of the change
 
-      ### 2. Review the diff
+      ### 3. Review the diff
       Review the code:
       - Read the full diff: `git diff origin/main...HEAD`
       - For each changed file, read the surrounding context to understand how the
         changes fit into the existing codebase
 
-      ### 3. Check the following areas
+      ### 4. Check the following areas
 
       **Correctness**:
       - Does the code do what the PR/issue describes?
@@ -141,7 +142,7 @@ spec:
       - Changes are minimal and focused — no unrelated refactoring
       - Naming is clear and consistent with the codebase
 
-      ### 4. Submit the review
+      ### 5. Submit the review
       Submit a review using `gh pr review {{.Number}}`:
 
       - If the PR looks good with no or only minor nits:
@@ -168,8 +169,6 @@ spec:
 
       ## Suggestions (optional)
       - <Non-blocking improvement ideas>
-
-      /kelos needs-input
       ```
 
       For inline comments on specific lines, use:
@@ -185,7 +184,6 @@ spec:
       - Do NOT merge or close the PR
       - Do NOT change labels
       - Submit exactly one review per run
-      - The review body MUST end with a standalone `/kelos needs-input` line
       - Be specific: reference file paths and line numbers
       - Be constructive: explain why something is a problem and suggest a fix
       - Distinguish between blocking issues (request changes) and optional nits (approve with comments)

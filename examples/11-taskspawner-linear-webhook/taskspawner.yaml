@@ -33,7 +33,6 @@ spec:
       type: oauth
       secretRef:
         name: claude-credentials
-        key: token
     workspaceRef:
       name: my-workspace
     branch: "linear-task-{{.ID}}"

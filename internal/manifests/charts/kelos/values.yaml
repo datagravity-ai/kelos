@@ -27,11 +27,6 @@ spawner:
   resources:
     requests: ""
     limits: ""
-tokenRefresher:
-  image: ghcr.io/kelos-dev/kelos-token-refresher
-  resources:
-    requests: ""
-    limits: ""
 controller:
   resources:
     requests: {}
@@ -43,6 +38,7 @@ webhookServer:
       enabled: false
       replicas: 1
       secretName: ""
+      githubSecretName: ""
     linear:
       enabled: false
       replicas: 1
