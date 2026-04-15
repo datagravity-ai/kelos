@@ -122,14 +122,14 @@ func main() {
 	tokenResolver := newGitHubTokenResolver(githubToken, githubAppID, githubAppInstallationID, githubAppPrivateKey, githubAPIBaseURL)
 
 	cfgArgs := spawnerRuntimeConfig{
-		GitHubOwner:         githubOwner,
-		GitHubRepo:          githubRepo,
-		GitHubAPIBaseURL:    githubAPIBaseURL,
-		GHProxyURL:          ghProxyURL,
-		TokenResolver:       tokenResolver,
-		JiraBaseURL:         jiraBaseURL,
-		JiraProject:         jiraProject,
-		JiraJQL:             jiraJQL,
+		GitHubOwner:      githubOwner,
+		GitHubRepo:       githubRepo,
+		GitHubAPIBaseURL: githubAPIBaseURL,
+		GHProxyURL:       ghProxyURL,
+		TokenResolver:    tokenResolver,
+		JiraBaseURL:      jiraBaseURL,
+		JiraProject:      jiraProject,
+		JiraJQL:          jiraJQL,
 		HTTPClient:       httpClient,
 	}
 
@@ -189,15 +189,6 @@ func runReportingCycle(ctx context.Context, cl client.Client, key types.Namespac
 		if err := reporter.ReportTaskStatus(ctx, &taskList.Items[i]); err != nil {
 			ctrl.Log.WithName("spawner").Error(err, "Reporting task status", "task", taskList.Items[i].Name)
 			// Continue with remaining tasks rather than aborting the cycle
-		}
-	}
-	return nil
-}
-
-
-	for i := range taskList.Items {
-		if err := reporter.ReportTaskStatus(ctx, &taskList.Items[i]); err != nil {
-			ctrl.Log.WithName("spawner").Error(err, "Reporting Slack task status", "task", taskList.Items[i].Name)
 		}
 	}
 	return nil
@@ -673,7 +664,6 @@ func buildSourceWithProxy(ctx context.Context, ts *kelosv1alpha1.TaskSpawner, ow
 		}, nil
 	}
 
-
 	if ts.Spec.When.Cron != nil {
 		var lastDiscovery time.Time
 		if ts.Status.LastDiscoveryTime != nil {
@@ -688,16 +678,6 @@ func buildSourceWithProxy(ctx context.Context, ts *kelosv1alpha1.TaskSpawner, ow
 	}
 
 	return nil, fmt.Errorf("no source configured in TaskSpawner %s/%s", ts.Namespace, ts.Name)
-}
-
-	var result []string
-	for _, item := range strings.Split(s, ",") {
-		item = strings.TrimSpace(item)
-		if item != "" {
-			result = append(result, item)
-		}
-	}
-	return result
 }
 
 // newGitHubTokenResolver returns a function that resolves a GitHub API token.
