@@ -481,7 +481,7 @@ func (tr *SlackTaskReporter) UpdateActivityIndicator(ctx context.Context, task *
 	}
 
 	tr.mu.Lock()
-	if s := tr.activity[task.UID]; s != nil {
+	if s := tr.activity[task.UID]; s != nil && s.MessageTS == messageTS {
 		s.LastText = text
 	}
 	tr.mu.Unlock()
