@@ -868,9 +868,9 @@ func TestSlackTaskReporter_PostsNewReplyOnPhaseChange(t *testing.T) {
 			Name:      "test-task",
 			Namespace: "default",
 			Annotations: map[string]string{
-				AnnotationSlackReporting:   "enabled",
-				AnnotationSlackChannel:     "C123ABC",
-				AnnotationSlackThreadTS:    "1234567890.123456",
+				AnnotationSlackReporting: "enabled",
+				AnnotationSlackChannel:   "C123ABC",
+				AnnotationSlackThreadTS:  "1234567890.123456",
 
 				AnnotationSlackReportPhase: "accepted",
 			},
@@ -1078,9 +1078,9 @@ func TestSlackTaskReporter_PostsProgressReply(t *testing.T) {
 			Namespace: "default",
 			UID:       "uid-123",
 			Annotations: map[string]string{
-				AnnotationSlackReporting:   "enabled",
-				AnnotationSlackChannel:     "C123ABC",
-				AnnotationSlackThreadTS:    "1234567890.123456",
+				AnnotationSlackReporting: "enabled",
+				AnnotationSlackChannel:   "C123ABC",
+				AnnotationSlackThreadTS:  "1234567890.123456",
 
 				AnnotationSlackReportPhase: "accepted",
 			},
@@ -1263,9 +1263,9 @@ func TestSlackTaskReporter_DeduplicatesProgress(t *testing.T) {
 			Namespace: "default",
 			UID:       "uid-456",
 			Annotations: map[string]string{
-				AnnotationSlackReporting:   "enabled",
-				AnnotationSlackChannel:     "C123ABC",
-				AnnotationSlackThreadTS:    "1234567890.123456",
+				AnnotationSlackReporting: "enabled",
+				AnnotationSlackChannel:   "C123ABC",
+				AnnotationSlackThreadTS:  "1234567890.123456",
 
 				AnnotationSlackReportPhase: "accepted",
 			},
@@ -1324,9 +1324,9 @@ func TestSlackTaskReporter_PostsOnNewText(t *testing.T) {
 			Namespace: "default",
 			UID:       "uid-789",
 			Annotations: map[string]string{
-				AnnotationSlackReporting:   "enabled",
-				AnnotationSlackChannel:     "C123ABC",
-				AnnotationSlackThreadTS:    "1234567890.123456",
+				AnnotationSlackReporting: "enabled",
+				AnnotationSlackChannel:   "C123ABC",
+				AnnotationSlackThreadTS:  "1234567890.123456",
 
 				AnnotationSlackReportPhase: "accepted",
 			},
@@ -1395,9 +1395,9 @@ func TestSlackTaskReporter_ClearsProgressCacheOnTerminal(t *testing.T) {
 			Namespace: "default",
 			UID:       "uid-clear",
 			Annotations: map[string]string{
-				AnnotationSlackReporting:   "enabled",
-				AnnotationSlackChannel:     "C123ABC",
-				AnnotationSlackThreadTS:    "1234567890.123456",
+				AnnotationSlackReporting: "enabled",
+				AnnotationSlackChannel:   "C123ABC",
+				AnnotationSlackThreadTS:  "1234567890.123456",
 
 				AnnotationSlackReportPhase: "accepted",
 			},
