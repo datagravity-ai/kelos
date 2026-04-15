@@ -1725,6 +1725,19 @@ func TestAppendActivityContext_AddsNewContextBlock(t *testing.T) {
 	}
 }
 
+func TestAppendActivityContext_SkipsTextOnlyMessages(t *testing.T) {
+	baseMsg := SlackMessage{Text: "I found the issue in the config.", Blocks: nil}
+	result := appendActivityContext(baseMsg, "Reading `main.go`...")
+
+	// Should return the base message unchanged — no blocks added.
+	if len(result.Blocks) != 0 {
+		t.Fatalf("block count = %d, want 0 (text-only message unchanged)", len(result.Blocks))
+	}
+	if result.Text != baseMsg.Text {
+		t.Errorf("text changed: got %q", result.Text)
+	}
+}
+
 func TestAppendActivityContext_DoesNotMutateBase(t *testing.T) {
 	baseMsg := FormatSlackTransitionMessage("accepted", "test-task", "", nil)
 	originalBlockCount := len(baseMsg.Blocks)

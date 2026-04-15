@@ -513,24 +513,28 @@ func (tr *SlackTaskReporter) clearActivityState(uid types.UID) {
 // already a ContextBlock, the activity element is appended to it. Otherwise
 // a new ContextBlock is added.
 func appendActivityContext(baseMsg SlackMessage, activityText string) SlackMessage {
+	// If baseMsg has no blocks, there is nothing safe to attach to
+	// without hiding the text content — skip the update.
+	if len(baseMsg.Blocks) == 0 {
+		return baseMsg
+	}
+
 	activityElement := slack.NewTextBlockObject(slack.MarkdownType, activityText, false, false)
 
 	blocks := make([]slack.Block, len(baseMsg.Blocks))
 	copy(blocks, baseMsg.Blocks)
 
-	if len(blocks) > 0 {
-		if ctx, ok := blocks[len(blocks)-1].(*slack.ContextBlock); ok {
-			// Clone the context block and append the activity element.
-			newElements := make([]slack.MixedElement, len(ctx.ContextElements.Elements), len(ctx.ContextElements.Elements)+1)
-			copy(newElements, ctx.ContextElements.Elements)
-			newElements = append(newElements, activityElement)
-			newCtx := slack.NewContextBlock(ctx.BlockID, newElements...)
-			blocks[len(blocks)-1] = newCtx
-			return SlackMessage{Text: baseMsg.Text, Blocks: blocks}
-		}
+	if ctx, ok := blocks[len(blocks)-1].(*slack.ContextBlock); ok {
+		// Clone the context block and append the activity element.
+		newElements := make([]slack.MixedElement, len(ctx.ContextElements.Elements), len(ctx.ContextElements.Elements)+1)
+		copy(newElements, ctx.ContextElements.Elements)
+		newElements = append(newElements, activityElement)
+		newCtx := slack.NewContextBlock(ctx.BlockID, newElements...)
+		blocks[len(blocks)-1] = newCtx
+		return SlackMessage{Text: baseMsg.Text, Blocks: blocks}
 	}
 
-	// No existing context block — add a new one.
+	// Last block is not a context block — append a new one.
 	blocks = append(blocks, slack.NewContextBlock("", activityElement))
 	return SlackMessage{Text: baseMsg.Text, Blocks: blocks}
 }
