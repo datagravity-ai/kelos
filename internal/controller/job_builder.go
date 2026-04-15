@@ -518,9 +518,9 @@ func (b *JobBuilder) buildAgentJob(task *kelosv1alpha1.Task, workspace *kelosv1a
 			mounts = append(mounts, volumeMount)
 			mounts = append(mounts, userVolumeMounts...)
 
-			var envVars []corev1.EnvVar
+			var setupEnvVars []corev1.EnvVar
 			for _, e := range sc.Env {
-				envVars = append(envVars, corev1.EnvVar{
+				setupEnvVars = append(setupEnvVars, corev1.EnvVar{
 					Name:  e.Name,
 					Value: e.Value,
 				})
@@ -530,7 +530,7 @@ func (b *JobBuilder) buildAgentJob(task *kelosv1alpha1.Task, workspace *kelosv1a
 				Name:         sc.Name,
 				Image:        sc.Image,
 				Command:      sc.Command,
-				Env:          envVars,
+				Env:          setupEnvVars,
 				VolumeMounts: mounts,
 				WorkingDir:   WorkspaceMountPath + "/repo",
 				SecurityContext: &corev1.SecurityContext{

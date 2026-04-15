@@ -2147,6 +2147,7 @@ spec:
                         properties:
                           name:
                             description: Name of the environment variable.
+                            minLength: 1
                             type: string
                           value:
                             description: Value of the environment variable.
@@ -2171,6 +2172,13 @@ spec:
                   - name
                   type: object
                 type: array
+                x-kubernetes-validations:
+                - message: setup container names must be unique
+                  rule: self.map(sc, sc.name).size() == self.size()
+                - message: setup container names 'git-clone', 'remote-setup', 'branch-setup',
+                    'workspace-files', 'plugin-setup', and 'skills-install' are reserved
+                  rule: self.all(sc, !['git-clone','remote-setup','branch-setup','workspace-files','plugin-setup','skills-install'].exists(r,
+                    r == sc.name))
               volumes:
                 description: |-
                   Volumes are additional volumes mounted into the agent container.

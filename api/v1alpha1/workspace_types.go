@@ -53,6 +53,7 @@ type SetupContainer struct {
 // EnvVar represents an environment variable present in a container.
 type EnvVar struct {
 	// Name of the environment variable.
+	// +kubebuilder:validation:MinLength=1
 	Name string `json:"name"`
 
 	// Value of the environment variable.
@@ -124,6 +125,8 @@ type WorkspaceSpec struct {
 	// workspace volume and any user-defined volumes.  Use this for dependency
 	// installation, code generation, or other pre-agent setup steps.
 	// +optional
+	// +kubebuilder:validation:XValidation:rule="self.map(sc, sc.name).size() == self.size()",message="setup container names must be unique"
+	// +kubebuilder:validation:XValidation:rule="self.all(sc, !['git-clone','remote-setup','branch-setup','workspace-files','plugin-setup','skills-install'].exists(r, r == sc.name))",message="setup container names 'git-clone', 'remote-setup', 'branch-setup', 'workspace-files', 'plugin-setup', and 'skills-install' are reserved"
 	Setup []SetupContainer `json:"setup,omitempty"`
 }
 
