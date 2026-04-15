@@ -1,6 +1,8 @@
 package reporting
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/slack-go/slack"
@@ -394,5 +396,37 @@ func TestParseCells(t *testing.T) {
 	}
 	if cells[2] != "Engineer" {
 		t.Errorf("cell 2 = %q, want %q", cells[2], "Engineer")
+	}
+}
+
+func TestCellsToRichText_EmptyCellsUseNBSP(t *testing.T) {
+	cells := cellsToRichText([]string{"filled", "", "also filled"})
+	if len(cells) != 3 {
+		t.Fatalf("expected 3 cells, got %d", len(cells))
+	}
+
+	// The empty cell should contain a non-breaking space, not empty string.
+	b, _ := json.Marshal(cells[1])
+	if strings.Contains(string(b), `"text":""`) {
+		t.Error("empty cell produced empty text element; Slack rejects this with invalid_blocks")
+	}
+	if !strings.Contains(string(b), "\u00a0") {
+		t.Error("empty cell should contain non-breaking space")
+	}
+}
+
+func TestTableBlock_EmptyCells(t *testing.T) {
+	input := "| Project | Notes |\n| --- | --- |\n| Viz | |\n| AIDA | done |"
+	blocks := responseToBlocks(input)
+	if len(blocks) != 1 {
+		t.Fatalf("expected 1 block, got %d", len(blocks))
+	}
+	// Verify the table serializes without empty text elements.
+	b, err := json.Marshal(blocks[0])
+	if err != nil {
+		t.Fatalf("marshal error: %v", err)
+	}
+	if strings.Contains(string(b), `"text":""`) {
+		t.Error("table block contains empty text element; Slack rejects this with invalid_blocks")
 	}
 }
