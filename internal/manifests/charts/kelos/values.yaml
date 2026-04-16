@@ -63,6 +63,15 @@ webhookServer:
       # Each key should be named <SOURCE>_WEBHOOK_SECRET (e.g.,
       # NOTION_WEBHOOK_SECRET, SENTRY_WEBHOOK_SECRET).
       secretName: ""
+      # Extra env vars sourced from individual Kubernetes secrets.
+      # Useful when each webhook source has its own Secret and the key
+      # needs to be remapped to the <SOURCE>_WEBHOOK_SECRET convention.
+      # Example:
+      #   extraEnv:
+      #     - name: LINEAR_COMMENT_WEBHOOK_SECRET
+      #       secretName: linear-comment-webhook-secret
+      #       key: WEBHOOK_SECRET
+      extraEnv: []
   resources:
     limits:
       cpu: 500m

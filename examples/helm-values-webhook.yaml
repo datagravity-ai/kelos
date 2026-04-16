@@ -15,6 +15,15 @@ webhookServer:
       replicas: 1
       secretName: linear-webhook-secret # Must contain WEBHOOK_SECRET key
 
+    # Enable generic webhook server with per-source secrets
+    # generic:
+    #   enabled: true
+    #   replicas: 1
+    #   extraEnv:
+    #     - name: LINEAR_COMMENT_WEBHOOK_SECRET
+    #       secretName: linear-comment-webhook-secret
+    #       key: WEBHOOK_SECRET
+
   # Enable ingress for external webhook access (traditional Ingress API)
   ingress:
     enabled: true
