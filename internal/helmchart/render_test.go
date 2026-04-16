@@ -292,6 +292,7 @@ func TestRender_GenericWebhookExtraEnv(t *testing.T) {
 			want: []string{
 				"LINEAR_COMMENT_WEBHOOK_SECRET",
 				"linear-comment-webhook-secret",
+				"key: WEBHOOK_SECRET",
 			},
 		},
 		{

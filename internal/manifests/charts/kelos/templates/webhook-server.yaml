@@ -269,7 +269,6 @@ spec:
             - --webhook-bind-address=:8443
             - --metrics-bind-address=:8080
             - --health-probe-bind-address=:8081
-          {{- if or .Values.webhookServer.sources.generic.secretName .Values.webhookServer.sources.generic.extraEnv }}
           {{- if .Values.webhookServer.sources.generic.secretName }}
           envFrom:
             - secretRef:
@@ -284,7 +283,6 @@ spec:
                   name: {{ .secretName }}
                   key: {{ .key }}
             {{- end }}
-          {{- end }}
           {{- end }}
           ports:
             - name: webhook
