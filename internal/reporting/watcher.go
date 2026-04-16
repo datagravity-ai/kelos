@@ -357,6 +357,8 @@ func (tr *SlackTaskReporter) updateProgress(ctx context.Context, task *kelosv1al
 		log.V(1).Info("Updating Slack progress message", "task", task.Name)
 		if err := tr.Reporter.UpdateMessage(ctx, channel, replyTS, msg); err != nil {
 			log.Error(err, "Failed to update Slack progress message", "task", task.Name)
+			// Clear the stale TS so the next tick posts a fresh reply.
+			tr.setProgressTS(task.UID, "")
 			return nil
 		}
 		tr.setLastProgress(task.UID, text)

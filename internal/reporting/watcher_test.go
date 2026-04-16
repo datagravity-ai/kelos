@@ -1196,6 +1196,80 @@ func TestSlackTaskReporter_EditsProgressOnNewText(t *testing.T) {
 	}
 }
 
+func TestSlackTaskReporter_ClearsProgressTSOnUpdateFailure(t *testing.T) {
+	task := &kelosv1alpha1.Task{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-task",
+			Namespace: "default",
+			UID:       "uid-fail-update",
+			Annotations: map[string]string{
+				AnnotationSlackReporting:   "enabled",
+				AnnotationSlackChannel:     "C123ABC",
+				AnnotationSlackThreadTS:    "1234567890.123456",
+				AnnotationSlackReportPhase: "accepted",
+			},
+		},
+		Spec: kelosv1alpha1.TaskSpec{
+			Type:   "claude-code",
+			Prompt: "test",
+			Credentials: kelosv1alpha1.Credentials{
+				Type:      kelosv1alpha1.CredentialTypeOAuth,
+				SecretRef: &kelosv1alpha1.SecretReference{Name: "creds"},
+			},
+		},
+		Status: kelosv1alpha1.TaskStatus{
+			Phase:   kelosv1alpha1.TaskPhaseRunning,
+			PodName: "test-pod",
+		},
+	}
+
+	cl := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(task).Build()
+
+	reporter := &fakeSlackReporter{
+		postFn: func(ctx context.Context, channel, threadTS string, msg SlackMessage) (string, error) {
+			return "1234567890.111111", nil
+		},
+		updateFn: func(ctx context.Context, channel, messageTS string, msg SlackMessage) error {
+			return fmt.Errorf("message_not_found")
+		},
+	}
+
+	pr := &fakeProgressReader{text: "First update"}
+	tr := &SlackTaskReporter{
+		Client:         cl,
+		Reporter:       reporter,
+		ProgressReader: pr,
+	}
+
+	// First call posts a new progress message.
+	if err := tr.ReportTaskStatus(context.Background(), task); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	tr.mu.Lock()
+	if tr.progressTS["uid-fail-update"] == "" {
+		t.Fatal("expected progressTS to be set after first post")
+	}
+	tr.mu.Unlock()
+
+	// Change text so dedup allows the update attempt.
+	pr.text = "Second update"
+
+	// Second call tries to edit but updateFn returns an error.
+	if err := tr.ReportTaskStatus(context.Background(), task); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	if tr.progressTS["uid-fail-update"] != "" {
+		t.Error("expected progressTS to be cleared after update failure")
+	}
+	if tr.lastProgress["uid-fail-update"] != "First update" {
+		t.Errorf("lastProgress = %q, want 'First update' (should not update on failure)", tr.lastProgress["uid-fail-update"])
+	}
+}
+
 func TestSlackTaskReporter_ClearsProgressCacheOnTerminal(t *testing.T) {
 	// First, seed the progress cache via a running task
 	runningTask := &kelosv1alpha1.Task{
