@@ -1,6 +1,8 @@
 package reporting
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/slack-go/slack"
@@ -379,6 +381,228 @@ func TestParseRichTextElements(t *testing.T) {
 			t.Errorf("middle text = %q, want %q", mid.Text, " and ")
 		}
 	})
+
+	t.Run("bold text", func(t *testing.T) {
+		elems := parseRichTextElements("this is **important** text")
+		if len(elems) != 3 {
+			t.Fatalf("expected 3 elements, got %d", len(elems))
+		}
+		bold, ok := elems[1].(*slack.RichTextSectionTextElement)
+		if !ok {
+			t.Fatalf("expected text element, got %T", elems[1])
+		}
+		if bold.Text != "important" {
+			t.Errorf("bold text = %q, want %q", bold.Text, "important")
+		}
+		if bold.Style == nil || !bold.Style.Bold {
+			t.Error("expected bold style")
+		}
+	})
+
+	t.Run("bold wrapping code", func(t *testing.T) {
+		elems := parseRichTextElements("**`PIISample`**")
+		if len(elems) != 1 {
+			t.Fatalf("expected 1 element, got %d", len(elems))
+		}
+		te, ok := elems[0].(*slack.RichTextSectionTextElement)
+		if !ok {
+			t.Fatalf("expected text element, got %T", elems[0])
+		}
+		if te.Text != "PIISample" {
+			t.Errorf("text = %q, want %q", te.Text, "PIISample")
+		}
+		if te.Style == nil || !te.Style.Bold || !te.Style.Code {
+			t.Errorf("expected bold+code style, got %+v", te.Style)
+		}
+	})
+
+	t.Run("strikethrough", func(t *testing.T) {
+		elems := parseRichTextElements("~~removed~~")
+		if len(elems) != 1 {
+			t.Fatalf("expected 1 element, got %d", len(elems))
+		}
+		te, ok := elems[0].(*slack.RichTextSectionTextElement)
+		if !ok {
+			t.Fatalf("expected text element, got %T", elems[0])
+		}
+		if te.Style == nil || !te.Style.Strike {
+			t.Error("expected strike style")
+		}
+	})
+
+	t.Run("markdown link", func(t *testing.T) {
+		elems := parseRichTextElements("see [docs](https://example.com) here")
+		if len(elems) != 3 {
+			t.Fatalf("expected 3 elements, got %d", len(elems))
+		}
+		link, ok := elems[1].(*slack.RichTextSectionLinkElement)
+		if !ok {
+			t.Fatalf("expected link element, got %T", elems[1])
+		}
+		if link.URL != "https://example.com" {
+			t.Errorf("url = %q, want %q", link.URL, "https://example.com")
+		}
+		if link.Text != "docs" {
+			t.Errorf("text = %q, want %q", link.Text, "docs")
+		}
+	})
+
+	t.Run("slack link", func(t *testing.T) {
+		elems := parseRichTextElements("see <https://github.com/foo/bar#L34|checks/pii.py:34> here")
+		if len(elems) != 3 {
+			t.Fatalf("expected 3 elements, got %d", len(elems))
+		}
+		link, ok := elems[1].(*slack.RichTextSectionLinkElement)
+		if !ok {
+			t.Fatalf("expected link element, got %T", elems[1])
+		}
+		if link.URL != "https://github.com/foo/bar#L34" {
+			t.Errorf("url = %q, want %q", link.URL, "https://github.com/foo/bar#L34")
+		}
+		if link.Text != "checks/pii.py:34" {
+			t.Errorf("text = %q, want %q", link.Text, "checks/pii.py:34")
+		}
+	})
+
+	t.Run("markdown link with parens in url", func(t *testing.T) {
+		elems := parseRichTextElements("[Go](https://en.wikipedia.org/wiki/Go_(language))")
+		if len(elems) != 1 {
+			t.Fatalf("expected 1 element, got %d", len(elems))
+		}
+		link, ok := elems[0].(*slack.RichTextSectionLinkElement)
+		if !ok {
+			t.Fatalf("expected link element, got %T", elems[0])
+		}
+		if link.URL != "https://en.wikipedia.org/wiki/Go_(language)" {
+			t.Errorf("url = %q, want %q", link.URL, "https://en.wikipedia.org/wiki/Go_(language)")
+		}
+	})
+}
+
+func TestParseRichTextElements_TableCells(t *testing.T) {
+	t.Run("table cell with code", func(t *testing.T) {
+		input := "| Name | Command |\n| --- | --- |\n| test | `make test` |"
+		blocks := responseToBlocks(input)
+		if len(blocks) != 1 {
+			t.Fatalf("expected 1 block, got %d", len(blocks))
+		}
+		table, ok := blocks[0].(*slack.TableBlock)
+		if !ok {
+			t.Fatalf("expected *TableBlock, got %T", blocks[0])
+		}
+		// Data row (index 1), second cell should have code-styled element.
+		cell := table.Rows[1][1]
+		section, ok := cell.Elements[0].(*slack.RichTextSection)
+		if !ok {
+			t.Fatalf("expected *RichTextSection, got %T", cell.Elements[0])
+		}
+		if len(section.Elements) != 1 {
+			t.Fatalf("expected 1 element in cell, got %d", len(section.Elements))
+		}
+		te, ok := section.Elements[0].(*slack.RichTextSectionTextElement)
+		if !ok {
+			t.Fatalf("expected text element, got %T", section.Elements[0])
+		}
+		if te.Text != "make test" {
+			t.Errorf("text = %q, want %q", te.Text, "make test")
+		}
+		if te.Style == nil || !te.Style.Code {
+			t.Error("expected code style on table cell element")
+		}
+	})
+
+	t.Run("table cell with markdown link", func(t *testing.T) {
+		input := "| File | Link |\n| --- | --- |\n| pii.py | [checks/pii.py:34](https://github.com/foo/bar#L34) |"
+		blocks := responseToBlocks(input)
+		if len(blocks) != 1 {
+			t.Fatalf("expected 1 block, got %d", len(blocks))
+		}
+		table, ok := blocks[0].(*slack.TableBlock)
+		if !ok {
+			t.Fatalf("expected *TableBlock, got %T", blocks[0])
+		}
+		cell := table.Rows[1][1]
+		section, ok := cell.Elements[0].(*slack.RichTextSection)
+		if !ok {
+			t.Fatalf("expected *RichTextSection, got %T", cell.Elements[0])
+		}
+		if len(section.Elements) != 1 {
+			t.Fatalf("expected 1 element in cell, got %d", len(section.Elements))
+		}
+		link, ok := section.Elements[0].(*slack.RichTextSectionLinkElement)
+		if !ok {
+			t.Fatalf("expected link element, got %T", section.Elements[0])
+		}
+		if link.URL != "https://github.com/foo/bar#L34" {
+			t.Errorf("url = %q, want %q", link.URL, "https://github.com/foo/bar#L34")
+		}
+		if link.Text != "checks/pii.py:34" {
+			t.Errorf("text = %q, want %q", link.Text, "checks/pii.py:34")
+		}
+	})
+
+	t.Run("table cell with bold code", func(t *testing.T) {
+		input := "| Check | Status |\n| --- | --- |\n| **`PIISample`** | passed |"
+		blocks := responseToBlocks(input)
+		if len(blocks) != 1 {
+			t.Fatalf("expected 1 block, got %d", len(blocks))
+		}
+		table, ok := blocks[0].(*slack.TableBlock)
+		if !ok {
+			t.Fatalf("expected *TableBlock, got %T", blocks[0])
+		}
+		cell := table.Rows[1][0]
+		section, ok := cell.Elements[0].(*slack.RichTextSection)
+		if !ok {
+			t.Fatalf("expected *RichTextSection, got %T", cell.Elements[0])
+		}
+		if len(section.Elements) != 1 {
+			t.Fatalf("expected 1 element in cell, got %d", len(section.Elements))
+		}
+		te, ok := section.Elements[0].(*slack.RichTextSectionTextElement)
+		if !ok {
+			t.Fatalf("expected text element, got %T", section.Elements[0])
+		}
+		if te.Text != "PIISample" {
+			t.Errorf("text = %q, want %q", te.Text, "PIISample")
+		}
+		if te.Style == nil || !te.Style.Bold || !te.Style.Code {
+			t.Errorf("expected bold+code style, got %+v", te.Style)
+		}
+	})
+}
+
+func TestMergeStyle(t *testing.T) {
+	t.Run("nil + style", func(t *testing.T) {
+		s := mergeStyle(nil, &slack.RichTextSectionTextStyle{Bold: true})
+		if s == nil || !s.Bold {
+			t.Error("expected bold")
+		}
+	})
+
+	t.Run("style + nil", func(t *testing.T) {
+		s := mergeStyle(&slack.RichTextSectionTextStyle{Code: true}, nil)
+		if s == nil || !s.Code {
+			t.Error("expected code")
+		}
+	})
+
+	t.Run("merge bold + code", func(t *testing.T) {
+		s := mergeStyle(
+			&slack.RichTextSectionTextStyle{Bold: true},
+			&slack.RichTextSectionTextStyle{Code: true},
+		)
+		if s == nil || !s.Bold || !s.Code {
+			t.Errorf("expected bold+code, got %+v", s)
+		}
+	})
+
+	t.Run("nil + nil", func(t *testing.T) {
+		s := mergeStyle(nil, nil)
+		if s != nil {
+			t.Errorf("expected nil, got %+v", s)
+		}
+	})
 }
 
 func TestParseCells(t *testing.T) {
@@ -394,5 +618,40 @@ func TestParseCells(t *testing.T) {
 	}
 	if cells[2] != "Engineer" {
 		t.Errorf("cell 2 = %q, want %q", cells[2], "Engineer")
+	}
+}
+
+func TestCellsToRichText_EmptyCellsUseNBSP(t *testing.T) {
+	cells := cellsToRichText([]string{"filled", "", "also filled"})
+	if len(cells) != 3 {
+		t.Fatalf("expected 3 cells, got %d", len(cells))
+	}
+
+	// The empty cell should contain a non-breaking space, not empty string.
+	b, err := json.Marshal(cells[1])
+	if err != nil {
+		t.Fatalf("marshal error: %v", err)
+	}
+	if strings.Contains(string(b), `"text":""`) {
+		t.Error("empty cell produced empty text element; Slack rejects this with invalid_blocks")
+	}
+	if !strings.Contains(string(b), "\u00a0") {
+		t.Error("empty cell should contain non-breaking space")
+	}
+}
+
+func TestTableBlock_EmptyCells(t *testing.T) {
+	input := "| Project | Notes |\n| --- | --- |\n| Viz | |\n| AIDA | done |"
+	blocks := responseToBlocks(input)
+	if len(blocks) != 1 {
+		t.Fatalf("expected 1 block, got %d", len(blocks))
+	}
+	// Verify the table serializes without empty text elements.
+	b, err := json.Marshal(blocks[0])
+	if err != nil {
+		t.Fatalf("marshal error: %v", err)
+	}
+	if strings.Contains(string(b), `"text":""`) {
+		t.Error("table block contains empty text element; Slack rejects this with invalid_blocks")
 	}
 }
