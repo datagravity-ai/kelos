@@ -267,6 +267,86 @@ func TestRender_LinearWebhookApiKeySecret(t *testing.T) {
 	}
 }
 
+func TestRender_GenericWebhookSecrets(t *testing.T) {
+	tests := []struct {
+		name           string
+		webhookSecrets []map[string]interface{}
+		secretName     string
+		wantEnvVar     string
+		wantSecretName string
+		wantEnvFrom    bool
+	}{
+		{
+			name: "webhookSecrets injects per-source env vars",
+			webhookSecrets: []map[string]interface{}{
+				{
+					"envName":    "LINEAR_COMMENT_WEBHOOK_SECRET",
+					"secretName": "linear-comment-webhook-secret",
+					"secretKey":  "WEBHOOK_SECRET",
+				},
+			},
+			wantEnvVar:     "LINEAR_COMMENT_WEBHOOK_SECRET",
+			wantSecretName: "linear-comment-webhook-secret",
+		},
+		{
+			name:        "secretName and webhookSecrets together",
+			secretName:  "generic-secrets",
+			wantEnvFrom: true,
+			webhookSecrets: []map[string]interface{}{
+				{
+					"envName":    "LINEAR_COMMENT_WEBHOOK_SECRET",
+					"secretName": "linear-comment-webhook-secret",
+					"secretKey":  "WEBHOOK_SECRET",
+				},
+			},
+			wantEnvVar:     "LINEAR_COMMENT_WEBHOOK_SECRET",
+			wantSecretName: "linear-comment-webhook-secret",
+		},
+		{
+			name:           "empty webhookSecrets and no secretName omits env/envFrom",
+			webhookSecrets: []map[string]interface{}{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			generic := map[string]interface{}{
+				"enabled":        true,
+				"replicas":       1,
+				"webhookSecrets": tt.webhookSecrets,
+			}
+			if tt.secretName != "" {
+				generic["secretName"] = tt.secretName
+			}
+			vals := map[string]interface{}{
+				"webhookServer": map[string]interface{}{
+					"sources": map[string]interface{}{
+						"generic": generic,
+					},
+				},
+			}
+			data, err := Render(manifests.ChartFS, vals)
+			if err != nil {
+				t.Fatalf("rendering chart: %v", err)
+			}
+			output := string(data)
+			if tt.wantEnvVar != "" {
+				if !strings.Contains(output, tt.wantEnvVar) {
+					t.Errorf("expected env var %q in rendered output", tt.wantEnvVar)
+				}
+				if !strings.Contains(output, tt.wantSecretName) {
+					t.Errorf("expected secret name %q in rendered output", tt.wantSecretName)
+				}
+			}
+			if tt.wantEnvFrom {
+				if !strings.Contains(output, "envFrom") {
+					t.Error("expected envFrom in rendered output")
+				}
+			}
+		})
+	}
+}
+
 func TestRender_ParseableOutput(t *testing.T) {
 	vals := map[string]interface{}{
 		"image": map[string]interface{}{
