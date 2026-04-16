@@ -203,6 +203,23 @@ jobs:
             endpoints:
               - port: metrics
                 interval: 30s
+          ---
+          apiVersion: monitoring.googleapis.com/v1
+          kind: PodMonitoring
+          metadata:
+            name: kelos-webhook-generic
+            namespace: kelos-system
+            labels:
+              app.kubernetes.io/name: kelos
+              app.kubernetes.io/component: webhook-generic
+          spec:
+            selector:
+              matchLabels:
+                app.kubernetes.io/name: kelos
+                app.kubernetes.io/component: webhook-generic
+            endpoints:
+              - port: metrics
+                interval: 30s
           EOF
 
       - name: Apply self-development resources
