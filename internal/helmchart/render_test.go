@@ -278,6 +278,67 @@ func TestRender_LinearWebhookApiKeySecret(t *testing.T) {
 	}
 }
 
+func TestRender_GenericWebhookExtraEnv(t *testing.T) {
+	tests := []struct {
+		name     string
+		extraEnv []interface{}
+		want     []string
+		notWant  []string
+	}{
+		{
+			name: "extraEnv injects secret key refs",
+			extraEnv: []interface{}{
+				map[string]interface{}{
+					"name":       "LINEAR_COMMENT_WEBHOOK_SECRET",
+					"secretName": "linear-comment-webhook-secret",
+					"key":        "WEBHOOK_SECRET",
+				},
+			},
+			want: []string{
+				"LINEAR_COMMENT_WEBHOOK_SECRET",
+				"linear-comment-webhook-secret",
+				"key: WEBHOOK_SECRET",
+			},
+		},
+		{
+			name:     "empty extraEnv omits env block",
+			extraEnv: []interface{}{},
+			notWant:  []string{"LINEAR_COMMENT_WEBHOOK_SECRET"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			vals := map[string]interface{}{
+				"webhookServer": map[string]interface{}{
+					"sources": map[string]interface{}{
+						"generic": map[string]interface{}{
+							"enabled":  true,
+							"replicas": 1,
+							"extraEnv": tt.extraEnv,
+						},
+					},
+				},
+			}
+			data, err := Render(manifests.ChartFS, vals)
+			if err != nil {
+				t.Fatalf("rendering chart: %v", err)
+			}
+			output := string(data)
+			for _, s := range tt.want {
+				if !strings.Contains(output, s) {
+					t.Errorf("expected rendered output to contain %q", s)
+				}
+			}
+			for _, s := range tt.notWant {
+				if strings.Contains(output, s) {
+					t.Errorf("did not expect rendered output to contain %q", s)
+				}
+			}
+		})
+	}
+}
+
 func TestRender_WebhookServiceType(t *testing.T) {
 	tests := []struct {
 		name        string
