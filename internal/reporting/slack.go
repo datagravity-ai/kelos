@@ -111,7 +111,17 @@ func FormatSlackTransitionMessage(phase, taskName, message string, results map[s
 
 	if resp != "" {
 		fallbackText = fmt.Sprintf("%s (Task: %s)", decoded, taskName)
-		blocks = append(blocks, responseToBlocks(decoded)...)
+		// Budget: total limit minus blocks already added, minus blocks
+		// that will be appended after the response (PR, error, context).
+		reserved := 1 // context block (always present)
+		if results["pr"] != "" {
+			reserved++
+		}
+		if message != "" && phase == "failed" {
+			reserved++
+		}
+		budget := SlackBlockLimit - len(blocks) - reserved
+		blocks = append(blocks, responseToBlocks(decoded, budget)...)
 	}
 
 	if pr := results["pr"]; pr != "" {

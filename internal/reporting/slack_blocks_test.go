@@ -152,7 +152,7 @@ func TestParseMarkdownSegments(t *testing.T) {
 
 func TestResponseToBlocks(t *testing.T) {
 	t.Run("plain text becomes SectionBlock", func(t *testing.T) {
-		blocks := responseToBlocks("Hello world")
+		blocks := responseToBlocks("Hello world", 0)
 		if len(blocks) != 1 {
 			t.Fatalf("expected 1 block, got %d", len(blocks))
 		}
@@ -166,7 +166,7 @@ func TestResponseToBlocks(t *testing.T) {
 	})
 
 	t.Run("header becomes HeaderBlock", func(t *testing.T) {
-		blocks := responseToBlocks("# My Title")
+		blocks := responseToBlocks("# My Title", 0)
 		if len(blocks) != 1 {
 			t.Fatalf("expected 1 block, got %d", len(blocks))
 		}
@@ -181,7 +181,7 @@ func TestResponseToBlocks(t *testing.T) {
 
 	t.Run("table becomes TableBlock", func(t *testing.T) {
 		input := "| Name | Age |\n| --- | --- |\n| Alice | 30 |"
-		blocks := responseToBlocks(input)
+		blocks := responseToBlocks(input, 0)
 		if len(blocks) != 1 {
 			t.Fatalf("expected 1 block, got %d", len(blocks))
 		}
@@ -196,7 +196,7 @@ func TestResponseToBlocks(t *testing.T) {
 
 	t.Run("unordered list becomes RichTextBlock", func(t *testing.T) {
 		input := "- apple\n- banana\n- cherry"
-		blocks := responseToBlocks(input)
+		blocks := responseToBlocks(input, 0)
 		if len(blocks) != 1 {
 			t.Fatalf("expected 1 block, got %d", len(blocks))
 		}
@@ -221,7 +221,7 @@ func TestResponseToBlocks(t *testing.T) {
 
 	t.Run("ordered list becomes RichTextBlock", func(t *testing.T) {
 		input := "1. first\n2. second"
-		blocks := responseToBlocks(input)
+		blocks := responseToBlocks(input, 0)
 		if len(blocks) != 1 {
 			t.Fatalf("expected 1 block, got %d", len(blocks))
 		}
@@ -237,7 +237,7 @@ func TestResponseToBlocks(t *testing.T) {
 
 	t.Run("mixed content produces correct block types", func(t *testing.T) {
 		input := "## Report\nHere are the results:\n\n| Name | Score |\n| --- | --- |\n| Alice | 95 |\n\n- Note 1\n- Note 2"
-		blocks := responseToBlocks(input)
+		blocks := responseToBlocks(input, 0)
 		if len(blocks) < 4 {
 			t.Fatalf("expected at least 4 blocks, got %d", len(blocks))
 		}
@@ -256,14 +256,14 @@ func TestResponseToBlocks(t *testing.T) {
 	})
 
 	t.Run("empty string produces no blocks", func(t *testing.T) {
-		blocks := responseToBlocks("")
+		blocks := responseToBlocks("", 0)
 		if len(blocks) != 0 {
 			t.Errorf("expected 0 blocks, got %d", len(blocks))
 		}
 	})
 
 	t.Run("divider becomes DividerBlock", func(t *testing.T) {
-		blocks := responseToBlocks("Text above\n---\nText below")
+		blocks := responseToBlocks("Text above\n---\nText below", 0)
 		if len(blocks) != 3 {
 			t.Fatalf("expected 3 blocks, got %d", len(blocks))
 		}
@@ -273,7 +273,7 @@ func TestResponseToBlocks(t *testing.T) {
 	})
 
 	t.Run("header strips backtick code spans", func(t *testing.T) {
-		blocks := responseToBlocks("# The `start_data_complete_jobs` function")
+		blocks := responseToBlocks("# The `start_data_complete_jobs` function", 0)
 		if len(blocks) != 1 {
 			t.Fatalf("expected 1 block, got %d", len(blocks))
 		}
@@ -289,7 +289,7 @@ func TestResponseToBlocks(t *testing.T) {
 
 	t.Run("list items with inline code", func(t *testing.T) {
 		input := "- Run `make test` first\n- Then `make build`"
-		blocks := responseToBlocks(input)
+		blocks := responseToBlocks(input, 0)
 		if len(blocks) != 1 {
 			t.Fatalf("expected 1 block, got %d", len(blocks))
 		}
@@ -323,7 +323,7 @@ func TestResponseToBlocks(t *testing.T) {
 
 	t.Run("asterisk list items", func(t *testing.T) {
 		input := "* foo\n* bar"
-		blocks := responseToBlocks(input)
+		blocks := responseToBlocks(input, 0)
 		if len(blocks) != 1 {
 			t.Fatalf("expected 1 block, got %d", len(blocks))
 		}
@@ -482,7 +482,7 @@ func TestParseRichTextElements(t *testing.T) {
 func TestParseRichTextElements_TableCells(t *testing.T) {
 	t.Run("table cell with code", func(t *testing.T) {
 		input := "| Name | Command |\n| --- | --- |\n| test | `make test` |"
-		blocks := responseToBlocks(input)
+		blocks := responseToBlocks(input, 0)
 		if len(blocks) != 1 {
 			t.Fatalf("expected 1 block, got %d", len(blocks))
 		}
@@ -513,7 +513,7 @@ func TestParseRichTextElements_TableCells(t *testing.T) {
 
 	t.Run("table cell with markdown link", func(t *testing.T) {
 		input := "| File | Link |\n| --- | --- |\n| pii.py | [checks/pii.py:34](https://github.com/foo/bar#L34) |"
-		blocks := responseToBlocks(input)
+		blocks := responseToBlocks(input, 0)
 		if len(blocks) != 1 {
 			t.Fatalf("expected 1 block, got %d", len(blocks))
 		}
@@ -543,7 +543,7 @@ func TestParseRichTextElements_TableCells(t *testing.T) {
 
 	t.Run("table cell with bold code", func(t *testing.T) {
 		input := "| Check | Status |\n| --- | --- |\n| **`PIISample`** | passed |"
-		blocks := responseToBlocks(input)
+		blocks := responseToBlocks(input, 0)
 		if len(blocks) != 1 {
 			t.Fatalf("expected 1 block, got %d", len(blocks))
 		}
@@ -642,7 +642,7 @@ func TestCellsToRichText_EmptyCellsUseNBSP(t *testing.T) {
 
 func TestTableBlock_EmptyCells(t *testing.T) {
 	input := "| Project | Notes |\n| --- | --- |\n| Viz | |\n| AIDA | done |"
-	blocks := responseToBlocks(input)
+	blocks := responseToBlocks(input, 0)
 	if len(blocks) != 1 {
 		t.Fatalf("expected 1 block, got %d", len(blocks))
 	}
@@ -654,4 +654,53 @@ func TestTableBlock_EmptyCells(t *testing.T) {
 	if strings.Contains(string(b), `"text":""`) {
 		t.Error("table block contains empty text element; Slack rejects this with invalid_blocks")
 	}
+}
+
+func TestResponseToBlocks_Truncation(t *testing.T) {
+	// Build markdown with 30 headers, each followed by a line of text.
+	// This produces 60 blocks (header + section per pair).
+	var sb strings.Builder
+	for i := 0; i < 30; i++ {
+		if i > 0 {
+			sb.WriteString("\n\n")
+		}
+		sb.WriteString("### Section ")
+		sb.WriteString(strings.Repeat("X", 1))
+		sb.WriteByte('\n')
+		sb.WriteString("Content for section.")
+	}
+	longMarkdown := sb.String()
+
+	t.Run("truncates when exceeding maxBlocks", func(t *testing.T) {
+		blocks := responseToBlocks(longMarkdown, 10)
+		if len(blocks) > 10 {
+			t.Errorf("expected at most 10 blocks, got %d", len(blocks))
+		}
+		last, ok := blocks[len(blocks)-1].(*slack.SectionBlock)
+		if !ok {
+			t.Fatalf("expected last block to be *SectionBlock (truncation indicator), got %T", blocks[len(blocks)-1])
+		}
+		if !strings.Contains(last.Text.Text, "truncated") {
+			t.Errorf("truncation indicator text = %q, expected to contain 'truncated'", last.Text.Text)
+		}
+	})
+
+	t.Run("no truncation when under limit", func(t *testing.T) {
+		input := "## Title\nSome text.\n\n- item 1\n- item 2"
+		blocks := responseToBlocks(input, 50)
+		for _, b := range blocks {
+			if sec, ok := b.(*slack.SectionBlock); ok {
+				if strings.Contains(sec.Text.Text, "truncated") {
+					t.Error("unexpected truncation indicator in short response")
+				}
+			}
+		}
+	})
+
+	t.Run("zero maxBlocks uses default limit", func(t *testing.T) {
+		blocks := responseToBlocks(longMarkdown, 0)
+		if len(blocks) > SlackBlockLimit {
+			t.Errorf("expected at most %d blocks with maxBlocks=0, got %d", SlackBlockLimit, len(blocks))
+		}
+	})
 }

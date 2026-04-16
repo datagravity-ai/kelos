@@ -202,32 +202,56 @@ func parseMarkdownSegments(text string) []segment {
 	return segments
 }
 
+// SlackBlockLimit is the maximum number of blocks Slack allows per message.
+const SlackBlockLimit = 50
+
 // responseToBlocks converts a markdown response string into Slack blocks.
-func responseToBlocks(text string) []slack.Block {
+// maxBlocks limits the number of blocks returned; if the response would
+// exceed the limit, the output is truncated with an indicator. Pass 0 to
+// use SlackBlockLimit.
+func responseToBlocks(text string, maxBlocks int) []slack.Block {
+	if maxBlocks <= 0 {
+		maxBlocks = SlackBlockLimit
+	}
+
 	segments := parseMarkdownSegments(text)
 	var blocks []slack.Block
 
 	for _, seg := range segments {
+		var newBlocks []slack.Block
+
 		switch seg.typ {
 		case segDivider:
-			blocks = append(blocks, slack.NewDividerBlock())
+			newBlocks = []slack.Block{slack.NewDividerBlock()}
 		case segHeader:
-			blocks = append(blocks, headerBlock(seg.lines[0]))
+			newBlocks = []slack.Block{headerBlock(seg.lines[0])}
 		case segTable:
 			if b := tableBlock(seg.lines); b != nil {
-				blocks = append(blocks, b)
+				newBlocks = []slack.Block{b}
 			}
 		case segList:
-			blocks = append(blocks, listBlock(seg.lines)...)
+			newBlocks = listBlock(seg.lines)
 		case segPlain:
 			joined := strings.Join(seg.lines, "\n")
 			if strings.TrimSpace(joined) != "" {
-				blocks = append(blocks, slack.NewSectionBlock(
+				newBlocks = []slack.Block{slack.NewSectionBlock(
 					slack.NewTextBlockObject(slack.MarkdownType, convertInlineMarkdown(joined), false, false),
 					nil, nil,
-				))
+				)}
 			}
 		}
+
+		// Reserve 1 slot for the truncation indicator.
+		if len(blocks)+len(newBlocks) > maxBlocks-1 {
+			blocks = append(blocks, slack.NewSectionBlock(
+				slack.NewTextBlockObject(slack.MarkdownType,
+					"_… response truncated — see thread notification for full text_", false, false),
+				nil, nil,
+			))
+			break
+		}
+
+		blocks = append(blocks, newBlocks...)
 	}
 
 	return blocks
