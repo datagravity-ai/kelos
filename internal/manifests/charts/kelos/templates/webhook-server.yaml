@@ -274,16 +274,6 @@ spec:
             - secretRef:
                 name: {{ .Values.webhookServer.sources.generic.secretName }}
           {{- end }}
-          {{- if .Values.webhookServer.sources.generic.extraEnv }}
-          env:
-            {{- range .Values.webhookServer.sources.generic.extraEnv }}
-            - name: {{ .name }}
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .secretName }}
-                  key: {{ .key }}
-            {{- end }}
-          {{- end }}
           ports:
             - name: webhook
               containerPort: 8443
