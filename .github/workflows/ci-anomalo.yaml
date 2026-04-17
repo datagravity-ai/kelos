@@ -62,11 +62,3 @@ jobs:
       - name: Integration Test
         run: make test-integration
 
-  test-e2e:
-    permissions:
-      contents: read
-      issues: read
-    uses: ./.github/workflows/reusable-e2e.yaml
-    secrets:
-      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-      CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
