@@ -46,7 +46,7 @@ test: ## Run unit tests.
 
 .PHONY: test-integration
 test-integration: envtest ## Run integration tests (envtest).
-	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test ./test/integration/... -v
+	KUBEBUILDER_ASSETS="$$($(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test ./test/integration/... -v
 
 .PHONY: test-e2e
 test-e2e: ginkgo ## Run e2e tests (requires cluster and agent credentials).
