@@ -29,6 +29,8 @@ type SlackMessageData struct {
 	// HasThreadContext indicates that Body contains full thread context
 	// rather than the raw message text.
 	HasThreadContext bool
+	// ChannelType is the Slack channel type: "channel", "group", "im", or "mim".
+	ChannelType string
 	// IsSlashCommand indicates this came from a slash command rather than a message event.
 	IsSlashCommand bool
 	// SlashCommandID is the composite ID for slash commands (channelID:command:triggerID).
@@ -43,6 +45,9 @@ func MatchesSpawner(slackCfg *v1alpha1.Slack, msg *SlackMessageData) bool {
 		return false
 	}
 	if !matchesChannel(msg.ChannelID, slackCfg.Channels) {
+		return false
+	}
+	if !matchesChannelType(msg.ChannelType, slackCfg.ChannelTypes) {
 		return false
 	}
 	if !matchesUser(msg.UserID, slackCfg.AllowedUsers) {
@@ -110,6 +115,20 @@ func matchesChannel(channelID string, allowed []string) bool {
 	}
 	for _, id := range allowed {
 		if id == channelID {
+			return true
+		}
+	}
+	return false
+}
+
+// matchesChannelType returns true if channelType is in the allowed list,
+// or if the allowed list is empty (all channel types permitted).
+func matchesChannelType(channelType string, allowed []string) bool {
+	if len(allowed) == 0 {
+		return true
+	}
+	for _, ct := range allowed {
+		if ct == channelType {
 			return true
 		}
 	}

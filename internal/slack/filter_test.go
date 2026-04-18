@@ -178,6 +178,46 @@ func TestMatchesSpawner(t *testing.T) {
 			msg:  &SlackMessageData{UserID: "U1", ChannelID: "C1", Text: "<@UBOT1> more context", ThreadTS: "1234567890.123456"},
 			want: true,
 		},
+		{
+			name: "channelTypes filter matches im",
+			slackCfg: &v1alpha1.Slack{
+				ChannelTypes: []string{"im"},
+			},
+			msg:  &SlackMessageData{UserID: "U1", ChannelID: "D1", ChannelType: "im"},
+			want: true,
+		},
+		{
+			name: "channelTypes filter rejects non-im",
+			slackCfg: &v1alpha1.Slack{
+				ChannelTypes: []string{"im"},
+			},
+			msg:  &SlackMessageData{UserID: "U1", ChannelID: "C1", ChannelType: "channel"},
+			want: false,
+		},
+		{
+			name: "channelTypes empty matches all types",
+			slackCfg: &v1alpha1.Slack{},
+			msg:  &SlackMessageData{UserID: "U1", ChannelID: "C1", ChannelType: "channel"},
+			want: true,
+		},
+		{
+			name: "channelTypes combined with other filters",
+			slackCfg: &v1alpha1.Slack{
+				ChannelTypes:   []string{"im"},
+				AllowedUsers:   []string{"U1"},
+			},
+			msg:  &SlackMessageData{UserID: "U1", ChannelID: "D1", ChannelType: "im"},
+			want: true,
+		},
+		{
+			name: "channelTypes matches but user rejects",
+			slackCfg: &v1alpha1.Slack{
+				ChannelTypes:   []string{"im"},
+				AllowedUsers:   []string{"U2"},
+			},
+			msg:  &SlackMessageData{UserID: "U1", ChannelID: "D1", ChannelType: "im"},
+			want: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -387,6 +427,31 @@ func TestShouldProcess(t *testing.T) {
 	}
 }
 
+func TestMatchesChannelType(t *testing.T) {
+	tests := []struct {
+		name        string
+		channelType string
+		allowed     []string
+		want        bool
+	}{
+		{"empty allowed list matches all", "im", nil, true},
+		{"im in allowed list", "im", []string{"im"}, true},
+		{"channel in allowed list", "channel", []string{"channel", "group"}, true},
+		{"im not in allowed list", "im", []string{"channel", "group"}, false},
+		{"group not in allowed list", "group", []string{"im"}, false},
+		{"empty channel type not in list", "", []string{"im"}, false},
+		{"empty channel type matches empty list", "", nil, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := matchesChannelType(tt.channelType, tt.allowed); got != tt.want {
+				t.Errorf("matchesChannelType() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestMatchesChannel(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -530,31 +595,31 @@ func TestTriageSolverRouting(t *testing.T) {
 	}{
 		{
 			name:       "top-level mention triggers triage only",
-			msg:        &SlackMessageData{UserID: "U1", ChannelID: "C1", Text: "<@UBOT1> this endpoint is broken"},
+			msg:        &SlackMessageData{UserID: "U1", ChannelID: "C1", ChannelType: "channel", Text: "<@UBOT1> this endpoint is broken"},
 			wantTriage: true,
 			wantSolver: false,
 		},
 		{
 			name:       "top-level /solve triggers solver only",
-			msg:        &SlackMessageData{UserID: "U1", ChannelID: "C1", Text: "<@UBOT1> /solve fix it"},
+			msg:        &SlackMessageData{UserID: "U1", ChannelID: "C1", ChannelType: "channel", Text: "<@UBOT1> /solve fix it"},
 			wantTriage: false,
 			wantSolver: true,
 		},
 		{
 			name:       "thread reply with mention triggers triage only",
-			msg:        &SlackMessageData{UserID: "U1", ChannelID: "C1", Text: "<@UBOT1> more context", ThreadTS: "123.456"},
+			msg:        &SlackMessageData{UserID: "U1", ChannelID: "C1", ChannelType: "channel", Text: "<@UBOT1> more context", ThreadTS: "123.456"},
 			wantTriage: true,
 			wantSolver: false,
 		},
 		{
 			name:       "thread reply with /solve triggers solver only",
-			msg:        &SlackMessageData{UserID: "U1", ChannelID: "C1", Text: "<@UBOT1> /solve go ahead", ThreadTS: "123.456"},
+			msg:        &SlackMessageData{UserID: "U1", ChannelID: "C1", ChannelType: "channel", Text: "<@UBOT1> /solve go ahead", ThreadTS: "123.456"},
 			wantTriage: false,
 			wantSolver: true,
 		},
 		{
 			name:       "no mention triggers neither",
-			msg:        &SlackMessageData{UserID: "U1", ChannelID: "C1", Text: "this is broken"},
+			msg:        &SlackMessageData{UserID: "U1", ChannelID: "C1", ChannelType: "channel", Text: "this is broken"},
 			wantTriage: false,
 			wantSolver: false,
 		},
@@ -577,6 +642,99 @@ func TestTriageSolverRouting(t *testing.T) {
 			}
 			if solverMatch != sc.wantSolver {
 				t.Errorf("solver: got %v, want %v", solverMatch, sc.wantSolver)
+			}
+		})
+	}
+}
+
+// TestDMRouting validates that DM-specific spawners using channelTypes
+// correctly route messages without requiring @-mentions.
+func TestDMRouting(t *testing.T) {
+	// Channel-based spawners: require @-mention, only match "channel" type
+	channelTriageCfg := &v1alpha1.Slack{
+		MentionUserIDs:  []string{"UBOT1"},
+		ExcludeCommands: []string{"/solve"},
+		Channels:        []string{"C1"},
+	}
+	// DM-based spawners: no mention required, only match "im" type
+	dmTriageCfg := &v1alpha1.Slack{
+		ChannelTypes:    []string{"im"},
+		ExcludeCommands: []string{"/triage"},
+	}
+	dmSolverCfg := &v1alpha1.Slack{
+		ChannelTypes:   []string{"im"},
+		TriggerCommand: "/triage",
+	}
+
+	scenarios := []struct {
+		name             string
+		msg              *SlackMessageData
+		wantChannelRoute bool
+		wantDMTriage     bool
+		wantDMSolver     bool
+	}{
+		{
+			name:             "DM message without mention triggers DM triage only",
+			msg:              &SlackMessageData{UserID: "U1", ChannelID: "D1", ChannelType: "im", Text: "this is broken"},
+			wantChannelRoute: false,
+			wantDMTriage:     true,
+			wantDMSolver:     false,
+		},
+		{
+			name:             "DM /triage triggers DM solver only",
+			msg:              &SlackMessageData{UserID: "U1", ChannelID: "D1", ChannelType: "im", Text: "/triage check this"},
+			wantChannelRoute: false,
+			wantDMTriage:     false,
+			wantDMSolver:     true,
+		},
+		{
+			name:             "DM thread reply without mention triggers DM triage",
+			msg:              &SlackMessageData{UserID: "U1", ChannelID: "D1", ChannelType: "im", Text: "more context", ThreadTS: "123.456"},
+			wantChannelRoute: false,
+			wantDMTriage:     true,
+			wantDMSolver:     false,
+		},
+		{
+			name:             "channel message with mention triggers channel triage, not DM",
+			msg:              &SlackMessageData{UserID: "U1", ChannelID: "C1", ChannelType: "channel", Text: "<@UBOT1> this is broken"},
+			wantChannelRoute: true,
+			wantDMTriage:     false,
+			wantDMSolver:     false,
+		},
+		{
+			name:             "channel message without mention triggers neither",
+			msg:              &SlackMessageData{UserID: "U1", ChannelID: "C1", ChannelType: "channel", Text: "this is broken"},
+			wantChannelRoute: false,
+			wantDMTriage:     false,
+			wantDMSolver:     false,
+		},
+	}
+
+	for _, sc := range scenarios {
+		t.Run(sc.name, func(t *testing.T) {
+			channelMatch := MatchesSpawner(channelTriageCfg, sc.msg)
+			if channelMatch {
+				_, channelMatch = ProcessTriggerCommand(sc.msg.Text, channelTriageCfg.TriggerCommand)
+			}
+
+			dmTriageMatch := MatchesSpawner(dmTriageCfg, sc.msg)
+			if dmTriageMatch {
+				_, dmTriageMatch = ProcessTriggerCommand(sc.msg.Text, dmTriageCfg.TriggerCommand)
+			}
+
+			dmSolverMatch := MatchesSpawner(dmSolverCfg, sc.msg)
+			if dmSolverMatch {
+				_, dmSolverMatch = ProcessTriggerCommand(sc.msg.Text, dmSolverCfg.TriggerCommand)
+			}
+
+			if channelMatch != sc.wantChannelRoute {
+				t.Errorf("channel triage: got %v, want %v", channelMatch, sc.wantChannelRoute)
+			}
+			if dmTriageMatch != sc.wantDMTriage {
+				t.Errorf("DM triage: got %v, want %v", dmTriageMatch, sc.wantDMTriage)
+			}
+			if dmSolverMatch != sc.wantDMSolver {
+				t.Errorf("DM solver: got %v, want %v", dmSolverMatch, sc.wantDMSolver)
 			}
 		})
 	}
