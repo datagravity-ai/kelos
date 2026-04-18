@@ -350,7 +350,7 @@ func (tr *SlackTaskReporter) updateProgress(ctx context.Context, task *kelosv1al
 		return nil
 	}
 
-	msg := SlackMessage{Text: text}
+	msg := FormatProgressMessage(text, task.Name)
 
 	// If we already have a progress message for this task, edit it in-place.
 	if replyTS := tr.getProgressTS(task.UID); replyTS != "" {

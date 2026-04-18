@@ -917,6 +917,11 @@ func TestSlackTaskReporter_PostsProgressReply(t *testing.T) {
 	if posted[0].msg.Text != "Searching through release tags..." {
 		t.Errorf("text = %q, want progress text", posted[0].msg.Text)
 	}
+	// Progress messages should include Block Kit blocks so the activity
+	// indicator loop can append a context element.
+	if len(posted[0].msg.Blocks) == 0 {
+		t.Error("expected progress message to include blocks for activity indicator support")
+	}
 }
 
 func TestSlackTaskReporter_SkipsProgressWhenNoReader(t *testing.T) {
@@ -1193,6 +1198,9 @@ func TestSlackTaskReporter_EditsProgressOnNewText(t *testing.T) {
 	}
 	if state.BaseMsg.Text != "Second update" {
 		t.Errorf("activity BaseMsg.Text = %q, want 'Second update'", state.BaseMsg.Text)
+	}
+	if len(state.BaseMsg.Blocks) == 0 {
+		t.Error("expected activity BaseMsg to have blocks after in-place edit")
 	}
 }
 
@@ -1768,6 +1776,61 @@ func TestSlackTaskReporter_ProgressPostUpdatesActivityTarget(t *testing.T) {
 	// LastText should be reset so activity updates on the new message.
 	if state.LastText != "" {
 		t.Errorf("LastText = %q, want empty (reset for new target)", state.LastText)
+	}
+}
+
+func TestSlackTaskReporter_ActivityIndicatorWorksOnProgressMessage(t *testing.T) {
+	// Regression test: the activity indicator must keep working after the
+	// progress snapshot replaces the accepted message as the activity target.
+	// Previously, progress messages were text-only (no blocks), causing
+	// appendActivityContext to skip the update.
+	task := newRunningTaskWithAnnotations("test-task", "uid-progress-activity", map[string]string{
+		AnnotationSlackReporting:   "enabled",
+		AnnotationSlackChannel:     "C123ABC",
+		AnnotationSlackThreadTS:    "1234567890.123456",
+		AnnotationSlackReportPhase: "accepted",
+	})
+
+	cl := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(task).Build()
+
+	var updates []slackReplyRecord
+	reporter := &fakeSlackReporter{
+		postFn: func(ctx context.Context, channel, threadTS string, msg SlackMessage) (string, error) {
+			return "ts-progress", nil
+		},
+		updateFn: func(ctx context.Context, channel, messageTS string, msg SlackMessage) error {
+			updates = append(updates, slackReplyRecord{method: "update", channel: channel, threadTS: messageTS, msg: msg})
+			return nil
+		},
+	}
+
+	tr := &SlackTaskReporter{
+		Client:         cl,
+		Reporter:       reporter,
+		ProgressReader: &fakeProgressReader{text: "I found the issue in the config."},
+		ActivityReader: &fakeActivityReader{text: "Reading `config.yaml`..."},
+	}
+	// Seed initial activity target (from accepted post).
+	tr.setActivityTarget(task.UID, "ts-accepted", FormatSlackTransitionMessage("accepted", task.Name, "", nil))
+
+	// Trigger a progress update — this should post a new progress message
+	// and re-point the activity target at it.
+	if err := tr.ReportTaskStatus(context.Background(), task); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Now call UpdateActivityIndicator — it should update the progress
+	// message (not the old accepted message) with the activity context.
+	tr.UpdateActivityIndicator(context.Background(), task)
+
+	if len(updates) != 1 {
+		t.Fatalf("expected 1 activity update on the progress message, got %d", len(updates))
+	}
+	if updates[0].threadTS != "ts-progress" {
+		t.Errorf("activity update targeted %q, want ts-progress", updates[0].threadTS)
+	}
+	if len(updates[0].msg.Blocks) == 0 {
+		t.Error("expected activity update to include blocks")
 	}
 }
 
