@@ -565,6 +565,15 @@ type Slack struct {
 	// command name from the payload before delivery).
 	// +optional
 	ExcludeCommands []string `json:"excludeCommands,omitempty"`
+
+	// ChannelTypes optionally restricts which Slack channel types the spawner
+	// listens to. Values are Slack channel_type strings: "channel" (public
+	// channel), "group" (private channel), "im" (direct message), or "mim"
+	// (multi-party direct message). When empty, the spawner listens to all
+	// channel types. For slash commands, Slack provides channel_name instead
+	// of channel_type — "directmessage" is mapped to "im" for consistency.
+	// +optional
+	ChannelTypes []string `json:"channelTypes,omitempty"`
 }
 
 // TaskTemplateMetadata holds optional labels and annotations for spawned Tasks.

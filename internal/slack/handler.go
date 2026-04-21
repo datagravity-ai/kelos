@@ -222,9 +222,17 @@ func (h *SlackHandler) handleSlashCommand(ctx context.Context, evt socketmode.Ev
 		return
 	}
 
+	// Slack slash commands provide ChannelName instead of channel_type.
+	// Map "directmessage" to "im" for consistent channelTypes filtering.
+	channelType := cmd.ChannelName
+	if channelType == "directmessage" {
+		channelType = "im"
+	}
+
 	msg := &SlackMessageData{
 		UserID:         cmd.UserID,
 		ChannelID:      cmd.ChannelID,
+		ChannelType:    channelType,
 		UserName:       cmd.UserName,
 		Text:           cmd.Text,
 		Body:           body,
@@ -427,14 +435,15 @@ func (h *SlackHandler) enrichMessage(ctx context.Context, event *slackevents.Mes
 	}
 
 	return &SlackMessageData{
-		UserID:    event.User,
-		ChannelID: event.Channel,
-		UserName:  userName,
-		Text:      event.Text,
-		Body:      body,
-		ThreadTS:  event.ThreadTimeStamp,
-		Timestamp: event.TimeStamp,
-		Permalink: permalink,
+		UserID:      event.User,
+		ChannelID:   event.Channel,
+		ChannelType: event.ChannelType,
+		UserName:    userName,
+		Text:        event.Text,
+		Body:        body,
+		ThreadTS:    event.ThreadTimeStamp,
+		Timestamp:   event.TimeStamp,
+		Permalink:   permalink,
 	}
 }
 
