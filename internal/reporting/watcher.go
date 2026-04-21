@@ -379,9 +379,11 @@ func (tr *SlackTaskReporter) updateProgress(ctx context.Context, task *kelosv1al
 	tr.setLastProgress(task.UID, text)
 	tr.setProgressTS(task.UID, replyTS)
 
-	// Point the activity indicator at this new progress message so
-	// subsequent activity ticks update its context block.
+	// Strip the activity indicator from the old target message (e.g. the
+	// accepted ack) before switching, so only one message in the thread
+	// shows an active indicator at a time.
 	if replyTS != "" {
+		tr.resetPreviousActivityIndicator(ctx, task.UID, channel, replyTS)
 		tr.setActivityTarget(task.UID, replyTS, msg)
 	}
 
@@ -565,6 +567,27 @@ func (tr *SlackTaskReporter) setActivityTarget(uid types.UID, messageTS string, 
 	tr.activity[uid] = &activityState{
 		MessageTS: messageTS,
 		BaseMsg:   baseMsg,
+	}
+}
+
+// resetPreviousActivityIndicator reverts the old activity-target message back
+// to its base content (no activity context element) when the target is about
+// to move to a different message. This keeps only one "active" indicator in
+// the thread at a time.
+func (tr *SlackTaskReporter) resetPreviousActivityIndicator(ctx context.Context, uid types.UID, channel, newMessageTS string) {
+	tr.mu.Lock()
+	state := tr.activity[uid]
+	if state == nil || state.MessageTS == "" || state.MessageTS == newMessageTS {
+		tr.mu.Unlock()
+		return
+	}
+	oldTS := state.MessageTS
+	baseMsg := state.BaseMsg
+	tr.mu.Unlock()
+
+	log := ctrl.Log.WithName("slack-activity")
+	if err := tr.Reporter.UpdateMessage(ctx, channel, oldTS, baseMsg); err != nil {
+		log.V(1).Info("Failed to reset activity indicator on previous message", "messageTS", oldTS, "error", err)
 	}
 }
 

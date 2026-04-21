@@ -1819,18 +1819,80 @@ func TestSlackTaskReporter_ActivityIndicatorWorksOnProgressMessage(t *testing.T)
 		t.Fatalf("unexpected error: %v", err)
 	}
 
+	// The first update should reset the old accepted message back to its
+	// base content (strip the activity indicator).
+	if len(updates) < 1 {
+		t.Fatal("expected at least 1 update (reset of accepted message)")
+	}
+	if updates[0].threadTS != "ts-accepted" {
+		t.Errorf("reset update targeted %q, want ts-accepted", updates[0].threadTS)
+	}
+
 	// Now call UpdateActivityIndicator — it should update the progress
 	// message (not the old accepted message) with the activity context.
 	tr.UpdateActivityIndicator(context.Background(), task)
 
-	if len(updates) != 1 {
-		t.Fatalf("expected 1 activity update on the progress message, got %d", len(updates))
+	if len(updates) != 2 {
+		t.Fatalf("expected 2 updates (reset + activity), got %d", len(updates))
 	}
-	if updates[0].threadTS != "ts-progress" {
-		t.Errorf("activity update targeted %q, want ts-progress", updates[0].threadTS)
+	if updates[1].threadTS != "ts-progress" {
+		t.Errorf("activity update targeted %q, want ts-progress", updates[1].threadTS)
 	}
-	if len(updates[0].msg.Blocks) == 0 {
+	if len(updates[1].msg.Blocks) == 0 {
 		t.Error("expected activity update to include blocks")
+	}
+}
+
+func TestSlackTaskReporter_ResetsOldActivityIndicatorOnTargetSwitch(t *testing.T) {
+	// When a progress message is posted and becomes the new activity target,
+	// the old target (the accepted ack) should be updated back to its base
+	// content so there is only one active indicator in the thread.
+	task := newRunningTaskWithAnnotations("test-task", "uid-reset-indicator", map[string]string{
+		AnnotationSlackReporting:   "enabled",
+		AnnotationSlackChannel:     "C123ABC",
+		AnnotationSlackThreadTS:    "1234567890.123456",
+		AnnotationSlackReportPhase: "accepted",
+	})
+
+	cl := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(task).Build()
+
+	var updates []slackReplyRecord
+	reporter := &fakeSlackReporter{
+		postFn: func(ctx context.Context, channel, threadTS string, msg SlackMessage) (string, error) {
+			return "ts-progress", nil
+		},
+		updateFn: func(ctx context.Context, channel, messageTS string, msg SlackMessage) error {
+			updates = append(updates, slackReplyRecord{method: "update", channel: channel, threadTS: messageTS, msg: msg})
+			return nil
+		},
+	}
+
+	acceptedMsg := FormatSlackTransitionMessage("accepted", task.Name, "", nil)
+	tr := &SlackTaskReporter{
+		Client:         cl,
+		Reporter:       reporter,
+		ProgressReader: &fakeProgressReader{text: "Investigating the logs..."},
+	}
+	tr.setActivityTarget(task.UID, "ts-accepted", acceptedMsg)
+
+	if err := tr.ReportTaskStatus(context.Background(), task); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// First update resets the accepted message to its base content.
+	if len(updates) < 1 {
+		t.Fatal("expected at least 1 update for the reset call")
+	}
+	resetUpdate := updates[0]
+	if resetUpdate.threadTS != "ts-accepted" {
+		t.Errorf("reset targeted %q, want ts-accepted", resetUpdate.threadTS)
+	}
+	// The reset message should match the base accepted message (no activity element).
+	if resetUpdate.msg.Text != acceptedMsg.Text {
+		t.Errorf("reset text = %q, want %q", resetUpdate.msg.Text, acceptedMsg.Text)
+	}
+	if len(resetUpdate.msg.Blocks) != len(acceptedMsg.Blocks) {
+		t.Errorf("reset blocks count = %d, want %d (base message blocks)", len(resetUpdate.msg.Blocks), len(acceptedMsg.Blocks))
 	}
 }
 
