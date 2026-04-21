@@ -2022,6 +2022,39 @@ func TestSlackTaskReporter_ResetsOldActivityIndicatorOnTargetSwitch(t *testing.T
 	}
 }
 
+func TestSlackTaskReporter_ActivitySkipsUpdateWhenStateCleared(t *testing.T) {
+	// Verify that UpdateActivityIndicator does not call the Slack API
+	// when the activity state has been cleared (e.g. by the terminal path).
+	task := newRunningTaskWithAnnotations("test-task", "uid-race-guard", map[string]string{
+		AnnotationSlackReporting:   "enabled",
+		AnnotationSlackChannel:     "C123ABC",
+		AnnotationSlackThreadTS:    "1234567890.123456",
+		AnnotationSlackReportPhase: "accepted",
+	})
+
+	var updates []slackReplyRecord
+	reporter := &fakeSlackReporter{
+		updateFn: func(ctx context.Context, channel, messageTS string, msg SlackMessage) error {
+			updates = append(updates, slackReplyRecord{method: "update", channel: channel, threadTS: messageTS, msg: msg})
+			return nil
+		},
+	}
+
+	tr := &SlackTaskReporter{
+		Reporter:       reporter,
+		ActivityReader: &fakeActivityReader{text: "Reading files..."},
+	}
+	// Set a target then immediately clear it (simulates the terminal path).
+	tr.setActivityTarget(task.UID, "ts-progress", FormatProgressMessage("Working...", task.Name))
+	tr.clearActivityState(task.UID)
+
+	tr.UpdateActivityIndicator(context.Background(), task)
+
+	if len(updates) != 0 {
+		t.Errorf("expected 0 updates after state cleared, got %d", len(updates))
+	}
+}
+
 func TestSlackTaskReporter_SweepClearsActivityState(t *testing.T) {
 	reporter := &fakeSlackReporter{}
 	tr := &SlackTaskReporter{Reporter: reporter}

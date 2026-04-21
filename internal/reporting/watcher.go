@@ -264,12 +264,14 @@ func (tr *SlackTaskReporter) ReportTaskStatus(ctx context.Context, task *kelosv1
 	// instead of posting a new reply so the thread stays compact.
 	if desiredPhase == "succeeded" || desiredPhase == "failed" {
 		if progressTS := tr.getProgressTS(task.UID); progressTS != "" {
+			// Clear activity state first so a concurrent activity loop
+			// cannot overwrite the final message after we update it.
+			tr.clearActivityState(task.UID)
 			log.Info("Updating Slack progress message with final result", "task", task.Name, "channel", channel, "phase", desiredPhase)
 			if err := tr.Reporter.UpdateMessage(ctx, channel, progressTS, msg); err != nil {
 				log.Error(err, "Failed to update progress message with final result, posting new reply", "task", task.Name)
 			} else {
 				tr.clearProgressCache(task.UID)
-				tr.clearActivityState(task.UID)
 				return tr.persistSlackReportingState(ctx, task, desiredPhase)
 			}
 		}
@@ -558,6 +560,15 @@ func (tr *SlackTaskReporter) UpdateActivityIndicator(ctx context.Context, task *
 		tr.mu.Unlock()
 		return
 	}
+
+	// Re-check that the activity state still targets this message. The
+	// terminal path may have cleared it while we were building the message.
+	tr.mu.Lock()
+	if s := tr.activity[task.UID]; s == nil || s.MessageTS != messageTS {
+		tr.mu.Unlock()
+		return
+	}
+	tr.mu.Unlock()
 
 	if err := tr.Reporter.UpdateMessage(ctx, channel, messageTS, msg); err != nil {
 		log.V(1).Info("Failed to update activity indicator", "task", task.Name, "error", err)
