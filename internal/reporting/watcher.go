@@ -339,6 +339,21 @@ func (tr *SlackTaskReporter) ReportTaskStatus(ctx context.Context, task *kelosv1
 
 	msg := FormatSlackTransitionMessage(desiredPhase, task.Name, task.Status.Message, task.Status.Results)
 
+	// For terminal phases, edit the existing progress message in-place
+	// instead of posting a new reply so the thread stays compact.
+	if desiredPhase == "succeeded" || desiredPhase == "failed" {
+		if progressTS := tr.getProgressTS(task.UID); progressTS != "" {
+			log.Info("Updating Slack progress message with final result", "task", task.Name, "channel", channel, "phase", desiredPhase)
+			if err := tr.Reporter.UpdateMessage(ctx, channel, progressTS, msg); err != nil {
+				log.Error(err, "Failed to update progress message with final result, posting new reply", "task", task.Name)
+			} else {
+				tr.clearProgressCache(task.UID)
+				tr.clearActivityState(task.UID)
+				return tr.persistSlackReportingState(ctx, task, desiredPhase)
+			}
+		}
+	}
+
 	log.Info("Posting Slack thread reply", "task", task.Name, "channel", channel, "phase", desiredPhase)
 	replyTS, err := tr.Reporter.PostThreadReply(ctx, channel, threadTS, msg)
 	if err != nil {
