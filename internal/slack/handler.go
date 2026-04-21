@@ -369,6 +369,7 @@ func (h *SlackHandler) createTask(ctx context.Context, spawner *v1alpha1.TaskSpa
 	}
 	task.Annotations[reporting.AnnotationSlackReporting] = "enabled"
 	task.Annotations[reporting.AnnotationSlackChannel] = msg.ChannelID
+	task.Annotations[reporting.AnnotationSlackUserID] = msg.UserID
 
 	// Only set thread_ts for real message timestamps (not slash command composite IDs).
 	// Slash commands intentionally skip status reporting — there is no thread to reply to.
