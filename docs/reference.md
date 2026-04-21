@@ -217,6 +217,7 @@ The `promptTemplate` field uses Go `text/template` syntax. Available variables d
 | `{{.Type}}` | Resource type | Empty | Empty | Empty | Resource type (e.g., `"Issue"`, `"Comment"`) | Empty |
 | `{{.State}}` | Workflow state | Empty | Empty | Empty | Current state name (e.g., `"Todo"`, `"In Progress"`) | Empty |
 | `{{.IssueID}}` | Parent issue ID | Empty | Empty | Empty | Parent issue ID (Comment events only) | Empty |
+| `{{.ActorName}}` | Actor's display name | Empty | Empty | Empty | Display name of user who triggered the event (requires `LINEAR_API_KEY`) | Empty |
 | `{{.ActorEmail}}` | Actor's email | Empty | Empty | Empty | Email of user who triggered the event (requires `LINEAR_API_KEY`) | Empty |
 | `{{.Time}}` | Trigger time (RFC3339) | Empty | Empty | Empty | Empty | Cron tick time (e.g., `"2026-02-07T09:00:00Z"`) |
 | `{{.Schedule}}` | Cron schedule expression | Empty | Empty | Empty | Empty | Schedule string (e.g., `"0 * * * *"`) |

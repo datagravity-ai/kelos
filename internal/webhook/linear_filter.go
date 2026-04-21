@@ -22,6 +22,7 @@ type LinearEventData struct {
 	Labels     []string
 	State      string
 	ActorID    string
+	ActorName  string
 	ActorEmail string
 }
 
@@ -292,29 +293,30 @@ func enrichLinearCommentLabels(ctx context.Context, log logr.Logger, eventData *
 	eventData.Labels = labels
 }
 
-// linearEmailFetcher is the function used to fetch a user's email from the
+// linearUserInfoFetcher is the function used to fetch a user's info from the
 // Linear API. It is a package-level variable so tests can swap in a stub.
-var linearEmailFetcher = fetchLinearUserEmail
+var linearUserInfoFetcher = fetchLinearUserInfo
 
-// enrichLinearActorEmail fetches the actor's email from the Linear API and
-// sets it on the parsed event data.
-func enrichLinearActorEmail(ctx context.Context, log logr.Logger, eventData *LinearEventData) {
+// enrichLinearActorInfo fetches the actor's name and email from the Linear API
+// and sets them on the parsed event data.
+func enrichLinearActorInfo(ctx context.Context, log logr.Logger, eventData *LinearEventData) {
 	if eventData.ActorID == "" {
 		return
 	}
 
-	email, err := linearEmailFetcher(ctx, eventData.ActorID)
+	info, err := linearUserInfoFetcher(ctx, eventData.ActorID)
 	if err != nil {
-		log.Error(err, "Failed to fetch Linear actor email", "actorID", eventData.ActorID)
+		log.Error(err, "Failed to fetch Linear actor info", "actorID", eventData.ActorID)
 		return
 	}
-	if email == "" {
-		log.Info("LINEAR_API_KEY not set or actor has no email, cannot enrich actor email")
+	if info == nil {
+		log.Info("LINEAR_API_KEY not set, cannot enrich actor info")
 		return
 	}
 
-	log.Info("Enriched event with actor email from Linear API", "actorID", eventData.ActorID, "actorEmail", email)
-	eventData.ActorEmail = email
+	log.Info("Enriched event with actor info from Linear API", "actorID", eventData.ActorID, "actorName", info.Name, "actorEmail", info.Email)
+	eventData.ActorName = info.Name
+	eventData.ActorEmail = info.Email
 }
 
 // ExtractLinearWorkItem converts Linear webhook data to template variables.
@@ -328,6 +330,7 @@ func ExtractLinearWorkItem(eventData *LinearEventData) map[string]interface{} {
 		"State":      eventData.State,
 		"Labels":     strings.Join(eventData.Labels, ", "),
 		"IssueID":    "", // populated below for Comment events
+		"ActorName":  eventData.ActorName,
 		"ActorEmail": eventData.ActorEmail,
 		"Payload":    eventData.Payload,
 	}

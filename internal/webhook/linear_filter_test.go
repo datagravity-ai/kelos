@@ -1366,6 +1366,7 @@ func TestExtractLinearWorkItem(t *testing.T) {
 		Action:     "create",
 		State:      "Todo",
 		Labels:     []string{"bug", "urgent"},
+		ActorName:  "Alice Smith",
 		ActorEmail: "alice@example.com",
 		Payload:    map[string]interface{}{"key": "value"},
 	}
@@ -1381,6 +1382,7 @@ func TestExtractLinearWorkItem(t *testing.T) {
 		"State":      "Todo",
 		"Labels":     "bug, urgent",
 		"IssueID":    "",
+		"ActorName":  "Alice Smith",
 		"ActorEmail": "alice@example.com",
 		"Payload":    map[string]interface{}{"key": "value"},
 	}
@@ -1692,16 +1694,16 @@ func TestEnrichLinearCommentLabels_MatchesFilterAfterEnrichment(t *testing.T) {
 	}
 }
 
-func TestEnrichLinearActorEmail(t *testing.T) {
-	origFetcher := linearEmailFetcher
-	defer func() { linearEmailFetcher = origFetcher }()
+func TestEnrichLinearActorInfo(t *testing.T) {
+	origFetcher := linearUserInfoFetcher
+	defer func() { linearUserInfoFetcher = origFetcher }()
 
-	t.Run("enriches email when actorID is present", func(t *testing.T) {
-		linearEmailFetcher = func(ctx context.Context, userID string) (string, error) {
+	t.Run("enriches name and email when actorID is present", func(t *testing.T) {
+		linearUserInfoFetcher = func(ctx context.Context, userID string) (*linearUserInfo, error) {
 			if userID == "user-abc" {
-				return "alice@example.com", nil
+				return &linearUserInfo{Name: "Alice Smith", Email: "alice@example.com"}, nil
 			}
-			return "", nil
+			return &linearUserInfo{}, nil
 		}
 
 		eventData := &LinearEventData{
@@ -1710,16 +1712,17 @@ func TestEnrichLinearActorEmail(t *testing.T) {
 			Action:  "create",
 		}
 
-		enrichLinearActorEmail(context.Background(), logr.Discard(), eventData)
+		enrichLinearActorInfo(context.Background(), logr.Discard(), eventData)
 
+		assert.Equal(t, "Alice Smith", eventData.ActorName)
 		assert.Equal(t, "alice@example.com", eventData.ActorEmail)
 	})
 
 	t.Run("no-op when actorID is empty", func(t *testing.T) {
 		called := false
-		linearEmailFetcher = func(ctx context.Context, userID string) (string, error) {
+		linearUserInfoFetcher = func(ctx context.Context, userID string) (*linearUserInfo, error) {
 			called = true
-			return "", nil
+			return nil, nil
 		}
 
 		eventData := &LinearEventData{
@@ -1727,15 +1730,16 @@ func TestEnrichLinearActorEmail(t *testing.T) {
 			Action: "create",
 		}
 
-		enrichLinearActorEmail(context.Background(), logr.Discard(), eventData)
+		enrichLinearActorInfo(context.Background(), logr.Discard(), eventData)
 
 		assert.False(t, called, "should not call API when actorID is empty")
+		assert.Empty(t, eventData.ActorName)
 		assert.Empty(t, eventData.ActorEmail)
 	})
 
 	t.Run("handles API error gracefully", func(t *testing.T) {
-		linearEmailFetcher = func(ctx context.Context, userID string) (string, error) {
-			return "", fmt.Errorf("API error")
+		linearUserInfoFetcher = func(ctx context.Context, userID string) (*linearUserInfo, error) {
+			return nil, fmt.Errorf("API error")
 		}
 
 		eventData := &LinearEventData{
@@ -1744,8 +1748,9 @@ func TestEnrichLinearActorEmail(t *testing.T) {
 			Action:  "create",
 		}
 
-		enrichLinearActorEmail(context.Background(), logr.Discard(), eventData)
+		enrichLinearActorInfo(context.Background(), logr.Discard(), eventData)
 
+		assert.Empty(t, eventData.ActorName)
 		assert.Empty(t, eventData.ActorEmail)
 	})
 }

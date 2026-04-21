@@ -295,7 +295,7 @@ func (h *WebhookHandler) processWebhook(ctx context.Context, eventType string, p
 		if err != nil {
 			return false, fmt.Errorf("failed to parse %s webhook: %w", h.source, err)
 		}
-		enrichLinearActorEmail(ctx, log, eventData)
+		enrichLinearActorInfo(ctx, log, eventData)
 		parsed.Linear = eventData
 		parsed.ID = eventData.ID
 		parsed.Title = eventData.Title

@@ -267,7 +267,7 @@ Then configure a webhook in Linear (Settings → API → Webhooks) pointing to `
 
 **Filtering options:** `types` (required — e.g., `"Issue"`, `"Comment"`), and per-filter fields: `action` (`create`, `update`, `remove`), `states`, `labels`, `excludeLabels`.
 
-**Linear-specific variables:** `{{.Type}}` (resource type), `{{.State}}` (workflow state), `{{.Action}}` (webhook action), `{{.IssueID}}` (parent issue ID for Comment events), `{{.ActorEmail}}` (email of the user who triggered the event, requires `LINEAR_API_KEY`), `{{.Labels}}`, `{{.Payload}}` (full payload access).
+**Linear-specific variables:** `{{.Type}}` (resource type), `{{.State}}` (workflow state), `{{.Action}}` (webhook action), `{{.IssueID}}` (parent issue ID for Comment events), `{{.ActorName}}` (display name of the user who triggered the event, requires `LINEAR_API_KEY`), `{{.ActorEmail}}` (email of that user), `{{.Labels}}`, `{{.Payload}}` (full payload access).
 
 ### Cron
 
