@@ -2092,6 +2092,132 @@ func TestSlackTaskReporter_ClearsProgressCacheOnTerminal(t *testing.T) {
 	tr.mu.Unlock()
 }
 
+func TestSlackTaskReporter_EditsProgressMessageOnTerminalPhase(t *testing.T) {
+	// When a progress message exists and the task completes, the final
+	// result should be edited into the progress message instead of posting
+	// a new reply, keeping the thread compact (ack + single response).
+	task := newRunningTaskWithAnnotations("test-task", "uid-edit-terminal", map[string]string{
+		AnnotationSlackReporting:   "enabled",
+		AnnotationSlackChannel:     "C123ABC",
+		AnnotationSlackThreadTS:    "1234567890.123456",
+		AnnotationSlackReportPhase: "accepted",
+	})
+
+	cl := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(task).Build()
+
+	var posts []slackReplyRecord
+	var updates []slackReplyRecord
+	reporter := &fakeSlackReporter{
+		postFn: func(ctx context.Context, channel, threadTS string, msg SlackMessage) (string, error) {
+			posts = append(posts, slackReplyRecord{method: "post", channel: channel, threadTS: threadTS, msg: msg})
+			return "ts-progress", nil
+		},
+		updateFn: func(ctx context.Context, channel, messageTS string, msg SlackMessage) error {
+			updates = append(updates, slackReplyRecord{method: "update", channel: channel, threadTS: messageTS, msg: msg})
+			return nil
+		},
+	}
+
+	tr := &SlackTaskReporter{
+		Client:         cl,
+		Reporter:       reporter,
+		ProgressReader: &fakeProgressReader{text: "Working on the analysis..."},
+	}
+
+	// Post a progress update (simulates the running phase).
+	if err := tr.ReportTaskStatus(context.Background(), task); err != nil {
+		t.Fatalf("unexpected error posting progress: %v", err)
+	}
+	if len(posts) != 1 {
+		t.Fatalf("expected 1 post (progress), got %d", len(posts))
+	}
+
+	// Transition to succeeded.
+	succeededTask := task.DeepCopy()
+	succeededTask.Status.Phase = kelosv1alpha1.TaskPhaseSucceeded
+	succeededTask.Status.Message = "Here is the final answer."
+	succeededTask.Status.Results = map[string]string{"response": "done"}
+
+	cl2 := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(succeededTask).Build()
+	tr.Client = cl2
+
+	postsBefore := len(posts)
+	if err := tr.ReportTaskStatus(context.Background(), succeededTask); err != nil {
+		t.Fatalf("unexpected error on terminal phase: %v", err)
+	}
+
+	// Should NOT have posted a new reply.
+	if len(posts) != postsBefore {
+		t.Errorf("expected no new posts on terminal phase, got %d new", len(posts)-postsBefore)
+	}
+
+	// Should have updated the progress message with the final content.
+	var terminalUpdate *slackReplyRecord
+	for i := range updates {
+		if updates[i].threadTS == "ts-progress" {
+			terminalUpdate = &updates[i]
+		}
+	}
+	if terminalUpdate == nil {
+		t.Fatal("expected an update to the progress message with final content")
+	}
+	if len(terminalUpdate.msg.Blocks) == 0 {
+		t.Error("expected final update to include blocks")
+	}
+}
+
+func TestSlackTaskReporter_FallsBackToPostOnUpdateFailure(t *testing.T) {
+	// If editing the progress message fails, we should fall back to posting
+	// a new reply so the final result is never lost.
+	task := newRunningTaskWithAnnotations("test-task", "uid-fallback-post", map[string]string{
+		AnnotationSlackReporting:   "enabled",
+		AnnotationSlackChannel:     "C123ABC",
+		AnnotationSlackThreadTS:    "1234567890.123456",
+		AnnotationSlackReportPhase: "accepted",
+	})
+
+	cl := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(task).Build()
+
+	var posts []slackReplyRecord
+	reporter := &fakeSlackReporter{
+		postFn: func(ctx context.Context, channel, threadTS string, msg SlackMessage) (string, error) {
+			posts = append(posts, slackReplyRecord{method: "post", channel: channel, threadTS: threadTS, msg: msg})
+			return "ts-progress", nil
+		},
+		updateFn: func(ctx context.Context, channel, messageTS string, msg SlackMessage) error {
+			return fmt.Errorf("slack API error")
+		},
+	}
+
+	tr := &SlackTaskReporter{
+		Client:         cl,
+		Reporter:       reporter,
+		ProgressReader: &fakeProgressReader{text: "Working on it..."},
+	}
+
+	// Post a progress update.
+	if err := tr.ReportTaskStatus(context.Background(), task); err != nil {
+		t.Fatalf("unexpected error posting progress: %v", err)
+	}
+
+	// Transition to succeeded — update will fail, should fall back to post.
+	succeededTask := task.DeepCopy()
+	succeededTask.Status.Phase = kelosv1alpha1.TaskPhaseSucceeded
+	succeededTask.Status.Results = map[string]string{"response": "done"}
+
+	cl2 := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(succeededTask).Build()
+	tr.Client = cl2
+
+	if err := tr.ReportTaskStatus(context.Background(), succeededTask); err != nil {
+		t.Fatalf("unexpected error on terminal phase: %v", err)
+	}
+
+	// Should have fallen back to posting a new reply (2 total: progress + final).
+	if len(posts) != 2 {
+		t.Errorf("expected 2 posts (progress + fallback), got %d", len(posts))
+	}
+}
+
 func TestSlackTaskReporter_SweepsStaleProgressEntries(t *testing.T) {
 	reporter := &fakeSlackReporter{
 		postFn: func(ctx context.Context, channel, threadTS string, msg SlackMessage) (string, error) {
