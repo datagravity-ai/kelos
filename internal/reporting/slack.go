@@ -94,6 +94,19 @@ var phaseFallbackText = map[string]string{
 	"failed":    "Failed.",
 }
 
+// FormatProgressMessage returns a Slack message with Block Kit blocks for
+// an in-progress agent snapshot. Using blocks (rather than text-only) allows
+// the activity indicator loop to append a context element showing the agent's
+// current action.
+func FormatProgressMessage(text, taskName string) SlackMessage {
+	blocks := responseToBlocks(text)
+	blocks = append(blocks, contextBlock(taskName))
+	return SlackMessage{
+		Text:   text,
+		Blocks: blocks,
+	}
+}
+
 // FormatSlackTransitionMessage returns a rich Slack message for a task phase transition.
 func FormatSlackTransitionMessage(phase, taskName, message string, results map[string]string) SlackMessage {
 	fallbackText := fmt.Sprintf("%s (Task: %s)", phaseFallbackText[phase], taskName)
