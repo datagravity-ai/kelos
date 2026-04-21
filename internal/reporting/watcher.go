@@ -76,6 +76,10 @@ const (
 	// used as thread_ts for posting replies.
 	AnnotationSlackThreadTS = "kelos.dev/slack-thread-ts"
 
+	// AnnotationSlackUserID records the Slack user ID of the person who
+	// triggered the task.
+	AnnotationSlackUserID = "kelos.dev/slack-user-id"
+
 	// AnnotationSlackReportPhase records the last Task phase that was
 	// reported to Slack, preventing duplicate API calls on re-list.
 	AnnotationSlackReportPhase = "kelos.dev/slack-report-phase"
