@@ -3,6 +3,7 @@ package webhook
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -1078,6 +1079,7 @@ func TestParseLinearWebhook(t *testing.T) {
 			payload: `{
 				"type": "Issue",
 				"action": "create",
+				"actorId": "user-abc-123",
 				"data": {
 					"id": "issue-123",
 					"title": "Test issue",
@@ -1089,12 +1091,13 @@ func TestParseLinearWebhook(t *testing.T) {
 				}
 			}`,
 			expected: &LinearEventData{
-				ID:     "issue-123",
-				Title:  "Test issue",
-				Type:   "Issue",
-				Action: "create",
-				State:  "Todo",
-				Labels: []string{"bug", "urgent"},
+				ID:      "issue-123",
+				Title:   "Test issue",
+				Type:    "Issue",
+				Action:  "create",
+				State:   "Todo",
+				Labels:  []string{"bug", "urgent"},
+				ActorID: "user-abc-123",
 			},
 			wantErr: false,
 		},
@@ -1142,6 +1145,7 @@ func TestParseLinearWebhook(t *testing.T) {
 				assert.Equal(t, tt.expected.Action, result.Action)
 				assert.Equal(t, tt.expected.State, result.State)
 				assert.Equal(t, tt.expected.Labels, result.Labels)
+				assert.Equal(t, tt.expected.ActorID, result.ActorID)
 			}
 		})
 	}
@@ -1356,27 +1360,29 @@ func TestMatchesLinearEvent(t *testing.T) {
 
 func TestExtractLinearWorkItem(t *testing.T) {
 	eventData := &LinearEventData{
-		ID:      "issue-123",
-		Title:   "Test Issue",
-		Type:    "Issue",
-		Action:  "create",
-		State:   "Todo",
-		Labels:  []string{"bug", "urgent"},
-		Payload: map[string]interface{}{"key": "value"},
+		ID:         "issue-123",
+		Title:      "Test Issue",
+		Type:       "Issue",
+		Action:     "create",
+		State:      "Todo",
+		Labels:     []string{"bug", "urgent"},
+		ActorEmail: "alice@example.com",
+		Payload:    map[string]interface{}{"key": "value"},
 	}
 
 	result := ExtractLinearWorkItem(eventData)
 
 	expected := map[string]interface{}{
-		"ID":      "issue-123",
-		"Title":   "Test Issue",
-		"Kind":    "LinearWebhook",
-		"Type":    "Issue",
-		"Action":  "create",
-		"State":   "Todo",
-		"Labels":  "bug, urgent",
-		"IssueID": "",
-		"Payload": map[string]interface{}{"key": "value"},
+		"ID":         "issue-123",
+		"Title":      "Test Issue",
+		"Kind":       "LinearWebhook",
+		"Type":       "Issue",
+		"Action":     "create",
+		"State":      "Todo",
+		"Labels":     "bug, urgent",
+		"IssueID":    "",
+		"ActorEmail": "alice@example.com",
+		"Payload":    map[string]interface{}{"key": "value"},
 	}
 
 	assert.Equal(t, expected, result)
@@ -1684,4 +1690,62 @@ func TestEnrichLinearCommentLabels_MatchesFilterAfterEnrichment(t *testing.T) {
 	if !matched {
 		t.Error("Expected match after enrichment")
 	}
+}
+
+func TestEnrichLinearActorEmail(t *testing.T) {
+	origFetcher := linearEmailFetcher
+	defer func() { linearEmailFetcher = origFetcher }()
+
+	t.Run("enriches email when actorID is present", func(t *testing.T) {
+		linearEmailFetcher = func(ctx context.Context, userID string) (string, error) {
+			if userID == "user-abc" {
+				return "alice@example.com", nil
+			}
+			return "", nil
+		}
+
+		eventData := &LinearEventData{
+			ActorID: "user-abc",
+			Type:    "Issue",
+			Action:  "create",
+		}
+
+		enrichLinearActorEmail(context.Background(), logr.Discard(), eventData)
+
+		assert.Equal(t, "alice@example.com", eventData.ActorEmail)
+	})
+
+	t.Run("no-op when actorID is empty", func(t *testing.T) {
+		called := false
+		linearEmailFetcher = func(ctx context.Context, userID string) (string, error) {
+			called = true
+			return "", nil
+		}
+
+		eventData := &LinearEventData{
+			Type:   "Issue",
+			Action: "create",
+		}
+
+		enrichLinearActorEmail(context.Background(), logr.Discard(), eventData)
+
+		assert.False(t, called, "should not call API when actorID is empty")
+		assert.Empty(t, eventData.ActorEmail)
+	})
+
+	t.Run("handles API error gracefully", func(t *testing.T) {
+		linearEmailFetcher = func(ctx context.Context, userID string) (string, error) {
+			return "", fmt.Errorf("API error")
+		}
+
+		eventData := &LinearEventData{
+			ActorID: "user-abc",
+			Type:    "Issue",
+			Action:  "create",
+		}
+
+		enrichLinearActorEmail(context.Background(), logr.Discard(), eventData)
+
+		assert.Empty(t, eventData.ActorEmail)
+	})
 }

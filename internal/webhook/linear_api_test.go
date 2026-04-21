@@ -151,3 +151,83 @@ func TestFetchLinearIssueLabels_NoAPIKey(t *testing.T) {
 		t.Errorf("Expected nil labels, got %v", labels)
 	}
 }
+
+func TestFetchLinearUserEmail(t *testing.T) {
+	tests := []struct {
+		name       string
+		response   string
+		statusCode int
+		wantEmail  string
+		wantErr    bool
+	}{
+		{
+			name:       "successful response with email",
+			response:   `{"data":{"user":{"email":"alice@example.com"}}}`,
+			statusCode: http.StatusOK,
+			wantEmail:  "alice@example.com",
+		},
+		{
+			name:       "user with no email",
+			response:   `{"data":{"user":{"email":""}}}`,
+			statusCode: http.StatusOK,
+			wantEmail:  "",
+		},
+		{
+			name:       "API error status",
+			statusCode: http.StatusUnauthorized,
+			wantErr:    true,
+		},
+		{
+			name:       "GraphQL error",
+			response:   `{"errors":[{"message":"User not found"}]}`,
+			statusCode: http.StatusOK,
+			wantErr:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					t.Errorf("Expected POST, got %s", r.Method)
+				}
+
+				var req linearGraphQLRequest
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					t.Errorf("Failed to decode request body: %v", err)
+				}
+				if req.Variables["id"] != "user-123" {
+					t.Errorf("Expected user ID 'user-123', got %v", req.Variables["id"])
+				}
+
+				w.WriteHeader(tt.statusCode)
+				if tt.statusCode == http.StatusOK {
+					w.Write([]byte(tt.response))
+				} else {
+					w.Write([]byte("error"))
+				}
+			}))
+			defer server.Close()
+
+			email, err := fetchLinearUserEmailFromURL(context.Background(), server.URL, "test-api-key", "user-123")
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("fetchLinearUserEmailFromURL() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !tt.wantErr && email != tt.wantEmail {
+				t.Errorf("fetchLinearUserEmailFromURL() = %q, want %q", email, tt.wantEmail)
+			}
+		})
+	}
+}
+
+func TestFetchLinearUserEmail_NoAPIKey(t *testing.T) {
+	email, err := fetchLinearUserEmailFromURL(context.Background(), "http://unused", "", "user-123")
+	if err != nil {
+		t.Errorf("Expected no error, got %v", err)
+	}
+	if email != "" {
+		t.Errorf("Expected empty email, got %q", email)
+	}
+}

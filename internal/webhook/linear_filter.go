@@ -14,13 +14,15 @@ import (
 // Fields are populated manually by ParseLinearWebhook from the nested payload
 // structure — they do not map 1:1 to the wire format so no JSON tags are used.
 type LinearEventData struct {
-	ID      string
-	Title   string
-	Type    string
-	Action  string
-	Payload map[string]interface{}
-	Labels  []string
-	State   string
+	ID         string
+	Title      string
+	Type       string
+	Action     string
+	Payload    map[string]interface{}
+	Labels     []string
+	State      string
+	ActorID    string
+	ActorEmail string
 }
 
 // ParseLinearWebhook parses a Linear webhook payload.
@@ -42,6 +44,11 @@ func ParseLinearWebhook(payload []byte) (*LinearEventData, error) {
 	// Extract action from the payload
 	if actionVal, ok := rawPayload["action"].(string); ok {
 		eventData.Action = actionVal
+	}
+
+	// Extract actorId (top-level field identifying who triggered the event)
+	if actorID, ok := rawPayload["actorId"].(string); ok {
+		eventData.ActorID = actorID
 	}
 
 	// Extract data from nested structure
@@ -285,18 +292,44 @@ func enrichLinearCommentLabels(ctx context.Context, log logr.Logger, eventData *
 	eventData.Labels = labels
 }
 
+// linearEmailFetcher is the function used to fetch a user's email from the
+// Linear API. It is a package-level variable so tests can swap in a stub.
+var linearEmailFetcher = fetchLinearUserEmail
+
+// enrichLinearActorEmail fetches the actor's email from the Linear API and
+// sets it on the parsed event data.
+func enrichLinearActorEmail(ctx context.Context, log logr.Logger, eventData *LinearEventData) {
+	if eventData.ActorID == "" {
+		return
+	}
+
+	email, err := linearEmailFetcher(ctx, eventData.ActorID)
+	if err != nil {
+		log.Error(err, "Failed to fetch Linear actor email", "actorID", eventData.ActorID)
+		return
+	}
+	if email == "" {
+		log.Info("LINEAR_API_KEY not set or actor has no email, cannot enrich actor email")
+		return
+	}
+
+	log.Info("Enriched event with actor email from Linear API", "actorID", eventData.ActorID, "actorEmail", email)
+	eventData.ActorEmail = email
+}
+
 // ExtractLinearWorkItem converts Linear webhook data to template variables.
 func ExtractLinearWorkItem(eventData *LinearEventData) map[string]interface{} {
 	vars := map[string]interface{}{
-		"ID":      eventData.ID,
-		"Title":   eventData.Title,
-		"Kind":    "LinearWebhook",
-		"Type":    eventData.Type,
-		"Action":  eventData.Action,
-		"State":   eventData.State,
-		"Labels":  strings.Join(eventData.Labels, ", "),
-		"IssueID": "", // populated below for Comment events
-		"Payload": eventData.Payload,
+		"ID":         eventData.ID,
+		"Title":      eventData.Title,
+		"Kind":       "LinearWebhook",
+		"Type":       eventData.Type,
+		"Action":     eventData.Action,
+		"State":      eventData.State,
+		"Labels":     strings.Join(eventData.Labels, ", "),
+		"IssueID":    "", // populated below for Comment events
+		"ActorEmail": eventData.ActorEmail,
+		"Payload":    eventData.Payload,
 	}
 
 	// For Comment events, extract the parent issue ID

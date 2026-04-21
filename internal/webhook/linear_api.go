@@ -31,6 +31,13 @@ const linearIssueLabelsQuery = `query IssueLabels($id: String!) {
   }
 }`
 
+// linearUserEmailQuery is the GraphQL query to fetch a user's email by ID.
+const linearUserEmailQuery = `query UserEmail($id: String!) {
+  user(id: $id) {
+    email
+  }
+}`
+
 type linearGraphQLRequest struct {
 	Query     string                 `json:"query"`
 	Variables map[string]interface{} `json:"variables"`
@@ -49,6 +56,73 @@ type linearGraphQLResponse struct {
 	Errors []struct {
 		Message string `json:"message"`
 	} `json:"errors,omitempty"`
+}
+
+type linearUserEmailResponse struct {
+	Data struct {
+		User struct {
+			Email string `json:"email"`
+		} `json:"user"`
+	} `json:"data"`
+	Errors []struct {
+		Message string `json:"message"`
+	} `json:"errors,omitempty"`
+}
+
+// fetchLinearUserEmail fetches the email for a Linear user by ID using the
+// GraphQL API. The API key is read from the LINEAR_API_KEY environment variable.
+// Returns ("", nil) if the env var is not set.
+func fetchLinearUserEmail(ctx context.Context, userID string) (string, error) {
+	apiKey := os.Getenv(linearAPIKeyEnvVar)
+	return fetchLinearUserEmailFromURL(ctx, defaultLinearAPIURL, apiKey, userID)
+}
+
+// fetchLinearUserEmailFromURL is the testable core of fetchLinearUserEmail.
+func fetchLinearUserEmailFromURL(ctx context.Context, apiURL, apiKey, userID string) (string, error) {
+	if apiKey == "" {
+		return "", nil
+	}
+
+	reqBody := linearGraphQLRequest{
+		Query: linearUserEmailQuery,
+		Variables: map[string]interface{}{
+			"id": userID,
+		},
+	}
+
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", fmt.Errorf("marshaling Linear GraphQL request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return "", fmt.Errorf("creating Linear API request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", apiKey)
+
+	resp, err := linearHTTPClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("calling Linear API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return "", fmt.Errorf("Linear API returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var gqlResp linearUserEmailResponse
+	if err := json.NewDecoder(resp.Body).Decode(&gqlResp); err != nil {
+		return "", fmt.Errorf("decoding Linear API response: %w", err)
+	}
+
+	if len(gqlResp.Errors) > 0 {
+		return "", fmt.Errorf("Linear API error: %s", gqlResp.Errors[0].Message)
+	}
+
+	return gqlResp.Data.User.Email, nil
 }
 
 // fetchLinearIssueLabels fetches labels for a Linear issue by ID using the
