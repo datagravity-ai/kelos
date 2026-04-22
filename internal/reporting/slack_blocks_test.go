@@ -655,4 +655,3 @@ func TestTableBlock_EmptyCells(t *testing.T) {
 		t.Error("table block contains empty text element; Slack rejects this with invalid_blocks")
 	}
 }
-
