@@ -48,6 +48,10 @@ const (
 	// used as thread_ts for posting replies.
 	AnnotationSlackThreadTS = "kelos.dev/slack-thread-ts"
 
+	// AnnotationSlackUserID records the Slack user ID of the person who
+	// triggered the task.
+	AnnotationSlackUserID = "kelos.dev/slack-user-id"
+
 	// AnnotationSlackReportPhase records the last Task phase that was
 	// reported to Slack, preventing duplicate API calls on re-list.
 	AnnotationSlackReportPhase = "kelos.dev/slack-report-phase"
@@ -260,6 +264,21 @@ func (tr *SlackTaskReporter) ReportTaskStatus(ctx context.Context, task *kelosv1
 
 	msg := FormatSlackTransitionMessage(desiredPhase, task.Name, task.Status.Message, task.Status.Results)
 
+	// For terminal phases, edit the existing progress message in-place
+	// instead of posting a new reply so the thread stays compact.
+	if desiredPhase == "succeeded" || desiredPhase == "failed" {
+		if progressTS := tr.getProgressTS(task.UID); progressTS != "" {
+			log.Info("Updating Slack progress message with final result", "task", task.Name, "channel", channel, "phase", desiredPhase)
+			if err := tr.Reporter.UpdateMessage(ctx, channel, progressTS, msg); err != nil {
+				log.Error(err, "Failed to update progress message with final result, posting new reply", "task", task.Name)
+			} else {
+				tr.clearProgressCache(task.UID)
+				tr.clearActivityState(task.UID)
+				return tr.persistSlackReportingState(ctx, task, desiredPhase)
+			}
+		}
+	}
+
 	log.Info("Posting Slack thread reply", "task", task.Name, "channel", channel, "phase", desiredPhase)
 	replyTS, err := tr.Reporter.PostThreadReply(ctx, channel, threadTS, msg)
 	if err != nil {
@@ -350,7 +369,7 @@ func (tr *SlackTaskReporter) updateProgress(ctx context.Context, task *kelosv1al
 		return nil
 	}
 
-	msg := SlackMessage{Text: text}
+	msg := FormatProgressMessage(text, task.Name)
 
 	// If we already have a progress message for this task, edit it in-place.
 	if replyTS := tr.getProgressTS(task.UID); replyTS != "" {
@@ -379,9 +398,11 @@ func (tr *SlackTaskReporter) updateProgress(ctx context.Context, task *kelosv1al
 	tr.setLastProgress(task.UID, text)
 	tr.setProgressTS(task.UID, replyTS)
 
-	// Point the activity indicator at this new progress message so
-	// subsequent activity ticks update its context block.
+	// Strip the activity indicator from the old target message (e.g. the
+	// accepted ack) before switching, so only one message in the thread
+	// shows an active indicator at a time.
 	if replyTS != "" {
+		tr.resetPreviousActivityIndicator(ctx, task.UID, channel, replyTS)
 		tr.setActivityTarget(task.UID, replyTS, msg)
 	}
 
@@ -565,6 +586,27 @@ func (tr *SlackTaskReporter) setActivityTarget(uid types.UID, messageTS string, 
 	tr.activity[uid] = &activityState{
 		MessageTS: messageTS,
 		BaseMsg:   baseMsg,
+	}
+}
+
+// resetPreviousActivityIndicator reverts the old activity-target message back
+// to its base content (no activity context element) when the target is about
+// to move to a different message. This keeps only one "active" indicator in
+// the thread at a time.
+func (tr *SlackTaskReporter) resetPreviousActivityIndicator(ctx context.Context, uid types.UID, channel, newMessageTS string) {
+	tr.mu.Lock()
+	state := tr.activity[uid]
+	if state == nil || state.MessageTS == "" || state.MessageTS == newMessageTS {
+		tr.mu.Unlock()
+		return
+	}
+	oldTS := state.MessageTS
+	baseMsg := state.BaseMsg
+	tr.mu.Unlock()
+
+	log := ctrl.Log.WithName("slack-activity")
+	if err := tr.Reporter.UpdateMessage(ctx, channel, oldTS, baseMsg); err != nil {
+		log.V(1).Info("Failed to reset activity indicator on previous message", "messageTS", oldTS, "error", err)
 	}
 }
 

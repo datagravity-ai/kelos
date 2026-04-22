@@ -218,6 +218,40 @@ func TestFormatSlackTransitionMessage_TruncatesLongResponse(t *testing.T) {
 	}
 }
 
+func TestFormatProgressMessage(t *testing.T) {
+	t.Run("includes blocks and context", func(t *testing.T) {
+		got := FormatProgressMessage("Looking at the config files...", "test-task")
+		if got.Text != "Looking at the config files..." {
+			t.Errorf("text = %q, want progress text", got.Text)
+		}
+		if len(got.Blocks) == 0 {
+			t.Fatal("expected blocks to be present")
+		}
+		// Last block should be a context block with the task name.
+		lastBlock := got.Blocks[len(got.Blocks)-1]
+		assertContextContains(t, lastBlock, "test-task")
+	})
+
+	t.Run("appendActivityContext works", func(t *testing.T) {
+		base := FormatProgressMessage("Investigating the issue...", "test-task")
+		result := appendActivityContext(base, "Reading `main.go`...")
+		// Should have blocks (not skipped like text-only messages).
+		if len(result.Blocks) == 0 {
+			t.Fatal("expected blocks after appending activity context")
+		}
+		// The activity text should be in the last context block.
+		lastBlock := result.Blocks[len(result.Blocks)-1]
+		ctx, ok := lastBlock.(*slack.ContextBlock)
+		if !ok {
+			t.Fatalf("last block: expected *ContextBlock, got %T", lastBlock)
+		}
+		// Should have 2 elements: task name + activity.
+		if len(ctx.ContextElements.Elements) != 2 {
+			t.Errorf("context elements = %d, want 2 (task name + activity)", len(ctx.ContextElements.Elements))
+		}
+	})
+}
+
 func TestConvertInlineMarkdown(t *testing.T) {
 	tests := []struct {
 		name string
