@@ -202,6 +202,9 @@ func parseMarkdownSegments(text string) []segment {
 	return segments
 }
 
+// SlackBlockLimit is the maximum number of blocks Slack allows per message.
+const SlackBlockLimit = 50
+
 // responseToBlocks converts a markdown response string into Slack blocks.
 func responseToBlocks(text string) []slack.Block {
 	segments := parseMarkdownSegments(text)
