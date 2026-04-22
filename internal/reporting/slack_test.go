@@ -181,6 +181,43 @@ func TestFormatSlackTransitionMessages(t *testing.T) {
 	})
 }
 
+func TestFormatSlackTransitionMessage_TruncatesLongResponse(t *testing.T) {
+	var sb strings.Builder
+	for i := 0; i < 30; i++ {
+		if i > 0 {
+			sb.WriteString("\n\n")
+		}
+		sb.WriteString("### Header\nSome content here.")
+	}
+	results := map[string]string{"response": b64(sb.String())}
+
+	got := FormatSlackTransitionMessage("succeeded", "test-task", "", results)
+
+	if len(got.Blocks) > SlackBlockLimit {
+		t.Errorf("total blocks = %d, must be <= %d", len(got.Blocks), SlackBlockLimit)
+	}
+
+	// Last block must be the context block (task name).
+	last := got.Blocks[len(got.Blocks)-1]
+	if _, ok := last.(*slack.ContextBlock); !ok {
+		t.Errorf("last block should be ContextBlock, got %T", last)
+	}
+
+	// A truncation indicator must be present somewhere.
+	found := false
+	for _, b := range got.Blocks {
+		if sec, ok := b.(*slack.SectionBlock); ok && sec.Text != nil {
+			if strings.Contains(sec.Text.Text, "truncated") {
+				found = true
+				break
+			}
+		}
+	}
+	if !found {
+		t.Error("expected a truncation indicator block")
+	}
+}
+
 func TestFormatProgressMessage(t *testing.T) {
 	t.Run("includes blocks and context", func(t *testing.T) {
 		got := FormatProgressMessage("Looking at the config files...", "test-task")

@@ -153,6 +153,18 @@ func FormatSlackTransitionMessage(phase, taskName, message string, results map[s
 
 	blocks = append(blocks, contextBlock(taskName))
 
+	if len(blocks) > SlackBlockLimit {
+		truncated := make([]slack.Block, SlackBlockLimit)
+		copy(truncated, blocks[:SlackBlockLimit-2])
+		truncated[SlackBlockLimit-2] = slack.NewSectionBlock(
+			slack.NewTextBlockObject(slack.MarkdownType,
+				"_… response truncated_", false, false),
+			nil, nil,
+		)
+		truncated[SlackBlockLimit-1] = blocks[len(blocks)-1]
+		blocks = truncated
+	}
+
 	return SlackMessage{
 		Text:   fallbackText,
 		Blocks: blocks,
