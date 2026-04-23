@@ -775,6 +775,7 @@ type TaskTemplate struct {
 	// in promptTemplate, branch, and metadata templates. Sources are
 	// fetched in parallel during the discovery cycle.
 	// +optional
+	// +kubebuilder:validation:MaxItems=8
 	// +kubebuilder:validation:XValidation:rule="self.all(a, self.exists_one(b, b.name == a.name))",message="contextSources names must be unique"
 	ContextSources []ContextSource `json:"contextSources,omitempty"`
 

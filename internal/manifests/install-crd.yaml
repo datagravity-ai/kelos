@@ -972,6 +972,7 @@ spec:
                       - name
                       - url
                       type: object
+                    maxItems: 8
                     type: array
                     x-kubernetes-validations:
                     - message: contextSources names must be unique
