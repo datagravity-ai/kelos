@@ -9,9 +9,19 @@ import (
 	"github.com/slack-go/slack"
 )
 
+// firstMsg is a helper that returns the first (and usually only) message
+// from FormatSlackTransitionMessage, failing the test if the slice is empty.
+func firstMsg(t *testing.T, msgs []SlackMessage) SlackMessage {
+	t.Helper()
+	if len(msgs) == 0 {
+		t.Fatal("FormatSlackTransitionMessage returned 0 messages")
+	}
+	return msgs[0]
+}
+
 func TestFormatSlackTransitionMessages(t *testing.T) {
 	t.Run("accepted", func(t *testing.T) {
-		got := FormatSlackTransitionMessage("accepted", "spawner-1234567890.123456", "", nil)
+		got := firstMsg(t, FormatSlackTransitionMessage("accepted", "spawner-1234567890.123456", "", nil))
 		if got.Text != "Working on your request... (Task: spawner-1234567890.123456)" {
 			t.Errorf("fallback text = %q", got.Text)
 		}
@@ -22,7 +32,7 @@ func TestFormatSlackTransitionMessages(t *testing.T) {
 
 	t.Run("succeeded with PR", func(t *testing.T) {
 		results := map[string]string{"pr": "https://github.com/org/repo/pull/42"}
-		got := FormatSlackTransitionMessage("succeeded", "spawner-1234567890.123456", "", results)
+		got := firstMsg(t, FormatSlackTransitionMessage("succeeded", "spawner-1234567890.123456", "", results))
 		if got.Text != "PR: https://github.com/org/repo/pull/42 (Task: spawner-1234567890.123456)" {
 			t.Errorf("fallback text = %q", got.Text)
 		}
@@ -31,7 +41,7 @@ func TestFormatSlackTransitionMessages(t *testing.T) {
 	})
 
 	t.Run("succeeded without results", func(t *testing.T) {
-		got := FormatSlackTransitionMessage("succeeded", "spawner-1234567890.123456", "", nil)
+		got := firstMsg(t, FormatSlackTransitionMessage("succeeded", "spawner-1234567890.123456", "", nil))
 		if got.Text != "Done! (Task: spawner-1234567890.123456)" {
 			t.Errorf("fallback text = %q", got.Text)
 		}
@@ -39,7 +49,7 @@ func TestFormatSlackTransitionMessages(t *testing.T) {
 	})
 
 	t.Run("succeeded with empty results", func(t *testing.T) {
-		got := FormatSlackTransitionMessage("succeeded", "spawner-1234567890.123456", "", map[string]string{})
+		got := firstMsg(t, FormatSlackTransitionMessage("succeeded", "spawner-1234567890.123456", "", map[string]string{}))
 		if got.Text != "Done! (Task: spawner-1234567890.123456)" {
 			t.Errorf("fallback text = %q", got.Text)
 		}
@@ -47,7 +57,7 @@ func TestFormatSlackTransitionMessages(t *testing.T) {
 	})
 
 	t.Run("succeeded ignores status message", func(t *testing.T) {
-		got := FormatSlackTransitionMessage("succeeded", "spawner-1234567890.123456", "Task completed successfully", nil)
+		got := firstMsg(t, FormatSlackTransitionMessage("succeeded", "spawner-1234567890.123456", "Task completed successfully", nil))
 		if got.Text != "Done! (Task: spawner-1234567890.123456)" {
 			t.Errorf("fallback text = %q", got.Text)
 		}
@@ -56,7 +66,7 @@ func TestFormatSlackTransitionMessages(t *testing.T) {
 
 	t.Run("succeeded with response", func(t *testing.T) {
 		results := map[string]string{"response": b64("I need your GitHub username to proceed.")}
-		got := FormatSlackTransitionMessage("succeeded", "spawner-1234567890.123456", "", results)
+		got := firstMsg(t, FormatSlackTransitionMessage("succeeded", "spawner-1234567890.123456", "", results))
 		if got.Text != "I need your GitHub username to proceed. (Task: spawner-1234567890.123456)" {
 			t.Errorf("fallback text = %q", got.Text)
 		}
@@ -69,7 +79,7 @@ func TestFormatSlackTransitionMessages(t *testing.T) {
 			"response": b64("Added CODEOWNERS entry."),
 			"pr":       "https://github.com/org/repo/pull/42",
 		}
-		got := FormatSlackTransitionMessage("succeeded", "spawner-1234567890.123456", "", results)
+		got := firstMsg(t, FormatSlackTransitionMessage("succeeded", "spawner-1234567890.123456", "", results))
 		if got.Text != "Added CODEOWNERS entry.\nPR: https://github.com/org/repo/pull/42 (Task: spawner-1234567890.123456)" {
 			t.Errorf("fallback text = %q", got.Text)
 		}
@@ -80,7 +90,7 @@ func TestFormatSlackTransitionMessages(t *testing.T) {
 
 	t.Run("succeeded with multiline response", func(t *testing.T) {
 		results := map[string]string{"response": b64("Line one.\nLine two.\nLine three.")}
-		got := FormatSlackTransitionMessage("succeeded", "spawner-1234567890.123456", "", results)
+		got := firstMsg(t, FormatSlackTransitionMessage("succeeded", "spawner-1234567890.123456", "", results))
 		if got.Text != "Line one.\nLine two.\nLine three. (Task: spawner-1234567890.123456)" {
 			t.Errorf("fallback text = %q", got.Text)
 		}
@@ -89,7 +99,7 @@ func TestFormatSlackTransitionMessages(t *testing.T) {
 
 	t.Run("succeeded with non-base64 response fallback", func(t *testing.T) {
 		results := map[string]string{"response": "plain text response"}
-		got := FormatSlackTransitionMessage("succeeded", "spawner-1234567890.123456", "", results)
+		got := firstMsg(t, FormatSlackTransitionMessage("succeeded", "spawner-1234567890.123456", "", results))
 		if got.Text != "plain text response (Task: spawner-1234567890.123456)" {
 			t.Errorf("fallback text = %q", got.Text)
 		}
@@ -97,7 +107,7 @@ func TestFormatSlackTransitionMessages(t *testing.T) {
 	})
 
 	t.Run("failed with message", func(t *testing.T) {
-		got := FormatSlackTransitionMessage("failed", "spawner-1234567890.123456", "pod OOMKilled", nil)
+		got := firstMsg(t, FormatSlackTransitionMessage("failed", "spawner-1234567890.123456", "pod OOMKilled", nil))
 		if got.Text != "Error: pod OOMKilled (Task: spawner-1234567890.123456)" {
 			t.Errorf("fallback text = %q", got.Text)
 		}
@@ -106,7 +116,7 @@ func TestFormatSlackTransitionMessages(t *testing.T) {
 	})
 
 	t.Run("failed without message", func(t *testing.T) {
-		got := FormatSlackTransitionMessage("failed", "spawner-1234567890.123456", "", nil)
+		got := firstMsg(t, FormatSlackTransitionMessage("failed", "spawner-1234567890.123456", "", nil))
 		if got.Text != "Failed. (Task: spawner-1234567890.123456)" {
 			t.Errorf("fallback text = %q", got.Text)
 		}
@@ -115,7 +125,7 @@ func TestFormatSlackTransitionMessages(t *testing.T) {
 
 	t.Run("failed with response", func(t *testing.T) {
 		results := map[string]string{"response": b64("Could not find the file.")}
-		got := FormatSlackTransitionMessage("failed", "spawner-1234567890.123456", "Task failed", results)
+		got := firstMsg(t, FormatSlackTransitionMessage("failed", "spawner-1234567890.123456", "Task failed", results))
 		if got.Text != "Could not find the file.\nError: Task failed (Task: spawner-1234567890.123456)" {
 			t.Errorf("fallback text = %q", got.Text)
 		}
@@ -127,7 +137,7 @@ func TestFormatSlackTransitionMessages(t *testing.T) {
 	t.Run("succeeded with table response", func(t *testing.T) {
 		resp := "| Name | Age |\n| --- | --- |\n| Alice | 30 |"
 		results := map[string]string{"response": b64(resp)}
-		got := FormatSlackTransitionMessage("succeeded", "spawner-1234567890.123456", "", results)
+		got := firstMsg(t, FormatSlackTransitionMessage("succeeded", "spawner-1234567890.123456", "", results))
 		// table + context
 		assertBlockCount(t, got.Blocks, 2)
 		if _, ok := got.Blocks[0].(*slack.TableBlock); !ok {
@@ -138,7 +148,7 @@ func TestFormatSlackTransitionMessages(t *testing.T) {
 	t.Run("succeeded with list response", func(t *testing.T) {
 		resp := "- item one\n- item two\n- item three"
 		results := map[string]string{"response": b64(resp)}
-		got := FormatSlackTransitionMessage("succeeded", "spawner-1234567890.123456", "", results)
+		got := firstMsg(t, FormatSlackTransitionMessage("succeeded", "spawner-1234567890.123456", "", results))
 		// rich_text list + context
 		assertBlockCount(t, got.Blocks, 2)
 		if _, ok := got.Blocks[0].(*slack.RichTextBlock); !ok {
@@ -149,7 +159,7 @@ func TestFormatSlackTransitionMessages(t *testing.T) {
 	t.Run("succeeded with header response", func(t *testing.T) {
 		resp := "# Summary\nEverything looks good."
 		results := map[string]string{"response": b64(resp)}
-		got := FormatSlackTransitionMessage("succeeded", "spawner-1234567890.123456", "", results)
+		got := firstMsg(t, FormatSlackTransitionMessage("succeeded", "spawner-1234567890.123456", "", results))
 		// HeaderBlock + SectionBlock + context
 		assertBlockCount(t, got.Blocks, 3)
 		if hdr, ok := got.Blocks[0].(*slack.HeaderBlock); !ok {
@@ -163,7 +173,7 @@ func TestFormatSlackTransitionMessages(t *testing.T) {
 	t.Run("succeeded with mixed rich content", func(t *testing.T) {
 		resp := "## Report\nResults below:\n\n| Col | Val |\n| --- | --- |\n| a | 1 |\n\n- note 1\n- note 2"
 		results := map[string]string{"response": b64(resp)}
-		got := FormatSlackTransitionMessage("succeeded", "spawner-1234567890.123456", "", results)
+		got := firstMsg(t, FormatSlackTransitionMessage("succeeded", "spawner-1234567890.123456", "", results))
 		// header + section + table + list + context
 		assertBlockCount(t, got.Blocks, 5)
 		if _, ok := got.Blocks[0].(*slack.HeaderBlock); !ok {
@@ -181,7 +191,7 @@ func TestFormatSlackTransitionMessages(t *testing.T) {
 	})
 }
 
-func TestFormatSlackTransitionMessage_TruncatesLongResponse(t *testing.T) {
+func TestFormatSlackTransitionMessage_SplitsLongResponse(t *testing.T) {
 	var sb strings.Builder
 	for i := 0; i < 30; i++ {
 		if i > 0 {
@@ -191,30 +201,87 @@ func TestFormatSlackTransitionMessage_TruncatesLongResponse(t *testing.T) {
 	}
 	results := map[string]string{"response": b64(sb.String())}
 
-	got := FormatSlackTransitionMessage("succeeded", "test-task", "", results)
+	msgs := FormatSlackTransitionMessage("succeeded", "test-task", "", results)
 
-	if len(got.Blocks) > SlackBlockLimit {
-		t.Errorf("total blocks = %d, must be <= %d", len(got.Blocks), SlackBlockLimit)
+	if len(msgs) < 2 {
+		t.Fatalf("expected multiple messages for long response, got %d", len(msgs))
 	}
 
-	// Last block must be the context block (task name).
-	last := got.Blocks[len(got.Blocks)-1]
+	// Every message must be within the block limit.
+	for i, msg := range msgs {
+		if len(msg.Blocks) > SlackBlockLimit {
+			t.Errorf("message %d has %d blocks, must be <= %d", i, len(msg.Blocks), SlackBlockLimit)
+		}
+	}
+
+	// Last block of the last message must be the context block (task name).
+	lastMsg := msgs[len(msgs)-1]
+	last := lastMsg.Blocks[len(lastMsg.Blocks)-1]
 	if _, ok := last.(*slack.ContextBlock); !ok {
-		t.Errorf("last block should be ContextBlock, got %T", last)
+		t.Errorf("last block of last message should be ContextBlock, got %T", last)
 	}
 
-	// A truncation indicator must be present somewhere.
-	found := false
-	for _, b := range got.Blocks {
+	// First message should have a continuation context with part info.
+	firstMsg := msgs[0]
+	firstLast := firstMsg.Blocks[len(firstMsg.Blocks)-1]
+	if ctx, ok := firstLast.(*slack.ContextBlock); ok {
+		found := false
+		for _, elem := range ctx.ContextElements.Elements {
+			if txt, ok := elem.(*slack.TextBlockObject); ok {
+				if strings.Contains(txt.Text, "Part 1/") {
+					found = true
+					break
+				}
+			}
+		}
+		if !found {
+			t.Error("expected first message to have a Part 1/N continuation indicator")
+		}
+	} else {
+		t.Errorf("first message last block: expected *ContextBlock, got %T", firstLast)
+	}
+
+	// Continuation messages should have part indicators in their fallback text.
+	for i := 1; i < len(msgs); i++ {
+		if !strings.Contains(msgs[i].Text, "continued") {
+			t.Errorf("message %d fallback text should contain 'continued', got %q", i, msgs[i].Text)
+		}
+	}
+}
+
+func TestFormatSlackTransitionMessage_SplitsWithPRLink(t *testing.T) {
+	// Verify that the PR link ends up in the last message.
+	var sb strings.Builder
+	for i := 0; i < 30; i++ {
+		if i > 0 {
+			sb.WriteString("\n\n")
+		}
+		sb.WriteString("### Header\nSome content here.")
+	}
+	results := map[string]string{
+		"response": b64(sb.String()),
+		"pr":       "https://github.com/org/repo/pull/99",
+	}
+
+	msgs := FormatSlackTransitionMessage("succeeded", "test-task", "", results)
+
+	if len(msgs) < 2 {
+		t.Fatalf("expected multiple messages, got %d", len(msgs))
+	}
+
+	// PR link should be in the last message.
+	lastMsg := msgs[len(msgs)-1]
+	foundPR := false
+	for _, b := range lastMsg.Blocks {
 		if sec, ok := b.(*slack.SectionBlock); ok && sec.Text != nil {
-			if strings.Contains(sec.Text.Text, "truncated") {
-				found = true
+			if strings.Contains(sec.Text.Text, "Pull Request") {
+				foundPR = true
 				break
 			}
 		}
 	}
-	if !found {
-		t.Error("expected a truncation indicator block")
+	if !foundPR {
+		t.Error("expected PR link in last message")
 	}
 }
 
@@ -278,7 +345,7 @@ func TestConvertInlineMarkdown(t *testing.T) {
 
 func TestFormatSlackSucceeded_MarkdownConversion(t *testing.T) {
 	results := map[string]string{"response": b64("## Summary\nI updated the **CODEOWNERS** file.")}
-	got := FormatSlackTransitionMessage("succeeded", "spawner-1234567890.123456", "", results)
+	got := firstMsg(t, FormatSlackTransitionMessage("succeeded", "spawner-1234567890.123456", "", results))
 	// ## Summary becomes a HeaderBlock, text becomes a SectionBlock with inline markdown converted
 	if hdr, ok := got.Blocks[0].(*slack.HeaderBlock); !ok {
 		t.Errorf("block 0: expected *HeaderBlock, got %T", got.Blocks[0])
