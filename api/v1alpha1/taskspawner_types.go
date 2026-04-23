@@ -527,6 +527,7 @@ type ContextSource struct {
 	// as .Context.NAME in promptTemplate, branch, and metadata templates.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=64
 	// +kubebuilder:validation:Pattern=`^[a-zA-Z][a-zA-Z0-9_]*$`
 	Name string `json:"name"`
 
