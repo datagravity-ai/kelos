@@ -643,6 +643,101 @@ type SlackTrigger struct {
 	MentionOptional *bool `json:"mentionOptional,omitempty"`
 }
 
+// ContextSource declares an external HTTP endpoint to query before task
+// creation. The response body (optionally filtered via JSONPath) is made
+// available as a .Context.NAME template variable.
+type ContextSource struct {
+	// Name identifies this context source. The fetched value is available
+	// as .Context.NAME in promptTemplate, branch, and metadata templates.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern=`^[a-zA-Z][a-zA-Z0-9_]*$`
+	Name string `json:"name"`
+
+	// URL is the HTTP(S) endpoint to fetch. Supports Go text/template
+	// variables from the work item (e.g., "https://api.example.com/items/{{.Number}}").
+	// HTTPS is required unless AllowInsecure is set.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	URL string `json:"url"`
+
+	// Method is the HTTP method to use. Defaults to GET.
+	// +kubebuilder:validation:Enum=GET;POST
+	// +kubebuilder:default=GET
+	// +optional
+	Method string `json:"method,omitempty"`
+
+	// Headers are static HTTP headers to include in the request.
+	// Values support Go text/template variables from the work item.
+	// +optional
+	Headers map[string]string `json:"headers,omitempty"`
+
+	// HeadersFrom references Secrets whose data keys map to HTTP header
+	// values. These are merged with inline Headers; HeadersFrom values
+	// take precedence on conflict.
+	// +optional
+	HeadersFrom []HeaderFromSecret `json:"headersFrom,omitempty"`
+
+	// Body is a Go text/template for POST request bodies.
+	// +optional
+	Body string `json:"body,omitempty"`
+
+	// JSONPathFilter is a JSONPath expression applied to the JSON response
+	// body (e.g., "$.data.value"). When set, only the extracted value is
+	// stored as the context variable. When empty, the entire response body
+	// is stored as a string. Uses the same JSONPath syntax as generic
+	// webhook fieldMapping.
+	// +optional
+	JSONPathFilter string `json:"jsonPathFilter,omitempty"`
+
+	// AllowInsecure permits plain HTTP (non-TLS) URLs. Defaults to false.
+	// +optional
+	AllowInsecure bool `json:"allowInsecure,omitempty"`
+
+	// TimeoutSeconds is the per-request timeout. Defaults to 10.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=60
+	// +kubebuilder:default=10
+	// +optional
+	TimeoutSeconds *int32 `json:"timeoutSeconds,omitempty"`
+
+	// MaxResponseBytes limits the response body size read from the
+	// endpoint. Prevents oversized responses from inflating prompts.
+	// Defaults to 32768 (32 KiB).
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=131072
+	// +kubebuilder:default=32768
+	// +optional
+	MaxResponseBytes *int32 `json:"maxResponseBytes,omitempty"`
+
+	// Required when true causes task creation to be skipped for this work
+	// item if the context source fetch fails. When false (default), a
+	// failed fetch produces an empty string for the context variable and
+	// logs a warning.
+	// +optional
+	Required bool `json:"required,omitempty"`
+}
+
+// HeaderFromSecret maps a single HTTP header to a value stored in a
+// Kubernetes Secret.
+type HeaderFromSecret struct {
+	// Header is the HTTP header name (e.g., "Authorization").
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Header string `json:"header"`
+
+	// SecretRef references the Secret containing the header value.
+	// The Secret must be in the same namespace as the TaskSpawner.
+	// +kubebuilder:validation:Required
+	SecretRef SecretReference `json:"secretRef"`
+
+	// Key is the data key within the Secret whose value is used as the
+	// header value.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Key string `json:"key"`
+}
+
 // TaskTemplateMetadata holds optional labels and annotations for spawned Tasks.
 type TaskTemplateMetadata struct {
 	// Labels are merged into the spawned Task's labels. Values support Go
@@ -717,6 +812,7 @@ type TaskTemplate struct {
 	// GitHub webhook sources: {{.Event}}, {{.Action}}, {{.Sender}}, {{.Ref}}, {{.Repository}}, {{.Payload}} (full payload access)
 	// Linear webhook sources: {{.Type}}, {{.Action}}, {{.State}}, {{.Labels}}, {{.IssueID}}, {{.Payload}}
 	// Cron sources: {{.Time}}, {{.Schedule}}
+	// When contextSources are configured: .Context.NAME for each source
 	// +optional
 	Branch string `json:"branch,omitempty"`
 
@@ -727,6 +823,7 @@ type TaskTemplate struct {
 	// GitHub webhook sources: {{.Event}}, {{.Action}}, {{.Sender}}, {{.Ref}}, {{.Repository}}, {{.Payload}} (full payload access)
 	// Linear webhook sources: {{.Type}}, {{.Action}}, {{.State}}, {{.Labels}}, {{.IssueID}}, {{.Payload}}
 	// Cron sources: {{.Time}}, {{.Schedule}}
+	// When contextSources are configured: .Context.NAME for each source
 	// +optional
 	PromptTemplate string `json:"promptTemplate,omitempty"`
 
@@ -748,6 +845,15 @@ type TaskTemplate struct {
 	// Metadata holds optional labels and annotations for spawned Tasks.
 	// +optional
 	Metadata *TaskTemplateMetadata `json:"metadata,omitempty"`
+
+	// ContextSources declares external HTTP endpoints to query before task
+	// creation. Each source's response is available as .Context.NAME
+	// in promptTemplate, branch, and metadata templates. Sources are
+	// fetched in parallel during the discovery cycle.
+	// +optional
+	// +kubebuilder:validation:MaxItems=8
+	// +kubebuilder:validation:XValidation:rule="self.all(a, self.exists_one(b, b.name == a.name))",message="contextSources names must be unique"
+	ContextSources []ContextSource `json:"contextSources,omitempty"`
 
 	// UpstreamRepo is the upstream repository in "owner/repo" format.
 	// When set, spawned Tasks inherit this value and inject
