@@ -19,7 +19,6 @@ package controller
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -506,20 +505,23 @@ func (b *SessionStatefulSetBuilder) resolveAgentImage(tmpl *kelosv1alpha1.TaskTe
 
 // wrapInitContainerWithExistsCheck wraps an init container so it skips
 // execution when the given path already exists on a persistent volume.
+// Handles two forms from buildGitCloneInitContainer:
+//   - No SecretRef: Command=nil, Args=[clone args] (image entrypoint is git)
+//   - With SecretRef: Command=["sh","-c","<script>"], Args=["--", clone args...]
 func wrapInitContainerWithExistsCheck(c corev1.Container, checkPath string) corev1.Container {
-	origCmd := ""
-	if len(c.Command) > 0 && c.Command[0] == "sh" && len(c.Args) > 0 {
-		origCmd = c.Args[len(c.Args)-1]
-	} else {
-		parts := append(c.Command, c.Args...)
-		for i, p := range parts {
-			parts[i] = fmt.Sprintf("'%s'", p)
+	skipPrefix := fmt.Sprintf("if [ -d '%s' ]; then echo 'Workspace already exists, skipping clone'; exit 0; fi; ", checkPath)
+
+	if len(c.Command) > 0 && c.Command[0] == "sh" {
+		// SecretRef form: Command=["sh","-c","<script>"], Args=["--", ...].
+		// Prepend the skip check to the existing script; keep Args intact.
+		if len(c.Command) >= 3 {
+			c.Command[2] = skipPrefix + c.Command[2]
 		}
-		origCmd = strings.Join(parts, " ")
+	} else {
+		// No SecretRef form: Command=nil, Args=[clone args].
+		// The image entrypoint is "git", so we need exec git "$@".
+		c.Command = []string{"sh", "-c", skipPrefix + `exec git "$@"`, "--"}
 	}
-	wrapped := fmt.Sprintf("if [ -d '%s' ]; then echo 'Workspace already exists, skipping clone'; exit 0; fi; %s", checkPath, origCmd)
-	c.Command = []string{"sh", "-c", wrapped}
-	c.Args = nil
 	return c
 }
 
