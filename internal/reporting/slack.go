@@ -9,7 +9,8 @@ import (
 	"github.com/slack-go/slack"
 )
 
-const slackFallbackTextLimit = 4000
+// Slack's chat.postMessage text field limit is 40,000 characters.
+const slackFallbackTextLimit = 40000
 
 // decodeResponse decodes a base64-encoded agent response from task results.
 // Returns the raw string if decoding fails (backward compatibility).
@@ -117,8 +118,6 @@ func FormatProgressMessage(text, taskName string) SlackMessage {
 // so that no individual message exceeds the Slack block limit, and each chunk
 // is posted as a separate thread reply.
 func FormatSlackTransitionMessage(phase, taskName, message string, results map[string]string) []SlackMessage {
-	fallbackText := fmt.Sprintf("%s (Task: %s)", phaseFallbackText[phase], taskName)
-
 	// Build the optional header block (e.g. "Working on your request…").
 	var headerBlocks []slack.Block
 	if header, ok := phaseHeaderText[phase]; ok {
@@ -133,18 +132,13 @@ func FormatSlackTransitionMessage(phase, taskName, message string, results map[s
 	decoded := decodeResponse(resp)
 	var responseBlocks []slack.Block
 	if resp != "" {
-		fallbackText = fmt.Sprintf("%s (Task: %s)", decoded, taskName)
 		responseBlocks = responseToBlocks(decoded)
 	}
 
 	// Build the trailing blocks (PR link, error, context).
 	var trailingBlocks []slack.Block
-	if pr := results["pr"]; pr != "" {
-		if resp != "" {
-			fallbackText = fmt.Sprintf("%s\nPR: %s (Task: %s)", decoded, pr, taskName)
-		} else {
-			fallbackText = fmt.Sprintf("PR: %s (Task: %s)", pr, taskName)
-		}
+	pr := results["pr"]
+	if pr != "" {
 		trailingBlocks = append(trailingBlocks, slack.NewSectionBlock(
 			slack.NewTextBlockObject(slack.MarkdownType, fmt.Sprintf(":link: *Pull Request:* <%s>", pr), false, false),
 			nil, nil,
@@ -152,11 +146,6 @@ func FormatSlackTransitionMessage(phase, taskName, message string, results map[s
 	}
 
 	if message != "" && phase == "failed" {
-		if resp != "" {
-			fallbackText = fmt.Sprintf("%s\nError: %s (Task: %s)", decoded, message, taskName)
-		} else {
-			fallbackText = fmt.Sprintf("Error: %s (Task: %s)", message, taskName)
-		}
 		trailingBlocks = append(trailingBlocks, slack.NewSectionBlock(
 			slack.NewTextBlockObject(slack.MarkdownType, fmt.Sprintf(":warning: *Error:* %s", message), false, false),
 			nil, nil,
@@ -165,7 +154,7 @@ func FormatSlackTransitionMessage(phase, taskName, message string, results map[s
 
 	trailingBlocks = append(trailingBlocks, contextBlock(taskName))
 
-	fallbackText = truncateFallbackText(fallbackText)
+	fallbackText := buildFallbackText(decoded, pr, message, phase, taskName)
 
 	// Check if everything fits in a single message.
 	totalBlocks := len(headerBlocks) + len(responseBlocks) + len(trailingBlocks)
@@ -288,6 +277,27 @@ func splitBlocks(blocks []slack.Block, firstCap, lastReserve int) [][]slack.Bloc
 	}
 
 	return chunks
+}
+
+func buildFallbackText(decoded, pr, message, phase, taskName string) string {
+	var s string
+	switch {
+	case decoded != "" && pr != "" && message != "" && phase == "failed":
+		s = fmt.Sprintf("%s\nPR: %s\nError: %s (Task: %s)", decoded, pr, message, taskName)
+	case decoded != "" && pr != "":
+		s = fmt.Sprintf("%s\nPR: %s (Task: %s)", decoded, pr, taskName)
+	case decoded != "" && message != "" && phase == "failed":
+		s = fmt.Sprintf("%s\nError: %s (Task: %s)", decoded, message, taskName)
+	case decoded != "":
+		s = fmt.Sprintf("%s (Task: %s)", decoded, taskName)
+	case pr != "":
+		s = fmt.Sprintf("PR: %s (Task: %s)", pr, taskName)
+	case message != "" && phase == "failed":
+		s = fmt.Sprintf("Error: %s (Task: %s)", message, taskName)
+	default:
+		s = fmt.Sprintf("%s (Task: %s)", phaseFallbackText[phase], taskName)
+	}
+	return truncateFallbackText(s)
 }
 
 func truncateFallbackText(s string) string {

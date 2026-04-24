@@ -361,7 +361,7 @@ func TestFormatSlackTransitionMessage_UnicodeBulletResponse(t *testing.T) {
 }
 
 func TestFormatSlackTransitionMessage_FallbackTextTruncated(t *testing.T) {
-	long := strings.Repeat("A", 10000)
+	long := strings.Repeat("A", 50000)
 	results := map[string]string{"response": b64(long)}
 	msgs := FormatSlackTransitionMessage("succeeded", "test-task", "", results)
 	for i, msg := range msgs {
@@ -372,7 +372,7 @@ func TestFormatSlackTransitionMessage_FallbackTextTruncated(t *testing.T) {
 }
 
 func TestFormatProgressMessage_FallbackTextTruncated(t *testing.T) {
-	long := strings.Repeat("x", 10000)
+	long := strings.Repeat("x", 50000)
 	got := FormatProgressMessage(long, "test-task")
 	if len([]rune(got.Text)) > slackFallbackTextLimit {
 		t.Errorf("fallback text length %d exceeds limit %d", len([]rune(got.Text)), slackFallbackTextLimit)
