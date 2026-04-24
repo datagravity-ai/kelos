@@ -233,6 +233,9 @@ func responseToBlocks(text string) []slack.Block {
 			joined := strings.Join(seg.lines, "\n")
 			if strings.TrimSpace(joined) != "" {
 				for _, chunk := range splitText(convertInlineMarkdown(joined), slackSectionTextLimit) {
+					if chunk == "" {
+						continue
+					}
 					blocks = append(blocks, slack.NewSectionBlock(
 						slack.NewTextBlockObject(slack.MarkdownType, chunk, false, false),
 						nil, nil,
@@ -427,7 +430,10 @@ func splitText(s string, maxLen int) []string {
 				chunk = runes[:end]
 			}
 		}
-		chunks = append(chunks, strings.TrimRight(string(chunk), "\n"))
+		trimmed := strings.TrimRight(string(chunk), "\n")
+		if trimmed != "" {
+			chunks = append(chunks, trimmed)
+		}
 		runes = runes[end:]
 	}
 	return chunks

@@ -733,6 +733,16 @@ func TestSplitText(t *testing.T) {
 			t.Fatalf("expected 3 chunks, got %d: %v", len(chunks), chunks)
 		}
 	})
+
+	t.Run("newline-only chunk trimmed to empty", func(t *testing.T) {
+		input := "aaa\n\n\n\n\nbbb"
+		chunks := splitText(input, 5)
+		for i, c := range chunks {
+			if c == "" {
+				t.Errorf("chunk %d is empty after trimming", i)
+			}
+		}
+	})
 }
 
 func TestTableBlock_EmptyCells(t *testing.T) {
