@@ -640,6 +640,111 @@ func TestCellsToRichText_EmptyCellsUseNBSP(t *testing.T) {
 	}
 }
 
+func TestUnicodeBulletList(t *testing.T) {
+	input := "• item one\n• item two\n• item three"
+	segs := parseMarkdownSegments(input)
+	if len(segs) != 1 {
+		t.Fatalf("expected 1 segment, got %d", len(segs))
+	}
+	if segs[0].typ != segList {
+		t.Errorf("expected segList, got %d", segs[0].typ)
+	}
+
+	blocks := responseToBlocks(input)
+	if len(blocks) != 1 {
+		t.Fatalf("expected 1 block, got %d", len(blocks))
+	}
+	if _, ok := blocks[0].(*slack.RichTextBlock); !ok {
+		t.Errorf("expected *RichTextBlock, got %T", blocks[0])
+	}
+}
+
+func TestUnicodeBulletMixedWithDash(t *testing.T) {
+	input := "• first\n- second\n• third"
+	segs := parseMarkdownSegments(input)
+	if len(segs) != 1 {
+		t.Fatalf("expected 1 segment, got %d", len(segs))
+	}
+	if segs[0].typ != segList {
+		t.Errorf("expected segList, got %d", segs[0].typ)
+	}
+}
+
+func TestSectionTextSplitting(t *testing.T) {
+	var sb strings.Builder
+	for sb.Len() < 5000 {
+		sb.WriteString("This is a long line of text that will be repeated. ")
+	}
+	blocks := responseToBlocks(sb.String())
+	for _, b := range blocks {
+		sec, ok := b.(*slack.SectionBlock)
+		if !ok {
+			continue
+		}
+		if len([]rune(sec.Text.Text)) > slackSectionTextLimit {
+			t.Errorf("section text length %d exceeds limit %d", len([]rune(sec.Text.Text)), slackSectionTextLimit)
+		}
+	}
+	if len(blocks) < 2 {
+		t.Errorf("expected text to be split into multiple sections, got %d blocks", len(blocks))
+	}
+}
+
+func TestHeaderBlockTruncation(t *testing.T) {
+	long := strings.Repeat("A", 200)
+	blocks := responseToBlocks("# " + long)
+	if len(blocks) != 1 {
+		t.Fatalf("expected 1 block, got %d", len(blocks))
+	}
+	hdr, ok := blocks[0].(*slack.HeaderBlock)
+	if !ok {
+		t.Fatalf("expected *HeaderBlock, got %T", blocks[0])
+	}
+	if len([]rune(hdr.Text.Text)) > slackHeaderTextLimit {
+		t.Errorf("header text length %d exceeds limit %d", len([]rune(hdr.Text.Text)), slackHeaderTextLimit)
+	}
+}
+
+func TestSplitText(t *testing.T) {
+	t.Run("short text unchanged", func(t *testing.T) {
+		chunks := splitText("hello", 100)
+		if len(chunks) != 1 || chunks[0] != "hello" {
+			t.Errorf("got %v", chunks)
+		}
+	})
+
+	t.Run("splits at newline", func(t *testing.T) {
+		input := "aaa\nbbb\nccc"
+		chunks := splitText(input, 5)
+		if len(chunks) < 2 {
+			t.Fatalf("expected at least 2 chunks, got %d", len(chunks))
+		}
+		for _, c := range chunks {
+			if len([]rune(c)) > 5 {
+				t.Errorf("chunk %q exceeds limit 5", c)
+			}
+		}
+	})
+
+	t.Run("hard splits when no newline", func(t *testing.T) {
+		input := strings.Repeat("x", 10)
+		chunks := splitText(input, 4)
+		if len(chunks) != 3 {
+			t.Fatalf("expected 3 chunks, got %d: %v", len(chunks), chunks)
+		}
+	})
+
+	t.Run("newline-only chunk trimmed to empty", func(t *testing.T) {
+		input := "aaa\n\n\n\n\nbbb"
+		chunks := splitText(input, 5)
+		for i, c := range chunks {
+			if c == "" {
+				t.Errorf("chunk %d is empty after trimming", i)
+			}
+		}
+	})
+}
+
 func TestTableBlock_EmptyCells(t *testing.T) {
 	input := "| Project | Notes |\n| --- | --- |\n| Viz | |\n| AIDA | done |"
 	blocks := responseToBlocks(input)
