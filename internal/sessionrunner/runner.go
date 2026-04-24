@@ -127,6 +127,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	sessionStart := time.Now()
 	tasksCompleted := int32(0)
 	lastTaskTime := time.Now()
+	lastProcessedTask := ""
 
 	for {
 		select {
@@ -158,7 +159,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			continue
 		}
 
-		if taskName == "" {
+		if taskName == "" || taskName == lastProcessedTask {
 			time.Sleep(pollInterval)
 			continue
 		}
@@ -178,6 +179,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			}
 		}
 
+		lastProcessedTask = taskName
 		lastTaskTime = time.Now()
 		tasksCompleted++
 		if setErr := r.setAnnotation(ctx, annotationTasksCompleted, strconv.Itoa(int(tasksCompleted))); setErr != nil {
