@@ -91,6 +91,7 @@ func (r *SessionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		if task.Status.SessionPodName != "" {
 			if err := r.clearPodAssignment(ctx, task.Namespace, task.Status.SessionPodName); err != nil {
 				logger.Error(err, "Failed to clear pod assignment", "pod", task.Status.SessionPodName)
+				return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 			}
 		}
 		return ctrl.Result{}, nil
