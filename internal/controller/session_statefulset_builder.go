@@ -19,6 +19,7 @@ package controller
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -244,10 +245,12 @@ func (b *SessionStatefulSetBuilder) Build(input SessionStatefulSetInput) (*appsv
 
 	// Node selector.
 	var nodeSelector map[string]string
-	var serviceAccountName string
+	serviceAccountName := SessionRunnerServiceAccount
 	if po := tmpl.PodOverrides; po != nil {
 		nodeSelector = po.NodeSelector
-		serviceAccountName = po.ServiceAccountName
+		if po.ServiceAccountName != "" {
+			serviceAccountName = po.ServiceAccountName
+		}
 	}
 
 	// VolumeClaimTemplate for workspace.
@@ -423,9 +426,11 @@ func (b *SessionStatefulSetBuilder) buildInitContainers(
 		},
 	}
 
-	// Git clone (only runs on first pod start since PVC persists the workspace).
+	// Git clone — skip if workspace already exists on PVC (pod restart).
 	if workspace != nil {
-		initContainers = append(initContainers, buildGitCloneInitContainer(workspace, workspaceEnvVars))
+		gitClone := buildGitCloneInitContainer(workspace, workspaceEnvVars)
+		gitClone = wrapInitContainerWithExistsCheck(gitClone, WorkspaceMountPath+"/repo/.git")
+		initContainers = append(initContainers, gitClone)
 
 		effectiveRemotes := effectiveWorkspaceRemotes(workspace)
 		if c := buildRemoteSetupInitContainer(effectiveRemotes); c != nil {
@@ -497,6 +502,25 @@ func (b *SessionStatefulSetBuilder) resolveAgentImage(tmpl *kelosv1alpha1.TaskTe
 	default:
 		return ClaudeCodeImage
 	}
+}
+
+// wrapInitContainerWithExistsCheck wraps an init container so it skips
+// execution when the given path already exists on a persistent volume.
+func wrapInitContainerWithExistsCheck(c corev1.Container, checkPath string) corev1.Container {
+	origCmd := ""
+	if len(c.Command) > 0 && c.Command[0] == "sh" && len(c.Args) > 0 {
+		origCmd = c.Args[len(c.Args)-1]
+	} else {
+		parts := append(c.Command, c.Args...)
+		for i, p := range parts {
+			parts[i] = fmt.Sprintf("'%s'", p)
+		}
+		origCmd = strings.Join(parts, " ")
+	}
+	wrapped := fmt.Sprintf("if [ -d '%s' ]; then echo 'Workspace already exists, skipping clone'; exit 0; fi; %s", checkPath, origCmd)
+	c.Command = []string{"sh", "-c", wrapped}
+	c.Args = nil
+	return c
 }
 
 // sessionStatefulSetName returns the name of the StatefulSet for a TaskSpawner.

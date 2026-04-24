@@ -102,7 +102,9 @@ func (r *SessionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	// If task has a session pod assigned, check for completion signals.
-	if task.Status.SessionPodName != "" && task.Status.Phase == kelosv1alpha1.TaskPhaseRunning {
+	// Handle both Pending (waiting for runner to start) and Running phases.
+	if task.Status.SessionPodName != "" &&
+		(task.Status.Phase == kelosv1alpha1.TaskPhasePending || task.Status.Phase == kelosv1alpha1.TaskPhaseRunning) {
 		return r.checkTaskCompletion(ctx, &task)
 	}
 
@@ -166,7 +168,8 @@ func (r *SessionReconciler) assignTask(ctx context.Context, task *kelosv1alpha1.
 		return ctrl.Result{}, err
 	}
 
-	// Update Task status.
+	// Update Task status. If this fails, roll back the pod annotation to avoid
+	// leaving the pod marked as assigned while the task remains Queued.
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		if getErr := r.Get(ctx, client.ObjectKeyFromObject(task), task); getErr != nil {
 			return getErr
@@ -176,6 +179,9 @@ func (r *SessionReconciler) assignTask(ctx context.Context, task *kelosv1alpha1.
 		task.Status.Message = fmt.Sprintf("Assigned to session pod %s", availablePod.Name)
 		return r.Status().Update(ctx, task)
 	}); err != nil {
+		if rollbackErr := r.clearPodAssignment(ctx, task.Namespace, availablePod.Name); rollbackErr != nil {
+			logger.Error(rollbackErr, "Failed to roll back pod assignment after task status update failure", "pod", availablePod.Name)
+		}
 		return ctrl.Result{}, err
 	}
 
@@ -206,20 +212,28 @@ func (r *SessionReconciler) checkTaskCompletion(ctx context.Context, task *kelos
 	switch taskStatus {
 	case "succeeded":
 		logger.Info("Task completed successfully via session runner", "task", task.Name)
+		if result, err := r.updateTaskPhase(ctx, task, kelosv1alpha1.TaskPhaseSucceeded, "Task completed successfully"); err != nil {
+			return result, err
+		}
 		if err := r.clearPodAssignment(ctx, task.Namespace, pod.Name); err != nil {
 			logger.Error(err, "Failed to clear pod assignment after success")
 		}
-		return r.updateTaskPhase(ctx, task, kelosv1alpha1.TaskPhaseSucceeded, "Task completed successfully")
+		return ctrl.Result{}, nil
 
 	case "failed":
 		logger.Info("Task failed via session runner", "task", task.Name)
+		if result, err := r.updateTaskPhase(ctx, task, kelosv1alpha1.TaskPhaseFailed, "Task failed"); err != nil {
+			return result, err
+		}
 		if err := r.clearPodAssignment(ctx, task.Namespace, pod.Name); err != nil {
 			logger.Error(err, "Failed to clear pod assignment after failure")
 		}
-		return r.updateTaskPhase(ctx, task, kelosv1alpha1.TaskPhaseFailed, "Task failed")
+		return ctrl.Result{}, nil
 
 	case "running":
-		// Still running, requeue.
+		if task.Status.Phase != kelosv1alpha1.TaskPhaseRunning {
+			return r.updateTaskPhase(ctx, task, kelosv1alpha1.TaskPhaseRunning, "Task is running on session pod")
+		}
 		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 
 	default:

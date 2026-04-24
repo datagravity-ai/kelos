@@ -860,12 +860,14 @@ func (r *TaskReconciler) reconcilePersistentTask(ctx context.Context, task *kelo
 		}
 
 		// Check TTL expiration.
-		if expired, _ := r.ttlExpired(task); expired {
+		if expired, requeueAfter := r.ttlExpired(task); expired {
 			logger.Info("Deleting persistent Task due to TTL expiration", "task", task.Name)
 			if err := r.Delete(ctx, task); err != nil && !apierrors.IsNotFound(err) {
 				return ctrl.Result{}, err
 			}
 			return ctrl.Result{}, nil
+		} else if requeueAfter > 0 {
+			return ctrl.Result{RequeueAfter: requeueAfter}, nil
 		}
 		return ctrl.Result{}, nil
 	}
