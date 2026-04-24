@@ -3,6 +3,7 @@ package reporting
 import (
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/slack-go/slack"
 )
@@ -74,8 +75,8 @@ var (
 	tableSepRe = regexp.MustCompile(`^\s*\|[\s\-:|]+\|\s*$`)
 	// headerRe matches markdown headers: # Header, ## Header, ### Header
 	headerRe = regexp.MustCompile(`^(#{1,3})\s+(.+)$`)
-	// unorderedListRe matches unordered list items: - item, * item
-	unorderedListRe = regexp.MustCompile(`^(\s*)[-*]\s+(.+)$`)
+	// unorderedListRe matches unordered list items: - item, * item, • item
+	unorderedListRe = regexp.MustCompile(`^(\s*)[-*•]\s+(.+)$`)
 	// orderedListRe matches ordered list items: 1. item, 2. item
 	orderedListRe = regexp.MustCompile(`^(\s*)\d+\.\s+(.+)$`)
 	// dividerRe matches horizontal rule lines: ---, ***, ___  (three or more of the same character)
@@ -202,8 +203,14 @@ func parseMarkdownSegments(text string) []segment {
 	return segments
 }
 
-// SlackBlockLimit is the maximum number of blocks Slack allows per message.
-const SlackBlockLimit = 50
+const (
+	// SlackBlockLimit is the maximum number of blocks Slack allows per message.
+	SlackBlockLimit = 50
+	// slackSectionTextLimit is the maximum character length for a section block's text.
+	slackSectionTextLimit = 3000
+	// slackHeaderTextLimit is the maximum character length for a header block's text.
+	slackHeaderTextLimit = 150
+)
 
 // responseToBlocks converts a markdown response string into Slack blocks.
 func responseToBlocks(text string) []slack.Block {
@@ -225,10 +232,12 @@ func responseToBlocks(text string) []slack.Block {
 		case segPlain:
 			joined := strings.Join(seg.lines, "\n")
 			if strings.TrimSpace(joined) != "" {
-				blocks = append(blocks, slack.NewSectionBlock(
-					slack.NewTextBlockObject(slack.MarkdownType, convertInlineMarkdown(joined), false, false),
-					nil, nil,
-				))
+				for _, chunk := range splitText(convertInlineMarkdown(joined), slackSectionTextLimit) {
+					blocks = append(blocks, slack.NewSectionBlock(
+						slack.NewTextBlockObject(slack.MarkdownType, chunk, false, false),
+						nil, nil,
+					))
+				}
 			}
 		}
 	}
@@ -240,6 +249,9 @@ func responseToBlocks(text string) []slack.Block {
 // HeaderBlocks only support plain text, so backtick code spans are stripped.
 func headerBlock(text string) *slack.HeaderBlock {
 	text = reInlineCode.ReplaceAllString(text, "$1")
+	if utf8.RuneCountInString(text) > slackHeaderTextLimit {
+		text = string([]rune(text)[:slackHeaderTextLimit-1]) + "…"
+	}
 	return slack.NewHeaderBlock(
 		slack.NewTextBlockObject(slack.PlainTextType, text, false, false),
 	)
@@ -393,6 +405,41 @@ func mergeStyle(a, b *slack.RichTextSectionTextStyle) *slack.RichTextSectionText
 		Strike: a.Strike || b.Strike,
 		Code:   a.Code || b.Code,
 	}
+}
+
+// splitText splits s into chunks of at most maxLen runes, breaking at the
+// last newline before the limit when possible.
+func splitText(s string, maxLen int) []string {
+	if utf8.RuneCountInString(s) <= maxLen {
+		return []string{s}
+	}
+	runes := []rune(s)
+	var chunks []string
+	for len(runes) > 0 {
+		end := maxLen
+		if end > len(runes) {
+			end = len(runes)
+		}
+		chunk := runes[:end]
+		if end < len(runes) {
+			if idx := lastIndexRune(chunk, '\n'); idx > 0 {
+				end = idx + 1
+				chunk = runes[:end]
+			}
+		}
+		chunks = append(chunks, strings.TrimRight(string(chunk), "\n"))
+		runes = runes[end:]
+	}
+	return chunks
+}
+
+func lastIndexRune(runes []rune, r rune) int {
+	for i := len(runes) - 1; i >= 0; i-- {
+		if runes[i] == r {
+			return i
+		}
+	}
+	return -1
 }
 
 // listBlock creates Slack RichTextBlock(s) from markdown list lines.

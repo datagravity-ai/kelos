@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"unicode/utf8"
 
 	"github.com/slack-go/slack"
 )
+
+const slackFallbackTextLimit = 4000
 
 // decodeResponse decodes a base64-encoded agent response from task results.
 // Returns the raw string if decoding fails (backward compatibility).
@@ -162,6 +165,8 @@ func FormatSlackTransitionMessage(phase, taskName, message string, results map[s
 
 	trailingBlocks = append(trailingBlocks, contextBlock(taskName))
 
+	fallbackText = truncateFallbackText(fallbackText)
+
 	// Check if everything fits in a single message.
 	totalBlocks := len(headerBlocks) + len(responseBlocks) + len(trailingBlocks)
 	if totalBlocks <= SlackBlockLimit {
@@ -283,6 +288,13 @@ func splitBlocks(blocks []slack.Block, firstCap, lastReserve int) [][]slack.Bloc
 	}
 
 	return chunks
+}
+
+func truncateFallbackText(s string) string {
+	if utf8.RuneCountInString(s) <= slackFallbackTextLimit {
+		return s
+	}
+	return string([]rune(s)[:slackFallbackTextLimit-1]) + "…"
 }
 
 // continuationContextBlock returns a context block indicating a multi-part
