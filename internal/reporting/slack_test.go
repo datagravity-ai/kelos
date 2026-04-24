@@ -334,6 +334,51 @@ func TestFormatSlackTransitionMessage_SingleChunkWithTrailing(t *testing.T) {
 	}
 }
 
+func TestFormatSlackTransitionMessage_UnicodeBulletResponse(t *testing.T) {
+	var sb strings.Builder
+	sb.WriteString("# Weekly Update\n\n")
+	for i := 0; i < 50; i++ {
+		sb.WriteString("• *Status:* On track — lots of progress this week with many issues completed across the board.\n")
+	}
+	results := map[string]string{"response": b64(sb.String())}
+	msgs := FormatSlackTransitionMessage("succeeded", "test-task", "", results)
+
+	for i, msg := range msgs {
+		if len(msg.Blocks) > SlackBlockLimit {
+			t.Errorf("message %d has %d blocks, must be <= %d", i, len(msg.Blocks), SlackBlockLimit)
+		}
+		for j, b := range msg.Blocks {
+			if sec, ok := b.(*slack.SectionBlock); ok && sec.Text != nil {
+				if len([]rune(sec.Text.Text)) > slackSectionTextLimit {
+					t.Errorf("message %d block %d section text length %d exceeds %d", i, j, len([]rune(sec.Text.Text)), slackSectionTextLimit)
+				}
+			}
+		}
+		if len([]rune(msg.Text)) > slackFallbackTextLimit {
+			t.Errorf("message %d fallback text length %d exceeds %d", i, len([]rune(msg.Text)), slackFallbackTextLimit)
+		}
+	}
+}
+
+func TestFormatSlackTransitionMessage_FallbackTextTruncated(t *testing.T) {
+	long := strings.Repeat("A", 50000)
+	results := map[string]string{"response": b64(long)}
+	msgs := FormatSlackTransitionMessage("succeeded", "test-task", "", results)
+	for i, msg := range msgs {
+		if len([]rune(msg.Text)) > slackFallbackTextLimit {
+			t.Errorf("message %d fallback text length %d exceeds limit %d", i, len([]rune(msg.Text)), slackFallbackTextLimit)
+		}
+	}
+}
+
+func TestFormatProgressMessage_FallbackTextTruncated(t *testing.T) {
+	long := strings.Repeat("x", 50000)
+	got := FormatProgressMessage(long, "test-task")
+	if len([]rune(got.Text)) > slackFallbackTextLimit {
+		t.Errorf("fallback text length %d exceeds limit %d", len([]rune(got.Text)), slackFallbackTextLimit)
+	}
+}
+
 func TestFormatProgressMessage(t *testing.T) {
 	t.Run("includes blocks and context", func(t *testing.T) {
 		got := FormatProgressMessage("Looking at the config files...", "test-task")
