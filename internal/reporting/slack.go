@@ -212,6 +212,8 @@ func splitResponseMessages(headerBlocks, responseBlocks, trailingBlocks []slack.
 			blocks = append(blocks, chunk...)
 			if totalParts > 1 {
 				blocks = append(blocks, continuationContextBlock(taskName, partNum, totalParts))
+			} else {
+				blocks = append(blocks, trailingBlocks...)
 			}
 		} else if i == totalParts-1 {
 			// Last message: remaining response blocks + trailing blocks.

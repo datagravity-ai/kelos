@@ -285,6 +285,55 @@ func TestFormatSlackTransitionMessage_SplitsWithPRLink(t *testing.T) {
 	}
 }
 
+func TestFormatSlackTransitionMessage_SingleChunkWithTrailing(t *testing.T) {
+	// When response blocks barely exceed the limit (e.g. 49 response blocks
+	// + 2 trailing = 51), splitBlocks may return a single chunk. The trailing
+	// blocks (PR link, context) must still be included.
+	var sb strings.Builder
+	for i := 0; i < 49; i++ {
+		if i > 0 {
+			sb.WriteString("\n\n")
+		}
+		sb.WriteString("Short paragraph.")
+	}
+	results := map[string]string{
+		"response": b64(sb.String()),
+		"pr":       "https://github.com/org/repo/pull/77",
+	}
+
+	msgs := FormatSlackTransitionMessage("succeeded", "test-task", "", results)
+
+	// All blocks should fit in a single message after splitting.
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+
+	msg := msgs[0]
+	if len(msg.Blocks) > SlackBlockLimit {
+		t.Errorf("message has %d blocks, must be <= %d", len(msg.Blocks), SlackBlockLimit)
+	}
+
+	// PR link must be present.
+	foundPR := false
+	for _, b := range msg.Blocks {
+		if sec, ok := b.(*slack.SectionBlock); ok && sec.Text != nil {
+			if strings.Contains(sec.Text.Text, "Pull Request") {
+				foundPR = true
+				break
+			}
+		}
+	}
+	if !foundPR {
+		t.Error("expected PR link in message")
+	}
+
+	// Context block must be present as the last block.
+	last := msg.Blocks[len(msg.Blocks)-1]
+	if _, ok := last.(*slack.ContextBlock); !ok {
+		t.Errorf("last block should be ContextBlock, got %T", last)
+	}
+}
+
 func TestFormatProgressMessage(t *testing.T) {
 	t.Run("includes blocks and context", func(t *testing.T) {
 		got := FormatProgressMessage("Looking at the config files...", "test-task")
