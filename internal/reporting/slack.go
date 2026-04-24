@@ -107,33 +107,42 @@ func FormatProgressMessage(text, taskName string) SlackMessage {
 	}
 }
 
-// FormatSlackTransitionMessage returns a rich Slack message for a task phase transition.
-func FormatSlackTransitionMessage(phase, taskName, message string, results map[string]string) SlackMessage {
+// FormatSlackTransitionMessage returns one or more rich Slack messages for a
+// task phase transition. When the agent response is short enough to fit in a
+// single message (≤ SlackBlockLimit blocks), a single SlackMessage is returned.
+// For longer responses, the response blocks are split across multiple messages
+// so that no individual message exceeds the Slack block limit, and each chunk
+// is posted as a separate thread reply.
+func FormatSlackTransitionMessage(phase, taskName, message string, results map[string]string) []SlackMessage {
 	fallbackText := fmt.Sprintf("%s (Task: %s)", phaseFallbackText[phase], taskName)
-	var blocks []slack.Block
 
+	// Build the optional header block (e.g. "Working on your request…").
+	var headerBlocks []slack.Block
 	if header, ok := phaseHeaderText[phase]; ok {
-		blocks = append(blocks, slack.NewSectionBlock(
+		headerBlocks = append(headerBlocks, slack.NewSectionBlock(
 			slack.NewTextBlockObject(slack.MarkdownType, header, false, false),
 			nil, nil,
 		))
 	}
 
+	// Build the response blocks from the agent output.
 	resp := results["response"]
 	decoded := decodeResponse(resp)
-
+	var responseBlocks []slack.Block
 	if resp != "" {
 		fallbackText = fmt.Sprintf("%s (Task: %s)", decoded, taskName)
-		blocks = append(blocks, responseToBlocks(decoded)...)
+		responseBlocks = responseToBlocks(decoded)
 	}
 
+	// Build the trailing blocks (PR link, error, context).
+	var trailingBlocks []slack.Block
 	if pr := results["pr"]; pr != "" {
 		if resp != "" {
 			fallbackText = fmt.Sprintf("%s\nPR: %s (Task: %s)", decoded, pr, taskName)
 		} else {
 			fallbackText = fmt.Sprintf("PR: %s (Task: %s)", pr, taskName)
 		}
-		blocks = append(blocks, slack.NewSectionBlock(
+		trailingBlocks = append(trailingBlocks, slack.NewSectionBlock(
 			slack.NewTextBlockObject(slack.MarkdownType, fmt.Sprintf(":link: *Pull Request:* <%s>", pr), false, false),
 			nil, nil,
 		))
@@ -145,28 +154,142 @@ func FormatSlackTransitionMessage(phase, taskName, message string, results map[s
 		} else {
 			fallbackText = fmt.Sprintf("Error: %s (Task: %s)", message, taskName)
 		}
-		blocks = append(blocks, slack.NewSectionBlock(
+		trailingBlocks = append(trailingBlocks, slack.NewSectionBlock(
 			slack.NewTextBlockObject(slack.MarkdownType, fmt.Sprintf(":warning: *Error:* %s", message), false, false),
 			nil, nil,
 		))
 	}
 
-	blocks = append(blocks, contextBlock(taskName))
+	trailingBlocks = append(trailingBlocks, contextBlock(taskName))
 
-	if len(blocks) > SlackBlockLimit {
-		truncated := make([]slack.Block, SlackBlockLimit)
-		copy(truncated, blocks[:SlackBlockLimit-2])
-		truncated[SlackBlockLimit-2] = slack.NewSectionBlock(
-			slack.NewTextBlockObject(slack.MarkdownType,
-				"_… response truncated_", false, false),
-			nil, nil,
-		)
-		truncated[SlackBlockLimit-1] = blocks[len(blocks)-1]
-		blocks = truncated
+	// Check if everything fits in a single message.
+	totalBlocks := len(headerBlocks) + len(responseBlocks) + len(trailingBlocks)
+	if totalBlocks <= SlackBlockLimit {
+		var blocks []slack.Block
+		blocks = append(blocks, headerBlocks...)
+		blocks = append(blocks, responseBlocks...)
+		blocks = append(blocks, trailingBlocks...)
+		return []SlackMessage{{Text: fallbackText, Blocks: blocks}}
 	}
 
-	return SlackMessage{
-		Text:   fallbackText,
-		Blocks: blocks,
+	// Split response blocks across multiple messages.
+	return splitResponseMessages(headerBlocks, responseBlocks, trailingBlocks, fallbackText, taskName)
+}
+
+// splitResponseMessages distributes response blocks across multiple messages
+// so that each message stays within the SlackBlockLimit. The first message
+// includes the header blocks, and the last message includes the trailing
+// blocks (PR link, error, context). Continuation messages get a part number
+// context block.
+func splitResponseMessages(headerBlocks, responseBlocks, trailingBlocks []slack.Block, fallbackText, taskName string) []SlackMessage {
+	// Reserve space in the first chunk for header blocks and the
+	// continuation context block that will be appended.
+	firstChunkCap := SlackBlockLimit - len(headerBlocks) - 1
+	// Reserve space in the last chunk for trailing blocks.
+	lastChunkTrailing := len(trailingBlocks)
+
+	// Split the response blocks into chunks.
+	chunks := splitBlocks(responseBlocks, firstChunkCap, lastChunkTrailing)
+
+	if len(chunks) == 0 {
+		// No response blocks — single message with header + trailing.
+		var blocks []slack.Block
+		blocks = append(blocks, headerBlocks...)
+		blocks = append(blocks, trailingBlocks...)
+		return []SlackMessage{{Text: fallbackText, Blocks: blocks}}
 	}
+
+	totalParts := len(chunks)
+	var messages []SlackMessage
+
+	for i, chunk := range chunks {
+		var blocks []slack.Block
+		partNum := i + 1
+
+		if i == 0 {
+			// First message: header + first chunk of response blocks.
+			blocks = append(blocks, headerBlocks...)
+			blocks = append(blocks, chunk...)
+			if totalParts > 1 {
+				blocks = append(blocks, continuationContextBlock(taskName, partNum, totalParts))
+			} else {
+				blocks = append(blocks, trailingBlocks...)
+			}
+		} else if i == totalParts-1 {
+			// Last message: remaining response blocks + trailing blocks.
+			blocks = append(blocks, chunk...)
+			blocks = append(blocks, trailingBlocks...)
+		} else {
+			// Middle message: response blocks + continuation context.
+			blocks = append(blocks, chunk...)
+			blocks = append(blocks, continuationContextBlock(taskName, partNum, totalParts))
+		}
+
+		text := fallbackText
+		if i > 0 {
+			text = fmt.Sprintf("(continued, part %d/%d) (Task: %s)", partNum, totalParts, taskName)
+		}
+
+		messages = append(messages, SlackMessage{Text: text, Blocks: blocks})
+	}
+
+	return messages
+}
+
+// splitBlocks divides blocks into chunks. The first chunk has capacity
+// firstCap and the last chunk reserves lastReserve slots for trailing
+// blocks. Middle chunks use the full SlackBlockLimit minus one slot for
+// a continuation context block.
+func splitBlocks(blocks []slack.Block, firstCap, lastReserve int) [][]slack.Block {
+	if len(blocks) == 0 {
+		return nil
+	}
+
+	var chunks [][]slack.Block
+	pos := 0
+
+	// First chunk.
+	end := pos + firstCap
+	if end > len(blocks) {
+		end = len(blocks)
+	}
+	chunks = append(chunks, blocks[pos:end])
+	pos = end
+
+	if pos >= len(blocks) {
+		return chunks
+	}
+
+	// Middle and last chunks.
+	for pos < len(blocks) {
+		remaining := len(blocks) - pos
+
+		// Check if remaining blocks fit in a final chunk with trailing
+		// blocks. Reserve 1 extra for the continuation context on middle
+		// chunks, but the last chunk uses trailing blocks instead.
+		if remaining <= SlackBlockLimit-lastReserve {
+			chunks = append(chunks, blocks[pos:])
+			break
+		}
+
+		// Middle chunk: full limit minus 1 for the continuation context block.
+		chunkSize := SlackBlockLimit - 1
+		end := pos + chunkSize
+		if end > len(blocks) {
+			end = len(blocks)
+		}
+		chunks = append(chunks, blocks[pos:end])
+		pos = end
+	}
+
+	return chunks
+}
+
+// continuationContextBlock returns a context block indicating a multi-part
+// message with the current part number and total.
+func continuationContextBlock(taskName string, part, total int) *slack.ContextBlock {
+	return slack.NewContextBlock("",
+		slack.NewTextBlockObject(slack.MarkdownType,
+			fmt.Sprintf("Task: `%s` · Part %d/%d", taskName, part, total), false, false),
+	)
 }

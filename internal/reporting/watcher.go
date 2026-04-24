@@ -518,16 +518,25 @@ func (tr *SlackTaskReporter) ReportTaskStatus(ctx context.Context, task *kelosv1
 		return nil
 	}
 
-	msg := FormatSlackTransitionMessage(desiredPhase, task.Name, task.Status.Message, task.Status.Results)
+	msgs := FormatSlackTransitionMessage(desiredPhase, task.Name, task.Status.Message, task.Status.Results)
 
-	// For terminal phases, edit the existing progress message in-place
-	// instead of posting a new reply so the thread stays compact.
+	// For terminal phases, try to edit the existing progress message
+	// in-place. When the response is a single message, this keeps the
+	// thread compact. When the response was split into multiple messages,
+	// replace the progress message with the first part and post the rest
+	// as new replies.
 	if desiredPhase == "succeeded" || desiredPhase == "failed" {
 		if progressTS := tr.getProgressTS(task.UID); progressTS != "" {
 			log.Info("Updating Slack progress message with final result", "task", task.Name, "channel", channel, "phase", desiredPhase)
-			if err := tr.Reporter.UpdateMessage(ctx, channel, progressTS, msg); err != nil {
+			if err := tr.Reporter.UpdateMessage(ctx, channel, progressTS, msgs[0]); err != nil {
 				log.Error(err, "Failed to update progress message with final result, posting new reply", "task", task.Name)
 			} else {
+				// Post any continuation messages as new thread replies.
+				for _, msg := range msgs[1:] {
+					if _, err := tr.Reporter.PostThreadReply(ctx, channel, threadTS, msg); err != nil {
+						log.Error(err, "Failed to post continuation message", "task", task.Name)
+					}
+				}
 				tr.clearProgressCache(task.UID)
 				tr.clearActivityState(task.UID)
 				return tr.persistSlackReportingState(ctx, task, desiredPhase)
@@ -535,15 +544,22 @@ func (tr *SlackTaskReporter) ReportTaskStatus(ctx context.Context, task *kelosv1
 		}
 	}
 
-	log.Info("Posting Slack thread reply", "task", task.Name, "channel", channel, "phase", desiredPhase)
-	replyTS, err := tr.Reporter.PostThreadReply(ctx, channel, threadTS, msg)
-	if err != nil {
-		return fmt.Errorf("posting Slack reply for task %s: %w", task.Name, err)
+	// Post all messages as thread replies.
+	var firstReplyTS string
+	for i, msg := range msgs {
+		log.Info("Posting Slack thread reply", "task", task.Name, "channel", channel, "phase", desiredPhase, "part", i+1, "total", len(msgs))
+		replyTS, err := tr.Reporter.PostThreadReply(ctx, channel, threadTS, msg)
+		if err != nil {
+			return fmt.Errorf("posting Slack reply for task %s (part %d/%d): %w", task.Name, i+1, len(msgs), err)
+		}
+		if i == 0 {
+			firstReplyTS = replyTS
+		}
 	}
 
 	// Track the accepted message so the activity loop can update it.
-	if desiredPhase == "accepted" && replyTS != "" {
-		tr.setActivityTarget(task.UID, replyTS, msg)
+	if desiredPhase == "accepted" && firstReplyTS != "" {
+		tr.setActivityTarget(task.UID, firstReplyTS, msgs[0])
 	}
 
 	// Clean up caches when reporting a terminal phase.
