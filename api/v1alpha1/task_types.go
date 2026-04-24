@@ -32,6 +32,9 @@ const (
 	TaskPhaseFailed TaskPhase = "Failed"
 	// TaskPhaseWaiting means the Task is waiting for dependencies or branch lock.
 	TaskPhaseWaiting TaskPhase = "Waiting"
+	// TaskPhaseQueued means the Task is waiting for an available persistent
+	// session pod assignment.
+	TaskPhaseQueued TaskPhase = "Queued"
 )
 
 // SecretReference refers to a Secret containing credentials.
@@ -200,6 +203,12 @@ type TaskStatus struct {
 	// Results contains structured key-value outputs produced by the agent.
 	// +optional
 	Results map[string]string `json:"results,omitempty"`
+
+	// SessionPodName is the name of the persistent session pod assigned to
+	// execute this Task. Set only for Tasks belonging to a persistent-mode
+	// TaskSpawner.
+	// +optional
+	SessionPodName string `json:"sessionPodName,omitempty"`
 }
 
 // +genclient
