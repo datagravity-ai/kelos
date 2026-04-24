@@ -914,9 +914,9 @@ func TestSlackTaskReporter_PostsNewReplyOnPhaseChange(t *testing.T) {
 		t.Errorf("channel = %q, want C123ABC", posted[0].channel)
 	}
 	// Verify the message includes the PR URL
-	wantMsg := FormatSlackTransitionMessage("succeeded", task.Name, task.Status.Message, task.Status.Results)
-	if posted[0].msg.Text != wantMsg.Text {
-		t.Errorf("text = %q, want %q", posted[0].msg.Text, wantMsg.Text)
+	wantMsgs := FormatSlackTransitionMessage("succeeded", task.Name, task.Status.Message, task.Status.Results)
+	if posted[0].msg.Text != wantMsgs[0].Text {
+		t.Errorf("text = %q, want %q", posted[0].msg.Text, wantMsgs[0].Text)
 	}
 
 }
@@ -1799,7 +1799,7 @@ func TestSlackTaskReporter_UpdatesAcceptedMessageWithActivity(t *testing.T) {
 		},
 	}
 
-	baseMsg := FormatSlackTransitionMessage("accepted", task.Name, "", nil)
+	baseMsg := FormatSlackTransitionMessage("accepted", task.Name, "", nil)[0]
 	tr := &SlackTaskReporter{
 		Reporter:       reporter,
 		ActivityReader: &fakeActivityReader{text: "Reading `main.go`..."},
@@ -1845,7 +1845,7 @@ func TestSlackTaskReporter_UpdatesActivityInPlace(t *testing.T) {
 	}
 
 	ar := &fakeActivityReader{text: "Reading `main.go`..."}
-	baseMsg := FormatSlackTransitionMessage("accepted", task.Name, "", nil)
+	baseMsg := FormatSlackTransitionMessage("accepted", task.Name, "", nil)[0]
 	tr := &SlackTaskReporter{
 		Reporter:       reporter,
 		ActivityReader: ar,
@@ -1883,7 +1883,7 @@ func TestSlackTaskReporter_SkipsActivityWhenUnchanged(t *testing.T) {
 		},
 	}
 
-	baseMsg := FormatSlackTransitionMessage("accepted", task.Name, "", nil)
+	baseMsg := FormatSlackTransitionMessage("accepted", task.Name, "", nil)[0]
 	tr := &SlackTaskReporter{
 		Reporter:       reporter,
 		ActivityReader: &fakeActivityReader{text: "Thinking..."},
@@ -2161,7 +2161,7 @@ func TestSlackTaskReporter_ActivityIndicatorWorksOnProgressMessage(t *testing.T)
 		ActivityReader: &fakeActivityReader{text: "Reading `config.yaml`..."},
 	}
 	// Seed initial activity target (from accepted post).
-	tr.setActivityTarget(task.UID, "ts-accepted", FormatSlackTransitionMessage("accepted", task.Name, "", nil))
+	tr.setActivityTarget(task.UID, "ts-accepted", FormatSlackTransitionMessage("accepted", task.Name, "", nil)[0])
 
 	// Trigger a progress update — this should post a new progress message
 	// and re-point the activity target at it.
@@ -2217,7 +2217,7 @@ func TestSlackTaskReporter_ResetsOldActivityIndicatorOnTargetSwitch(t *testing.T
 		},
 	}
 
-	acceptedMsg := FormatSlackTransitionMessage("accepted", task.Name, "", nil)
+	acceptedMsg := FormatSlackTransitionMessage("accepted", task.Name, "", nil)[0]
 	tr := &SlackTaskReporter{
 		Client:         cl,
 		Reporter:       reporter,
@@ -2286,7 +2286,7 @@ func TestSlackTaskReporter_EmptyActivityUsesIdlePhrase(t *testing.T) {
 		},
 	}
 
-	baseMsg := FormatSlackTransitionMessage("accepted", task.Name, "", nil)
+	baseMsg := FormatSlackTransitionMessage("accepted", task.Name, "", nil)[0]
 	tr := &SlackTaskReporter{
 		Reporter:       reporter,
 		ActivityReader: &fakeActivityReader{text: ""}, // Empty — triggers idle phrase
@@ -2307,7 +2307,7 @@ func TestSlackTaskReporter_EmptyActivityUsesIdlePhrase(t *testing.T) {
 }
 
 func TestAppendActivityContext_AppendsToExistingContext(t *testing.T) {
-	baseMsg := FormatSlackTransitionMessage("accepted", "test-task", "", nil)
+	baseMsg := FormatSlackTransitionMessage("accepted", "test-task", "", nil)[0]
 	result := appendActivityContext(baseMsg, "Reading `main.go`...")
 
 	// Should have same number of blocks (activity appended to existing context block).
@@ -2361,7 +2361,7 @@ func TestAppendActivityContext_SkipsTextOnlyMessages(t *testing.T) {
 }
 
 func TestAppendActivityContext_DoesNotMutateBase(t *testing.T) {
-	baseMsg := FormatSlackTransitionMessage("accepted", "test-task", "", nil)
+	baseMsg := FormatSlackTransitionMessage("accepted", "test-task", "", nil)[0]
 	originalBlockCount := len(baseMsg.Blocks)
 
 	_ = appendActivityContext(baseMsg, "Reading...")
