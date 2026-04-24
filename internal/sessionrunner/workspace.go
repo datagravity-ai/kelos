@@ -82,7 +82,7 @@ func (wm *WorkspaceManager) Reset(ctx context.Context, branch string) error {
 	}
 
 	if err := wm.gitCmd(ctx, "reset", "--hard", "origin/"+baseBranch); err != nil {
-		fmt.Printf("Warning: git reset to origin/%s failed: %v\n", baseBranch, err)
+		return fmt.Errorf("failed to reset to origin/%s: %w", baseBranch, err)
 	}
 
 	// Clean untracked files, preserving specified directories.

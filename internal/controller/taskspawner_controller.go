@@ -108,7 +108,7 @@ func (r *TaskSpawnerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// Persistent-mode TaskSpawners manage a StatefulSet for session pods
 	// in addition to the normal discovery mechanism (Deployment/CronJob/Webhook).
 	if ts.Spec.ExecutionMode == kelosv1alpha1.ExecutionModePersistent {
-		if result, err := r.reconcileSessionStatefulSet(ctx, req, &ts, isSuspended); err != nil {
+		if result, err := r.reconcileSessionStatefulSet(ctx, req, &ts, isSuspended); err != nil || result.Requeue || result.RequeueAfter > 0 {
 			return result, err
 		}
 	}
@@ -486,6 +486,12 @@ func (r *TaskSpawnerReconciler) reconcileCronJob(ctx context.Context, req ctrl.R
 func (r *TaskSpawnerReconciler) reconcileSessionStatefulSet(ctx context.Context, req ctrl.Request, ts *kelosv1alpha1.TaskSpawner, isSuspended bool) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
+	// Ensure RBAC for session runner pods.
+	if err := r.ensureSessionRunnerRBAC(ctx, ts.Namespace); err != nil {
+		logger.Error(err, "Unable to ensure session runner RBAC")
+		return ctrl.Result{}, err
+	}
+
 	// Resolve workspace.
 	var workspace *kelosv1alpha1.WorkspaceSpec
 	if ts.Spec.TaskTemplate.WorkspaceRef != nil {
@@ -590,8 +596,10 @@ func (r *TaskSpawnerReconciler) reconcileSessionStatefulSet(ctx context.Context,
 			needsUpdate = true
 		}
 		// Update pod template (env vars, images, etc.) but not VolumeClaimTemplates (immutable).
-		if !reflect.DeepEqual(existingSts.Spec.Template.Spec.Containers, desiredSts.Spec.Template.Spec.Containers) ||
-			!reflect.DeepEqual(existingSts.Spec.Template.Spec.InitContainers, desiredSts.Spec.Template.Spec.InitContainers) {
+		// Compare specific fields rather than full container slices to avoid false
+		// positives from Kubernetes-injected defaults (terminationMessagePath, etc.).
+		if sessionContainersChanged(existingSts.Spec.Template.Spec.Containers, desiredSts.Spec.Template.Spec.Containers) ||
+			sessionContainersChanged(existingSts.Spec.Template.Spec.InitContainers, desiredSts.Spec.Template.Spec.InitContainers) {
 			existingSts.Spec.Template = desiredSts.Spec.Template
 			needsUpdate = true
 		}
@@ -992,6 +1000,67 @@ func (r *TaskSpawnerReconciler) ensureSpawnerRBAC(ctx context.Context, namespace
 	return nil
 }
 
+// ensureSessionRunnerRBAC ensures a ServiceAccount and RoleBinding exist for
+// session runner pods in the given namespace.
+func (r *TaskSpawnerReconciler) ensureSessionRunnerRBAC(ctx context.Context, namespace string) error {
+	logger := log.FromContext(ctx)
+
+	var sa corev1.ServiceAccount
+	if err := r.Get(ctx, types.NamespacedName{Name: SessionRunnerServiceAccount, Namespace: namespace}, &sa); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return err
+		}
+		sa = corev1.ServiceAccount{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      SessionRunnerServiceAccount,
+				Namespace: namespace,
+			},
+		}
+		if err := r.Create(ctx, &sa); err != nil {
+			if !apierrors.IsAlreadyExists(err) {
+				return err
+			}
+		} else {
+			logger.Info("Created session runner ServiceAccount", "namespace", namespace, "name", SessionRunnerServiceAccount)
+		}
+	}
+
+	rbName := SessionRunnerServiceAccount
+	var rb rbacv1.RoleBinding
+	if err := r.Get(ctx, types.NamespacedName{Name: rbName, Namespace: namespace}, &rb); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return err
+		}
+		rb = rbacv1.RoleBinding{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      rbName,
+				Namespace: namespace,
+			},
+			RoleRef: rbacv1.RoleRef{
+				APIGroup: rbacv1.GroupName,
+				Kind:     "ClusterRole",
+				Name:     SessionRunnerClusterRole,
+			},
+			Subjects: []rbacv1.Subject{
+				{
+					Kind:      "ServiceAccount",
+					Name:      SessionRunnerServiceAccount,
+					Namespace: namespace,
+				},
+			},
+		}
+		if err := r.Create(ctx, &rb); err != nil {
+			if !apierrors.IsAlreadyExists(err) {
+				return err
+			}
+		} else {
+			logger.Info("Created session runner RoleBinding", "namespace", namespace, "name", rbName)
+		}
+	}
+
+	return nil
+}
+
 // recordEvent records a Kubernetes Event on the given object if a Recorder is configured.
 func (r *TaskSpawnerReconciler) recordEvent(obj runtime.Object, eventType, reason, messageFmt string, args ...interface{}) {
 	if r.Recorder != nil {
@@ -1118,6 +1187,29 @@ func (r *TaskSpawnerReconciler) findTaskSpawnersForTask(ctx context.Context, obj
 // resourceRequirementsEqual compares two ResourceRequirements using semantic
 // equality for quantities instead of reflect.DeepEqual, which can report false
 // negatives when the internal representation of equal quantities differs.
+// sessionContainersChanged compares containers by the fields we control (name,
+// image, command, args, env, volumeMounts, workingDir, resources) rather than
+// the full struct, which includes Kubernetes-injected defaults that cause false
+// positives with reflect.DeepEqual.
+func sessionContainersChanged(existing, desired []corev1.Container) bool {
+	if len(existing) != len(desired) {
+		return true
+	}
+	for i := range desired {
+		e := existing[i]
+		d := desired[i]
+		if e.Name != d.Name || e.Image != d.Image || e.WorkingDir != d.WorkingDir ||
+			!equalStringSlices(e.Command, d.Command) ||
+			!equalStringSlices(e.Args, d.Args) ||
+			!equalEnvVars(e.Env, d.Env) ||
+			!reflect.DeepEqual(e.VolumeMounts, d.VolumeMounts) ||
+			!resourceRequirementsEqual(e.Resources, d.Resources) {
+			return true
+		}
+	}
+	return false
+}
+
 func resourceRequirementsEqual(a, b corev1.ResourceRequirements) bool {
 	return reflect.DeepEqual(a.Claims, b.Claims) &&
 		resourceListEqual(a.Requests, b.Requests) &&

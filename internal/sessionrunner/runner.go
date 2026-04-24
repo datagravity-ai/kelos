@@ -165,7 +165,6 @@ func (r *Runner) Run(ctx context.Context) error {
 
 		// Process the assigned task.
 		fmt.Printf("Task assigned: %s\n", taskName)
-		lastTaskTime = time.Now()
 
 		if err := r.processTask(ctx, taskName); err != nil {
 			fmt.Printf("Task %s failed: %v\n", taskName, err)
@@ -179,6 +178,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			}
 		}
 
+		lastTaskTime = time.Now()
 		tasksCompleted++
 		if setErr := r.setAnnotation(ctx, annotationTasksCompleted, strconv.Itoa(int(tasksCompleted))); setErr != nil {
 			fmt.Printf("Error updating tasks completed count: %v\n", setErr)
