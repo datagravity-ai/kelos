@@ -371,6 +371,14 @@ func TestFormatSlackTransitionMessage_FallbackTextTruncated(t *testing.T) {
 	}
 }
 
+func TestFormatProgressMessage_FallbackTextTruncated(t *testing.T) {
+	long := strings.Repeat("x", 10000)
+	got := FormatProgressMessage(long, "test-task")
+	if len([]rune(got.Text)) > slackFallbackTextLimit {
+		t.Errorf("fallback text length %d exceeds limit %d", len([]rune(got.Text)), slackFallbackTextLimit)
+	}
+}
+
 func TestFormatProgressMessage(t *testing.T) {
 	t.Run("includes blocks and context", func(t *testing.T) {
 		got := FormatProgressMessage("Looking at the config files...", "test-task")

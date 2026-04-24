@@ -105,7 +105,7 @@ func FormatProgressMessage(text, taskName string) SlackMessage {
 	blocks := responseToBlocks(text)
 	blocks = append(blocks, contextBlock(taskName))
 	return SlackMessage{
-		Text:   text,
+		Text:   truncateFallbackText(text),
 		Blocks: blocks,
 	}
 }
