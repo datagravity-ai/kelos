@@ -238,7 +238,17 @@ func (r *SessionReconciler) checkTaskCompletion(ctx context.Context, task *kelos
 		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 
 	default:
-		// Session runner hasn't started yet or status not set.
+		if pod.Status.Phase == corev1.PodFailed {
+			logger.Info("Session pod failed without reporting status, marking task failed",
+				"task", task.Name, "pod", pod.Name)
+			if result, err := r.updateTaskPhase(ctx, task, kelosv1alpha1.TaskPhaseFailed, "Session pod failed"); err != nil {
+				return result, err
+			}
+			if err := r.clearPodAssignment(ctx, task.Namespace, pod.Name); err != nil {
+				logger.Error(err, "Failed to clear pod assignment after pod failure")
+			}
+			return ctrl.Result{}, nil
+		}
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 }
