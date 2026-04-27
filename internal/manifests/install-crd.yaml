@@ -1917,6 +1917,31 @@ spec:
                           - event
                           type: object
                         type: array
+                      reporting:
+                        description: Reporting configures status reporting back to
+                          the originating GitHub issue or PR.
+                        properties:
+                          checkName:
+                            description: |-
+                              CheckName overrides the default Check Run name. Defaults to
+                              "Kelos: <taskspawner-name>". This name appears in branch protection
+                              rule configuration and the PR Checks tab.
+                            type: string
+                          checks:
+                            description: |-
+                              Checks creates GitHub Check Runs for pull request tasks, enabling
+                              branch protection integration. When enabled, the spawner creates
+                              a Check Run when a task starts (status: in_progress), updates it
+                              when the task completes (conclusion: success/failure), and includes
+                              the task name in the check details.
+                              Only applies to githubPullRequests source.
+                              Requires the GitHub token to have checks:write permission.
+                            type: boolean
+                          enabled:
+                            description: Enabled posts standard status comments back
+                              to the originating GitHub issue or PR.
+                            type: boolean
+                        type: object
                       repository:
                         description: |-
                           Repository restricts webhooks to a specific repository (owner/repo format).
