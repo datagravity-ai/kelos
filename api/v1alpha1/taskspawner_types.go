@@ -139,6 +139,22 @@ type GitHubReporting struct {
 	// Enabled posts standard status comments back to the originating GitHub issue or PR.
 	// +optional
 	Enabled bool `json:"enabled,omitempty"`
+
+	// Checks creates GitHub Check Runs for pull request tasks, enabling
+	// branch protection integration. When enabled, the spawner creates
+	// a Check Run when a task starts (status: in_progress), updates it
+	// when the task completes (conclusion: success/failure), and includes
+	// the task name in the check details.
+	// Only applies to githubPullRequests source.
+	// Requires the GitHub token to have checks:write permission.
+	// +optional
+	Checks bool `json:"checks,omitempty"`
+
+	// CheckName overrides the default Check Run name. Defaults to
+	// "Kelos: <taskspawner-name>". This name appears in branch protection
+	// rule configuration and the PR Checks tab.
+	// +optional
+	CheckName string `json:"checkName,omitempty"`
 }
 
 // GitHubTeamRef identifies a GitHub team in org/team-slug format.
