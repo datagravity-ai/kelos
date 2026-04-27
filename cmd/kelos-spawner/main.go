@@ -529,11 +529,21 @@ func sourceAnnotations(ts *kelosv1alpha1.TaskSpawner, item source.WorkItem) map[
 		annotations[reporting.AnnotationGitHubReporting] = "enabled"
 	}
 
+	if checksReportingEnabled(ts) {
+		annotations[reporting.AnnotationGitHubChecks] = "enabled"
+		if item.HeadSHA != "" {
+			annotations[reporting.AnnotationSourceSHA] = item.HeadSHA
+		}
+		if name := resolvedCheckName(ts); name != "" {
+			annotations[reporting.AnnotationGitHubCheckName] = name
+		}
+	}
+
 	return annotations
 }
 
-// reportingEnabled returns true when reporting is configured and enabled
-// on the TaskSpawner.
+// reportingEnabled returns true when GitHub comment reporting is configured
+// and enabled on the TaskSpawner.
 func reportingEnabled(ts *kelosv1alpha1.TaskSpawner) bool {
 	if ts.Spec.When.GitHubIssues != nil && ts.Spec.When.GitHubIssues.Reporting != nil {
 		return ts.Spec.When.GitHubIssues.Reporting.Enabled
@@ -542,6 +552,24 @@ func reportingEnabled(ts *kelosv1alpha1.TaskSpawner) bool {
 		return ts.Spec.When.GitHubPullRequests.Reporting.Enabled
 	}
 	return false
+}
+
+// checksReportingEnabled returns true when GitHub Checks API reporting is
+// configured and enabled on the TaskSpawner.
+func checksReportingEnabled(ts *kelosv1alpha1.TaskSpawner) bool {
+	if ts.Spec.When.GitHubPullRequests != nil && ts.Spec.When.GitHubPullRequests.Reporting != nil {
+		return ts.Spec.When.GitHubPullRequests.Reporting.Checks
+	}
+	return false
+}
+
+// resolvedCheckName returns the configured check name, or empty string for
+// the default.
+func resolvedCheckName(ts *kelosv1alpha1.TaskSpawner) string {
+	if ts.Spec.When.GitHubPullRequests != nil && ts.Spec.When.GitHubPullRequests.Reporting != nil {
+		return ts.Spec.When.GitHubPullRequests.Reporting.CheckName
+	}
+	return ""
 }
 
 type resolvedGitHubCommentPolicy struct {

@@ -17,8 +17,8 @@ import (
 )
 
 const (
-	// AnnotationGitHubReporting indicates that GitHub reporting is enabled for
-	// this Task.
+	// AnnotationGitHubReporting indicates that GitHub comment reporting is
+	// enabled for this Task.
 	AnnotationGitHubReporting = "kelos.dev/github-reporting"
 
 	// AnnotationSourceKind records whether the source item is an issue or pull-request.
@@ -64,12 +64,32 @@ const (
 	// AnnotationSlackReportPhase records the last Task phase that was
 	// reported to Slack, preventing duplicate API calls on re-list.
 	AnnotationSlackReportPhase = "kelos.dev/slack-report-phase"
+
+	// AnnotationGitHubChecks indicates that GitHub Check Run reporting is
+	// enabled for this Task.
+	AnnotationGitHubChecks = "kelos.dev/github-checks"
+
+	// AnnotationGitHubCheckRunID stores the GitHub Check Run ID so
+	// subsequent updates target the same check run.
+	AnnotationGitHubCheckRunID = "kelos.dev/github-check-run-id"
+
+	// AnnotationGitHubCheckReportPhase records the last Task phase that was
+	// reported via the Checks API.
+	AnnotationGitHubCheckReportPhase = "kelos.dev/github-check-report-phase"
+
+	// AnnotationSourceSHA records the head commit SHA for pull request sources.
+	AnnotationSourceSHA = "kelos.dev/source-sha"
+
+	// AnnotationGitHubCheckName stores the Check Run name configured on the
+	// TaskSpawner so the reporter can use it without access to the spec.
+	AnnotationGitHubCheckName = "kelos.dev/github-check-name"
 )
 
 // TaskReporter watches Tasks and reports status changes to GitHub.
 type TaskReporter struct {
-	Client   client.Client
-	Reporter *GitHubReporter
+	Client         client.Client
+	Reporter       *GitHubReporter
+	ChecksReporter *ChecksReporter
 	// Cache backstops AnnotationGitHubCommentID and AnnotationGitHubReportPhase
 	// when the persisted Update has not yet propagated to the controller-runtime
 	// cache the caller reads from. Optional; when nil, the reporter relies on
@@ -120,20 +140,43 @@ func (c *ReportStateCache) store(uid types.UID, commentID int64, phase string) {
 }
 
 // ReportTaskStatus checks a Task's current phase against its last reported
-// phase and creates or updates the GitHub status comment as needed.
+// phase and creates or updates the GitHub status comment and/or Check Run as
+// needed.
 func (tr *TaskReporter) ReportTaskStatus(ctx context.Context, task *kelosv1alpha1.Task) error {
-	log := ctrl.Log.WithName("reporter")
-
 	annotations := task.Annotations
 	if annotations == nil {
 		return nil
 	}
 
-	// Only process tasks with GitHub reporting enabled
-	if annotations[AnnotationGitHubReporting] != "enabled" {
+	commentEnabled := annotations[AnnotationGitHubReporting] == "enabled"
+	checksEnabled := annotations[AnnotationGitHubChecks] == "enabled"
+
+	if !commentEnabled && !checksEnabled {
 		return nil
 	}
 
+	if commentEnabled {
+		if err := tr.reportViaComment(ctx, task); err != nil {
+			return err
+		}
+	}
+
+	if checksEnabled {
+		if tr.ChecksReporter == nil {
+			ctrl.Log.WithName("reporter").Info("Checks reporting annotation is set but ChecksReporter is nil, skipping", "task", task.Name)
+		} else if err := tr.reportViaCheckRun(ctx, task); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// reportViaComment creates or updates a GitHub issue/PR comment.
+func (tr *TaskReporter) reportViaComment(ctx context.Context, task *kelosv1alpha1.Task) error {
+	log := ctrl.Log.WithName("reporter")
+
+	annotations := task.Annotations
 	numberStr, ok := annotations[AnnotationSourceNumber]
 	if !ok {
 		return nil
@@ -143,7 +186,6 @@ func (tr *TaskReporter) ReportTaskStatus(ctx context.Context, task *kelosv1alpha
 		return fmt.Errorf("parsing source number %q: %w", numberStr, err)
 	}
 
-	// Determine the desired report phase based on the Task's current phase.
 	var desiredPhase string
 	switch task.Status.Phase {
 	case kelosv1alpha1.TaskPhasePending, kelosv1alpha1.TaskPhaseRunning, kelosv1alpha1.TaskPhaseWaiting:
@@ -153,7 +195,6 @@ func (tr *TaskReporter) ReportTaskStatus(ctx context.Context, task *kelosv1alpha
 	case kelosv1alpha1.TaskPhaseFailed:
 		desiredPhase = "failed"
 	default:
-		// Task phase not yet set (empty string) — nothing to report
 		return nil
 	}
 
@@ -226,6 +267,90 @@ func (tr *TaskReporter) ReportTaskStatus(ctx context.Context, task *kelosv1alpha
 	tr.Cache.store(task.UID, commentID, desiredPhase)
 
 	return tr.persistReportingState(ctx, task, commentID, desiredPhase)
+}
+
+// reportViaCheckRun creates or updates a GitHub Check Run.
+func (tr *TaskReporter) reportViaCheckRun(ctx context.Context, task *kelosv1alpha1.Task) error {
+	log := ctrl.Log.WithName("reporter")
+
+	annotations := task.Annotations
+	headSHA := annotations[AnnotationSourceSHA]
+	if headSHA == "" {
+		return nil
+	}
+
+	checkName := annotations[AnnotationGitHubCheckName]
+	if checkName == "" {
+		spawnerName := task.Labels["kelos.dev/taskspawner"]
+		if spawnerName == "" {
+			spawnerName = task.Name
+		}
+		checkName = "Kelos: " + spawnerName
+	}
+
+	var desiredPhase string
+	var status, conclusion string
+	var output *checkRunOutput
+	switch task.Status.Phase {
+	case kelosv1alpha1.TaskPhasePending, kelosv1alpha1.TaskPhaseRunning, kelosv1alpha1.TaskPhaseWaiting:
+		desiredPhase = "in_progress"
+		status = "in_progress"
+		output = &checkRunOutput{
+			Title:   checkName + " — In Progress",
+			Summary: fmt.Sprintf("Agent task `%s` is in progress", task.Name),
+		}
+	case kelosv1alpha1.TaskPhaseSucceeded:
+		desiredPhase = "succeeded"
+		status = "completed"
+		conclusion = "success"
+		output = &checkRunOutput{
+			Title:   checkName + " — Succeeded",
+			Summary: fmt.Sprintf("Agent task `%s` has succeeded", task.Name),
+		}
+	case kelosv1alpha1.TaskPhaseFailed:
+		desiredPhase = "failed"
+		status = "completed"
+		conclusion = "failure"
+		output = &checkRunOutput{
+			Title:   checkName + " — Failed",
+			Summary: fmt.Sprintf("Agent task `%s` has failed", task.Name),
+		}
+	default:
+		return nil
+	}
+
+	if annotations[AnnotationGitHubCheckReportPhase] == desiredPhase {
+		return nil
+	}
+
+	checkRunID := int64(0)
+	if idStr, ok := annotations[AnnotationGitHubCheckRunID]; ok {
+		var err error
+		checkRunID, err = strconv.ParseInt(idStr, 10, 64)
+		if err != nil {
+			return fmt.Errorf("parsing %s annotation %q: %w", AnnotationGitHubCheckRunID, idStr, err)
+		}
+	}
+
+	if checkRunID == 0 {
+		log.Info("Creating GitHub Check Run", "task", task.Name, "name", checkName, "phase", desiredPhase)
+		newID, err := tr.ChecksReporter.CreateCheckRun(ctx, checkName, headSHA, status, conclusion, output)
+		if err != nil {
+			return fmt.Errorf("creating GitHub Check Run for task %s: %w", task.Name, err)
+		}
+		checkRunID = newID
+	} else {
+		log.Info("Updating GitHub Check Run", "task", task.Name, "checkRunID", checkRunID, "phase", desiredPhase)
+		if err := tr.ChecksReporter.UpdateCheckRun(ctx, checkRunID, status, conclusion, output); err != nil {
+			return fmt.Errorf("updating GitHub Check Run %d for task %s: %w", checkRunID, task.Name, err)
+		}
+	}
+
+	if err := tr.persistCheckRunState(ctx, task, checkRunID, desiredPhase); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (tr *TaskReporter) persistReportingState(ctx context.Context, task *kelosv1alpha1.Task, commentID int64, desiredPhase string) error {
@@ -741,4 +866,35 @@ func appendActivityContext(baseMsg SlackMessage, activityText string) SlackMessa
 	// Last block is not a context block — append a new one.
 	blocks = append(blocks, slack.NewContextBlock("", activityElement))
 	return SlackMessage{Text: baseMsg.Text, Blocks: blocks}
+}
+
+func (tr *TaskReporter) persistCheckRunState(ctx context.Context, task *kelosv1alpha1.Task, checkRunID int64, desiredPhase string) error {
+	checkRunIDStr := strconv.FormatInt(checkRunID, 10)
+
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var current kelosv1alpha1.Task
+		if err := tr.Client.Get(ctx, client.ObjectKeyFromObject(task), &current); err != nil {
+			return err
+		}
+
+		if current.Annotations == nil {
+			current.Annotations = make(map[string]string)
+		}
+		current.Annotations[AnnotationGitHubCheckRunID] = checkRunIDStr
+		current.Annotations[AnnotationGitHubCheckReportPhase] = desiredPhase
+
+		if err := tr.Client.Update(ctx, &current); err != nil {
+			return err
+		}
+
+		task.Annotations = current.Annotations
+		return nil
+	}); err != nil {
+		if apierrors.IsNotFound(err) {
+			return fmt.Errorf("persisting check run annotations on task %s: task no longer exists", task.Name)
+		}
+		return fmt.Errorf("persisting check run annotations on task %s: %w", task.Name, err)
+	}
+
+	return nil
 }
