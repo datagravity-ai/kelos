@@ -119,6 +119,136 @@ func TestRouteMessageThreadContextBody(t *testing.T) {
 	}
 }
 
+// TestShouldProcessAppMention verifies the filtering logic for app_mention events.
+func TestShouldProcessAppMention(t *testing.T) {
+	tests := []struct {
+		name       string
+		event      *slackevents.AppMentionEvent
+		selfUserID string
+		want       bool
+	}{
+		{
+			name: "workflow mention is processed",
+			event: &slackevents.AppMentionEvent{
+				User:  "UWORKFLOW",
+				Text:  "<@UBOT> please review",
+				BotID: "B_WORKFLOW",
+			},
+			selfUserID: "UBOT",
+			want:       true,
+		},
+		{
+			name: "regular user mention is skipped",
+			event: &slackevents.AppMentionEvent{
+				User: "U_REGULAR",
+				Text: "<@UBOT> hello",
+			},
+			selfUserID: "UBOT",
+			want:       false,
+		},
+		{
+			name: "self mention is skipped",
+			event: &slackevents.AppMentionEvent{
+				User:  "UBOT",
+				Text:  "<@UBOT> self mention",
+				BotID: "B_SELF",
+			},
+			selfUserID: "UBOT",
+			want:       false,
+		},
+		{
+			name: "empty text is skipped",
+			event: &slackevents.AppMentionEvent{
+				User:  "UWORKFLOW",
+				Text:  "",
+				BotID: "B_WORKFLOW",
+			},
+			selfUserID: "UBOT",
+			want:       false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := shouldProcessAppMention(tt.event, tt.selfUserID)
+			if got != tt.want {
+				t.Errorf("shouldProcessAppMention() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestRouteMessageFromAppMention verifies that a message originating from a
+// workflow app_mention (routed as SlackMessageData) creates a task.
+func TestRouteMessageFromAppMention(t *testing.T) {
+	scheme := runtime.NewScheme()
+	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+	utilruntime.Must(v1alpha1.AddToScheme(scheme))
+
+	spawner := &v1alpha1.TaskSpawner{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-spawner",
+			Namespace: "default",
+			UID:       "spawner-uid",
+		},
+		Spec: v1alpha1.TaskSpawnerSpec{
+			When: v1alpha1.When{
+				Slack: &v1alpha1.Slack{
+					MentionUserIDs: []string{"UBOT"},
+				},
+			},
+			TaskTemplate: v1alpha1.TaskTemplate{
+				Type: "claude-code",
+				Credentials: v1alpha1.Credentials{
+					Type: v1alpha1.CredentialTypeNone,
+				},
+				PromptTemplate: "{{.Body}}",
+			},
+		},
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(spawner.DeepCopy()).
+		Build()
+
+	tb, err := taskbuilder.NewTaskBuilder(cl)
+	if err != nil {
+		t.Fatalf("NewTaskBuilder: %v", err)
+	}
+
+	h := &SlackHandler{
+		client:      cl,
+		log:         logr.Discard(),
+		taskBuilder: tb,
+		botUserID:   "UBOT",
+	}
+
+	// Simulate a message that would come from enrichAppMention after a workflow
+	// app_mention event.
+	msg := &SlackMessageData{
+		UserID:    "UWORKFLOW",
+		ChannelID: "C1",
+		UserName:  "workflow-bot",
+		Text:      "<@UBOT> please review this PR",
+		Body:      "<@UBOT> please review this PR",
+		Timestamp: "1111111111.111111",
+	}
+
+	h.routeMessage(context.Background(), msg)
+
+	var tasks v1alpha1.TaskList
+	if err := cl.List(context.Background(), &tasks); err != nil {
+		t.Fatalf("List tasks: %v", err)
+	}
+	if len(tasks.Items) != 1 {
+		t.Fatalf("Expected 1 task from workflow app_mention, got %d", len(tasks.Items))
+	}
+	if tasks.Items[0].Spec.Prompt != "<@UBOT> please review this PR" {
+		t.Errorf("Task prompt = %q, want %q", tasks.Items[0].Spec.Prompt, "<@UBOT> please review this PR")
+	}
+}
+
 func TestCreateTaskAlreadyExists(t *testing.T) {
 	scheme := runtime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
