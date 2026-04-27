@@ -24,11 +24,13 @@ type ChecksReporter struct {
 }
 
 type createCheckRunRequest struct {
-	Name      string          `json:"name"`
-	HeadSHA   string          `json:"head_sha"`
-	Status    string          `json:"status"`
-	Output    *checkRunOutput `json:"output,omitempty"`
-	StartedAt *string         `json:"started_at,omitempty"`
+	Name        string          `json:"name"`
+	HeadSHA     string          `json:"head_sha"`
+	Status      string          `json:"status"`
+	Conclusion  string          `json:"conclusion,omitempty"`
+	Output      *checkRunOutput `json:"output,omitempty"`
+	StartedAt   *string         `json:"started_at,omitempty"`
+	CompletedAt *string         `json:"completed_at,omitempty"`
 }
 
 type updateCheckRunRequest struct {
@@ -49,16 +51,21 @@ type checkRunResponse struct {
 }
 
 // CreateCheckRun creates a new GitHub Check Run and returns the check run ID.
-func (r *ChecksReporter) CreateCheckRun(ctx context.Context, name, headSHA, status string, output *checkRunOutput) (int64, error) {
+// When status is "completed", conclusion must be set (e.g. "success", "failure").
+func (r *ChecksReporter) CreateCheckRun(ctx context.Context, name, headSHA, status, conclusion string, output *checkRunOutput) (int64, error) {
 	url := fmt.Sprintf("%s/repos/%s/%s/check-runs", r.baseURL(), r.Owner, r.Repo)
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	reqBody := createCheckRunRequest{
-		Name:      name,
-		HeadSHA:   headSHA,
-		Status:    status,
-		Output:    output,
-		StartedAt: &now,
+		Name:       name,
+		HeadSHA:    headSHA,
+		Status:     status,
+		Conclusion: conclusion,
+		Output:     output,
+		StartedAt:  &now,
+	}
+	if status == "completed" {
+		reqBody.CompletedAt = &now
 	}
 
 	payload, err := json.Marshal(reqBody)

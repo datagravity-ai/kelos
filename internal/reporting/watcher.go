@@ -105,8 +105,10 @@ func (tr *TaskReporter) ReportTaskStatus(ctx context.Context, task *kelosv1alpha
 		}
 	}
 
-	if checksEnabled && tr.ChecksReporter != nil {
-		if err := tr.reportViaCheckRun(ctx, task); err != nil {
+	if checksEnabled {
+		if tr.ChecksReporter == nil {
+			ctrl.Log.WithName("reporter").Info("Checks reporting annotation is set but ChecksReporter is nil, skipping", "task", task.Name)
+		} else if err := tr.reportViaCheckRun(ctx, task); err != nil {
 			return err
 		}
 	}
@@ -195,7 +197,11 @@ func (tr *TaskReporter) reportViaCheckRun(ctx context.Context, task *kelosv1alph
 
 	checkName := annotations[AnnotationGitHubCheckName]
 	if checkName == "" {
-		checkName = "Kelos: " + task.Labels["kelos.dev/taskspawner"]
+		spawnerName := task.Labels["kelos.dev/taskspawner"]
+		if spawnerName == "" {
+			spawnerName = task.Name
+		}
+		checkName = "Kelos: " + spawnerName
 	}
 
 	var desiredPhase string
@@ -244,7 +250,7 @@ func (tr *TaskReporter) reportViaCheckRun(ctx context.Context, task *kelosv1alph
 
 	if checkRunID == 0 {
 		log.Info("Creating GitHub Check Run", "task", task.Name, "name", checkName, "phase", desiredPhase)
-		newID, err := tr.ChecksReporter.CreateCheckRun(ctx, checkName, headSHA, status, output)
+		newID, err := tr.ChecksReporter.CreateCheckRun(ctx, checkName, headSHA, status, conclusion, output)
 		if err != nil {
 			return fmt.Errorf("creating GitHub Check Run for task %s: %w", task.Name, err)
 		}

@@ -42,7 +42,7 @@ func TestCreateCheckRun(t *testing.T) {
 		BaseURL: server.URL,
 	}
 
-	id, err := reporter.CreateCheckRun(context.Background(), "Kelos: my-spawner", "abc123", "in_progress", &checkRunOutput{
+	id, err := reporter.CreateCheckRun(context.Background(), "Kelos: my-spawner", "abc123", "in_progress", "", &checkRunOutput{
 		Title:   "Kelos Review — In Progress",
 		Summary: "Agent is working on PR #42",
 	})
@@ -96,7 +96,7 @@ func TestCreateCheckRunError(t *testing.T) {
 		BaseURL: server.URL,
 	}
 
-	_, err := reporter.CreateCheckRun(context.Background(), "test", "abc123", "in_progress", nil)
+	_, err := reporter.CreateCheckRun(context.Background(), "test", "abc123", "in_progress", "", nil)
 	if err == nil {
 		t.Fatal("Expected error, got nil")
 	}
@@ -220,7 +220,7 @@ func TestChecksReporter_UsesTokenFunc(t *testing.T) {
 		BaseURL:   server.URL,
 	}
 
-	_, err := reporter.CreateCheckRun(context.Background(), "test", "sha", "in_progress", nil)
+	_, err := reporter.CreateCheckRun(context.Background(), "test", "sha", "in_progress", "", nil)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
