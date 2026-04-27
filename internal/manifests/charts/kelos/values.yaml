@@ -62,6 +62,13 @@ webhookServer:
         # to avoid externally publishing the metrics endpoint; scrape metrics
         # via a PodMonitor or a separate ClusterIP Service in that case.
         type: ClusterIP
+      # reporting configures status reporting (comments and/or Check Runs)
+      # back to GitHub for tasks created by webhook events.
+      reporting:
+        # owner is the GitHub repository owner (e.g. "my-org").
+        owner: ""
+        # repo is the GitHub repository name (e.g. "my-repo").
+        repo: ""
     linear:
       enabled: false
       replicas: 1
