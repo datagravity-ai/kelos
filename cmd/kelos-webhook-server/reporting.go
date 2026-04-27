@@ -22,6 +22,9 @@ type reportingConfig struct {
 	GitHubRepo       string
 	GitHubTokenFile  string
 	GitHubAPIBaseURL string
+	// TokenResolver dynamically resolves a GitHub token. When set (e.g. for
+	// GitHub App auth), it takes precedence over GitHubTokenFile/GITHUB_TOKEN.
+	TokenResolver func(context.Context) (string, error)
 }
 
 // reportingReconciler watches Tasks with GitHub reporting annotations
@@ -46,27 +49,43 @@ func (r *reportingReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, nil
 	}
 
-	token, err := readGitHubToken(r.config.GitHubTokenFile)
-	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("reading GitHub token for reporting: %w", err)
+	// Build reporters with either dynamic token resolver (GitHub App) or
+	// static token (PAT / file).
+	var tokenFunc func() string
+	if r.config.TokenResolver != nil {
+		resolve := r.config.TokenResolver
+		tokenFunc = func() string {
+			t, err := resolve(ctx)
+			if err != nil {
+				log.Error(err, "Resolving GitHub token for reporting")
+				return ""
+			}
+			return t
+		}
+	} else {
+		token, err := readGitHubToken(r.config.GitHubTokenFile)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("reading GitHub token for reporting: %w", err)
+		}
+		tokenFunc = func() string { return token }
 	}
 
 	reporter := &reporting.TaskReporter{
 		Client: r.Client,
 		Reporter: &reporting.GitHubReporter{
-			Owner:   r.config.GitHubOwner,
-			Repo:    r.config.GitHubRepo,
-			Token:   token,
-			BaseURL: r.config.GitHubAPIBaseURL,
+			Owner:     r.config.GitHubOwner,
+			Repo:      r.config.GitHubRepo,
+			TokenFunc: tokenFunc,
+			BaseURL:   r.config.GitHubAPIBaseURL,
 		},
 	}
 
 	if checksEnabled {
 		reporter.ChecksReporter = &reporting.ChecksReporter{
-			Owner:   r.config.GitHubOwner,
-			Repo:    r.config.GitHubRepo,
-			Token:   token,
-			BaseURL: r.config.GitHubAPIBaseURL,
+			Owner:     r.config.GitHubOwner,
+			Repo:      r.config.GitHubRepo,
+			TokenFunc: tokenFunc,
+			BaseURL:   r.config.GitHubAPIBaseURL,
 		}
 	}
 

@@ -122,9 +122,10 @@ func main() {
 	// Set up signal handling context
 	ctx := ctrl.SetupSignalHandler()
 
-	// Set up GitHub token resolver for PR branch enrichment
+	// Set up GitHub token resolver for PR branch enrichment and reporting.
+	var tokenResolver func(context.Context) (string, error)
 	if githubToken != "" {
-		webhook.SetGitHubTokenResolver(func(context.Context) (string, error) { return githubToken, nil })
+		tokenResolver = func(context.Context) (string, error) { return githubToken, nil }
 	} else if githubAppID != "" && githubAppInstallationID != "" && githubAppPrivateKey != "" {
 		creds, err := githubapp.ParseCredentials(map[string][]byte{
 			"appID":          []byte(githubAppID),
@@ -139,7 +140,10 @@ func main() {
 		if githubAPIBaseURL != "" {
 			tc.BaseURL = githubAPIBaseURL
 		}
-		webhook.SetGitHubTokenResolver(githubapp.NewTokenProvider(tc, creds).Token)
+		tokenResolver = githubapp.NewTokenProvider(tc, creds).Token
+	}
+	if tokenResolver != nil {
+		webhook.SetGitHubTokenResolver(tokenResolver)
 	}
 
 	// Create webhook handler
@@ -190,6 +194,7 @@ func main() {
 				GitHubRepo:       githubRepo,
 				GitHubTokenFile:  githubTokenFile,
 				GitHubAPIBaseURL: githubAPIBaseURL,
+				TokenResolver:    tokenResolver,
 			},
 		}
 		if err := reportingReconciler.SetupWithManager(mgr); err != nil {
