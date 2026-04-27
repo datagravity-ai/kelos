@@ -34,6 +34,12 @@ spec:
             - --webhook-bind-address=:8443
             - --metrics-bind-address=:8080
             - --health-probe-bind-address=:8081
+            {{- if .Values.webhookServer.sources.github.reporting.owner }}
+            - --github-owner={{ .Values.webhookServer.sources.github.reporting.owner }}
+            {{- end }}
+            {{- if .Values.webhookServer.sources.github.reporting.repo }}
+            - --github-repo={{ .Values.webhookServer.sources.github.reporting.repo }}
+            {{- end }}
           env:
             - name: WEBHOOK_SECRET
               valueFrom:

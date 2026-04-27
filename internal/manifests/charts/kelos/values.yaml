@@ -53,6 +53,13 @@ webhookServer:
       replicas: 1
       secretName: ""
       githubSecretName: ""
+      # reporting configures status reporting (comments and/or Check Runs)
+      # back to GitHub for tasks created by webhook events.
+      reporting:
+        # owner is the GitHub repository owner (e.g. "my-org").
+        owner: ""
+        # repo is the GitHub repository name (e.g. "my-repo").
+        repo: ""
     linear:
       enabled: false
       replicas: 1
