@@ -287,6 +287,7 @@ func (r *SessionReconciler) clearPodAssignment(ctx context.Context, namespace, p
 // SetupWithManager sets up the controller with the Manager.
 func (r *SessionReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
+		Named("session").
 		For(&kelosv1alpha1.Task{},
 			builder.WithPredicates(predicate.NewPredicateFuncs(func(obj client.Object) bool {
 				return obj.GetLabels()[LabelExecutionMode] == string(kelosv1alpha1.ExecutionModePersistent)
