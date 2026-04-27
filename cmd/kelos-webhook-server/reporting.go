@@ -44,7 +44,10 @@ func (r *reportingReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	if task.Annotations == nil || task.Annotations[reporting.AnnotationGitHubReporting] != "enabled" {
+	commentEnabled := task.Annotations != nil && task.Annotations[reporting.AnnotationGitHubReporting] == "enabled"
+	checksEnabled := task.Annotations != nil && task.Annotations[reporting.AnnotationGitHubChecks] == "enabled"
+
+	if !commentEnabled && !checksEnabled {
 		return ctrl.Result{}, nil
 	}
 
@@ -55,22 +58,33 @@ func (r *reportingReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, nil
 	}
 
+	tokenFunc := func() string {
+		token, err := r.config.TokenResolver(ctx)
+		if err != nil {
+			log.Error(err, "Resolving GitHub token for reporting")
+			return ""
+		}
+		return token
+	}
+
 	reporter := &reporting.TaskReporter{
 		Client: r.Client,
 		Reporter: &reporting.GitHubReporter{
-			Owner: owner,
-			Repo:  repo,
-			TokenFunc: func() string {
-				token, err := r.config.TokenResolver(ctx)
-				if err != nil {
-					log.Error(err, "Resolving GitHub token for reporting")
-					return ""
-				}
-				return token
-			},
-			BaseURL: r.config.GitHubAPIBaseURL,
+			Owner:     owner,
+			Repo:      repo,
+			TokenFunc: tokenFunc,
+			BaseURL:   r.config.GitHubAPIBaseURL,
 		},
 		Cache: r.cache,
+	}
+
+	if checksEnabled {
+		reporter.ChecksReporter = &reporting.ChecksReporter{
+			Owner:     owner,
+			Repo:      repo,
+			TokenFunc: tokenFunc,
+			BaseURL:   r.config.GitHubAPIBaseURL,
+		}
 	}
 
 	if err := reporter.ReportTaskStatus(ctx, &task); err != nil {
@@ -122,5 +136,6 @@ func reportingEnabled(obj client.Object) bool {
 	if obj == nil {
 		return false
 	}
-	return obj.GetAnnotations()[reporting.AnnotationGitHubReporting] == "enabled"
+	a := obj.GetAnnotations()
+	return a[reporting.AnnotationGitHubReporting] == "enabled" || a[reporting.AnnotationGitHubChecks] == "enabled"
 }

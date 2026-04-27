@@ -47,6 +47,8 @@ type GitHubEventData struct {
 	CommentAuthor string
 	CommentBody   string
 	CommentURL    string
+	// HeadSHA is the head commit SHA for pull request events.
+	HeadSHA string
 	// PullRequestAPIURL is the GitHub API URL for the pull request associated
 	// with an issue_comment event. It is extracted from issue.pull_request.url
 	// and used to lazily fetch the PR's head branch when needed.
@@ -131,6 +133,7 @@ func ParseGitHubWebhook(eventType string, payload []byte) (*GitHubEventData, err
 			data.URL = pr.GetHTMLURL()
 			if head := pr.GetHead(); head != nil {
 				data.Branch = head.GetRef()
+				data.HeadSHA = head.GetSHA()
 			}
 		}
 
@@ -173,6 +176,7 @@ func ParseGitHubWebhook(eventType string, payload []byte) (*GitHubEventData, err
 			data.URL = pr.GetHTMLURL()
 			if head := pr.GetHead(); head != nil {
 				data.Branch = head.GetRef()
+				data.HeadSHA = head.GetSHA()
 			}
 		}
 
@@ -192,6 +196,7 @@ func ParseGitHubWebhook(eventType string, payload []byte) (*GitHubEventData, err
 			data.URL = pr.GetHTMLURL()
 			if head := pr.GetHead(); head != nil {
 				data.Branch = head.GetRef()
+				data.HeadSHA = head.GetSHA()
 			}
 		}
 

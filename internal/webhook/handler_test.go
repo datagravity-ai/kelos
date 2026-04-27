@@ -797,8 +797,8 @@ func TestServeHTTP_IssueCommentOnPR_EnrichesBranch(t *testing.T) {
 	// Swap the fetcher to return a known branch
 	orig := githubPRBranchFetcher
 	defer func() { githubPRBranchFetcher = orig }()
-	githubPRBranchFetcher = func(ctx context.Context, prAPIURL string) (string, error) {
-		return "feature-branch", nil
+	githubPRBranchFetcher = func(ctx context.Context, prAPIURL string) (githubPRHeadInfo, error) {
+		return githubPRHeadInfo{Branch: "feature-branch", SHA: "abc123sha"}, nil
 	}
 
 	spawner := &kelosv1alpha1.TaskSpawner{
