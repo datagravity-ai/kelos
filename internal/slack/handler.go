@@ -128,8 +128,10 @@ func (h *SlackHandler) handleEventsAPI(ctx context.Context, evt socketmode.Event
 		h.handleMemberJoinedChannel(ctx, inner)
 		return
 	case *slackevents.MessageEvent:
-		// fall through to message handling below
 		h.handleMessageEvent(ctx, inner)
+		return
+	case *slackevents.AppMentionEvent:
+		h.handleAppMentionEvent(ctx, inner)
 		return
 	default:
 		return
@@ -203,6 +205,85 @@ func (h *SlackHandler) handleMessageEvent(ctx context.Context, innerEvent *slack
 	}
 
 	h.routeMessage(ctx, msg)
+}
+
+// handleAppMentionEvent handles app_mention events, which fire when the bot is
+// @-mentioned. This is specifically for bot/workflow-originated mentions that
+// are filtered out by handleMessageEvent (subtype "bot_message"). Regular user
+// mentions (BotID empty) are already processed via handleMessageEvent, so we
+// skip them here to avoid creating duplicate tasks.
+func (h *SlackHandler) handleAppMentionEvent(ctx context.Context, event *slackevents.AppMentionEvent) {
+	if !shouldProcessAppMention(event, h.botUserID) {
+		h.log.V(1).Info("Skipping app_mention event",
+			"user", event.User, "botID", event.BotID, "channel", event.Channel)
+		return
+	}
+
+	msg := h.enrichAppMention(ctx, event)
+
+	if event.ThreadTimeStamp != "" {
+		body, err := FetchThreadContext(ctx, h.api, event.Channel, event.ThreadTimeStamp, h.botUserID)
+		if err != nil {
+			h.log.Error(err, "Failed to fetch thread context for app_mention",
+				"channel", event.Channel, "threadTS", event.ThreadTimeStamp)
+			return
+		}
+		msg.Body = body
+		msg.HasThreadContext = true
+	}
+
+	h.routeMessage(ctx, msg)
+}
+
+// shouldProcessAppMention decides whether an app_mention event should be processed.
+// It only accepts bot/workflow-originated mentions (BotID set) since regular user
+// mentions are already handled by handleMessageEvent. Self-mentions and empty text
+// are also filtered.
+func shouldProcessAppMention(event *slackevents.AppMentionEvent, selfUserID string) bool {
+	if event.BotID == "" {
+		return false
+	}
+	if event.User == selfUserID {
+		return false
+	}
+	return event.Text != ""
+}
+
+// enrichAppMention builds a SlackMessageData from an app_mention event,
+// enriching it with user info and permalink.
+func (h *SlackHandler) enrichAppMention(ctx context.Context, event *slackevents.AppMentionEvent) *SlackMessageData {
+	userName := event.User
+	if event.User != "" {
+		userCtx, userCancel := context.WithTimeout(ctx, enrichCallTimeout)
+		defer userCancel()
+		if info, err := h.api.GetUserInfoContext(userCtx, event.User); err == nil {
+			userName = info.RealName
+			if userName == "" {
+				userName = info.Name
+			}
+		}
+	}
+
+	permalink := ""
+	linkCtx, linkCancel := context.WithTimeout(ctx, enrichCallTimeout)
+	defer linkCancel()
+	if link, err := h.api.GetPermalinkContext(linkCtx, &goslack.PermalinkParameters{
+		Channel: event.Channel,
+		Ts:      event.TimeStamp,
+	}); err == nil {
+		permalink = link
+	}
+
+	return &SlackMessageData{
+		UserID:    event.User,
+		ChannelID: event.Channel,
+		UserName:  userName,
+		Text:      event.Text,
+		Body:      event.Text,
+		ThreadTS:  event.ThreadTimeStamp,
+		Timestamp: event.TimeStamp,
+		Permalink: permalink,
+	}
 }
 
 func (h *SlackHandler) handleSlashCommand(ctx context.Context, evt socketmode.Event) {
