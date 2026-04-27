@@ -594,14 +594,24 @@ func (h *WebhookHandler) createTask(ctx context.Context, spawner *v1alpha1.TaskS
 	// Stamp reporting annotations for GitHub webhook sources when reporting is enabled.
 	if h.source == GitHubSource && parsed.GitHub != nil && parsed.GitHub.Number > 0 &&
 		spawner.Spec.When.GitHubWebhook != nil &&
-		spawner.Spec.When.GitHubWebhook.Reporting != nil &&
-		spawner.Spec.When.GitHubWebhook.Reporting.Enabled {
+		spawner.Spec.When.GitHubWebhook.Reporting != nil {
+		rep := spawner.Spec.When.GitHubWebhook.Reporting
 		if task.Annotations == nil {
 			task.Annotations = make(map[string]string)
 		}
-		task.Annotations[reporting.AnnotationGitHubReporting] = "enabled"
+		if rep.Enabled {
+			task.Annotations[reporting.AnnotationGitHubReporting] = "enabled"
+		}
 		task.Annotations[reporting.AnnotationSourceKind] = webhookSourceKind(eventType, parsed.GitHub)
 		task.Annotations[reporting.AnnotationSourceNumber] = strconv.Itoa(parsed.GitHub.Number)
+
+		if rep.Checks && parsed.GitHub.HeadSHA != "" {
+			task.Annotations[reporting.AnnotationGitHubChecks] = "enabled"
+			task.Annotations[reporting.AnnotationSourceSHA] = parsed.GitHub.HeadSHA
+			if rep.CheckName != "" {
+				task.Annotations[reporting.AnnotationGitHubCheckName] = rep.CheckName
+			}
+		}
 	}
 
 	if err := h.client.Create(ctx, task); err != nil {

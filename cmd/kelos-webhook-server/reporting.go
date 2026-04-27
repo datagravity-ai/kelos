@@ -39,8 +39,10 @@ func (r *reportingReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	// Only process tasks with GitHub reporting enabled
-	if task.Annotations == nil || task.Annotations[reporting.AnnotationGitHubReporting] != "enabled" {
+	commentEnabled := task.Annotations != nil && task.Annotations[reporting.AnnotationGitHubReporting] == "enabled"
+	checksEnabled := task.Annotations != nil && task.Annotations[reporting.AnnotationGitHubChecks] == "enabled"
+
+	if !commentEnabled && !checksEnabled {
 		return ctrl.Result{}, nil
 	}
 
@@ -52,11 +54,20 @@ func (r *reportingReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	reporter := &reporting.TaskReporter{
 		Client: r.Client,
 		Reporter: &reporting.GitHubReporter{
-			Owner:     r.config.GitHubOwner,
-			Repo:      r.config.GitHubRepo,
+			Owner:   r.config.GitHubOwner,
+			Repo:    r.config.GitHubRepo,
 			Token:   token,
 			BaseURL: r.config.GitHubAPIBaseURL,
 		},
+	}
+
+	if checksEnabled {
+		reporter.ChecksReporter = &reporting.ChecksReporter{
+			Owner:   r.config.GitHubOwner,
+			Repo:    r.config.GitHubRepo,
+			Token:   token,
+			BaseURL: r.config.GitHubAPIBaseURL,
+		}
 	}
 
 	if err := reporter.ReportTaskStatus(ctx, &task); err != nil {
