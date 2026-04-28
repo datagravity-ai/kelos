@@ -20,6 +20,10 @@
 | `spec.podOverrides.env` | Additional environment variables (built-in vars take precedence on conflict) | No |
 | `spec.podOverrides.nodeSelector` | Node selection labels to constrain which nodes run agent pods | No |
 | `spec.podOverrides.serviceAccountName` | Service account name for the agent pod; use with workload identity systems (IRSA, GKE Workload Identity, Azure) | No |
+| `spec.podOverrides.volumes` | Additional volumes to attach to the agent pod. Names must not collide with Kelos-reserved names (`workspace`, `kelos-plugin`) | No |
+| `spec.podOverrides.volumeMounts` | Additional volume mounts on the agent container; names must reference either a user-supplied volume from `volumes` or a Kelos-managed volume (`workspace`, `kelos-plugin`) | No |
+| `spec.podOverrides.podSecurityContext` | Pod-level security context applied to the agent pod. Fields set here override Kelos defaults; `fsGroup` retains the Kelos default when unset so the agent user keeps workspace access | No |
+| `spec.podOverrides.containerSecurityContext` | Security context applied to the agent container. Use to declare `allowPrivilegeEscalation: false`, `capabilities.drop: [ALL]`, `readOnlyRootFilesystem: true`, etc., for PSS-restricted namespaces | No |
 
 ### Dependency Result Passing
 
@@ -181,7 +185,7 @@ GitHub Apps are preferred over PATs for production use because they offer fine-g
 | `spec.taskTemplate.dependsOn` | Task names that spawned Tasks depend on | No |
 | `spec.taskTemplate.branch` | Git branch template for spawned Tasks (supports Go template variables, e.g., `kelos-task-{{.Number}}`) | No |
 | `spec.taskTemplate.ttlSecondsAfterFinished` | Auto-delete spawned tasks after N seconds | No |
-| `spec.taskTemplate.podOverrides` | Pod customization for spawned Tasks (resources, timeout, env, nodeSelector, serviceAccountName) | No |
+| `spec.taskTemplate.podOverrides` | Pod customization for spawned Tasks (resources, timeout, env, nodeSelector, serviceAccountName, volumes, volumeMounts, podSecurityContext, containerSecurityContext) | No |
 | `spec.pollInterval` | How often to poll the source (default: `5m`). Deprecated: use per-source `pollInterval` instead | No |
 | `spec.maxConcurrency` | Limit max concurrent running tasks (important for cost control) | No |
 | `spec.maxTotalTasks` | Lifetime limit on total tasks created by this spawner | No |

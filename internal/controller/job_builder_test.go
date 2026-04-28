@@ -4449,3 +4449,319 @@ func TestBuildJob_NoneCredentials_ServiceAccountName(t *testing.T) {
 		t.Errorf("AWS_REGION = %q, want %q", env.Value, "us-west-2")
 	}
 }
+
+func TestBuildJob_PodOverridesVolumes(t *testing.T) {
+	builder := NewJobBuilder()
+	task := &kelosv1alpha1.Task{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-volumes",
+			Namespace: "default",
+		},
+		Spec: kelosv1alpha1.TaskSpec{
+			Type:   AgentTypeClaudeCode,
+			Prompt: "Mount a CA bundle",
+			Credentials: kelosv1alpha1.Credentials{
+				Type:      kelosv1alpha1.CredentialTypeAPIKey,
+				SecretRef: &kelosv1alpha1.SecretReference{Name: "my-secret"},
+			},
+			PodOverrides: &kelosv1alpha1.PodOverrides{
+				Volumes: []corev1.Volume{
+					{
+						Name: "ca-bundle",
+						VolumeSource: corev1.VolumeSource{
+							ConfigMap: &corev1.ConfigMapVolumeSource{
+								LocalObjectReference: corev1.LocalObjectReference{Name: "corp-ca"},
+							},
+						},
+					},
+				},
+				VolumeMounts: []corev1.VolumeMount{
+					{Name: "ca-bundle", MountPath: "/etc/ssl/certs/corp"},
+				},
+			},
+		},
+	}
+
+	job, err := builder.Build(task, nil, nil, task.Spec.Prompt)
+	if err != nil {
+		t.Fatalf("Build() returned error: %v", err)
+	}
+
+	foundVolume := false
+	for _, v := range job.Spec.Template.Spec.Volumes {
+		if v.Name == "ca-bundle" {
+			foundVolume = true
+			if v.ConfigMap == nil || v.ConfigMap.Name != "corp-ca" {
+				t.Errorf("ca-bundle volume: expected ConfigMap source named corp-ca, got %+v", v.VolumeSource)
+			}
+		}
+	}
+	if !foundVolume {
+		t.Error("Expected user-supplied volume ca-bundle on pod spec")
+	}
+
+	foundMount := false
+	for _, m := range job.Spec.Template.Spec.Containers[0].VolumeMounts {
+		if m.Name == "ca-bundle" {
+			foundMount = true
+			if m.MountPath != "/etc/ssl/certs/corp" {
+				t.Errorf("ca-bundle mount path = %q, want %q", m.MountPath, "/etc/ssl/certs/corp")
+			}
+		}
+	}
+	if !foundMount {
+		t.Error("Expected user-supplied volume mount ca-bundle on agent container")
+	}
+}
+
+func TestBuildJob_PodOverridesVolumes_ReservedNameRejected(t *testing.T) {
+	builder := NewJobBuilder()
+	for _, name := range []string{WorkspaceVolumeName, PluginVolumeName} {
+		t.Run(name, func(t *testing.T) {
+			task := &kelosv1alpha1.Task{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-reserved-" + name,
+					Namespace: "default",
+				},
+				Spec: kelosv1alpha1.TaskSpec{
+					Type:   AgentTypeClaudeCode,
+					Prompt: "Try to shadow a Kelos volume",
+					Credentials: kelosv1alpha1.Credentials{
+						Type:      kelosv1alpha1.CredentialTypeAPIKey,
+						SecretRef: &kelosv1alpha1.SecretReference{Name: "my-secret"},
+					},
+					PodOverrides: &kelosv1alpha1.PodOverrides{
+						Volumes: []corev1.Volume{
+							{
+								Name:         name,
+								VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+							},
+						},
+					},
+				},
+			}
+
+			_, err := builder.Build(task, nil, nil, task.Spec.Prompt)
+			if err == nil {
+				t.Fatalf("Build() with reserved volume name %q: expected error, got nil", name)
+			}
+			if !strings.Contains(err.Error(), "reserved") {
+				t.Errorf("Build() error = %v, want error mentioning reserved", err)
+			}
+		})
+	}
+}
+
+func TestBuildJob_PodOverridesVolumes_DuplicateNameRejected(t *testing.T) {
+	builder := NewJobBuilder()
+	task := &kelosv1alpha1.Task{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-duplicate-volume",
+			Namespace: "default",
+		},
+		Spec: kelosv1alpha1.TaskSpec{
+			Type:   AgentTypeClaudeCode,
+			Prompt: "Try to declare two volumes with the same name",
+			Credentials: kelosv1alpha1.Credentials{
+				Type:      kelosv1alpha1.CredentialTypeAPIKey,
+				SecretRef: &kelosv1alpha1.SecretReference{Name: "my-secret"},
+			},
+			PodOverrides: &kelosv1alpha1.PodOverrides{
+				Volumes: []corev1.Volume{
+					{Name: "scratch", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+					{Name: "scratch", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+				},
+			},
+		},
+	}
+
+	_, err := builder.Build(task, nil, nil, task.Spec.Prompt)
+	if err == nil {
+		t.Fatal("Build() with duplicate volume name: expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "duplicate") {
+		t.Errorf("Build() error = %v, want error mentioning duplicate", err)
+	}
+}
+
+func TestBuildJob_PodOverridesVolumeMounts_AppendToWorkspace(t *testing.T) {
+	builder := NewJobBuilder()
+	task := &kelosv1alpha1.Task{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-volume-mount-with-workspace",
+			Namespace: "default",
+		},
+		Spec: kelosv1alpha1.TaskSpec{
+			Type:   AgentTypeClaudeCode,
+			Prompt: "Mount an extra volume alongside the workspace",
+			Credentials: kelosv1alpha1.Credentials{
+				Type:      kelosv1alpha1.CredentialTypeAPIKey,
+				SecretRef: &kelosv1alpha1.SecretReference{Name: "my-secret"},
+			},
+			PodOverrides: &kelosv1alpha1.PodOverrides{
+				Volumes: []corev1.Volume{
+					{Name: "scratch", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+				},
+				VolumeMounts: []corev1.VolumeMount{
+					{Name: "scratch", MountPath: "/scratch"},
+				},
+			},
+		},
+	}
+	workspace := &kelosv1alpha1.WorkspaceSpec{Repo: "https://github.com/example/repo.git"}
+
+	job, err := builder.Build(task, workspace, nil, task.Spec.Prompt)
+	if err != nil {
+		t.Fatalf("Build() returned error: %v", err)
+	}
+
+	mounts := job.Spec.Template.Spec.Containers[0].VolumeMounts
+	mountNames := make([]string, 0, len(mounts))
+	for _, m := range mounts {
+		mountNames = append(mountNames, m.Name)
+	}
+	hasWorkspace := false
+	hasScratch := false
+	for _, n := range mountNames {
+		if n == WorkspaceVolumeName {
+			hasWorkspace = true
+		}
+		if n == "scratch" {
+			hasScratch = true
+		}
+	}
+	if !hasWorkspace {
+		t.Errorf("Expected workspace mount on agent container, got mounts %v", mountNames)
+	}
+	if !hasScratch {
+		t.Errorf("Expected user-supplied scratch mount on agent container, got mounts %v", mountNames)
+	}
+}
+
+func TestBuildJob_PodOverridesPodSecurityContext_PreservesFSGroup(t *testing.T) {
+	builder := NewJobBuilder()
+	task := &kelosv1alpha1.Task{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-podsc-fsgroup",
+			Namespace: "default",
+		},
+		Spec: kelosv1alpha1.TaskSpec{
+			Type:   AgentTypeClaudeCode,
+			Prompt: "Restrict pod with seccomp",
+			Credentials: kelosv1alpha1.Credentials{
+				Type:      kelosv1alpha1.CredentialTypeAPIKey,
+				SecretRef: &kelosv1alpha1.SecretReference{Name: "my-secret"},
+			},
+			PodOverrides: &kelosv1alpha1.PodOverrides{
+				PodSecurityContext: &corev1.PodSecurityContext{
+					RunAsNonRoot:   ptr(true),
+					SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+				},
+			},
+		},
+	}
+	workspace := &kelosv1alpha1.WorkspaceSpec{Repo: "https://github.com/example/repo.git"}
+
+	job, err := builder.Build(task, workspace, nil, task.Spec.Prompt)
+	if err != nil {
+		t.Fatalf("Build() returned error: %v", err)
+	}
+
+	psc := job.Spec.Template.Spec.SecurityContext
+	if psc == nil {
+		t.Fatal("Expected pod SecurityContext, got nil")
+	}
+	if psc.RunAsNonRoot == nil || !*psc.RunAsNonRoot {
+		t.Errorf("Expected RunAsNonRoot=true, got %v", psc.RunAsNonRoot)
+	}
+	if psc.SeccompProfile == nil || psc.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
+		t.Errorf("Expected RuntimeDefault seccomp profile, got %+v", psc.SeccompProfile)
+	}
+	if psc.FSGroup == nil || *psc.FSGroup != AgentUID {
+		t.Errorf("Expected FSGroup to be retained as %d, got %v", AgentUID, psc.FSGroup)
+	}
+}
+
+func TestBuildJob_PodOverridesPodSecurityContext_UserFSGroupOverrides(t *testing.T) {
+	builder := NewJobBuilder()
+	customFSGroup := int64(2000)
+	task := &kelosv1alpha1.Task{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-podsc-user-fsgroup",
+			Namespace: "default",
+		},
+		Spec: kelosv1alpha1.TaskSpec{
+			Type:   AgentTypeClaudeCode,
+			Prompt: "Override fsGroup",
+			Credentials: kelosv1alpha1.Credentials{
+				Type:      kelosv1alpha1.CredentialTypeAPIKey,
+				SecretRef: &kelosv1alpha1.SecretReference{Name: "my-secret"},
+			},
+			PodOverrides: &kelosv1alpha1.PodOverrides{
+				PodSecurityContext: &corev1.PodSecurityContext{
+					FSGroup: &customFSGroup,
+				},
+			},
+		},
+	}
+	workspace := &kelosv1alpha1.WorkspaceSpec{Repo: "https://github.com/example/repo.git"}
+
+	job, err := builder.Build(task, workspace, nil, task.Spec.Prompt)
+	if err != nil {
+		t.Fatalf("Build() returned error: %v", err)
+	}
+
+	psc := job.Spec.Template.Spec.SecurityContext
+	if psc == nil || psc.FSGroup == nil {
+		t.Fatalf("Expected pod SecurityContext with FSGroup, got %+v", psc)
+	}
+	if *psc.FSGroup != customFSGroup {
+		t.Errorf("Expected user FSGroup=%d to override default, got %d", customFSGroup, *psc.FSGroup)
+	}
+}
+
+func TestBuildJob_PodOverridesContainerSecurityContext(t *testing.T) {
+	builder := NewJobBuilder()
+	task := &kelosv1alpha1.Task{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-csc",
+			Namespace: "default",
+		},
+		Spec: kelosv1alpha1.TaskSpec{
+			Type:   AgentTypeClaudeCode,
+			Prompt: "Restrict the agent container",
+			Credentials: kelosv1alpha1.Credentials{
+				Type:      kelosv1alpha1.CredentialTypeAPIKey,
+				SecretRef: &kelosv1alpha1.SecretReference{Name: "my-secret"},
+			},
+			PodOverrides: &kelosv1alpha1.PodOverrides{
+				ContainerSecurityContext: &corev1.SecurityContext{
+					AllowPrivilegeEscalation: ptr(false),
+					ReadOnlyRootFilesystem:   ptr(true),
+					Capabilities: &corev1.Capabilities{
+						Drop: []corev1.Capability{"ALL"},
+					},
+				},
+			},
+		},
+	}
+
+	job, err := builder.Build(task, nil, nil, task.Spec.Prompt)
+	if err != nil {
+		t.Fatalf("Build() returned error: %v", err)
+	}
+
+	csc := job.Spec.Template.Spec.Containers[0].SecurityContext
+	if csc == nil {
+		t.Fatal("Expected container SecurityContext, got nil")
+	}
+	if csc.AllowPrivilegeEscalation == nil || *csc.AllowPrivilegeEscalation {
+		t.Errorf("Expected AllowPrivilegeEscalation=false, got %v", csc.AllowPrivilegeEscalation)
+	}
+	if csc.ReadOnlyRootFilesystem == nil || !*csc.ReadOnlyRootFilesystem {
+		t.Errorf("Expected ReadOnlyRootFilesystem=true, got %v", csc.ReadOnlyRootFilesystem)
+	}
+	if csc.Capabilities == nil || len(csc.Capabilities.Drop) != 1 || csc.Capabilities.Drop[0] != "ALL" {
+		t.Errorf("Expected Capabilities.Drop=[ALL], got %+v", csc.Capabilities)
+	}
+}

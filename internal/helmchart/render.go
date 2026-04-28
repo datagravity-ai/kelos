@@ -1,8 +1,10 @@
 package helmchart
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
+	"io"
 	"io/fs"
 	"sort"
 	"strings"
@@ -11,6 +13,7 @@ import (
 	"helm.sh/helm/v3/pkg/chart/loader"
 	"helm.sh/helm/v3/pkg/chartutil"
 	"helm.sh/helm/v3/pkg/engine"
+	yamlutil "k8s.io/apimachinery/pkg/util/yaml"
 )
 
 // Render loads a Helm chart from the given embedded filesystem, merges the
@@ -57,7 +60,10 @@ func Render(chartFS fs.FS, values map[string]interface{}) ([]byte, error) {
 	seq := 0
 	for _, name := range names {
 		content := rendered[name]
-		parts := strings.Split(content, "---\n")
+		parts, err := splitYAMLDocs(content)
+		if err != nil {
+			return nil, fmt.Errorf("splitting rendered template %s: %w", name, err)
+		}
 		for _, part := range parts {
 			trimmed := strings.TrimSpace(part)
 			if len(trimmed) == 0 {
@@ -117,6 +123,28 @@ func kindOrder(kind string) int {
 		return order
 	}
 	return 100
+}
+
+// splitYAMLDocs splits a rendered template into its constituent YAML documents
+// using the Kubernetes YAML reader, which only treats lines that exactly match
+// "---" as document separators. A naive strings.Split on "---\n" matches the
+// trailing characters of any string containing "---\n" (e.g., the literal text
+// "rw-rw----\n" inside the upstream PodSecurityContext.fsGroup description),
+// which would split YAML documents mid-content.
+func splitYAMLDocs(content string) ([]string, error) {
+	reader := yamlutil.NewYAMLReader(bufio.NewReader(strings.NewReader(content)))
+	var docs []string
+	for {
+		doc, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		docs = append(docs, string(doc))
+	}
+	return docs, nil
 }
 
 func extractKind(doc string) string {

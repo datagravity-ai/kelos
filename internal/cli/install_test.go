@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -17,6 +18,12 @@ import (
 	"github.com/kelos-dev/kelos/internal/helmchart"
 	"github.com/kelos-dev/kelos/internal/manifests"
 )
+
+// imageLatestRefRE matches actual image references ending in ":latest" while
+// ignoring narrative occurrences in CRD descriptions like "Defaults to Always
+// if :latest tag is specified" — the leading non-whitespace requirement
+// distinguishes "registry/name:latest" from " :latest" prose.
+var imageLatestRefRE = regexp.MustCompile(`\S:latest`)
 
 func TestParseManifests_SingleDocument(t *testing.T) {
 	data := []byte(`apiVersion: v1
@@ -228,8 +235,8 @@ func TestRenderChart_VersionSubstitution(t *testing.T) {
 	if err != nil {
 		t.Fatalf("rendering chart: %v", err)
 	}
-	if bytes.Contains(data, []byte(":latest")) {
-		t.Error("expected all :latest tags to be replaced")
+	if imageLatestRefRE.Match(data) {
+		t.Error("expected all :latest image refs to be replaced")
 	}
 	if !bytes.Contains(data, []byte(":v0.5.0")) {
 		t.Error("expected :v0.5.0 tags in rendered output")
@@ -501,8 +508,8 @@ func TestInstallCommand_VersionFlag(t *testing.T) {
 		}
 	})
 
-	if strings.Contains(output, ":latest") {
-		t.Errorf("expected all :latest tags to be replaced, got:\n%s", output[:min(len(output), 500)])
+	if imageLatestRefRE.MatchString(output) {
+		t.Errorf("expected all :latest image refs to be replaced, got:\n%s", output[:min(len(output), 500)])
 	}
 	if !strings.Contains(output, ":v0.5.0") {
 		t.Errorf("expected :v0.5.0 tags in output, got:\n%s", output[:min(len(output), 500)])

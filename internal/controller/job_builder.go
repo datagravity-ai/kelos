@@ -606,6 +606,32 @@ func (b *JobBuilder) buildAgentJob(task *kelosv1alpha1.Task, workspace *kelosv1a
 		if po.ServiceAccountName != "" {
 			serviceAccountName = po.ServiceAccountName
 		}
+
+		if len(po.Volumes) > 0 {
+			if err := validateUserVolumes(po.Volumes); err != nil {
+				return nil, err
+			}
+			volumes = append(volumes, po.Volumes...)
+		}
+
+		if len(po.VolumeMounts) > 0 {
+			mainContainer.VolumeMounts = append(mainContainer.VolumeMounts, po.VolumeMounts...)
+		}
+
+		if po.PodSecurityContext != nil {
+			merged := po.PodSecurityContext.DeepCopy()
+			// Retain Kelos's default FSGroup so the agent user keeps
+			// access to the workspace volume unless the user opts in
+			// to a different value explicitly.
+			if merged.FSGroup == nil && podSecurityContext != nil && podSecurityContext.FSGroup != nil {
+				merged.FSGroup = podSecurityContext.FSGroup
+			}
+			podSecurityContext = merged
+		}
+
+		if po.ContainerSecurityContext != nil {
+			mainContainer.SecurityContext = po.ContainerSecurityContext.DeepCopy()
+		}
 	}
 
 	// PodFailurePolicy ensures only pod disruptions (e.g. node scale-down,
@@ -725,6 +751,29 @@ func sanitizeWorkspaceFilePath(filePath string) (string, error) {
 
 func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
+}
+
+// reservedVolumeNames is the set of volume names that Kelos manages
+// internally. PodOverrides.Volumes entries must not use these names.
+var reservedVolumeNames = map[string]struct{}{
+	WorkspaceVolumeName: {},
+	PluginVolumeName:    {},
+}
+
+// validateUserVolumes ensures no user-supplied volume name collides with
+// a Kelos-reserved name or duplicates another user-supplied name.
+func validateUserVolumes(volumes []corev1.Volume) error {
+	seen := make(map[string]struct{}, len(volumes))
+	for _, v := range volumes {
+		if _, reserved := reservedVolumeNames[v.Name]; reserved {
+			return fmt.Errorf("podOverrides.volumes: %q is a Kelos-reserved volume name", v.Name)
+		}
+		if _, dup := seen[v.Name]; dup {
+			return fmt.Errorf("podOverrides.volumes: duplicate volume name %q", v.Name)
+		}
+		seen[v.Name] = struct{}{}
+	}
+	return nil
 }
 
 // sanitizeComponentName validates that a plugin, skill, or agent name is safe
