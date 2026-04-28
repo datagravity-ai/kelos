@@ -355,6 +355,51 @@ func TestSessionStatefulSetBuilder_WithPlugins(t *testing.T) {
 	}
 }
 
+func TestSessionStatefulSetBuilder_CustomSessionRunnerImage(t *testing.T) {
+	builder := &SessionStatefulSetBuilder{
+		SessionRunnerImage:           "my-registry.example.com/kelos-session-runner:v1.2.3",
+		SessionRunnerImagePullPolicy: corev1.PullAlways,
+	}
+
+	ts := &kelosv1alpha1.TaskSpawner{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "custom-runner",
+			Namespace: "default",
+		},
+		Spec: kelosv1alpha1.TaskSpawnerSpec{
+			ExecutionMode: kelosv1alpha1.ExecutionModePersistent,
+			TaskTemplate: kelosv1alpha1.TaskTemplate{
+				Type: AgentTypeClaudeCode,
+				Credentials: kelosv1alpha1.Credentials{
+					Type:      kelosv1alpha1.CredentialTypeAPIKey,
+					SecretRef: &kelosv1alpha1.SecretReference{Name: "secret"},
+				},
+				WorkspaceRef: &kelosv1alpha1.WorkspaceReference{Name: "ws"},
+			},
+		},
+	}
+
+	workspace := &kelosv1alpha1.WorkspaceSpec{
+		Repo: "https://github.com/test/repo.git",
+	}
+
+	sts, _, err := builder.Build(SessionStatefulSetInput{
+		TaskSpawner: ts,
+		Workspace:   workspace,
+	})
+	if err != nil {
+		t.Fatalf("Build() returned error: %v", err)
+	}
+
+	injector := sts.Spec.Template.Spec.InitContainers[0]
+	if injector.Image != "my-registry.example.com/kelos-session-runner:v1.2.3" {
+		t.Errorf("Injector image: expected custom image, got %q", injector.Image)
+	}
+	if injector.ImagePullPolicy != corev1.PullAlways {
+		t.Errorf("Injector pull policy: expected Always, got %q", injector.ImagePullPolicy)
+	}
+}
+
 func TestSessionStatefulSetName(t *testing.T) {
 	if got := sessionStatefulSetName("my-spawner"); got != "session-my-spawner" {
 		t.Errorf("sessionStatefulSetName: expected 'session-my-spawner', got %q", got)
