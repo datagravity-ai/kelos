@@ -454,7 +454,7 @@ See the [full AgentConfig spec](docs/reference.md#agentconfig) for plugins, skil
 
 Kelos integrates with external systems in two ways:
 
-**TaskSpawner** — Kelos natively watches external sources and automatically creates Tasks. Supports GitHub Issues, GitHub Pull Requests, GitHub Webhooks, Jira, and Cron schedules. No glue code needed.
+**TaskSpawner** — Kelos natively watches external sources and automatically creates Tasks. Supports GitHub Issues, GitHub Pull Requests, GitHub Webhooks, Linear Webhooks, Jira, Cron schedules, and Generic Webhooks (for arbitrary HTTP POST sources like Sentry, Notion, or Slack). No glue code needed.
 
 ```yaml
 spec:

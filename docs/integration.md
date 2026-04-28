@@ -269,6 +269,82 @@ Then configure a webhook in Linear (Settings → API → Webhooks) pointing to `
 
 **Linear-specific variables:** `{{.Type}}` (resource type), `{{.State}}` (workflow state), `{{.Action}}` (webhook action), `{{.IssueID}}` (parent issue ID for Comment events), `{{.Labels}}`, `{{.Payload}}` (full payload access).
 
+### Generic Webhooks
+
+React to arbitrary HTTP POST events from any system that can deliver a JSON payload — Sentry, Notion, Slack, Drata, PagerDuty, internal services, or anything else. Unlike the GitHub and Linear webhook sources, the generic webhook source has no built-in knowledge of any particular schema; you describe how to extract fields and what to filter on using JSONPath expressions.
+
+```yaml
+apiVersion: kelos.dev/v1alpha1
+kind: TaskSpawner
+metadata:
+  name: sentry-error-responder
+spec:
+  when:
+    webhook:
+      source: sentry            # URL: /webhook/sentry, secret: SENTRY_WEBHOOK_SECRET
+      fieldMapping:
+        id: "$.data.event.event_id"   # required — used for deduplication and task naming
+        title: "$.data.event.title"
+        url: "$.data.url"
+        level: "$.data.event.level"
+      filters:
+        - field: "$.data.event.level"
+          value: "error"
+        - field: "$.data.event.platform"
+          pattern: "^(python|go|node)"
+  taskTemplate:
+    type: claude-code
+    workspaceRef:
+      name: my-workspace
+    credentials:
+      type: oauth
+      secretRef:
+        name: claude-oauth-token
+    promptTemplate: |
+      A new Sentry error was reported.
+
+      Title: {{.Title}}
+      Level: {{.level}}
+      URL:   {{.URL}}
+
+      Investigate the stack trace in the payload and open a PR with a fix.
+    branch: "sentry-{{.ID}}"
+  maxConcurrency: 3
+```
+
+**Setup:** Enable the `generic` source on `kelos-webhook-server` in your Helm values, then create a Secret containing one HMAC key per source. Each key must be named `<SOURCE>_WEBHOOK_SECRET` (uppercased). For example, with `source: sentry` and `source: notion`:
+
+```bash
+kubectl create secret generic generic-webhook-secrets \
+  --from-literal=SENTRY_WEBHOOK_SECRET=<your-sentry-secret> \
+  --from-literal=NOTION_WEBHOOK_SECRET=<your-notion-secret>
+```
+
+```yaml
+# Helm values
+webhookServer:
+  sources:
+    generic:
+      enabled: true
+      secretName: generic-webhook-secrets
+```
+
+The webhook URL is `https://your-webhook-domain/webhook/<source>` (e.g., `/webhook/sentry`). The server validates each delivery against the matching `<SOURCE>_WEBHOOK_SECRET` using `X-Hub-Signature-256` (`sha256=<hex>`), the same scheme GitHub uses. Senders that emit a different signature header are not currently supported.
+
+**Configuration:**
+
+- **`source`** *(required)* — short identifier (lowercase alphanumeric with optional hyphens) that determines both the URL path (`/webhook/<source>`) and the HMAC env var (`<SOURCE>_WEBHOOK_SECRET`).
+- **`fieldMapping`** *(required)* — map of template variable name → JSONPath expression evaluated against the request body. Each key becomes `{{.Key}}` in `promptTemplate` and `branch`. Lowercase keys `id`, `title`, `body`, and `url` are also exposed under their canonical uppercase aliases (`{{.ID}}`, `{{.Title}}`, `{{.Body}}`, `{{.URL}}`) for compatibility with templates written for the GitHub or Linear sources. The **`id` key is required** — it is used for delivery deduplication and Task naming. Missing fields produce empty strings (no error); only malformed JSONPath expressions fail.
+- **`filters[]`** *(optional)* — list of conditions that must ALL match for a delivery to trigger a Task (AND semantics across filters). Each filter has a `field` (JSONPath) and exactly one of:
+  - `value` — exact string match against the extracted value
+  - `pattern` — Go [regexp](https://pkg.go.dev/regexp/syntax) match against the extracted value
+  
+  When `filters` is empty, every delivery triggers a Task. A filter whose `field` is missing in the payload fails (the delivery is skipped).
+
+**Generic-webhook variables:** `{{.Kind}}` is always `"GenericWebhook"`, `{{.Payload}}` is the full parsed JSON body (use it for advanced templating like `{{.Payload.data.event.platform}}`), and every key from `fieldMapping` becomes a top-level variable. Standard fields `{{.ID}}`, `{{.Title}}`, `{{.Body}}`, and `{{.URL}}` always exist (empty if not mapped).
+
+See [example 13](../examples/13-taskspawner-generic-webhook/) for a full setup walkthrough.
+
 ### Cron
 
 Run agents on a schedule — dependency updates, code health checks, or periodic maintenance.
@@ -300,31 +376,33 @@ spec:
 
 All `promptTemplate` and `branch` fields support Go `text/template` syntax. Available variables depend on the source:
 
-| Variable | GitHub Issues | GitHub PRs | GitHub Webhook | Jira | Linear Webhook | Cron |
-|----------|--------------|------------|----------------|------|----------------|------|
-| `{{.ID}}` | Issue number (string) | PR number (string) | Issue/PR number or commit ID | Issue key (e.g., `ENG-42`) | Linear resource ID | Date-time string |
-| `{{.Number}}` | Issue number (int) | PR number (int) | Issue/PR number | `0` | Empty | `0` |
-| `{{.Title}}` | Issue title | PR title | Issue/PR title | Issue summary | Resource title | Trigger time (RFC3339) |
-| `{{.Body}}` | Issue body | PR body | Issue/PR/comment body | Issue description | Empty | Empty |
-| `{{.URL}}` | Issue URL | PR URL | Issue/PR URL | Issue URL | Empty | Empty |
-| `{{.Labels}}` | Comma-separated | Comma-separated | Empty | Comma-separated | Comma-separated | Empty |
-| `{{.Comments}}` | Issue comments | PR comments | Empty | Issue comments | Empty | Empty |
-| `{{.Kind}}` | `"Issue"` | `"PR"` | `"webhook"` | Jira issue type | `"LinearWebhook"` | `"Issue"` |
-| `{{.Event}}` | Empty | Empty | Event type (e.g., `"issues"`) | Empty | Empty | Empty |
-| `{{.Action}}` | Empty | Empty | Action (e.g., `"opened"`) | Empty | Action (e.g., `"create"`, `"update"`) | Empty |
-| `{{.Sender}}` | Empty | Empty | Event sender username | Empty | Empty | Empty |
-| `{{.Branch}}` | Empty | PR head branch | PR/push branch | Empty | Empty | Empty |
-| `{{.Ref}}` | Empty | Empty | Git ref (e.g., `"refs/heads/main"`) | Empty | Empty | Empty |
-| `{{.Repository}}` | Empty | Empty | `owner/repo` format | Empty | Empty | Empty |
-| `{{.RepositoryOwner}}` | Empty | Empty | Repository owner login | Empty | Empty | Empty |
-| `{{.RepositoryName}}` | Empty | Empty | Repository name only | Empty | Empty | Empty |
-| `{{.Payload}}` | Empty | Empty | Full webhook payload | Empty | Full Linear webhook payload | Empty |
-| `{{.ReviewState}}` | Empty | `approved` / `changes_requested` | Empty | Empty | Empty | Empty |
-| `{{.ReviewComments}}` | Empty | Inline review comments | Empty | Empty | Empty | Empty |
-| `{{.Type}}` | Empty | Empty | Empty | Empty | Resource type (e.g., `"Issue"`, `"Comment"`) | Empty |
-| `{{.State}}` | Empty | Empty | Empty | Empty | Workflow state (e.g., `"Todo"`, `"In Progress"`) | Empty |
-| `{{.IssueID}}` | Empty | Empty | Empty | Empty | Parent issue ID (Comment events only) | Empty |
-| `{{.Time}}` | Empty | Empty | Empty | Empty | Empty | Trigger time (RFC3339) |
+| Variable | GitHub Issues | GitHub PRs | GitHub Webhook | Jira | Linear Webhook | Generic Webhook | Cron |
+|----------|--------------|------------|----------------|------|----------------|-----------------|------|
+| `{{.ID}}` | Issue number (string) | PR number (string) | Issue/PR number or commit ID | Issue key (e.g., `ENG-42`) | Linear resource ID | Mapped `id` field (required) | Date-time string |
+| `{{.Number}}` | Issue number (int) | PR number (int) | Issue/PR number | `0` | Empty | Empty | `0` |
+| `{{.Title}}` | Issue title | PR title | Issue/PR title | Issue summary | Resource title | Mapped `title` field (if present) | Trigger time (RFC3339) |
+| `{{.Body}}` | Issue body | PR body | Issue/PR/comment body | Issue description | Empty | Mapped `body` field (if present) | Empty |
+| `{{.URL}}` | Issue URL | PR URL | Issue/PR URL | Issue URL | Empty | Mapped `url` field (if present) | Empty |
+| `{{.Labels}}` | Comma-separated | Comma-separated | Empty | Comma-separated | Comma-separated | Empty | Empty |
+| `{{.Comments}}` | Issue comments | PR comments | Empty | Issue comments | Empty | Empty | Empty |
+| `{{.Kind}}` | `"Issue"` | `"PR"` | `"webhook"` | Jira issue type | `"LinearWebhook"` | `"GenericWebhook"` | `"Issue"` |
+| `{{.Event}}` | Empty | Empty | Event type (e.g., `"issues"`) | Empty | Empty | Empty | Empty |
+| `{{.Action}}` | Empty | Empty | Action (e.g., `"opened"`) | Empty | Action (e.g., `"create"`, `"update"`) | Empty | Empty |
+| `{{.Sender}}` | Empty | Empty | Event sender username | Empty | Empty | Empty | Empty |
+| `{{.Branch}}` | Empty | PR head branch | PR/push branch | Empty | Empty | Empty | Empty |
+| `{{.Ref}}` | Empty | Empty | Git ref (e.g., `"refs/heads/main"`) | Empty | Empty | Empty | Empty |
+| `{{.Repository}}` | Empty | Empty | `owner/repo` format | Empty | Empty | Empty | Empty |
+| `{{.RepositoryOwner}}` | Empty | Empty | Repository owner login | Empty | Empty | Empty | Empty |
+| `{{.RepositoryName}}` | Empty | Empty | Repository name only | Empty | Empty | Empty | Empty |
+| `{{.Payload}}` | Empty | Empty | Full webhook payload | Empty | Full Linear webhook payload | Full parsed JSON body | Empty |
+| `{{.ReviewState}}` | Empty | `approved` / `changes_requested` | Empty | Empty | Empty | Empty | Empty |
+| `{{.ReviewComments}}` | Empty | Inline review comments | Empty | Empty | Empty | Empty | Empty |
+| `{{.Type}}` | Empty | Empty | Empty | Empty | Resource type (e.g., `"Issue"`, `"Comment"`) | Empty | Empty |
+| `{{.State}}` | Empty | Empty | Empty | Empty | Workflow state (e.g., `"Todo"`, `"In Progress"`) | Empty | Empty |
+| `{{.IssueID}}` | Empty | Empty | Empty | Empty | Parent issue ID (Comment events only) | Empty | Empty |
+| `{{.Time}}` | Empty | Empty | Empty | Empty | Empty | Empty | Trigger time (RFC3339) |
+
+> **Generic Webhook only:** any additional keys you declare in `fieldMapping` are also exposed as top-level variables. For example, `fieldMapping: {severity: "$.level"}` makes `{{.severity}}` available in templates.
 
 ## Direct Task Creation: Workflow Integration
 
