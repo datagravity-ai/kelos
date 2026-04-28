@@ -18,6 +18,9 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
+    - jsonPath: .spec.executionMode
+      name: Mode
+      type: string
     - jsonPath: .spec.taskTemplate.workspaceRef.name
       name: Workspace
       type: string
