@@ -39,11 +39,29 @@ webhookServer:
       replicas: 1
       secretName: ""
       githubSecretName: ""
+      service:
+        # Service type for the webhook endpoint.
+        # Allowed values: ClusterIP, LoadBalancer, NodePort.
+        # When type is ClusterIP, the Service also exposes the unauthenticated
+        # metrics port (8080) for in-cluster scraping. When type is
+        # LoadBalancer or NodePort, only the webhook port (8443) is exposed
+        # to avoid externally publishing the metrics endpoint; scrape metrics
+        # via a PodMonitor or a separate ClusterIP Service in that case.
+        type: ClusterIP
     linear:
       enabled: false
       replicas: 1
       secretName: ""
       apiKeySecretName: ""
+      service:
+        # Service type for the webhook endpoint.
+        # Allowed values: ClusterIP, LoadBalancer, NodePort.
+        # When type is ClusterIP, the Service also exposes the unauthenticated
+        # metrics port (8080) for in-cluster scraping. When type is
+        # LoadBalancer or NodePort, only the webhook port (8443) is exposed
+        # to avoid externally publishing the metrics endpoint; scrape metrics
+        # via a PodMonitor or a separate ClusterIP Service in that case.
+        type: ClusterIP
     generic:
       enabled: false
       replicas: 1
@@ -51,6 +69,15 @@ webhookServer:
       # Each key should be named <SOURCE>_WEBHOOK_SECRET (e.g.,
       # NOTION_WEBHOOK_SECRET, SENTRY_WEBHOOK_SECRET).
       secretName: ""
+      service:
+        # Service type for the webhook endpoint.
+        # Allowed values: ClusterIP, LoadBalancer, NodePort.
+        # When type is ClusterIP, the Service also exposes the unauthenticated
+        # metrics port (8080) for in-cluster scraping. When type is
+        # LoadBalancer or NodePort, only the webhook port (8443) is exposed
+        # to avoid externally publishing the metrics endpoint; scrape metrics
+        # via a PodMonitor or a separate ClusterIP Service in that case.
+        type: ClusterIP
   resources:
     limits:
       cpu: 500m
