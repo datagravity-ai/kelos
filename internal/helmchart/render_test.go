@@ -267,6 +267,224 @@ func TestRender_LinearWebhookApiKeySecret(t *testing.T) {
 	}
 }
 
+func TestRender_WebhookServiceType(t *testing.T) {
+	tests := []struct {
+		name        string
+		source      string
+		serviceType string
+	}{
+		{
+			name:        "github service type LoadBalancer",
+			source:      "github",
+			serviceType: "LoadBalancer",
+		},
+		{
+			name:        "linear service type NodePort",
+			source:      "linear",
+			serviceType: "NodePort",
+		},
+		{
+			name:        "generic service type LoadBalancer",
+			source:      "generic",
+			serviceType: "LoadBalancer",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			vals := map[string]interface{}{
+				"webhookServer": map[string]interface{}{
+					"sources": map[string]interface{}{
+						tt.source: map[string]interface{}{
+							"enabled":    true,
+							"replicas":   1,
+							"secretName": tt.source + "-webhook-secret",
+							"service": map[string]interface{}{
+								"type": tt.serviceType,
+							},
+						},
+					},
+				},
+			}
+			data, err := Render(manifests.ChartFS, vals)
+			if err != nil {
+				t.Fatalf("rendering chart: %v", err)
+			}
+			output := string(data)
+			expected := "type: " + tt.serviceType
+			if !strings.Contains(output, expected) {
+				t.Errorf("expected rendered output to contain %q", expected)
+			}
+		})
+	}
+}
+
+func TestRender_WebhookServiceTypeDefault(t *testing.T) {
+	vals := map[string]interface{}{
+		"webhookServer": map[string]interface{}{
+			"sources": map[string]interface{}{
+				"github": map[string]interface{}{
+					"enabled":    true,
+					"replicas":   1,
+					"secretName": "github-webhook-secret",
+				},
+			},
+		},
+	}
+	data, err := Render(manifests.ChartFS, vals)
+	if err != nil {
+		t.Fatalf("rendering chart: %v", err)
+	}
+	output := string(data)
+	if !strings.Contains(output, "type: ClusterIP") {
+		t.Error("expected default service type to be ClusterIP")
+	}
+}
+
+func TestRender_WebhookServiceMetricsPortExposure(t *testing.T) {
+	tests := []struct {
+		name            string
+		source          string
+		serviceType     string
+		wantMetricsPort bool
+	}{
+		{
+			name:            "github ClusterIP exposes metrics port",
+			source:          "github",
+			serviceType:     "ClusterIP",
+			wantMetricsPort: true,
+		},
+		{
+			name:            "github LoadBalancer omits metrics port",
+			source:          "github",
+			serviceType:     "LoadBalancer",
+			wantMetricsPort: false,
+		},
+		{
+			name:            "github NodePort omits metrics port",
+			source:          "github",
+			serviceType:     "NodePort",
+			wantMetricsPort: false,
+		},
+		{
+			name:            "linear LoadBalancer omits metrics port",
+			source:          "linear",
+			serviceType:     "LoadBalancer",
+			wantMetricsPort: false,
+		},
+		{
+			name:            "generic NodePort omits metrics port",
+			source:          "generic",
+			serviceType:     "NodePort",
+			wantMetricsPort: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			vals := map[string]interface{}{
+				"webhookServer": map[string]interface{}{
+					"sources": map[string]interface{}{
+						tt.source: map[string]interface{}{
+							"enabled":    true,
+							"replicas":   1,
+							"secretName": tt.source + "-webhook-secret",
+							"service": map[string]interface{}{
+								"type": tt.serviceType,
+							},
+						},
+					},
+				},
+			}
+			data, err := Render(manifests.ChartFS, vals)
+			if err != nil {
+				t.Fatalf("rendering chart: %v", err)
+			}
+			output := string(data)
+
+			serviceName := "kelos-webhook-" + tt.source
+			serviceSpec := extractServiceSpec(t, output, serviceName)
+			hasMetricsPort := strings.Contains(serviceSpec, "name: metrics")
+			if tt.wantMetricsPort && !hasMetricsPort {
+				t.Errorf("expected metrics port in %s Service spec, got:\n%s", serviceName, serviceSpec)
+			}
+			if !tt.wantMetricsPort && hasMetricsPort {
+				t.Errorf("expected no metrics port in %s Service spec when type=%s, got:\n%s", serviceName, tt.serviceType, serviceSpec)
+			}
+			if !strings.Contains(serviceSpec, "name: webhook") {
+				t.Errorf("expected webhook port to remain in %s Service spec, got:\n%s", serviceName, serviceSpec)
+			}
+		})
+	}
+}
+
+// extractServiceSpec returns the YAML body for the Service named name from the
+// rendered chart output, or fails the test if not found.
+func extractServiceSpec(t *testing.T, output, name string) string {
+	t.Helper()
+	docs := strings.Split(output, "---\n")
+	marker := "name: " + name + "\n"
+	for _, doc := range docs {
+		if !strings.Contains(doc, "kind: Service") {
+			continue
+		}
+		if !strings.Contains(doc, marker) {
+			continue
+		}
+		return doc
+	}
+	t.Fatalf("Service %q not found in rendered output", name)
+	return ""
+}
+
+func TestRender_WebhookServiceTypeRejectsUnsupported(t *testing.T) {
+	tests := []struct {
+		name        string
+		source      string
+		serviceType string
+	}{
+		{
+			name:        "github ExternalName rejected",
+			source:      "github",
+			serviceType: "ExternalName",
+		},
+		{
+			name:        "linear bogus type rejected",
+			source:      "linear",
+			serviceType: "Bogus",
+		},
+		{
+			name:        "generic empty type rejected",
+			source:      "generic",
+			serviceType: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			vals := map[string]interface{}{
+				"webhookServer": map[string]interface{}{
+					"sources": map[string]interface{}{
+						tt.source: map[string]interface{}{
+							"enabled":    true,
+							"replicas":   1,
+							"secretName": tt.source + "-webhook-secret",
+							"service": map[string]interface{}{
+								"type": tt.serviceType,
+							},
+						},
+					},
+				},
+			}
+			if _, err := Render(manifests.ChartFS, vals); err == nil {
+				t.Fatal("expected error rendering chart with unsupported service type")
+			} else if !strings.Contains(err.Error(), "is not supported") {
+				t.Errorf("expected validation error, got: %v", err)
+			}
+		})
+	}
+}
+
 func TestRender_ParseableOutput(t *testing.T) {
 	vals := map[string]interface{}{
 		"image": map[string]interface{}{

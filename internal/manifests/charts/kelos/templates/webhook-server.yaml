@@ -1,3 +1,12 @@
+{{- $allowedServiceTypes := list "ClusterIP" "LoadBalancer" "NodePort" }}
+{{- range $source := list "github" "linear" "generic" }}
+{{- $sourceCfg := index $.Values.webhookServer.sources $source }}
+{{- if $sourceCfg.enabled }}
+{{- if not (has $sourceCfg.service.type $allowedServiceTypes) }}
+{{- fail (printf "webhookServer.sources.%s.service.type %q is not supported; must be one of %v" $source $sourceCfg.service.type $allowedServiceTypes) }}
+{{- end }}
+{{- end }}
+{{- end }}
 {{- if .Values.webhookServer.sources.github.enabled }}
 ---
 apiVersion: apps/v1
@@ -110,16 +119,18 @@ metadata:
     app.kubernetes.io/name: kelos
     app.kubernetes.io/component: webhook-github
 spec:
-  type: ClusterIP
+  type: {{ .Values.webhookServer.sources.github.service.type }}
   ports:
     - name: webhook
       port: 8443
       targetPort: webhook
       protocol: TCP
+    {{- if eq .Values.webhookServer.sources.github.service.type "ClusterIP" }}
     - name: metrics
       port: 8080
       targetPort: metrics
       protocol: TCP
+    {{- end }}
   selector:
     app.kubernetes.io/name: kelos
     app.kubernetes.io/component: webhook-github
@@ -218,16 +229,18 @@ metadata:
     app.kubernetes.io/name: kelos
     app.kubernetes.io/component: webhook-linear
 spec:
-  type: ClusterIP
+  type: {{ .Values.webhookServer.sources.linear.service.type }}
   ports:
     - name: webhook
       port: 8443
       targetPort: webhook
       protocol: TCP
+    {{- if eq .Values.webhookServer.sources.linear.service.type "ClusterIP" }}
     - name: metrics
       port: 8080
       targetPort: metrics
       protocol: TCP
+    {{- end }}
   selector:
     app.kubernetes.io/name: kelos
     app.kubernetes.io/component: webhook-linear
@@ -318,16 +331,18 @@ metadata:
     app.kubernetes.io/name: kelos
     app.kubernetes.io/component: webhook-generic
 spec:
-  type: ClusterIP
+  type: {{ .Values.webhookServer.sources.generic.service.type }}
   ports:
     - name: webhook
       port: 8443
       targetPort: webhook
       protocol: TCP
+    {{- if eq .Values.webhookServer.sources.generic.service.type "ClusterIP" }}
     - name: metrics
       port: 8080
       targetPort: metrics
       protocol: TCP
+    {{- end }}
   selector:
     app.kubernetes.io/name: kelos
     app.kubernetes.io/component: webhook-generic
