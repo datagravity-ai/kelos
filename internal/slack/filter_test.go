@@ -178,6 +178,55 @@ func TestMatchesSpawner(t *testing.T) {
 			msg:  &SlackMessageData{UserID: "U1", ChannelID: "C1", Text: "<@UBOT1> more context", ThreadTS: "1234567890.123456"},
 			want: true,
 		},
+		{
+			name: "fromUserIDs matches",
+			slackCfg: &v1alpha1.Slack{
+				FromUserIDs: []string{"BBOT1"},
+			},
+			msg:  &SlackMessageData{UserID: "BBOT1", ChannelID: "C1"},
+			want: true,
+		},
+		{
+			name: "fromUserIDs rejects non-matching user",
+			slackCfg: &v1alpha1.Slack{
+				FromUserIDs: []string{"BBOT1"},
+			},
+			msg:  &SlackMessageData{UserID: "U1", ChannelID: "C1"},
+			want: false,
+		},
+		{
+			name: "excludeFromUserIDs rejects matching user",
+			slackCfg: &v1alpha1.Slack{
+				ExcludeFromUserIDs: []string{"BBOT1"},
+			},
+			msg:  &SlackMessageData{UserID: "BBOT1", ChannelID: "C1"},
+			want: false,
+		},
+		{
+			name: "excludeFromUserIDs allows non-matching user",
+			slackCfg: &v1alpha1.Slack{
+				ExcludeFromUserIDs: []string{"BBOT1"},
+			},
+			msg:  &SlackMessageData{UserID: "U1", ChannelID: "C1"},
+			want: true,
+		},
+		{
+			name: "excludeFromUserIDs with mention filter combined",
+			slackCfg: &v1alpha1.Slack{
+				MentionUserIDs:     []string{"UGRAVITY"},
+				ExcludeFromUserIDs: []string{"BTHENA"},
+			},
+			msg:  &SlackMessageData{UserID: "BTHENA", ChannelID: "C1", Text: "<@UGRAVITY> hey"},
+			want: false,
+		},
+		{
+			name: "excludeFromUserIDs multiple IDs rejects second",
+			slackCfg: &v1alpha1.Slack{
+				ExcludeFromUserIDs: []string{"BBOT1", "BBOT2"},
+			},
+			msg:  &SlackMessageData{UserID: "BBOT2", ChannelID: "C1"},
+			want: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -503,6 +552,48 @@ func TestStripLeadingMentions(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := stripLeadingMentions(tt.text); got != tt.want {
 				t.Errorf("stripLeadingMentions() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMatchesFromUser(t *testing.T) {
+	tests := []struct {
+		name        string
+		userID      string
+		fromUserIDs []string
+		want        bool
+	}{
+		{"empty list matches all", "U1", nil, true},
+		{"in list", "BBOT1", []string{"BBOT1", "BBOT2"}, true},
+		{"not in list", "U1", []string{"BBOT1", "BBOT2"}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := matchesFromUser(tt.userID, tt.fromUserIDs); got != tt.want {
+				t.Errorf("matchesFromUser() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMatchesExcludedUser(t *testing.T) {
+	tests := []struct {
+		name               string
+		userID             string
+		excludeFromUserIDs []string
+		want               bool
+	}{
+		{"empty list never matches", "U1", nil, false},
+		{"in list", "BBOT1", []string{"BBOT1", "BBOT2"}, true},
+		{"not in list", "U1", []string{"BBOT1", "BBOT2"}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := matchesExcludedUser(tt.userID, tt.excludeFromUserIDs); got != tt.want {
+				t.Errorf("matchesExcludedUser() = %v, want %v", got, tt.want)
 			}
 		})
 	}
