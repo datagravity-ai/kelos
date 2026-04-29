@@ -76,7 +76,7 @@ func formatAttachments(attachments []goslack.Attachment) string {
 // FetchThreadContext fetches the full thread history and returns formatted
 // context. The caller decides whether to process the message — this function
 // always returns the thread body when the API call succeeds.
-func FetchThreadContext(ctx context.Context, api *goslack.Client, channelID, threadTS, botUserID string) (string, error) {
+func FetchThreadContext(ctx context.Context, api slackAPI, channelID, threadTS, botUserID string) (string, error) {
 	threadCtx, cancel := context.WithTimeout(ctx, threadFetchTimeout)
 	defer cancel()
 

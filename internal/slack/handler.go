@@ -27,6 +27,17 @@ const (
 	postMessageTimeout = 5 * time.Second
 )
 
+// slackAPI is an interface for the Slack API methods used by SlackHandler.
+// It allows substituting a test double in unit tests.
+type slackAPI interface {
+	GetConversationInfoContext(ctx context.Context, input *goslack.GetConversationInfoInput) (*goslack.Channel, error)
+	LeaveConversationContext(ctx context.Context, channelID string) (bool, error)
+	PostMessageContext(ctx context.Context, channelID string, options ...goslack.MsgOption) (string, string, error)
+	GetUserInfoContext(ctx context.Context, user string) (*goslack.User, error)
+	GetPermalinkContext(ctx context.Context, params *goslack.PermalinkParameters) (string, error)
+	GetConversationRepliesContext(ctx context.Context, params *goslack.GetConversationRepliesParameters) ([]goslack.Message, bool, string, error)
+}
+
 // SlackHandler handles Slack messages via Socket Mode and routes them to
 // matching TaskSpawners. It is the centralized equivalent of the per-TaskSpawner
 // SlackSource that previously ran in each spawner pod.
@@ -34,7 +45,7 @@ type SlackHandler struct {
 	client          client.Client
 	log             logr.Logger
 	taskBuilder     *taskbuilder.TaskBuilder
-	api             *goslack.Client
+	api             slackAPI
 	sm              *socketmode.Client
 	botUserID       string
 	joinMessageFile string
@@ -144,6 +155,23 @@ func (h *SlackHandler) handleEventsAPI(ctx context.Context, evt socketmode.Event
 // event is silently ignored.
 func (h *SlackHandler) handleMemberJoinedChannel(ctx context.Context, evt *slackevents.MemberJoinedChannelEvent) {
 	if evt.User != h.botUserID {
+		return
+	}
+
+	infoCtx, infoCancel := context.WithTimeout(ctx, enrichCallTimeout)
+	defer infoCancel()
+	ch, err := h.api.GetConversationInfoContext(infoCtx, &goslack.GetConversationInfoInput{
+		ChannelID: evt.Channel,
+	})
+	if err != nil {
+		h.log.Info("Failed to get channel info, continuing with greeting", "channel", evt.Channel, "error", err)
+	} else if ch.IsExtShared || ch.IsPendingExtShared {
+		h.log.Info("Leaving external channel", "channel", evt.Channel)
+		leaveCtx, leaveCancel := context.WithTimeout(ctx, enrichCallTimeout)
+		defer leaveCancel()
+		if _, err := h.api.LeaveConversationContext(leaveCtx, evt.Channel); err != nil {
+			h.log.Error(err, "Failed to leave external channel", "channel", evt.Channel)
+		}
 		return
 	}
 
