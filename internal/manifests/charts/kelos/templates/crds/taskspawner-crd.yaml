@@ -3821,6 +3821,12 @@ spec:
                       tasks through this source. The URL path is /webhook/<source> and
                       the HMAC secret is read from the <SOURCE>_WEBHOOK_SECRET env var.
                     properties:
+                      deliveryIDHeader:
+                        description: |-
+                          DeliveryIDHeader is the HTTP header containing a unique delivery
+                          identifier for idempotency. If empty, a SHA-256 hash of the body
+                          is used.
+                        type: string
                       fieldMapping:
                         additionalProperties:
                           type: string
@@ -3865,6 +3871,20 @@ spec:
                             rule: has(self.value) != (has(self.pattern) && size(self.pattern)
                               > 0)
                         type: array
+                      signatureHeader:
+                        default: X-Webhook-Signature-256
+                        description: |-
+                          SignatureHeader is the HTTP header containing the HMAC signature.
+                          Defaults to "X-Webhook-Signature-256".
+                        type: string
+                      signaturePrefix:
+                        default: sha256=
+                        description: |-
+                          SignaturePrefix is the prefix before the hex digest in the signature
+                          header value (e.g., "sha256=" for GitHub-style signatures). Set to
+                          empty string if the header contains the raw hex digest (Linear-style).
+                          Defaults to "sha256=".
+                        type: string
                       source:
                         description: |-
                           Source is a short identifier for this webhook source (e.g., "notion",
