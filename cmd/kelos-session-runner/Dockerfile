@@ -1,4 +1,4 @@
-FROM gcr.io/distroless/static:nonroot
+FROM busybox:1.37
 ARG TARGETARCH
 WORKDIR /
 COPY bin/kelos-session-runner-linux-${TARGETARCH} kelos-session-runner
