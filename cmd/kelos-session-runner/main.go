@@ -19,6 +19,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"syscall"
@@ -26,7 +27,34 @@ import (
 	"github.com/kelos-dev/kelos/internal/sessionrunner"
 )
 
+func selfCopy(dest string) error {
+	src, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dest, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	_, err = io.Copy(out, in)
+	return err
+}
+
 func main() {
+	if len(os.Args) == 3 && os.Args[1] == "--self-copy" {
+		if err := selfCopy(os.Args[2]); err != nil {
+			fmt.Fprintf(os.Stderr, "Self-copy failed: %v\n", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
 	cfg := sessionrunner.ConfigFromEnv()
 
 	if cfg.PodName == "" || cfg.PodNamespace == "" {
