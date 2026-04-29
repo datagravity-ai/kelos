@@ -165,7 +165,7 @@ func (h *SlackHandler) handleMemberJoinedChannel(ctx context.Context, evt *slack
 	})
 	if err != nil {
 		h.log.Info("Failed to get channel info, continuing with greeting", "channel", evt.Channel, "error", err)
-	} else if ch.IsExtShared || ch.IsPendingExtShared {
+	} else if ch != nil && (ch.IsExtShared || ch.IsPendingExtShared) {
 		h.log.Info("Leaving external channel", "channel", evt.Channel)
 		leaveCtx, leaveCancel := context.WithTimeout(ctx, enrichCallTimeout)
 		defer leaveCancel()

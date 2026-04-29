@@ -500,6 +500,12 @@ func TestHandleMemberJoinedChannel_ExternalChannel(t *testing.T) {
 			wantLeave:    false,
 			wantGreeting: true,
 		},
+		{
+			name:         "nil channel with nil error fails open with greeting",
+			convInfo:     nil,
+			wantLeave:    false,
+			wantGreeting: true,
+		},
 	}
 
 	for _, tt := range tests {
