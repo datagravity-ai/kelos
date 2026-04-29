@@ -86,6 +86,33 @@ type PodOverrides struct {
 	// Workload Identity, or Azure Workload Identity.
 	// +optional
 	ServiceAccountName string `json:"serviceAccountName,omitempty"`
+
+	// Volumes is a list of additional volumes to attach to the agent pod.
+	// User-supplied volume names must not collide with Kelos-reserved
+	// names ("workspace", "kelos-plugin").
+	// +optional
+	Volumes []corev1.Volume `json:"volumes,omitempty"`
+
+	// VolumeMounts is a list of additional volume mounts to add to the
+	// agent container. Names must reference either a user-supplied volume
+	// from Volumes or a Kelos-managed volume ("workspace", "kelos-plugin").
+	// Init containers are not exposed via this field.
+	// +optional
+	VolumeMounts []corev1.VolumeMount `json:"volumeMounts,omitempty"`
+
+	// PodSecurityContext is applied to the agent pod. Fields set here
+	// override Kelos defaults; fields left unset retain Kelos defaults
+	// (in particular, FSGroup is retained when a workspace is mounted so
+	// the agent user keeps read/write access to the workspace volume).
+	// +optional
+	PodSecurityContext *corev1.PodSecurityContext `json:"podSecurityContext,omitempty"`
+
+	// ContainerSecurityContext is applied to the agent container. Use
+	// this to declare allowPrivilegeEscalation=false, capabilities.drop=[ALL],
+	// readOnlyRootFilesystem=true, etc., so the spawned pod can land in a
+	// PSS restricted namespace.
+	// +optional
+	ContainerSecurityContext *corev1.SecurityContext `json:"containerSecurityContext,omitempty"`
 }
 
 // TaskSpec defines the desired state of Task.

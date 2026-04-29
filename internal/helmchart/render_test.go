@@ -1,12 +1,23 @@
 package helmchart
 
 import (
+	"bufio"
+	"bytes"
+	"io"
+	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/kelos-dev/kelos/internal/manifests"
+	yamlutil "k8s.io/apimachinery/pkg/util/yaml"
 	sigyaml "sigs.k8s.io/yaml"
 )
+
+// imageLatestRefRE matches actual image references ending in ":latest" while
+// ignoring narrative occurrences in CRD descriptions like "Defaults to Always
+// if :latest tag is specified" — the leading non-whitespace requirement
+// distinguishes "registry/name:latest" from " :latest" prose.
+var imageLatestRefRE = regexp.MustCompile(`\S:latest`)
 
 func TestRender_NilValues(t *testing.T) {
 	data, err := Render(manifests.ChartFS, nil)
@@ -29,8 +40,8 @@ func TestRender_NilValues(t *testing.T) {
 			t.Errorf("expected rendered output to contain %q", expected)
 		}
 	}
-	if !strings.Contains(output, ":latest") {
-		t.Error("expected :latest tags in rendered output when using default values")
+	if !imageLatestRefRE.MatchString(output) {
+		t.Error("expected :latest image refs in rendered output when using default values")
 	}
 }
 
@@ -73,8 +84,8 @@ func TestRender_VersionOverride(t *testing.T) {
 		t.Fatalf("rendering chart: %v", err)
 	}
 	output := string(data)
-	if strings.Contains(output, ":latest") {
-		t.Error("expected no :latest tags in rendered output")
+	if imageLatestRefRE.MatchString(output) {
+		t.Error("expected no :latest image refs in rendered output")
 	}
 	if !strings.Contains(output, ":v1.2.3") {
 		t.Error("expected :v1.2.3 tags in rendered output")
@@ -495,16 +506,26 @@ func TestRender_ParseableOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("rendering chart: %v", err)
 	}
-	// Verify each non-empty YAML document is actually parseable.
-	docs := strings.Split(string(data), "---\n")
+	// Verify each non-empty YAML document is actually parseable. Use the
+	// Kubernetes YAML reader rather than splitting on "---\n", since the
+	// rendered chart contains literal text like "rw-rw----" inside CRD
+	// descriptions that would falsely match a naive separator search.
+	reader := yamlutil.NewYAMLReader(bufio.NewReader(bytes.NewReader(data)))
 	validDocs := 0
-	for _, doc := range docs {
-		trimmed := strings.TrimSpace(doc)
+	for {
+		doc, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("reading YAML document: %v", err)
+		}
+		trimmed := bytes.TrimSpace(doc)
 		if len(trimmed) == 0 {
 			continue
 		}
 		var obj map[string]interface{}
-		if err := sigyaml.Unmarshal([]byte(trimmed), &obj); err != nil {
+		if err := sigyaml.Unmarshal(trimmed, &obj); err != nil {
 			t.Errorf("invalid YAML document: %v\n---\n%s", err, trimmed)
 		}
 		validDocs++
