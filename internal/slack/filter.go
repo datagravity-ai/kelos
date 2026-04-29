@@ -55,6 +55,14 @@ func MatchesSpawner(slackCfg *v1alpha1.Slack, msg *SlackMessageData) bool {
 			return false
 		}
 	}
+	// FromUserIDs filter: only accept messages from specific users.
+	if !matchesFromUser(msg.UserID, slackCfg.FromUserIDs) {
+		return false
+	}
+	// ExcludeFromUserIDs filter: reject messages from specific users/bots.
+	if matchesExcludedUser(msg.UserID, slackCfg.ExcludeFromUserIDs) {
+		return false
+	}
 	// ExcludeCommands filter: reject messages matching any excluded prefix.
 	// Applied consistently for all message types including thread replies.
 	if matchesExcludeCommands(msg.Text, slackCfg.ExcludeCommands) {
@@ -158,6 +166,34 @@ func matchesExcludeCommands(text string, excludeCommands []string) bool {
 	cleaned := stripLeadingMentions(text)
 	for _, prefix := range excludeCommands {
 		if strings.HasPrefix(cleaned, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// matchesFromUser returns true if userID is in the fromUserIDs list,
+// or if the list is empty (all users permitted).
+func matchesFromUser(userID string, fromUserIDs []string) bool {
+	if len(fromUserIDs) == 0 {
+		return true
+	}
+	for _, id := range fromUserIDs {
+		if id == userID {
+			return true
+		}
+	}
+	return false
+}
+
+// matchesExcludedUser returns true if userID is in the excludeFromUserIDs list.
+// When it returns true, the spawner should NOT process this message.
+func matchesExcludedUser(userID string, excludeFromUserIDs []string) bool {
+	if len(excludeFromUserIDs) == 0 {
+		return false
+	}
+	for _, id := range excludeFromUserIDs {
+		if id == userID {
 			return true
 		}
 	}

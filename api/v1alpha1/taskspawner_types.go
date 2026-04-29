@@ -653,6 +653,28 @@ type Slack struct {
 	// command name from the payload before delivery).
 	// +optional
 	ExcludeCommands []string `json:"excludeCommands,omitempty"`
+
+	// FromUserIDs optionally restricts task spawning to messages from specific
+	// Slack user or bot IDs (e.g., "B04NHQV08DQ" for a bot). When set, only
+	// messages from one of these IDs trigger tasks. When empty, messages from
+	// any user are accepted (subject to other filters).
+	// +optional
+	FromUserIDs []string `json:"fromUserIDs,omitempty"`
+
+	// ExcludeFromUserIDs optionally rejects messages from specific Slack user
+	// or bot IDs (e.g., "B04NHQV08DQ"). This provides negative routing to
+	// prevent a spawner from firing on messages from certain users or bots,
+	// such as preventing double-firing when multiple spawners monitor the same
+	// channels. When empty, no users are excluded.
+	// +optional
+	ExcludeFromUserIDs []string `json:"excludeFromUserIDs,omitempty"`
+
+	// FieldMapping maps JSONPath expressions to WorkItem template variables,
+	// allowing extraction of structured data from Slack message payloads.
+	// The "id" key is required for deduplication and task naming. Other keys
+	// become available as template variables in promptTemplate.
+	// +optional
+	FieldMapping map[string]string `json:"fieldMapping,omitempty"`
 }
 
 // ContextSource declares an external HTTP endpoint to query before task

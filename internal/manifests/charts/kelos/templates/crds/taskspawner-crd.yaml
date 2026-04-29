@@ -1372,6 +1372,34 @@ spec:
                         items:
                           type: string
                         type: array
+                      excludeFromUserIDs:
+                        description: |-
+                          ExcludeFromUserIDs optionally rejects messages from specific Slack user
+                          or bot IDs (e.g., "B04NHQV08DQ"). This provides negative routing to
+                          prevent a spawner from firing on messages from certain users or bots,
+                          such as preventing double-firing when multiple spawners monitor the same
+                          channels. When empty, no users are excluded.
+                        items:
+                          type: string
+                        type: array
+                      fieldMapping:
+                        additionalProperties:
+                          type: string
+                        description: |-
+                          FieldMapping maps JSONPath expressions to WorkItem template variables,
+                          allowing extraction of structured data from Slack message payloads.
+                          The "id" key is required for deduplication and task naming. Other keys
+                          become available as template variables in promptTemplate.
+                        type: object
+                      fromUserIDs:
+                        description: |-
+                          FromUserIDs optionally restricts task spawning to messages from specific
+                          Slack user or bot IDs (e.g., "B04NHQV08DQ" for a bot). When set, only
+                          messages from one of these IDs trigger tasks. When empty, messages from
+                          any user are accepted (subject to other filters).
+                        items:
+                          type: string
+                        type: array
                       mentionUserIDs:
                         description: |-
                           MentionUserIDs optionally requires that the message @-mentions at least
