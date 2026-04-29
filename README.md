@@ -13,22 +13,20 @@
 <p align="center">
   <a href="#quick-start">Quick Start</a> &middot;
   <a href="#kelos-skill">Kelos Skill</a> &middot;
-  <a href="#kelos-developing-kelos">Kelos Developing Kelos</a> &middot;
   <a href="#examples">Examples</a> &middot;
-  <a href="docs/integration.md">Integration</a> &middot;
+  <a href="#integration">Integration</a> &middot;
   <a href="docs/reference.md">Reference</a> &middot;
   <a href="examples/">YAML Manifests</a>
 </p>
 
-Kelos lets you **define your development workflow as Kubernetes resources** and run it continuously. Declare what triggers agents, what they do, and how they hand off — Kelos handles the rest.
+Kelos is a Kubernetes-native framework for AI coding agents. It does two things:
 
-Kelos develops Kelos through TaskSpawners running 24/7: triaging issues, planning implementations, fixing bugs, responding to PR feedback, reviewing code, squashing commits, updating agent images, testing DX, brainstorming improvements, and tuning their own prompts and configs. [See the full pipeline below.](#kelos-developing-kelos)
+1. **Defines the agent and the environment it runs in as one unit** — the prompt, model, instructions, plugins, MCP servers, git workspace, credentials, and Pod resources all live together as Kubernetes resources you can version-control.
+2. **Defines how agents integrate with your workflows** — trigger runs from GitHub issues, PRs, webhooks, Linear, Jira, schedules, or any HTTP source, and chain agents into pipelines.
 
 Supports **Claude Code**, **OpenAI Codex**, **Google Gemini**, **OpenCode**, **Cursor**, and [custom agent images](docs/agent-image-interface.md).
 
 ## How It Works
-
-Kelos orchestrates the flow from external events to autonomous execution:
 
 <img width="2310" height="1582" alt="kelos-resources" src="https://github.com/user-attachments/assets/a03c388e-cc28-4a25-972f-e0e506b4d583" />
 
@@ -36,18 +34,17 @@ You define what needs to be done, and Kelos handles the "how" — from cloning t
 
 ### Core Primitives
 
-Kelos is built on four resources:
+Kelos is built on four resources, grouped by the two concerns above:
 
-1. **Tasks** — Ephemeral units of work that wrap an AI agent run.
-2. **Workspaces** — Persistent or ephemeral environments (git repos) where agents operate.
-3. **AgentConfigs** — Reusable bundles of agent instructions (`AGENTS.md`, `CLAUDE.md`), plugins (skills and agents), and MCP servers.
-4. **TaskSpawners** — Orchestration engines that react to external triggers (GitHub, Cron) to automatically manage agent lifecycles.
+**Defining the agent and its environment**
 
-## Kelos Developing Kelos
+- **Tasks** — A single agent run: prompt, model, credentials, and Pod-level overrides.
+- **Workspaces** — The git repository (URL, ref, auth) the agent operates in.
+- **AgentConfigs** — Reusable bundles of agent instructions (`AGENTS.md`, `CLAUDE.md`), plugins (skills and agents), and MCP servers.
 
-Kelos develops itself. TaskSpawners run 24/7, each handling a different part of the development lifecycle — fully autonomous.
+**Integrating with workflows**
 
-See the [`self-development/` README](self-development/README.md) for the full pipeline: manifests, triggers, models, and setup instructions.
+- **TaskSpawners** — React to external triggers (GitHub Issues/PRs, webhooks, Linear, Jira, Cron, Generic Webhooks) and create Tasks automatically.
 
 ## Why Kelos?
 
@@ -474,11 +471,17 @@ See the [Integration guide](docs/integration.md) for examples of both approaches
 
 ## Orchestration Patterns
 
-- **Autonomous Self-Development** — Build a feedback loop where agents pick up issues, write code, self-review, and fix CI flakes until the task is complete. See the [self-development pipeline](#kelos-developing-kelos).
+- **Autonomous Self-Development** — Build a feedback loop where agents pick up issues, write code, self-review, and fix CI flakes until the task is complete. Kelos itself is developed this way — see [Case Study: Kelos Developing Kelos](#case-study-kelos-developing-kelos) below.
 - **Event-Driven Bug Fixing** — Automatically spawn agents to investigate and fix bugs as soon as they are labeled in GitHub. See [Auto-fix GitHub issues](#auto-fix-github-issues-with-taskspawner).
 - **Fleet-Wide Refactoring** — Orchestrate a "fan-out" where dozens of agents apply the same refactoring pattern across a fleet of microservices in parallel.
 - **Hands-Free CI/CD** — Embed agents as first-class steps in your deployment pipelines to generate documentation or perform automated migrations.
 - **AI Worker Pools** — Maintain a pool of specialized agents (e.g., "The Security Fixer") that developers can trigger via simple Kubernetes resources.
+
+## Case Study: Kelos Developing Kelos
+
+Kelos develops Kelos. TaskSpawners run 24/7, each handling a different part of the development lifecycle — triaging issues, planning implementations, fixing bugs, responding to PR feedback, reviewing code, squashing commits, updating agent images, testing DX, brainstorming improvements, and tuning their own prompts and configs.
+
+See the [`self-development/` README](self-development/README.md) for the full pipeline: manifests, triggers, models, and setup instructions.
 
 ## Reference
 
