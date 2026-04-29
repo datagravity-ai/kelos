@@ -415,9 +415,10 @@ func (b *SessionStatefulSetBuilder) buildInitContainers(
 	// Inject the session runner binary into the shared volume.
 	initContainers := []corev1.Container{
 		{
-			Name:    "inject-session-runner",
-			Image:   b.SessionRunnerImage,
-			Command: []string{"cp", "/kelos-session-runner", SessionRunnerMountPath + "/kelos-session-runner"},
+			Name:            "inject-session-runner",
+			Image:           b.SessionRunnerImage,
+			ImagePullPolicy: b.SessionRunnerImagePullPolicy,
+			Command:         []string{"cp", "/kelos-session-runner", SessionRunnerMountPath + "/kelos-session-runner"},
 			VolumeMounts: []corev1.VolumeMount{
 				{Name: SessionRunnerVolumeName, MountPath: SessionRunnerMountPath},
 			},
