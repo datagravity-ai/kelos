@@ -99,6 +99,32 @@ spec:
       concrete plan. Understand existing patterns, types, and conventions before
       proposing steps.
 
+      ### 3a. If the plan involves API / CRD changes
+      CRD fields are effectively permanent — once shipped, they cannot be
+      removed or renamed without breaking existing objects and clients.
+      When the issue requires adding or changing types under `api/`, the plan
+      MUST resolve these before implementation, not after:
+
+      - **Name.** Propose the exact field/type name. Check whether the name
+        will still describe the feature accurately as it evolves. Reuse names
+        already used in Kelos CRDs (grep `api/`) for the same concept; reuse
+        Kubernetes-native names (`template`, `selector`, `replicas`,
+        `conditions`, `phase`, `observedGeneration`) only when the semantics
+        match upstream.
+      - **Shape / extensibility.** Prefer a struct over a bare scalar or
+        bool when more knobs are likely later (e.g. `policy: { type: X }`
+        instead of `policyType: X`). Prefer a named-string enum over a
+        bool for mode/strategy fields. Prefer list-of-struct over
+        list-of-scalar for items that may need per-item config. Avoid
+        stringly-typed fields encoding multiple values.
+      - **Compatibility.** Spell out whether the change is additive,
+        whether old clients can still ignore it, and whether any defaulting
+        / conversion is needed.
+      - **Open questions.** If naming or shape is unresolved, surface it in
+        **Open Questions & Risks** rather than baking a guess into the plan.
+
+      Recommend running `/kelos api-review` on the resulting PR.
+
       ### 4. Assess the current plan
       Determine whether the issue already contains a solid implementation plan:
         - If YES: normalize it into a concise canonical step list. Do not invent

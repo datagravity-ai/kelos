@@ -131,6 +131,11 @@ spec:
 
       ### 4. Check the following areas
 
+      > **CRD fields are effectively permanent.** Once a field ships in a CRD,
+      > removing or renaming it is a breaking change for every existing object
+      > and client. Review each new field as if it cannot be deleted later —
+      > scrutinize the name, type, semantics, and shape before approving.
+
       **Kubernetes API conventions** (ref: https://github.com/kubernetes/community/blob/main/contributors/devel/sig-architecture/api-conventions.md):
       - Are field names camelCase in Go and camelCase in JSON tags?
       - Are optional fields marked with `+optional` and use pointer types or `omitempty`?
@@ -162,11 +167,39 @@ spec:
       - If CRD or API types changed, were `make update` artifacts included in the PR?
 
       **Naming and documentation**:
-      - Are type and field names clear and consistent with existing API?
+      - Does the feature/type name accurately describe what it does, and will
+        it still make sense as the feature evolves? A wrong name is hard to
+        fix once shipped.
+      - Are field and type names consistent with existing Kelos CRDs under
+        `api/`? Look for similar concepts already named — reuse the same term
+        instead of inventing a synonym.
+      - Are names consistent with Kubernetes native resources (Pod, Deployment,
+        Job, etc.) and well-known CRDs when the concept is analogous? For
+        example, prefer `template`, `selector`, `replicas`, `conditions`,
+        `phase`, `observedGeneration` where the semantics match the upstream
+        meaning. Do not reuse those names with different semantics.
       - Do all exported types and fields have godoc comments?
       - Are comments descriptive of the field's purpose and behavior?
       - Do field names follow Kubernetes conventions (e.g., `xxxRef` for references,
         `xxxName` for names, `xxxSeconds` for duration-in-seconds)?
+
+      **Extensibility / future-proofing**:
+      - Is the field shape expandable? Prefer a struct (object) over a bare
+        scalar or bool when more knobs are likely later — e.g.,
+        `policy: { type: X }` instead of `policyType: X`, so additional
+        sub-fields can be added without a new top-level field.
+      - For lists of choices, prefer a named-string enum over a bool, so new
+        values can be added later without introducing a second flag.
+      - For things that may need per-item configuration (sources, targets,
+        rules), use a list of structs rather than a list of scalars.
+      - Avoid "stringly-typed" free-form fields (a single string encoding
+        multiple values) when a structured field would let the API grow.
+      - Watch for fields that bake in a current implementation detail and
+        will be hard to generalize (e.g., a name that implies a specific
+        backend, units, or algorithm).
+      - If a similar field already exists elsewhere in the API, can the new
+        use case be expressed by extending that field instead of adding a
+        parallel one?
 
       **Defaulting and conversion**:
       - Are defaults set via kubebuilder markers or webhook defaulting?
