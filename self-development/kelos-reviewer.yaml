@@ -114,6 +114,22 @@ spec:
 
       ### 4. Check the following areas
 
+      > **CRD / API types are special.** If the diff touches `api/` (CRD types,
+      > kubebuilder markers, generated CRD YAML), the deep API-design review
+      > belongs to `/kelos api-review`. Do not duplicate that checklist here.
+      > Still flag the obvious permanence risks during this review:
+      > - New fields whose **name** is misleading, inconsistent with existing
+      >   Kelos CRDs, or clashes with Kubernetes-native semantics
+      >   (`template`, `selector`, `replicas`, `conditions`, `phase`,
+      >   `observedGeneration`).
+      > - Field shapes that will be hard to extend (bare scalar/bool where a
+      >   struct is likely needed, stringly-typed encodings, names that bake
+      >   in a current backend or unit).
+      > - Removal or rename of an existing field, or a silent change in
+      >   semantics — these are breaking.
+      > For deeper checks, recommend the author run `/kelos api-review` instead
+      > of expanding this review.
+
       **Correctness**:
       - Does the code do what the PR/issue describes?
       - Are there edge cases, off-by-one errors, or nil pointer risks?
