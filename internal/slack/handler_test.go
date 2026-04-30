@@ -2,11 +2,13 @@ package slack
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/go-logr/logr"
+	goslack "github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -18,6 +20,44 @@ import (
 	"github.com/kelos-dev/kelos/internal/reporting"
 	"github.com/kelos-dev/kelos/internal/taskbuilder"
 )
+
+type fakeSlackAPI struct {
+	convInfo      *goslack.Channel
+	convInfoErr   error
+	leftChannels  []string
+	postedMsgs    []fakePostedMsg
+	leaveErr      error
+}
+
+type fakePostedMsg struct {
+	channel string
+}
+
+func (f *fakeSlackAPI) GetConversationInfoContext(_ context.Context, input *goslack.GetConversationInfoInput) (*goslack.Channel, error) {
+	return f.convInfo, f.convInfoErr
+}
+
+func (f *fakeSlackAPI) LeaveConversationContext(_ context.Context, channelID string) (bool, error) {
+	f.leftChannels = append(f.leftChannels, channelID)
+	return true, f.leaveErr
+}
+
+func (f *fakeSlackAPI) PostMessageContext(_ context.Context, channelID string, _ ...goslack.MsgOption) (string, string, error) {
+	f.postedMsgs = append(f.postedMsgs, fakePostedMsg{channel: channelID})
+	return "", "", nil
+}
+
+func (f *fakeSlackAPI) GetUserInfoContext(_ context.Context, _ string) (*goslack.User, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (f *fakeSlackAPI) GetPermalinkContext(_ context.Context, _ *goslack.PermalinkParameters) (string, error) {
+	return "", errors.New("not implemented")
+}
+
+func (f *fakeSlackAPI) GetConversationRepliesContext(_ context.Context, _ *goslack.GetConversationRepliesParameters) ([]goslack.Message, bool, string, error) {
+	return nil, false, "", errors.New("not implemented")
+}
 
 // TestRouteMessageThreadContextBody verifies that routeMessage preserves the
 // thread context body for thread replies (HasThreadContext=true) and uses the
@@ -401,4 +441,113 @@ func TestHandleMemberJoinedChannelIgnoresOtherUsers(t *testing.T) {
 
 	// Should return without attempting to post (no panic = pass).
 	h.handleMemberJoinedChannel(context.Background(), evt)
+}
+
+func TestHandleMemberJoinedChannel_ExternalChannel(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "join-message.txt")
+	if err := os.WriteFile(path, []byte("Welcome!"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	tests := []struct {
+		name          string
+		convInfo      *goslack.Channel
+		convInfoErr   error
+		wantLeave     bool
+		wantGreeting  bool
+	}{
+		{
+			name: "external channel leaves and no greeting",
+			convInfo: &goslack.Channel{
+				GroupConversation: goslack.GroupConversation{
+					Conversation: goslack.Conversation{
+						IsExtShared: true,
+					},
+				},
+			},
+			wantLeave:    true,
+			wantGreeting: false,
+		},
+		{
+			name: "pending external channel leaves and no greeting",
+			convInfo: &goslack.Channel{
+				GroupConversation: goslack.GroupConversation{
+					Conversation: goslack.Conversation{
+						IsPendingExtShared: true,
+					},
+				},
+			},
+			wantLeave:    true,
+			wantGreeting: false,
+		},
+		{
+			name: "internal channel posts greeting",
+			convInfo: &goslack.Channel{
+				GroupConversation: goslack.GroupConversation{
+					Conversation: goslack.Conversation{
+						IsExtShared:        false,
+						IsPendingExtShared: false,
+					},
+				},
+			},
+			wantLeave:    false,
+			wantGreeting: true,
+		},
+		{
+			name:         "conversations.info error fails open with greeting",
+			convInfoErr:  errors.New("api error"),
+			wantLeave:    false,
+			wantGreeting: true,
+		},
+		{
+			name:         "nil channel with nil error fails open with greeting",
+			convInfo:     nil,
+			wantLeave:    false,
+			wantGreeting: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := &fakeSlackAPI{
+				convInfo:    tt.convInfo,
+				convInfoErr: tt.convInfoErr,
+			}
+
+			h := &SlackHandler{
+				log:             logr.Discard(),
+				botUserID:       "UBOT",
+				joinMessageFile: path,
+				api:             fake,
+			}
+
+			evt := &slackevents.MemberJoinedChannelEvent{
+				User:    "UBOT",
+				Channel: "C123",
+			}
+
+			h.handleMemberJoinedChannel(context.Background(), evt)
+
+			if tt.wantLeave {
+				if len(fake.leftChannels) != 1 || fake.leftChannels[0] != "C123" {
+					t.Errorf("Expected leave on channel C123, got %v", fake.leftChannels)
+				}
+			} else {
+				if len(fake.leftChannels) != 0 {
+					t.Errorf("Expected no leave, got %v", fake.leftChannels)
+				}
+			}
+
+			if tt.wantGreeting {
+				if len(fake.postedMsgs) != 1 || fake.postedMsgs[0].channel != "C123" {
+					t.Errorf("Expected greeting posted to C123, got %v", fake.postedMsgs)
+				}
+			} else {
+				if len(fake.postedMsgs) != 0 {
+					t.Errorf("Expected no greeting, got %v", fake.postedMsgs)
+				}
+			}
+		})
+	}
 }
