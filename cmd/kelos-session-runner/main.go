@@ -48,7 +48,6 @@ func selfCopy(dest string) error {
 	}
 	return out.Close()
 }
-}
 
 func main() {
 	if len(os.Args) == 3 && os.Args[1] == "--self-copy" {
