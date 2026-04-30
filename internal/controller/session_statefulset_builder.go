@@ -418,7 +418,7 @@ func (b *SessionStatefulSetBuilder) buildInitContainers(
 			Name:            "inject-session-runner",
 			Image:           b.SessionRunnerImage,
 			ImagePullPolicy: b.SessionRunnerImagePullPolicy,
-			Command:         []string{"cp", "/kelos-session-runner", SessionRunnerMountPath + "/kelos-session-runner"},
+			Command:         []string{"/kelos-session-runner", "--self-copy", SessionRunnerMountPath + "/kelos-session-runner"},
 			VolumeMounts: []corev1.VolumeMount{
 				{Name: SessionRunnerVolumeName, MountPath: SessionRunnerMountPath},
 			},
