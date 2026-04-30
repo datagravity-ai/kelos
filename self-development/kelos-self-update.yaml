@@ -72,8 +72,8 @@ spec:
 
       1. **Prompt Tuning**
          - Review prompts in all TaskSpawner definitions (`self-development/*.yaml`)
-         - Compare prompts against actual agent behavior by checking recent PRs and issues created by agents
-           (`gh pr list --label generated-by-kelos --limit 20`, `gh issue list --label generated-by-kelos --limit 20`)
+         - Compare prompts against actual agent behavior by checking recent merged/closed PRs and issues created by agents
+           (`gh pr list --state merged --label generated-by-kelos --limit 20`, `gh issue list --state all --label generated-by-kelos --limit 20`)
          - Identify prompts that produce low-quality output, miss edge cases, or lack clarity
          - Propose improved prompt wording backed by evidence from past agent runs
 
