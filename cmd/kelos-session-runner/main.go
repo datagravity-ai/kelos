@@ -41,9 +41,13 @@ func selfCopy(dest string) error {
 	if err != nil {
 		return err
 	}
-	defer out.Close()
 	_, err = io.Copy(out, in)
-	return err
+	if err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
+}
 }
 
 func main() {
