@@ -44,11 +44,13 @@ spec:
         - event: issue_comment
           action: created
           bodyContains: /kelos pick-up
+          commentOn: Issue
           state: open
           author: gjkim42
         - event: issue_comment
           action: created
           bodyContains: /kelos pick-up
+          commentOn: Issue
           state: open
           author: kelos-bot[bot]
       reporting:
@@ -99,7 +101,6 @@ spec:
       Task:
       - 0. Refresh the latest issue state:
         - Re-read the issue and all comments: `gh issue view {{.Number}} --comments`
-        - If `gh pr view {{.Number}}` succeeds, this webhook came from a pull request comment. Exit without doing any work.
       - 1. Set up your working branch. Run this exactly:
         ```
         git fetch --unshallow || true; git fetch origin main; git rebase origin/main

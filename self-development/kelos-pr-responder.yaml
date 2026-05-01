@@ -13,6 +13,7 @@ spec:
         - event: issue_comment
           action: created
           bodyContains: /kelos pick-up
+          commentOn: PullRequest
           labels:
             - generated-by-kelos
           state: open
@@ -20,6 +21,7 @@ spec:
         - event: issue_comment
           action: created
           bodyContains: /kelos pick-up
+          commentOn: PullRequest
           labels:
             - generated-by-kelos
           state: open
