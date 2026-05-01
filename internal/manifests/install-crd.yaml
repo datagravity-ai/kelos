@@ -6947,6 +6947,20 @@ spec:
                           type: string
                         maxItems: 64
                         type: array
+                      excludePatterns:
+                        description: |-
+                          ExcludePatterns rejects messages whose text (after stripping leading
+                          @-mentions) matches any of the given regular expressions. Each entry
+                          is checked independently — the message is excluded if the text matches
+                          ANY entry. Patterns use Go regexp syntax (RE2, unanchored). Leading
+                          @-mentions are stripped before matching so a pattern like "^/solve"
+                          matches "@bot /solve fix this". Does NOT apply to slash commands.
+                        items:
+                          maxLength: 256
+                          minLength: 1
+                          type: string
+                        maxItems: 10
+                        type: array
                       secretRef:
                         description: |-
                           SecretRef references a Secret containing "SLACK_BOT_TOKEN" and

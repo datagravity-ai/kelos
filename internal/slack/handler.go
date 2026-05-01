@@ -359,7 +359,7 @@ func (h *SlackHandler) routeMessage(ctx context.Context, msg *SlackMessageData) 
 
 		// Check trigger patterns (per-spawner, since each TaskSpawner can have different triggers).
 		// Slash commands skip the trigger check — the command name itself acts as the trigger.
-		if !msg.IsSlashCommand && !MatchesTriggers(msg.Text, slackCfg.Triggers, h.botUserID) {
+		if !msg.IsSlashCommand && !MatchesTriggers(msg.Text, slackCfg.Triggers, h.botUserID, slackCfg.ExcludePatterns) {
 			spawnerLog.V(1).Info("Message did not match triggers")
 			continue
 		}

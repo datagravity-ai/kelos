@@ -696,6 +696,18 @@ type Slack struct {
 	// +optional
 	// +kubebuilder:validation:MaxItems=8
 	Triggers []SlackTrigger `json:"triggers,omitempty"`
+
+	// ExcludePatterns rejects messages whose text (after stripping leading
+	// @-mentions) matches any of the given regular expressions. Each entry
+	// is checked independently — the message is excluded if the text matches
+	// ANY entry. Patterns use Go regexp syntax (RE2, unanchored). Leading
+	// @-mentions are stripped before matching so a pattern like "^/solve"
+	// matches "@bot /solve fix this". Does NOT apply to slash commands.
+	// +optional
+	// +kubebuilder:validation:MaxItems=10
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=256
+	ExcludePatterns []string `json:"excludePatterns,omitempty"`
 }
 
 // SlackTrigger defines a regex pattern trigger for Slack messages.
@@ -709,78 +721,6 @@ type SlackTrigger struct {
 	// without requiring a bot @-mention.
 	// +optional
 	MentionOptional *bool `json:"mentionOptional,omitempty"`
-}
-
-// GenericWebhook configures webhook-driven task spawning from arbitrary HTTP
-// POST payloads with JSON bodies. Any system that can send an HTTP POST can
-// trigger tasks through this source. The URL path is /webhook/<source> and
-// the HMAC secret is read from the <SOURCE>_WEBHOOK_SECRET env var (e.g.,
-// source "notion" uses NOTION_WEBHOOK_SECRET).
-// +kubebuilder:validation:XValidation:rule="'id' in self.fieldMapping",message="fieldMapping must include an 'id' key for deduplication and task naming"
-type GenericWebhook struct {
-	// Source is a short identifier for this webhook source (e.g., "notion",
-	// "sentry", "drata"). It determines:
-	//   - The URL path: /webhook/<source>
-	//   - The env var for HMAC validation: <SOURCE>_WEBHOOK_SECRET
-	// Must be lowercase alphanumeric with optional hyphens.
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:Pattern=`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`
-	Source string `json:"source"`
-
-	// FieldMapping maps JSONPath expressions to WorkItem template variables.
-	// Each key is a template variable name (available as {{.Key}} in
-	// promptTemplate and branch), and each value is a JSONPath expression
-	// evaluated against the request body.
-	// The "id" key is required — it provides the unique identifier used for
-	// deduplication and task naming.
-	// +kubebuilder:validation:Required
-	FieldMapping map[string]string `json:"fieldMapping"`
-
-	// Filters define conditions that must ALL match for a webhook delivery
-	// to trigger a task (AND semantics across filters). Each filter extracts
-	// a field via JSONPath and matches it against an exact value or regex
-	// pattern. If empty, all deliveries trigger tasks.
-	// +optional
-	Filters []GenericWebhookFilter `json:"filters,omitempty"`
-
-	// DeliveryIDHeader is the HTTP header containing a unique delivery
-	// identifier for idempotency. If empty, a SHA-256 hash of the body
-	// is used.
-	// +optional
-	DeliveryIDHeader string `json:"deliveryIDHeader,omitempty"`
-
-	// SignatureHeader is the HTTP header containing the HMAC signature.
-	// Defaults to "X-Webhook-Signature-256".
-	// +kubebuilder:default="X-Webhook-Signature-256"
-	// +optional
-	SignatureHeader string `json:"signatureHeader,omitempty"`
-
-	// SignaturePrefix is the prefix before the hex digest in the signature
-	// header value (e.g., "sha256=" for GitHub-style signatures). Set to
-	// empty string if the header contains the raw hex digest (Linear-style).
-	// Defaults to "sha256=".
-	// +kubebuilder:default="sha256="
-	// +optional
-	SignaturePrefix string `json:"signaturePrefix,omitempty"`
-}
-
-// GenericWebhookFilter defines a condition for filtering generic webhook payloads.
-// Exactly one of Value or Pattern must be set.
-// +kubebuilder:validation:XValidation:rule="has(self.value) != (has(self.pattern) && size(self.pattern) > 0)",message="exactly one of value or pattern must be set"
-type GenericWebhookFilter struct {
-	// Field is a JSONPath expression selecting the payload field to match.
-	// +kubebuilder:validation:Required
-	Field string `json:"field"`
-
-	// Value requires an exact string match against the extracted field value.
-	// Mutually exclusive with Pattern.
-	// +optional
-	Value *string `json:"value,omitempty"`
-
-	// Pattern requires a regex match against the extracted field value.
-	// Mutually exclusive with Value.
-	// +optional
-	Pattern string `json:"pattern,omitempty"`
 }
 
 // ContextSource declares an external HTTP endpoint to query before task
