@@ -503,23 +503,26 @@ func (b *SessionStatefulSetBuilder) buildVolumes(agentConfig *kelosv1alpha1.Agen
 
 // resolveAgentImage returns the container image and pull policy for the agent type.
 func (b *SessionStatefulSetBuilder) resolveAgentImage(tmpl *kelosv1alpha1.TaskTemplate) (string, corev1.PullPolicy) {
-	if tmpl.Image != "" {
-		return tmpl.Image, ""
-	}
+	var image string
+	var policy corev1.PullPolicy
 	switch tmpl.Type {
 	case AgentTypeClaudeCode:
-		return b.ClaudeCodeImage, b.ClaudeCodeImagePullPolicy
+		image, policy = b.ClaudeCodeImage, b.ClaudeCodeImagePullPolicy
 	case AgentTypeCodex:
-		return b.CodexImage, b.CodexImagePullPolicy
+		image, policy = b.CodexImage, b.CodexImagePullPolicy
 	case AgentTypeGemini:
-		return b.GeminiImage, b.GeminiImagePullPolicy
+		image, policy = b.GeminiImage, b.GeminiImagePullPolicy
 	case AgentTypeOpenCode:
-		return b.OpenCodeImage, b.OpenCodeImagePullPolicy
+		image, policy = b.OpenCodeImage, b.OpenCodeImagePullPolicy
 	case AgentTypeCursor:
-		return b.CursorImage, b.CursorImagePullPolicy
+		image, policy = b.CursorImage, b.CursorImagePullPolicy
 	default:
-		return b.ClaudeCodeImage, b.ClaudeCodeImagePullPolicy
+		image, policy = b.ClaudeCodeImage, b.ClaudeCodeImagePullPolicy
 	}
+	if tmpl.Image != "" {
+		image = tmpl.Image
+	}
+	return image, policy
 }
 
 // wrapInitContainerWithExistsCheck wraps an init container so it skips
