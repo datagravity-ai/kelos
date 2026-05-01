@@ -3898,6 +3898,10 @@ spec:
                     - fieldMapping
                     - source
                     type: object
+                    x-kubernetes-validations:
+                    - message: fieldMapping must include an 'id' key for deduplication
+                        and task naming
+                      rule: '''id'' in self.fieldMapping'
                 type: object
             required:
             - taskTemplate
