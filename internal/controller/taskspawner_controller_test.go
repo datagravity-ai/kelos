@@ -68,9 +68,7 @@ func TestIsWebhookBased(t *testing.T) {
 			ts: &kelosv1alpha1.TaskSpawner{
 				Spec: kelosv1alpha1.TaskSpawnerSpec{
 					When: kelosv1alpha1.When{
-						Slack: &kelosv1alpha1.Slack{
-							TriggerCommand: "/kelos",
-						},
+						Slack: &kelosv1alpha1.Slack{},
 					},
 				},
 			},
