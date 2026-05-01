@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"os"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -89,17 +88,7 @@ func runOnce(ctx context.Context, cl client.Client, key types.NamespacedName, cf
 
 	if reportingEnabled(&ts) || checksReportingEnabled(&ts) {
 		if ts.Spec.When.Slack != nil {
-			botToken := os.Getenv("SLACK_BOT_TOKEN")
-			if botToken == "" {
-				return 0, fmt.Errorf("SLACK_BOT_TOKEN environment variable is required for Slack reporting")
-			}
-			slackReporter := &reporting.SlackTaskReporter{
-				Client:   cl,
-				Reporter: &reporting.SlackReporter{BotToken: botToken},
-			}
-			if err := runSlackReportingCycle(ctx, cl, key, slackReporter); err != nil {
-				return 0, err
-			}
+			// Slack reporting is handled by the centralized kelos-slack-server
 		} else {
 			if cfg.TokenResolver == nil {
 				return 0, fmt.Errorf("GitHub reporting is enabled but no token resolver is configured")
