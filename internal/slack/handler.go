@@ -404,10 +404,13 @@ func (h *SlackHandler) createTask(ctx context.Context, spawner *v1alpha1.TaskSpa
 	}
 	sum := sha256.Sum256([]byte(hashInput))
 	shortHash := hex.EncodeToString(sum[:])[:12]
-	taskName := fmt.Sprintf("%s-slack-%s", spawner.Name, shortHash)
-	if len(taskName) > 63 {
-		taskName = strings.TrimRight(taskName[:63], "-.")
+	// Truncate spawner name to leave room for "-slack-" (7) + hash (12) = 19 chars
+	name := spawner.Name
+	const maxPrefix = 63 - 7 - 12 // 44
+	if len(name) > maxPrefix {
+		name = strings.TrimRight(name[:maxPrefix], "-.")
 	}
+	taskName := fmt.Sprintf("%s-slack-%s", name, shortHash)
 
 	// Resolve GVK for owner reference
 	gvks, _, err := h.client.Scheme().ObjectKinds(spawner)
