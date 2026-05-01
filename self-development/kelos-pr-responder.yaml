@@ -13,26 +13,23 @@ spec:
         - event: issue_comment
           action: created
           bodyContains: /kelos pick-up
-          labels:
-            - generated-by-kelos
+          commentOn: PullRequest
           state: open
           author: gjkim42
         - event: issue_comment
           action: created
           bodyContains: /kelos pick-up
-          labels:
-            - generated-by-kelos
+          commentOn: PullRequest
           state: open
           author: kelos-bot[bot]
         - event: pull_request_review
           action: submitted
           bodyContains: /kelos pick-up
-          labels:
-            - generated-by-kelos
           state: open
           draft: false
       reporting:
         enabled: true
+        checks: {}
   maxConcurrency: 2
   taskTemplate:
     workspaceRef:
