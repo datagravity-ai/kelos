@@ -72,7 +72,12 @@ func MatchesSpawner(slackCfg *v1alpha1.Slack, msg *SlackMessageData) bool {
 // pattern. botUserID is the Slack user ID of the bot (used for mention
 // detection).
 func MatchesTriggers(text string, triggers []v1alpha1.SlackTrigger, botUserID string, excludePatterns []string) bool {
-	if len(triggers) > 0 && !matchesTriggers(text, triggers, botUserID) {
+	if len(triggers) == 0 {
+		// No triggers configured: require a bot @-mention to fire.
+		if !hasBotMention(text, botUserID) {
+			return false
+		}
+	} else if !matchesTriggers(text, triggers, botUserID) {
 		return false
 	}
 	if matchesExcludePatterns(text, excludePatterns) {

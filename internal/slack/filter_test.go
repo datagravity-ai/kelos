@@ -65,8 +65,15 @@ func TestMatchesTriggers(t *testing.T) {
 		want            bool
 	}{
 		{
-			name:      "no triggers matches everything",
+			name:      "no triggers without mention rejects",
 			text:      "hello world",
+			triggers:  nil,
+			botUserID: "UBOT",
+			want:      false,
+		},
+		{
+			name:      "no triggers with mention accepts",
+			text:      "hello <@UBOT> can you help",
 			triggers:  nil,
 			botUserID: "UBOT",
 			want:      true,
