@@ -2,21 +2,33 @@ package controller
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/json"
+	"encoding/pem"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	kelosv1alpha1 "github.com/kelos-dev/kelos/api/v1alpha1"
+	"github.com/kelos-dev/kelos/internal/githubapp"
 )
 
 func TestIsWebhookBased(t *testing.T) {
@@ -351,4 +363,153 @@ func TestReconcileWebhook(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestResolveSessionGitHubAppToken(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generating test key: %v", err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "RSA PRIVATE KEY",
+		Bytes: x509.MarshalPKCS1PrivateKey(key),
+	})
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"token":      "ghs_test_session_token",
+			"expires_at": time.Now().Add(1 * time.Hour).UTC().Format(time.RFC3339),
+		})
+	}))
+	defer server.Close()
+
+	scheme := runtime.NewScheme()
+	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+	utilruntime.Must(kelosv1alpha1.AddToScheme(scheme))
+
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "github-app-creds",
+			Namespace: "default",
+		},
+		Data: map[string][]byte{
+			"appID":          []byte("12345"),
+			"installationID": []byte("67890"),
+			"privateKey":     keyPEM,
+		},
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(secret).
+		Build()
+
+	tc := &githubapp.TokenClient{
+		BaseURL: server.URL,
+		Client:  server.Client(),
+	}
+
+	r := &TaskSpawnerReconciler{
+		Client:      cl,
+		Scheme:      scheme,
+		TokenClient: tc,
+	}
+
+	ts := &kelosv1alpha1.TaskSpawner{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-spawner",
+			Namespace: "default",
+			UID:       "spawner-uid",
+		},
+	}
+
+	workspace := &kelosv1alpha1.WorkspaceSpec{
+		Repo: "https://github.com/test/repo.git",
+		SecretRef: &kelosv1alpha1.SecretReference{
+			Name: "github-app-creds",
+		},
+	}
+
+	result, requeueAfter, err := r.resolveSessionGitHubAppToken(context.Background(), ts, workspace)
+	require.NoError(t, err)
+
+	assert.Equal(t, "session-test-spawner-github-token", result.SecretRef.Name)
+	assert.True(t, requeueAfter > 0, "requeueAfter should be positive")
+
+	// Verify the derived secret was created with the correct token.
+	var tokenSecret corev1.Secret
+	err = cl.Get(context.Background(), types.NamespacedName{
+		Name:      "session-test-spawner-github-token",
+		Namespace: "default",
+	}, &tokenSecret)
+	require.NoError(t, err)
+	token := string(tokenSecret.Data["GITHUB_TOKEN"])
+	if token == "" {
+		token = tokenSecret.StringData["GITHUB_TOKEN"]
+	}
+	assert.Equal(t, "ghs_test_session_token", token)
+	assert.NotEmpty(t, tokenSecret.Annotations[annotationTokenExpiresAt], "expiry annotation should be set")
+
+	// Second call should use cached token (no GitHub API call needed).
+	// Stop the server to prove no API call is made.
+	server.Close()
+	result2, requeueAfter2, err2 := r.resolveSessionGitHubAppToken(context.Background(), ts, workspace)
+	require.NoError(t, err2)
+	assert.Equal(t, "session-test-spawner-github-token", result2.SecretRef.Name)
+	assert.True(t, requeueAfter2 > 0, "requeueAfter should be positive on cache hit")
+}
+
+func TestTruncateResourceName(t *testing.T) {
+	short := "session-test-github-token"
+	assert.Equal(t, short, truncateResourceName(short))
+
+	long := "session-" + string(make([]byte, 250)) + "-github-token"
+	result := truncateResourceName(long)
+	assert.LessOrEqual(t, len(result), maxK8sNameLength)
+}
+
+func TestResolveSessionGitHubAppToken_PATSecret(t *testing.T) {
+	scheme := runtime.NewScheme()
+	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+	utilruntime.Must(kelosv1alpha1.AddToScheme(scheme))
+
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "pat-secret",
+			Namespace: "default",
+		},
+		Data: map[string][]byte{
+			"GITHUB_TOKEN": []byte("ghp_test"),
+		},
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(secret).
+		Build()
+
+	r := &TaskSpawnerReconciler{
+		Client: cl,
+		Scheme: scheme,
+	}
+
+	ts := &kelosv1alpha1.TaskSpawner{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-spawner",
+			Namespace: "default",
+		},
+	}
+
+	workspace := &kelosv1alpha1.WorkspaceSpec{
+		Repo: "https://github.com/test/repo.git",
+		SecretRef: &kelosv1alpha1.SecretReference{
+			Name: "pat-secret",
+		},
+	}
+
+	result, requeueAfter, err := r.resolveSessionGitHubAppToken(context.Background(), ts, workspace)
+	require.NoError(t, err)
+	assert.Equal(t, "pat-secret", result.SecretRef.Name, "PAT secret should pass through unchanged")
+	assert.Zero(t, requeueAfter, "no requeue needed for PAT secrets")
 }
