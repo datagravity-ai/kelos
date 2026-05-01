@@ -677,11 +677,6 @@ type GenericWebhookFilter struct {
 // (unless MentionOptional is set). Multiple triggers use OR semantics.
 // Empty triggers = every bot mention fires.
 type Slack struct {
-	// SecretRef references a Secret containing "SLACK_BOT_TOKEN" and
-	// "SLACK_APP_TOKEN" keys used to authenticate with Slack.
-	// +kubebuilder:validation:Required
-	SecretRef SecretReference `json:"secretRef"`
-
 	// Channels optionally restricts which Slack channels the bot listens in.
 	// Values are channel IDs (e.g., "C0123456789"). When empty, the bot
 	// listens in every channel it has been invited to.

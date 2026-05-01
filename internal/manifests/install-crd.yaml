@@ -6961,17 +6961,6 @@ spec:
                           type: string
                         maxItems: 10
                         type: array
-                      secretRef:
-                        description: |-
-                          SecretRef references a Secret containing "SLACK_BOT_TOKEN" and
-                          "SLACK_APP_TOKEN" keys used to authenticate with Slack.
-                        properties:
-                          name:
-                            description: Name is the name of the secret.
-                            type: string
-                        required:
-                        - name
-                        type: object
                       triggers:
                         description: |-
                           Triggers define regex patterns that must match the message text.
@@ -6994,8 +6983,6 @@ spec:
                           type: object
                         maxItems: 8
                         type: array
-                    required:
-                    - secretRef
                     type: object
                   webhook:
                     description: |-

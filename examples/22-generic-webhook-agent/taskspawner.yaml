@@ -1,0 +1,97 @@
+# Generic Webhook TaskSpawner
+#
+# Accepts any JSON POST to /webhook/<source-name> and creates a Task.
+# Demonstrates JSONPath field mapping, regex filters, and dynamic branch naming.
+#
+# Test with:
+#   curl -X POST http://<webhook-host>/webhook/my-source \
+#     -H "Content-Type: application/json" \
+#     -d '{
+#       "action": "created",
+#       "item": {
+#         "id": "item-42",
+#         "title": "Fix the login page",
+#         "priority": "high",
+#         "url": "https://example.com/items/42",
+#         "context": "Users report a blank screen after entering credentials on /login"
+#       }
+#     }'
+apiVersion: kelos.dev/v1alpha1
+kind: TaskSpawner
+metadata:
+  name: generic-webhook-agent
+  namespace: default # TODO: your namespace
+spec:
+  maxConcurrency: 1
+  when:
+    webhook:
+      # The source name determines:
+      #   - URL path: /webhook/<source>
+      #   - Env var for HMAC (optional): <SOURCE>_WEBHOOK_SECRET (uppercased, hyphens to underscores)
+      # TODO: change to your source system name
+      source: my-source
+
+      # Map JSONPath expressions to template variables.
+      # "id" is required for deduplication and task naming.
+      # TODO: adjust JSONPath expressions for your payload format
+      fieldMapping:
+        id: "$.item.id"
+        title: "$.item.title"
+        priority: "$.item.priority"
+        url: "$.item.url"
+        context: "$.item.context"
+        action: "$.action"
+
+      # Only create tasks when action is "created" AND priority is "high" or "critical".
+      # All filters must match (AND semantics). Remove filters to accept everything.
+      filters:
+        - field: "$.action"
+          value: "created"
+        - field: "$.item.priority"
+          pattern: "^(high|critical)$"
+
+  taskTemplate:
+    type: claude-code
+    credentials:
+      type: api-key
+      secretRef:
+        name: claude-credentials # TODO: your credentials secret
+    workspaceRef:
+      name: my-workspace # TODO: your workspace name
+    branch: "fix/{{.id}}"
+    promptTemplate: |
+      A new work item was received via webhook:
+
+      **{{.title}}**
+      - Priority: {{.priority}}
+      - URL: {{.url}}
+
+      ## Context
+
+      {{.context}}
+
+      ## Instructions
+
+      1. Investigate the issue described above
+      2. Search the codebase for relevant code and tests
+      3. Implement a fix with tests (TDD — tests first)
+      4. Open a draft PR:
+         ```bash
+         gh pr create --draft \
+           --title "fix: {{.title}}" \
+           --body "Triggered by webhook item {{.id}}\n\nURL: {{.url}}" \
+           --label agent-generated
+         ```
+
+      ## Rules
+
+      - Never merge PRs — always create drafts for human review
+      - Never commit secrets, tokens, or credentials
+      - Keep changes minimal and focused on the reported issue
+    ttlSecondsAfterFinished: 10800
+    podOverrides:
+      activeDeadlineSeconds: 1800
+      env:
+        - name: ANTHROPIC_MODEL
+          # TODO: your model identifier or ARN
+          value: "claude-sonnet-4-6"
