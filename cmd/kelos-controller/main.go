@@ -238,7 +238,8 @@ func main() {
 			SessionRunnerImage:           sessionRunnerImage,
 			SessionRunnerImagePullPolicy: corev1.PullPolicy(sessionRunnerImagePullPolicy),
 		},
-		Recorder: mgr.GetEventRecorderFor("kelos-controller"),
+		TokenClient: githubapp.NewTokenClient(),
+		Recorder:    mgr.GetEventRecorderFor("kelos-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "TaskSpawner")
 		os.Exit(1)

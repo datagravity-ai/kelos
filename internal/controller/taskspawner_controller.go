@@ -39,6 +39,7 @@ type TaskSpawnerReconciler struct {
 	Scheme                    *runtime.Scheme
 	DeploymentBuilder         *DeploymentBuilder
 	SessionStatefulSetBuilder *SessionStatefulSetBuilder
+	TokenClient               *githubapp.TokenClient
 	Recorder                  record.EventRecorder
 }
 
@@ -48,7 +49,7 @@ type TaskSpawnerReconciler struct {
 // +kubebuilder:rbac:groups=kelos.dev,resources=workspaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=batch,resources=cronjobs,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=rolebindings,verbs=get;list;watch;create
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
@@ -509,6 +510,19 @@ func (r *TaskSpawnerReconciler) reconcileSessionStatefulSet(ctx context.Context,
 		workspace = &ws.Spec
 	}
 
+	// Resolve GitHub App token if the workspace uses a GitHub App secret.
+	var tokenRequeueAfter time.Duration
+	if workspace != nil && workspace.SecretRef != nil {
+		resolvedWorkspace, requeueAfter, err := r.resolveSessionGitHubAppToken(ctx, ts, workspace)
+		if err != nil {
+			logger.Error(err, "Unable to resolve GitHub App token for session")
+			r.recordEvent(ts, corev1.EventTypeWarning, "GitHubTokenFailed", "Failed to resolve GitHub token: %v", err)
+			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+		}
+		workspace = resolvedWorkspace
+		tokenRequeueAfter = requeueAfter
+	}
+
 	// Resolve AgentConfig if referenced.
 	var agentConfig *kelosv1alpha1.AgentConfigSpec
 	if ts.Spec.TaskTemplate.AgentConfigRef != nil {
@@ -626,7 +640,98 @@ func (r *TaskSpawnerReconciler) reconcileSessionStatefulSet(ctx context.Context,
 		}
 	}
 
+	if tokenRequeueAfter > 0 {
+		return ctrl.Result{RequeueAfter: tokenRequeueAfter}, nil
+	}
 	return ctrl.Result{}, nil
+}
+
+// resolveSessionGitHubAppToken checks if the workspace secret is a GitHub App
+// secret, and if so, generates an installation token and creates/updates a
+// derived secret with the GITHUB_TOKEN key. Returns the (possibly modified)
+// workspace spec and a requeue duration for token refresh.
+func (r *TaskSpawnerReconciler) resolveSessionGitHubAppToken(ctx context.Context, ts *kelosv1alpha1.TaskSpawner, workspace *kelosv1alpha1.WorkspaceSpec) (*kelosv1alpha1.WorkspaceSpec, time.Duration, error) {
+	logger := log.FromContext(ctx)
+
+	var secret corev1.Secret
+	if err := r.Get(ctx, client.ObjectKey{
+		Namespace: ts.Namespace,
+		Name:      workspace.SecretRef.Name,
+	}, &secret); err != nil {
+		return nil, 0, fmt.Errorf("fetching workspace secret %q: %w", workspace.SecretRef.Name, err)
+	}
+
+	if !githubapp.IsGitHubApp(secret.Data) {
+		return workspace, 0, nil
+	}
+
+	if r.TokenClient == nil {
+		return nil, 0, fmt.Errorf("GitHub App secret detected but TokenClient is not configured")
+	}
+
+	logger.Info("Detected GitHub App secret for session, generating installation token", "secret", workspace.SecretRef.Name)
+
+	creds, err := githubapp.ParseCredentials(secret.Data)
+	if err != nil {
+		return nil, 0, fmt.Errorf("parsing GitHub App credentials: %w", err)
+	}
+
+	tc := &githubapp.TokenClient{
+		BaseURL: r.TokenClient.BaseURL,
+		Client:  r.TokenClient.Client,
+	}
+	if workspace.Repo != "" {
+		host, _, _ := parseGitHubRepo(workspace.Repo)
+		if apiBaseURL := gitHubAPIBaseURL(host); apiBaseURL != "" {
+			tc.BaseURL = apiBaseURL
+		}
+	}
+
+	tokenResp, err := tc.GenerateInstallationToken(ctx, creds)
+	if err != nil {
+		return nil, 0, fmt.Errorf("generating installation token: %w", err)
+	}
+
+	tokenSecretName := "session-" + ts.Name + "-github-token"
+	tokenSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      tokenSecretName,
+			Namespace: ts.Namespace,
+		},
+		StringData: map[string]string{
+			"GITHUB_TOKEN": tokenResp.Token,
+		},
+	}
+
+	if err := controllerutil.SetControllerReference(ts, tokenSecret, r.Scheme); err != nil {
+		return nil, 0, fmt.Errorf("setting owner reference on token secret: %w", err)
+	}
+
+	if err := r.Create(ctx, tokenSecret); err != nil {
+		if !apierrors.IsAlreadyExists(err) {
+			return nil, 0, fmt.Errorf("creating token secret: %w", err)
+		}
+		existing := &corev1.Secret{}
+		if err := r.Get(ctx, client.ObjectKey{Name: tokenSecretName, Namespace: ts.Namespace}, existing); err != nil {
+			return nil, 0, fmt.Errorf("fetching existing token secret: %w", err)
+		}
+		existing.StringData = tokenSecret.StringData
+		if err := r.Update(ctx, existing); err != nil {
+			return nil, 0, fmt.Errorf("updating token secret: %w", err)
+		}
+	}
+
+	resolved := *workspace
+	resolved.SecretRef = &kelosv1alpha1.SecretReference{
+		Name: tokenSecretName,
+	}
+
+	requeueAfter := time.Until(tokenResp.ExpiresAt) - githubapp.TokenExpiryMargin
+	if requeueAfter < time.Minute {
+		requeueAfter = time.Minute
+	}
+
+	return &resolved, requeueAfter, nil
 }
 
 func (r *TaskSpawnerReconciler) handleDeletion(ctx context.Context, ts *kelosv1alpha1.TaskSpawner) (ctrl.Result, error) {
