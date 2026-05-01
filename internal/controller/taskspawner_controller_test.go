@@ -436,6 +436,24 @@ func TestResolveSessionGitHubAppToken(t *testing.T) {
 		token = tokenSecret.StringData["GITHUB_TOKEN"]
 	}
 	assert.Equal(t, "ghs_test_session_token", token)
+	assert.NotEmpty(t, tokenSecret.Annotations[annotationTokenExpiresAt], "expiry annotation should be set")
+
+	// Second call should use cached token (no GitHub API call needed).
+	// Stop the server to prove no API call is made.
+	server.Close()
+	result2, requeueAfter2, err2 := r.resolveSessionGitHubAppToken(context.Background(), ts, workspace)
+	require.NoError(t, err2)
+	assert.Equal(t, "session-test-spawner-github-token", result2.SecretRef.Name)
+	assert.True(t, requeueAfter2 > 0, "requeueAfter should be positive on cache hit")
+}
+
+func TestTruncateResourceName(t *testing.T) {
+	short := "session-test-github-token"
+	assert.Equal(t, short, truncateResourceName(short))
+
+	long := "session-" + string(make([]byte, 250)) + "-github-token"
+	result := truncateResourceName(long)
+	assert.LessOrEqual(t, len(result), maxK8sNameLength)
 }
 
 func TestResolveSessionGitHubAppToken_PATSecret(t *testing.T) {

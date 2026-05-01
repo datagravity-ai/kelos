@@ -379,7 +379,16 @@ func (r *TaskReconciler) resolveGitHubAppToken(ctx context.Context, task *kelosv
 		return nil, fmt.Errorf("GitHub App secret detected but TokenClient is not configured")
 	}
 
-	logger.Info("Detected GitHub App secret, generating installation token", "secret", workspace.SecretRef.Name)
+	tokenSecretName := truncateResourceName(task.Name + "-github-token")
+
+	// Check if the derived secret already has a valid token.
+	if _, ok := cachedTokenRequeueAfter(ctx, r.Client, task.Namespace, tokenSecretName); ok {
+		resolved := *workspace
+		resolved.SecretRef = &kelosv1alpha1.SecretReference{Name: tokenSecretName}
+		return &resolved, nil
+	}
+
+	logger.Info("Generating installation token", "secret", workspace.SecretRef.Name)
 
 	creds, err := githubapp.ParseCredentials(secret.Data)
 	if err != nil {
@@ -404,38 +413,10 @@ func (r *TaskReconciler) resolveGitHubAppToken(ctx context.Context, task *kelosv
 		return nil, fmt.Errorf("generating installation token: %w", err)
 	}
 
-	// Create a new secret with the generated token, owned by the Task
-	tokenSecretName := task.Name + "-github-token"
-	tokenSecret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      tokenSecretName,
-			Namespace: task.Namespace,
-		},
-		StringData: map[string]string{
-			"GITHUB_TOKEN": tokenResp.Token,
-		},
+	if err := upsertTokenSecret(ctx, r.Client, r.Scheme, task, task.Namespace, tokenSecretName, tokenResp); err != nil {
+		return nil, err
 	}
 
-	if err := controllerutil.SetControllerReference(task, tokenSecret, r.Scheme); err != nil {
-		return nil, fmt.Errorf("setting owner reference on token secret: %w", err)
-	}
-
-	if err := r.Create(ctx, tokenSecret); err != nil {
-		if !apierrors.IsAlreadyExists(err) {
-			return nil, fmt.Errorf("creating token secret: %w", err)
-		}
-		// Update existing secret
-		existing := &corev1.Secret{}
-		if err := r.Get(ctx, client.ObjectKey{Name: tokenSecretName, Namespace: task.Namespace}, existing); err != nil {
-			return nil, fmt.Errorf("fetching existing token secret: %w", err)
-		}
-		existing.StringData = tokenSecret.StringData
-		if err := r.Update(ctx, existing); err != nil {
-			return nil, fmt.Errorf("updating token secret: %w", err)
-		}
-	}
-
-	// Return a modified workspace spec that points to the generated token secret
 	resolved := *workspace
 	resolved.SecretRef = &kelosv1alpha1.SecretReference{
 		Name: tokenSecretName,

@@ -2,6 +2,8 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"reflect"
 	"time"
@@ -31,6 +33,14 @@ import (
 
 const (
 	taskSpawnerFinalizer = "kelos.dev/taskspawner-finalizer"
+
+	// annotationTokenExpiresAt stores the GitHub App installation token expiry
+	// time on derived secrets so the reconciler can skip regeneration when the
+	// cached token is still valid.
+	annotationTokenExpiresAt = "kelos.dev/token-expires-at"
+
+	// maxK8sNameLength is the maximum length for Kubernetes resource names.
+	maxK8sNameLength = 253
 )
 
 // TaskSpawnerReconciler reconciles a TaskSpawner object.
@@ -649,7 +659,8 @@ func (r *TaskSpawnerReconciler) reconcileSessionStatefulSet(ctx context.Context,
 // resolveSessionGitHubAppToken checks if the workspace secret is a GitHub App
 // secret, and if so, generates an installation token and creates/updates a
 // derived secret with the GITHUB_TOKEN key. Returns the (possibly modified)
-// workspace spec and a requeue duration for token refresh.
+// workspace spec and a requeue duration for token refresh. Skips token
+// generation if the derived secret already contains a valid token.
 func (r *TaskSpawnerReconciler) resolveSessionGitHubAppToken(ctx context.Context, ts *kelosv1alpha1.TaskSpawner, workspace *kelosv1alpha1.WorkspaceSpec) (*kelosv1alpha1.WorkspaceSpec, time.Duration, error) {
 	logger := log.FromContext(ctx)
 
@@ -669,7 +680,16 @@ func (r *TaskSpawnerReconciler) resolveSessionGitHubAppToken(ctx context.Context
 		return nil, 0, fmt.Errorf("GitHub App secret detected but TokenClient is not configured")
 	}
 
-	logger.Info("Detected GitHub App secret for session, generating installation token", "secret", workspace.SecretRef.Name)
+	tokenSecretName := truncateResourceName("session-" + ts.Name + "-github-token")
+
+	// Check if the derived secret already has a valid token.
+	if requeueAfter, ok := cachedTokenRequeueAfter(ctx, r.Client, ts.Namespace, tokenSecretName); ok {
+		resolved := *workspace
+		resolved.SecretRef = &kelosv1alpha1.SecretReference{Name: tokenSecretName}
+		return &resolved, requeueAfter, nil
+	}
+
+	logger.Info("Generating installation token for session", "secret", workspace.SecretRef.Name)
 
 	creds, err := githubapp.ParseCredentials(secret.Data)
 	if err != nil {
@@ -692,33 +712,8 @@ func (r *TaskSpawnerReconciler) resolveSessionGitHubAppToken(ctx context.Context
 		return nil, 0, fmt.Errorf("generating installation token: %w", err)
 	}
 
-	tokenSecretName := "session-" + ts.Name + "-github-token"
-	tokenSecret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      tokenSecretName,
-			Namespace: ts.Namespace,
-		},
-		StringData: map[string]string{
-			"GITHUB_TOKEN": tokenResp.Token,
-		},
-	}
-
-	if err := controllerutil.SetControllerReference(ts, tokenSecret, r.Scheme); err != nil {
-		return nil, 0, fmt.Errorf("setting owner reference on token secret: %w", err)
-	}
-
-	if err := r.Create(ctx, tokenSecret); err != nil {
-		if !apierrors.IsAlreadyExists(err) {
-			return nil, 0, fmt.Errorf("creating token secret: %w", err)
-		}
-		existing := &corev1.Secret{}
-		if err := r.Get(ctx, client.ObjectKey{Name: tokenSecretName, Namespace: ts.Namespace}, existing); err != nil {
-			return nil, 0, fmt.Errorf("fetching existing token secret: %w", err)
-		}
-		existing.StringData = tokenSecret.StringData
-		if err := r.Update(ctx, existing); err != nil {
-			return nil, 0, fmt.Errorf("updating token secret: %w", err)
-		}
+	if err := upsertTokenSecret(ctx, r.Client, r.Scheme, ts, ts.Namespace, tokenSecretName, tokenResp); err != nil {
+		return nil, 0, err
 	}
 
 	resolved := *workspace
@@ -732,6 +727,81 @@ func (r *TaskSpawnerReconciler) resolveSessionGitHubAppToken(ctx context.Context
 	}
 
 	return &resolved, requeueAfter, nil
+}
+
+// truncateResourceName ensures a Kubernetes resource name stays within the
+// 253-character DNS subdomain limit by hashing overlong names.
+func truncateResourceName(name string) string {
+	if len(name) <= maxK8sNameLength {
+		return name
+	}
+	sum := sha256.Sum256([]byte(name))
+	suffix := hex.EncodeToString(sum[:])[:12]
+	return name[:maxK8sNameLength-len(suffix)-1] + "-" + suffix
+}
+
+// cachedTokenRequeueAfter checks if a derived token secret already has a
+// valid (non-expired) token. Returns the requeue duration and true if the
+// token is still valid, or 0 and false if a new token is needed.
+func cachedTokenRequeueAfter(ctx context.Context, cl client.Client, namespace, secretName string) (time.Duration, bool) {
+	var existing corev1.Secret
+	if err := cl.Get(ctx, client.ObjectKey{Namespace: namespace, Name: secretName}, &existing); err != nil {
+		return 0, false
+	}
+	expiresAtStr, ok := existing.Annotations[annotationTokenExpiresAt]
+	if !ok {
+		return 0, false
+	}
+	expiresAt, err := time.Parse(time.RFC3339, expiresAtStr)
+	if err != nil {
+		return 0, false
+	}
+	remaining := time.Until(expiresAt) - githubapp.TokenExpiryMargin
+	if remaining < time.Minute {
+		return 0, false
+	}
+	return remaining, true
+}
+
+// upsertTokenSecret creates or updates a derived secret containing a
+// GITHUB_TOKEN and its expiry annotation.
+func upsertTokenSecret(ctx context.Context, cl client.Client, scheme *runtime.Scheme, owner metav1.Object, namespace, name string, tokenResp *githubapp.TokenResponse) error {
+	tokenSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			Annotations: map[string]string{
+				annotationTokenExpiresAt: tokenResp.ExpiresAt.UTC().Format(time.RFC3339),
+			},
+		},
+		StringData: map[string]string{
+			"GITHUB_TOKEN": tokenResp.Token,
+		},
+	}
+
+	if err := controllerutil.SetControllerReference(owner, tokenSecret, scheme); err != nil {
+		return fmt.Errorf("setting owner reference on token secret: %w", err)
+	}
+
+	if err := cl.Create(ctx, tokenSecret); err != nil {
+		if !apierrors.IsAlreadyExists(err) {
+			return fmt.Errorf("creating token secret: %w", err)
+		}
+		existing := &corev1.Secret{}
+		if err := cl.Get(ctx, client.ObjectKey{Name: name, Namespace: namespace}, existing); err != nil {
+			return fmt.Errorf("fetching existing token secret: %w", err)
+		}
+		existing.StringData = tokenSecret.StringData
+		if existing.Annotations == nil {
+			existing.Annotations = make(map[string]string)
+		}
+		existing.Annotations[annotationTokenExpiresAt] = tokenResp.ExpiresAt.UTC().Format(time.RFC3339)
+		if err := cl.Update(ctx, existing); err != nil {
+			return fmt.Errorf("updating token secret: %w", err)
+		}
+	}
+
+	return nil
 }
 
 func (r *TaskSpawnerReconciler) handleDeletion(ctx context.Context, ts *kelosv1alpha1.TaskSpawner) (ctrl.Result, error) {
