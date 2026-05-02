@@ -2,6 +2,7 @@ package slack
 
 import (
 	"fmt"
+	"log"
 	"regexp"
 	"strings"
 	"sync"
@@ -37,22 +38,29 @@ type SlackMessageData struct {
 	SlashCommandID string
 }
 
-var triggerRegexpCache sync.Map
+var regexpCache sync.Map
+
+type regexpCacheEntry struct {
+	re  *regexp.Regexp
+	err error
+}
 
 func getOrCompileTriggerRegexp(pattern string) (*regexp.Regexp, error) {
-	if cached, ok := triggerRegexpCache.Load(pattern); ok {
-		return cached.(*regexp.Regexp), nil
+	if cached, ok := regexpCache.Load(pattern); ok {
+		entry := cached.(*regexpCacheEntry)
+		return entry.re, entry.err
 	}
 	re, err := regexp.Compile(pattern)
 	if err != nil {
-		return nil, err
+		log.Printf("Invalid regex pattern %q: %v", pattern, err)
 	}
-	triggerRegexpCache.Store(pattern, re)
-	return re, nil
+	regexpCache.Store(pattern, &regexpCacheEntry{re: re, err: err})
+	return re, err
 }
 
 // MatchesSpawner checks whether a Slack message matches the given TaskSpawner's
-// Slack configuration (channels, bot mention, and trigger patterns).
+// Slack configuration (channels, bot mention, trigger patterns, and exclude
+// patterns).
 func MatchesSpawner(slackCfg *v1alpha1.Slack, msg *SlackMessageData, botUserID string) bool {
 	if slackCfg == nil {
 		return false
@@ -60,16 +68,23 @@ func MatchesSpawner(slackCfg *v1alpha1.Slack, msg *SlackMessageData, botUserID s
 	if !matchesChannel(msg.ChannelID, slackCfg.Channels) {
 		return false
 	}
-	// Slash commands bypass mention and trigger filters.
+	// Slash commands bypass mention, trigger, and exclude filters.
 	if msg.IsSlashCommand {
 		return true
 	}
-	// No triggers: fire on any bot mention.
+	var positiveMatch bool
 	if len(slackCfg.Triggers) == 0 {
-		return hasBotMention(msg.Text, botUserID)
+		positiveMatch = hasBotMention(msg.Text, botUserID)
+	} else {
+		positiveMatch = matchesTriggers(msg.Text, slackCfg.Triggers, botUserID)
 	}
-	// With triggers: OR across triggers.
-	return matchesTriggers(msg.Text, slackCfg.Triggers, botUserID)
+	if !positiveMatch {
+		return false
+	}
+	if matchesExcludePatterns(msg.Text, slackCfg.ExcludePatterns) {
+		return false
+	}
+	return true
 }
 
 // ExtractSlackWorkItem builds the template variables map from a Slack message
@@ -117,6 +132,24 @@ func hasBotMention(text string, botUserID string) bool {
 	}
 	return strings.Contains(text, fmt.Sprintf("<@%s>", botUserID)) ||
 		strings.Contains(text, fmt.Sprintf("<@%s|", botUserID))
+}
+
+// matchesExcludePatterns returns true if the message text matches any of
+// the given regular expressions.
+func matchesExcludePatterns(text string, patterns []string) bool {
+	if len(patterns) == 0 {
+		return false
+	}
+	for _, p := range patterns {
+		re, err := getOrCompileTriggerRegexp(p)
+		if err != nil {
+			continue
+		}
+		if re.MatchString(text) {
+			return true
+		}
+	}
+	return false
 }
 
 // matchesTriggers evaluates trigger patterns against message text with OR

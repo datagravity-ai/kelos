@@ -180,6 +180,98 @@ func TestMatchesSpawner(t *testing.T) {
 			botUserID: "UBOT1",
 			want:      true,
 		},
+		{
+			name: "excludePatterns rejects matching message",
+			slackCfg: &v1alpha1.Slack{
+				ExcludePatterns: []string{"/solve"},
+			},
+			msg:       &SlackMessageData{UserID: "U1", ChannelID: "C1", Text: "<@UBOT1> /solve fix this"},
+			botUserID: "UBOT1",
+			want:      false,
+		},
+		{
+			name: "excludePatterns allows non-matching message",
+			slackCfg: &v1alpha1.Slack{
+				ExcludePatterns: []string{"/solve"},
+			},
+			msg:       &SlackMessageData{UserID: "U1", ChannelID: "C1", Text: "<@UBOT1> this is broken"},
+			botUserID: "UBOT1",
+			want:      true,
+		},
+		{
+			name: "excludePatterns multiple patterns OR semantics",
+			slackCfg: &v1alpha1.Slack{
+				ExcludePatterns: []string{"/solve", "/deploy"},
+			},
+			msg:       &SlackMessageData{UserID: "U1", ChannelID: "C1", Text: "<@UBOT1> /deploy now"},
+			botUserID: "UBOT1",
+			want:      false,
+		},
+		{
+			name: "excludePatterns not applied to slash commands",
+			slackCfg: &v1alpha1.Slack{
+				ExcludePatterns: []string{"/solve"},
+			},
+			msg:       &SlackMessageData{UserID: "U1", ChannelID: "C1", Text: "/solve fix this", IsSlashCommand: true},
+			botUserID: "UBOT1",
+			want:      true,
+		},
+		{
+			name: "excludePatterns applied to thread replies",
+			slackCfg: &v1alpha1.Slack{
+				ExcludePatterns: []string{"/solve"},
+			},
+			msg:       &SlackMessageData{UserID: "U1", ChannelID: "C1", Text: "<@UBOT1> /solve go", ThreadTS: "1234567890.123456"},
+			botUserID: "UBOT1",
+			want:      false,
+		},
+		{
+			name: "excludePatterns allows non-matching thread reply",
+			slackCfg: &v1alpha1.Slack{
+				ExcludePatterns: []string{"/solve"},
+			},
+			msg:       &SlackMessageData{UserID: "U1", ChannelID: "C1", Text: "<@UBOT1> more context", ThreadTS: "1234567890.123456"},
+			botUserID: "UBOT1",
+			want:      true,
+		},
+		{
+			name: "excludePatterns invalid regex skipped",
+			slackCfg: &v1alpha1.Slack{
+				ExcludePatterns: []string{"[invalid", "/solve"},
+			},
+			msg:       &SlackMessageData{UserID: "U1", ChannelID: "C1", Text: "<@UBOT1> /solve fix"},
+			botUserID: "UBOT1",
+			want:      false,
+		},
+		{
+			name: "excludePatterns empty list has no effect",
+			slackCfg: &v1alpha1.Slack{
+				ExcludePatterns: []string{},
+			},
+			msg:       &SlackMessageData{UserID: "U1", ChannelID: "C1", Text: "<@UBOT1> anything"},
+			botUserID: "UBOT1",
+			want:      true,
+		},
+		{
+			name: "excludePatterns with triggers both must pass",
+			slackCfg: &v1alpha1.Slack{
+				Triggers:        []v1alpha1.SlackTrigger{{Pattern: "fix"}},
+				ExcludePatterns: []string{"/solve"},
+			},
+			msg:       &SlackMessageData{UserID: "U1", ChannelID: "C1", Text: "<@UBOT1> fix the /solve issue"},
+			botUserID: "UBOT1",
+			want:      false,
+		},
+		{
+			name: "excludePatterns with triggers exclude does not match",
+			slackCfg: &v1alpha1.Slack{
+				Triggers:        []v1alpha1.SlackTrigger{{Pattern: "fix"}},
+				ExcludePatterns: []string{"/solve"},
+			},
+			msg:       &SlackMessageData{UserID: "U1", ChannelID: "C1", Text: "<@UBOT1> fix the login page"},
+			botUserID: "UBOT1",
+			want:      true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -434,6 +526,33 @@ func TestMatchesTriggers(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := matchesTriggers(tt.text, tt.triggers, tt.botUserID); got != tt.want {
 				t.Errorf("matchesTriggers() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMatchesExcludePatterns(t *testing.T) {
+	tests := []struct {
+		name     string
+		text     string
+		patterns []string
+		want     bool
+	}{
+		{"empty list never matches", "/solve fix", nil, false},
+		{"anchored pattern matches", "/solve fix", []string{"^/solve"}, true},
+		{"non-matching pattern", "/triage check", []string{"^/solve"}, false},
+		{"unanchored pattern matches anywhere", "please /solve this", []string{"/solve"}, true},
+		{"anchored pattern does not match mid-text", "please /solve this", []string{"^/solve"}, false},
+		{"multiple patterns second matches", "/deploy now", []string{"^/solve", "^/deploy"}, true},
+		{"invalid regex skipped", "/solve fix", []string{"[invalid", "^/solve"}, true},
+		{"empty text", "", []string{"^/solve"}, false},
+		{"case insensitive regex", "Deploy to prod", []string{"(?i)^deploy"}, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := matchesExcludePatterns(tt.text, tt.patterns); got != tt.want {
+				t.Errorf("matchesExcludePatterns() = %v, want %v", got, tt.want)
 			}
 		})
 	}
