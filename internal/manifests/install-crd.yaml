@@ -6322,6 +6322,22 @@ spec:
                         description: Reporting configures status reporting back to
                           the originating GitHub issue.
                         properties:
+                          checks:
+                            description: |-
+                              Checks creates GitHub Check Runs for pull request tasks. When nil,
+                              no Check Runs are created. Supported for githubPullRequests and
+                              githubWebhook sources with pull-request event types.
+                            properties:
+                              name:
+                                description: |-
+                                  Name overrides the default Check Run name ("Kelos: <taskspawner-name>").
+                                  This name appears in branch protection rule configuration and the PR
+                                  Checks tab. The default is stable across releases; note that renaming
+                                  the TaskSpawner changes the default and may require updating any branch
+                                  protection rules that reference it.
+                                maxLength: 100
+                                type: string
+                            type: object
                           enabled:
                             description: Enabled posts standard status comments back
                               to the originating GitHub issue or PR.
@@ -6359,6 +6375,9 @@ spec:
                       rule: '!(has(self.commentPolicy) && ((has(self.triggerComment)
                         && size(self.triggerComment) > 0) || (has(self.excludeComments)
                         && size(self.excludeComments) > 0)))'
+                    - message: checks reporting is not supported for githubIssues
+                        source
+                      rule: '!has(self.reporting) || !has(self.reporting.checks)'
                   githubPullRequests:
                     description: GitHubPullRequests discovers pull requests from a
                       GitHub repository.
@@ -6497,6 +6516,22 @@ spec:
                         description: Reporting configures status reporting back to
                           the originating GitHub pull request.
                         properties:
+                          checks:
+                            description: |-
+                              Checks creates GitHub Check Runs for pull request tasks. When nil,
+                              no Check Runs are created. Supported for githubPullRequests and
+                              githubWebhook sources with pull-request event types.
+                            properties:
+                              name:
+                                description: |-
+                                  Name overrides the default Check Run name ("Kelos: <taskspawner-name>").
+                                  This name appears in branch protection rule configuration and the PR
+                                  Checks tab. The default is stable across releases; note that renaming
+                                  the TaskSpawner changes the default and may require updating any branch
+                                  protection rules that reference it.
+                                maxLength: 100
+                                type: string
+                            type: object
                           enabled:
                             description: Enabled posts standard status comments back
                               to the originating GitHub issue or PR.
@@ -6548,6 +6583,7 @@ spec:
                           e.g., "issue_comment", "pull_request_review", "push", "issues"
                         items:
                           type: string
+                        maxItems: 20
                         minItems: 1
                         type: array
                       excludeAuthors:
@@ -6575,12 +6611,34 @@ spec:
                               description: Author filters by the event sender's username.
                               type: string
                             bodyContains:
-                              description: BodyContains filters by substring match
-                                on the comment/review body.
+                              description: |-
+                                BodyContains filters by case-sensitive substring match on the
+                                comment/review body.
+                                Deprecated: use BodyPattern instead, which supports regex.
+                              maxLength: 1024
+                              type: string
+                            bodyPattern:
+                              description: |-
+                                BodyPattern requires the comment/review body to match the given
+                                regular expression. The pattern is matched against the full body
+                                using Go regexp syntax (re2).
+                                When both BodyPattern and ExcludeBodyPatterns are set, the body must
+                                match BodyPattern AND must not match any ExcludeBodyPatterns entry.
+                              maxLength: 1024
                               type: string
                             branch:
                               description: Branch filters push events by branch name
                                 (exact match or glob).
+                              type: string
+                            commentOn:
+                              description: |-
+                                CommentOn scopes issue_comment-event filters to comments posted on a
+                                specific subject. GitHub fires issue_comment for both plain issues
+                                and pull requests; "Issue" matches only the former, "PullRequest"
+                                only the latter. Empty matches both. Ignored for other events.
+                              enum:
+                              - Issue
+                              - PullRequest
                               type: string
                             draft:
                               description: Draft filters PRs by draft status. nil
@@ -6595,6 +6653,18 @@ spec:
                                 any of these usernames.
                               items:
                                 type: string
+                              type: array
+                            excludeBodyPatterns:
+                              description: |-
+                                ExcludeBodyPatterns excludes events whose comment/review body matches
+                                any of the given regular expressions. Each entry is checked
+                                independently — the event is excluded if the body matches ANY entry.
+                                Patterns use Go regexp syntax (re2).
+                              items:
+                                maxLength: 1024
+                                minLength: 1
+                                type: string
+                              maxItems: 10
                               type: array
                             excludeLabels:
                               description: ExcludeLabels excludes issues/PRs with
@@ -6643,6 +6713,22 @@ spec:
                         description: Reporting configures status reporting back to
                           the originating GitHub issue or PR.
                         properties:
+                          checks:
+                            description: |-
+                              Checks creates GitHub Check Runs for pull request tasks. When nil,
+                              no Check Runs are created. Supported for githubPullRequests and
+                              githubWebhook sources with pull-request event types.
+                            properties:
+                              name:
+                                description: |-
+                                  Name overrides the default Check Run name ("Kelos: <taskspawner-name>").
+                                  This name appears in branch protection rule configuration and the PR
+                                  Checks tab. The default is stable across releases; note that renaming
+                                  the TaskSpawner changes the default and may require updating any branch
+                                  protection rules that reference it.
+                                maxLength: 100
+                                type: string
+                            type: object
                           enabled:
                             description: Enabled posts standard status comments back
                               to the originating GitHub issue or PR.
@@ -6656,6 +6742,12 @@ spec:
                     required:
                     - events
                     type: object
+                    x-kubernetes-validations:
+                    - message: checks reporting requires at least one pull-request
+                        event type
+                      rule: '!has(self.reporting) || !has(self.reporting.checks) ||
+                        self.events.exists(e, e in [''pull_request'', ''pull_request_review'',
+                        ''pull_request_review_comment'', ''pull_request_target''])'
                   jira:
                     description: Jira discovers issues from a Jira project.
                     properties:
@@ -6754,6 +6846,45 @@ spec:
                         type: array
                     required:
                     - types
+                    type: object
+                  slack:
+                    description: |-
+                      Slack discovers work items from Slack messages via Socket Mode.
+                      The centralized kelos-slack-server connects to Slack via an outbound
+                      WebSocket (no ingress required) and routes messages to matching agents.
+                    properties:
+                      channels:
+                        description: |-
+                          Channels optionally restricts which Slack channels the bot listens in.
+                          Values are channel IDs (e.g., "C0123456789"). When empty, the bot
+                          listens in every channel it has been invited to.
+                        items:
+                          pattern: ^[CG][A-Z0-9]{8,}$
+                          type: string
+                        maxItems: 64
+                        type: array
+                      triggers:
+                        description: |-
+                          Triggers define regex patterns that must match the message text.
+                          Bot mention is implicitly required unless MentionOptional is set.
+                          Multiple triggers use OR semantics. When empty, every bot mention fires.
+                        items:
+                          description: SlackTrigger defines a regex pattern trigger
+                            for Slack messages.
+                          properties:
+                            mentionOptional:
+                              description: |-
+                                MentionOptional, when true, fires the trigger on pattern match alone
+                                without requiring a bot @-mention.
+                              type: boolean
+                            pattern:
+                              description: Pattern is a Go RE2 regex matched against
+                                message text (unanchored).
+                              maxLength: 256
+                              type: string
+                          type: object
+                        maxItems: 8
+                        type: array
                     type: object
                   webhook:
                     description: |-

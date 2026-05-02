@@ -42,6 +42,7 @@ spec:
       repository: kelos-dev/kelos
       events:
         - issue_comment
+        - pull_request_review
       filters:
         - event: issue_comment
           action: created
@@ -53,8 +54,19 @@ spec:
           bodyContains: /kelos review
           state: open
           author: kelos-bot[bot]
+        - event: pull_request_review
+          action: submitted
+          bodyContains: /kelos review
+          state: open
+          author: gjkim42
+        - event: pull_request_review
+          action: submitted
+          bodyContains: /kelos review
+          state: open
+          author: kelos-bot[bot]
       reporting:
         enabled: true
+        checks: {}
   maxConcurrency: 3
   taskTemplate:
     workspaceRef:

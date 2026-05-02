@@ -553,6 +553,133 @@ func TestMatchesGitHubEvent_PullRequestDraftFilter(t *testing.T) {
 	}
 }
 
+func TestMatchesGitHubEvent_IssueCommentCommentOnFilter(t *testing.T) {
+	prCommentPayload := `{
+		"action": "created",
+		"sender": {"login": "user"},
+		"issue": {
+			"number": 1,
+			"title": "Test PR",
+			"state": "open",
+			"html_url": "https://github.com/owner/repo/pull/1",
+			"pull_request": {
+				"url": "https://api.github.com/repos/owner/repo/pulls/1",
+				"html_url": "https://github.com/owner/repo/pull/1"
+			}
+		},
+		"comment": {"body": "/kelos pick-up"}
+	}`
+	issueCommentPayload := `{
+		"action": "created",
+		"sender": {"login": "user"},
+		"issue": {
+			"number": 2,
+			"title": "Test Issue",
+			"state": "open",
+			"html_url": "https://github.com/owner/repo/issues/2"
+		},
+		"comment": {"body": "/kelos pick-up"}
+	}`
+
+	tests := []struct {
+		name      string
+		commentOn string
+		payload   string
+		want      bool
+	}{
+		{
+			name:      "Issue scope matches plain issue comment",
+			commentOn: v1alpha1.CommentOnIssue,
+			payload:   issueCommentPayload,
+			want:      true,
+		},
+		{
+			name:      "Issue scope rejects PR comment",
+			commentOn: v1alpha1.CommentOnIssue,
+			payload:   prCommentPayload,
+			want:      false,
+		},
+		{
+			name:      "PullRequest scope matches PR comment",
+			commentOn: v1alpha1.CommentOnPullRequest,
+			payload:   prCommentPayload,
+			want:      true,
+		},
+		{
+			name:      "PullRequest scope rejects plain issue comment",
+			commentOn: v1alpha1.CommentOnPullRequest,
+			payload:   issueCommentPayload,
+			want:      false,
+		},
+		{
+			name:      "Empty CommentOn matches plain issue comment",
+			commentOn: "",
+			payload:   issueCommentPayload,
+			want:      true,
+		},
+		{
+			name:      "Empty CommentOn matches PR comment",
+			commentOn: "",
+			payload:   prCommentPayload,
+			want:      true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			spawner := &v1alpha1.GitHubWebhook{
+				Events: []string{"issue_comment"},
+				Filters: []v1alpha1.GitHubWebhookFilter{
+					{
+						Event:     "issue_comment",
+						CommentOn: tt.commentOn,
+					},
+				},
+			}
+			got, err := parseAndMatch(t, spawner, "issue_comment", []byte(tt.payload))
+			if err != nil {
+				t.Fatalf("MatchesGitHubEvent() error = %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("MatchesGitHubEvent() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestMatchesGitHubEvent_CommentOnIgnoredOnIssuesEvent verifies that the
+// CommentOn filter is silently ignored on non-issue_comment events. The
+// filter is meaningful only for issue_comment, which is ambiguous between
+// issues and PRs; other events are already unambiguous.
+func TestMatchesGitHubEvent_CommentOnIgnoredOnIssuesEvent(t *testing.T) {
+	spawner := &v1alpha1.GitHubWebhook{
+		Events: []string{"issues"},
+		Filters: []v1alpha1.GitHubWebhookFilter{
+			{
+				Event:     "issues",
+				CommentOn: v1alpha1.CommentOnPullRequest,
+			},
+		},
+	}
+	payload := `{
+		"action": "opened",
+		"sender": {"login": "user"},
+		"issue": {
+			"number": 7,
+			"title": "Test issue",
+			"state": "open",
+			"html_url": "https://github.com/owner/repo/issues/7"
+		}
+	}`
+	got, err := parseAndMatch(t, spawner, "issues", []byte(payload))
+	if err != nil {
+		t.Fatalf("MatchesGitHubEvent() error = %v", err)
+	}
+	if !got {
+		t.Errorf("CommentOn should be ignored on issues events, but filter rejected the event")
+	}
+}
+
 func TestMatchesGitHubEvent_BodyContainsPullRequest(t *testing.T) {
 	spawner := &v1alpha1.GitHubWebhook{
 		Events: []string{"pull_request"},
@@ -606,6 +733,530 @@ func TestMatchesGitHubEvent_BodyContainsPullRequest(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := parseAndMatch(t, spawner, "pull_request", []byte(tt.payload))
+			if err != nil {
+				t.Errorf("MatchesGitHubEvent() error = %v", err)
+				return
+			}
+			if got != tt.want {
+				t.Errorf("MatchesGitHubEvent() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMatchesGitHubEvent_ExcludeBodyPatternsIssueComment(t *testing.T) {
+	spawner := &v1alpha1.GitHubWebhook{
+		Events: []string{"issue_comment"},
+		Filters: []v1alpha1.GitHubWebhookFilter{
+			{
+				Event:               "issue_comment",
+				Action:              "created",
+				ExcludeBodyPatterns: []string{`\[bot\]`},
+			},
+		},
+	}
+
+	tests := []struct {
+		name    string
+		payload string
+		want    bool
+	}{
+		{
+			name: "comment body does not match excluded pattern",
+			payload: `{
+				"action":"created",
+				"sender":{"login":"user"},
+				"issue":{"number":1,"title":"Test","state":"open"},
+				"comment":{"body":"Please review this PR"}
+			}`,
+			want: true,
+		},
+		{
+			name: "comment body matches excluded pattern",
+			payload: `{
+				"action":"created",
+				"sender":{"login":"user"},
+				"issue":{"number":1,"title":"Test","state":"open"},
+				"comment":{"body":"Auto-generated by [bot] system"}
+			}`,
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseAndMatch(t, spawner, "issue_comment", []byte(tt.payload))
+			if err != nil {
+				t.Errorf("MatchesGitHubEvent() error = %v", err)
+				return
+			}
+			if got != tt.want {
+				t.Errorf("MatchesGitHubEvent() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMatchesGitHubEvent_ExcludeBodyPatternsPullRequest(t *testing.T) {
+	spawner := &v1alpha1.GitHubWebhook{
+		Events: []string{"pull_request"},
+		Filters: []v1alpha1.GitHubWebhookFilter{
+			{
+				Event:               "pull_request",
+				ExcludeBodyPatterns: []string{`DO\s+NOT\s+MERGE`},
+			},
+		},
+	}
+
+	tests := []struct {
+		name    string
+		payload string
+		want    bool
+	}{
+		{
+			name: "PR body does not match excluded pattern",
+			payload: `{
+				"action":"opened",
+				"sender":{"login":"user"},
+				"pull_request":{
+					"number":1,
+					"title":"Test PR",
+					"body":"Ready for review",
+					"html_url":"https://github.com/owner/repo/pull/1",
+					"state":"open",
+					"head":{"ref":"feature-branch"}
+				}
+			}`,
+			want: true,
+		},
+		{
+			name: "PR body matches excluded pattern",
+			payload: `{
+				"action":"opened",
+				"sender":{"login":"user"},
+				"pull_request":{
+					"number":1,
+					"title":"Test PR",
+					"body":"DO NOT MERGE - still in progress",
+					"html_url":"https://github.com/owner/repo/pull/1",
+					"state":"open",
+					"head":{"ref":"feature-branch"}
+				}
+			}`,
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseAndMatch(t, spawner, "pull_request", []byte(tt.payload))
+			if err != nil {
+				t.Errorf("MatchesGitHubEvent() error = %v", err)
+				return
+			}
+			if got != tt.want {
+				t.Errorf("MatchesGitHubEvent() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMatchesGitHubEvent_ExcludeBodyPatternsPullRequestReview(t *testing.T) {
+	spawner := &v1alpha1.GitHubWebhook{
+		Events: []string{"pull_request_review"},
+		Filters: []v1alpha1.GitHubWebhookFilter{
+			{
+				Event:               "pull_request_review",
+				Action:              "submitted",
+				ExcludeBodyPatterns: []string{`(?i)lgtm`},
+			},
+		},
+	}
+
+	tests := []struct {
+		name    string
+		payload string
+		want    bool
+	}{
+		{
+			name: "review body does not match excluded pattern",
+			payload: `{
+				"action":"submitted",
+				"sender":{"login":"user"},
+				"pull_request":{
+					"number":1,
+					"title":"Test PR",
+					"body":"Some PR body",
+					"html_url":"https://github.com/owner/repo/pull/1",
+					"state":"open",
+					"head":{"ref":"feature-branch"}
+				},
+				"review":{"body":"Needs a few changes before merging"}
+			}`,
+			want: true,
+		},
+		{
+			name: "review body matches excluded pattern",
+			payload: `{
+				"action":"submitted",
+				"sender":{"login":"user"},
+				"pull_request":{
+					"number":1,
+					"title":"Test PR",
+					"body":"Some PR body",
+					"html_url":"https://github.com/owner/repo/pull/1",
+					"state":"open",
+					"head":{"ref":"feature-branch"}
+				},
+				"review":{"body":"LGTM, ship it!"}
+			}`,
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseAndMatch(t, spawner, "pull_request_review", []byte(tt.payload))
+			if err != nil {
+				t.Errorf("MatchesGitHubEvent() error = %v", err)
+				return
+			}
+			if got != tt.want {
+				t.Errorf("MatchesGitHubEvent() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMatchesGitHubEvent_ExcludeBodyPatternsPullRequestReviewComment(t *testing.T) {
+	spawner := &v1alpha1.GitHubWebhook{
+		Events: []string{"pull_request_review_comment"},
+		Filters: []v1alpha1.GitHubWebhookFilter{
+			{
+				Event:               "pull_request_review_comment",
+				Action:              "created",
+				ExcludeBodyPatterns: []string{`^nit:`},
+			},
+		},
+	}
+
+	tests := []struct {
+		name    string
+		payload string
+		want    bool
+	}{
+		{
+			name: "review comment body does not match excluded pattern",
+			payload: `{
+				"action":"created",
+				"sender":{"login":"user"},
+				"pull_request":{
+					"number":1,
+					"title":"Test PR",
+					"body":"Some PR body",
+					"html_url":"https://github.com/owner/repo/pull/1",
+					"state":"open",
+					"head":{"ref":"feature-branch"}
+				},
+				"comment":{"body":"This logic looks correct"}
+			}`,
+			want: true,
+		},
+		{
+			name: "review comment body matches excluded pattern",
+			payload: `{
+				"action":"created",
+				"sender":{"login":"user"},
+				"pull_request":{
+					"number":1,
+					"title":"Test PR",
+					"body":"Some PR body",
+					"html_url":"https://github.com/owner/repo/pull/1",
+					"state":"open",
+					"head":{"ref":"feature-branch"}
+				},
+				"comment":{"body":"nit: rename this variable for clarity"}
+			}`,
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseAndMatch(t, spawner, "pull_request_review_comment", []byte(tt.payload))
+			if err != nil {
+				t.Errorf("MatchesGitHubEvent() error = %v", err)
+				return
+			}
+			if got != tt.want {
+				t.Errorf("MatchesGitHubEvent() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMatchesGitHubEvent_BodyPatternAndExcludeBodyPatternsCombined(t *testing.T) {
+	spawner := &v1alpha1.GitHubWebhook{
+		Events: []string{"issue_comment"},
+		Filters: []v1alpha1.GitHubWebhookFilter{
+			{
+				Event:               "issue_comment",
+				Action:              "created",
+				BodyPattern:         `/deploy`,
+				ExcludeBodyPatterns: []string{`--dry-run`},
+			},
+		},
+	}
+
+	tests := []struct {
+		name    string
+		payload string
+		want    bool
+	}{
+		{
+			name: "matches bodyPattern and not excludeBodyPatterns",
+			payload: `{
+				"action":"created",
+				"sender":{"login":"user"},
+				"issue":{"number":1,"title":"Test","state":"open"},
+				"comment":{"body":"/deploy to production"}
+			}`,
+			want: true,
+		},
+		{
+			name: "matches bodyPattern but also matches excludeBodyPatterns",
+			payload: `{
+				"action":"created",
+				"sender":{"login":"user"},
+				"issue":{"number":1,"title":"Test","state":"open"},
+				"comment":{"body":"/deploy --dry-run to staging"}
+			}`,
+			want: false,
+		},
+		{
+			name: "does not match bodyPattern",
+			payload: `{
+				"action":"created",
+				"sender":{"login":"user"},
+				"issue":{"number":1,"title":"Test","state":"open"},
+				"comment":{"body":"just a comment"}
+			}`,
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseAndMatch(t, spawner, "issue_comment", []byte(tt.payload))
+			if err != nil {
+				t.Errorf("MatchesGitHubEvent() error = %v", err)
+				return
+			}
+			if got != tt.want {
+				t.Errorf("MatchesGitHubEvent() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMatchesGitHubEvent_ExcludeBodyPatternsMultiple(t *testing.T) {
+	spawner := &v1alpha1.GitHubWebhook{
+		Events: []string{"issue_comment"},
+		Filters: []v1alpha1.GitHubWebhookFilter{
+			{
+				Event:               "issue_comment",
+				Action:              "created",
+				ExcludeBodyPatterns: []string{`\[bot\]`, `auto-generated`},
+			},
+		},
+	}
+
+	tests := []struct {
+		name    string
+		payload string
+		want    bool
+	}{
+		{
+			name: "body matches neither excluded pattern",
+			payload: `{
+				"action":"created",
+				"sender":{"login":"user"},
+				"issue":{"number":1,"title":"Test","state":"open"},
+				"comment":{"body":"Please review this PR"}
+			}`,
+			want: true,
+		},
+		{
+			name: "body matches first excluded pattern",
+			payload: `{
+				"action":"created",
+				"sender":{"login":"user"},
+				"issue":{"number":1,"title":"Test","state":"open"},
+				"comment":{"body":"Posted by [bot] system"}
+			}`,
+			want: false,
+		},
+		{
+			name: "body matches second excluded pattern",
+			payload: `{
+				"action":"created",
+				"sender":{"login":"user"},
+				"issue":{"number":1,"title":"Test","state":"open"},
+				"comment":{"body":"This is auto-generated content"}
+			}`,
+			want: false,
+		},
+		{
+			name: "body matches both excluded patterns",
+			payload: `{
+				"action":"created",
+				"sender":{"login":"user"},
+				"issue":{"number":1,"title":"Test","state":"open"},
+				"comment":{"body":"auto-generated by [bot]"}
+			}`,
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseAndMatch(t, spawner, "issue_comment", []byte(tt.payload))
+			if err != nil {
+				t.Errorf("MatchesGitHubEvent() error = %v", err)
+				return
+			}
+			if got != tt.want {
+				t.Errorf("MatchesGitHubEvent() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMatchesGitHubEvent_ExcludeBodyPatternsIssue(t *testing.T) {
+	spawner := &v1alpha1.GitHubWebhook{
+		Events: []string{"issues"},
+		Filters: []v1alpha1.GitHubWebhookFilter{
+			{
+				Event:               "issues",
+				Action:              "opened",
+				ExcludeBodyPatterns: []string{`(?i)ignore`},
+			},
+		},
+	}
+
+	tests := []struct {
+		name    string
+		payload string
+		want    bool
+	}{
+		{
+			name: "issue body does not match excluded pattern",
+			payload: `{
+				"action":"opened",
+				"sender":{"login":"user"},
+				"issue":{
+					"number":1,
+					"title":"Test issue",
+					"body":"Please fix this bug",
+					"html_url":"https://github.com/owner/repo/issues/1",
+					"state":"open"
+				}
+			}`,
+			want: true,
+		},
+		{
+			name: "issue body matches excluded pattern case-insensitively",
+			payload: `{
+				"action":"opened",
+				"sender":{"login":"user"},
+				"issue":{
+					"number":1,
+					"title":"Test issue",
+					"body":"Ignore this issue for now",
+					"html_url":"https://github.com/owner/repo/issues/1",
+					"state":"open"
+				}
+			}`,
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseAndMatch(t, spawner, "issues", []byte(tt.payload))
+			if err != nil {
+				t.Errorf("MatchesGitHubEvent() error = %v", err)
+				return
+			}
+			if got != tt.want {
+				t.Errorf("MatchesGitHubEvent() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMatchesGitHubEvent_BodyPatternRegex(t *testing.T) {
+	spawner := &v1alpha1.GitHubWebhook{
+		Events: []string{"issue_comment"},
+		Filters: []v1alpha1.GitHubWebhookFilter{
+			{
+				Event:       "issue_comment",
+				Action:      "created",
+				BodyPattern: `/deploy\s+(staging|production)`,
+			},
+		},
+	}
+
+	tests := []struct {
+		name    string
+		payload string
+		want    bool
+	}{
+		{
+			name: "body matches regex with staging",
+			payload: `{
+				"action":"created",
+				"sender":{"login":"user"},
+				"issue":{"number":1,"title":"Test","state":"open"},
+				"comment":{"body":"/deploy staging"}
+			}`,
+			want: true,
+		},
+		{
+			name: "body matches regex with production",
+			payload: `{
+				"action":"created",
+				"sender":{"login":"user"},
+				"issue":{"number":1,"title":"Test","state":"open"},
+				"comment":{"body":"/deploy production"}
+			}`,
+			want: true,
+		},
+		{
+			name: "body does not match regex - wrong target",
+			payload: `{
+				"action":"created",
+				"sender":{"login":"user"},
+				"issue":{"number":1,"title":"Test","state":"open"},
+				"comment":{"body":"/deploy dev"}
+			}`,
+			want: false,
+		},
+		{
+			name: "body does not match regex - no command",
+			payload: `{
+				"action":"created",
+				"sender":{"login":"user"},
+				"issue":{"number":1,"title":"Test","state":"open"},
+				"comment":{"body":"just a comment"}
+			}`,
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseAndMatch(t, spawner, "issue_comment", []byte(tt.payload))
 			if err != nil {
 				t.Errorf("MatchesGitHubEvent() error = %v", err)
 				return
@@ -1427,6 +2078,97 @@ func TestParseGitHubWebhook_IssueCommentOnIssue_NoPullRequestAPIURL(t *testing.T
 
 	if got.PullRequestAPIURL != "" {
 		t.Errorf("PullRequestAPIURL should be empty for plain issues, got %q", got.PullRequestAPIURL)
+	}
+}
+
+func TestParseGitHubWebhook_HeadSHA(t *testing.T) {
+	tests := []struct {
+		name      string
+		eventType string
+		payload   string
+		wantSHA   string
+	}{
+		{
+			name:      "pull_request event extracts head SHA",
+			eventType: "pull_request",
+			payload: `{
+				"action": "opened",
+				"sender": {"login": "testuser"},
+				"repository": {"full_name": "org/repo", "name": "repo", "owner": {"login": "org"}},
+				"pull_request": {
+					"number": 1,
+					"title": "Test PR",
+					"html_url": "https://github.com/org/repo/pull/1",
+					"state": "open",
+					"head": {"ref": "feature", "sha": "abc123def456"}
+				}
+			}`,
+			wantSHA: "abc123def456",
+		},
+		{
+			name:      "pull_request_review event extracts head SHA",
+			eventType: "pull_request_review",
+			payload: `{
+				"action": "submitted",
+				"sender": {"login": "reviewer"},
+				"repository": {"full_name": "org/repo", "name": "repo", "owner": {"login": "org"}},
+				"review": {"state": "approved"},
+				"pull_request": {
+					"number": 2,
+					"title": "Review PR",
+					"html_url": "https://github.com/org/repo/pull/2",
+					"state": "open",
+					"head": {"ref": "feature", "sha": "deadbeef0000"}
+				}
+			}`,
+			wantSHA: "deadbeef0000",
+		},
+		{
+			name:      "pull_request_review_comment event extracts head SHA",
+			eventType: "pull_request_review_comment",
+			payload: `{
+				"action": "created",
+				"sender": {"login": "reviewer"},
+				"repository": {"full_name": "org/repo", "name": "repo", "owner": {"login": "org"}},
+				"comment": {"body": "nit"},
+				"pull_request": {
+					"number": 3,
+					"title": "Comment PR",
+					"html_url": "https://github.com/org/repo/pull/3",
+					"state": "open",
+					"head": {"ref": "feature", "sha": "cafebabe1234"}
+				}
+			}`,
+			wantSHA: "cafebabe1234",
+		},
+		{
+			name:      "issues event has no head SHA",
+			eventType: "issues",
+			payload: `{
+				"action": "opened",
+				"sender": {"login": "testuser"},
+				"repository": {"full_name": "org/repo", "name": "repo", "owner": {"login": "org"}},
+				"issue": {
+					"number": 5,
+					"title": "Bug",
+					"html_url": "https://github.com/org/repo/issues/5",
+					"state": "open"
+				}
+			}`,
+			wantSHA: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseGitHubWebhook(tt.eventType, []byte(tt.payload))
+			if err != nil {
+				t.Fatalf("ParseGitHubWebhook() error = %v", err)
+			}
+			if got.HeadSHA != tt.wantSHA {
+				t.Errorf("HeadSHA = %q, want %q", got.HeadSHA, tt.wantSHA)
+			}
+		})
 	}
 }
 

@@ -51,6 +51,12 @@ type When struct {
 	// the HMAC secret is read from the <SOURCE>_WEBHOOK_SECRET env var.
 	// +optional
 	GenericWebhook *GenericWebhook `json:"webhook,omitempty"`
+
+	// Slack discovers work items from Slack messages via Socket Mode.
+	// The centralized kelos-slack-server connects to Slack via an outbound
+	// WebSocket (no ingress required) and routes messages to matching agents.
+	// +optional
+	Slack *Slack `json:"slack,omitempty"`
 }
 
 // Cron triggers task spawning on a cron schedule.
@@ -61,10 +67,38 @@ type Cron struct {
 }
 
 // GitHubReporting configures status reporting back to GitHub.
+// All GitHub sources (issues, pull requests, webhooks) support comment
+// reporting via the Enabled field. The Checks field is supported for
+// githubPullRequests and for githubWebhook sources that include at least
+// one pull-request event type; other sources reject it via CEL validation.
 type GitHubReporting struct {
 	// Enabled posts standard status comments back to the originating GitHub issue or PR.
 	// +optional
 	Enabled bool `json:"enabled,omitempty"`
+
+	// Checks creates GitHub Check Runs for pull request tasks. When nil,
+	// no Check Runs are created. Supported for githubPullRequests and
+	// githubWebhook sources with pull-request event types.
+	// +optional
+	Checks *GitHubChecksReporting `json:"checks,omitempty"`
+}
+
+// GitHubChecksReporting configures GitHub Check Run reporting for pull
+// request tasks, enabling branch protection and merge queue integration.
+// When present, the spawner creates a Check Run when a task starts (status:
+// in_progress) and updates it when the task completes (conclusion:
+// success/failure). The check name appears in the Check Run title, while
+// the task name appears in the summary.
+// Requires the GitHub token to have checks:write permission.
+type GitHubChecksReporting struct {
+	// Name overrides the default Check Run name ("Kelos: <taskspawner-name>").
+	// This name appears in branch protection rule configuration and the PR
+	// Checks tab. The default is stable across releases; note that renaming
+	// the TaskSpawner changes the default and may require updating any branch
+	// protection rules that reference it.
+	// +optional
+	// +kubebuilder:validation:MaxLength=100
+	Name string `json:"name,omitempty"`
 }
 
 // GitHubTeamRef identifies a GitHub team in org/team-slug format.
@@ -109,6 +143,7 @@ type GitHubCommentPolicy struct {
 // fork but issues should be discovered from the upstream repository.
 // If the workspace has a secretRef, it is used for GitHub API authentication.
 // +kubebuilder:validation:XValidation:rule="!(has(self.commentPolicy) && ((has(self.triggerComment) && size(self.triggerComment) > 0) || (has(self.excludeComments) && size(self.excludeComments) > 0)))",message="commentPolicy cannot be used with triggerComment or excludeComments"
+// +kubebuilder:validation:XValidation:rule="!has(self.reporting) || !has(self.reporting.checks)",message="checks reporting is not supported for githubIssues source"
 type GitHubIssues struct {
 	// Repo optionally overrides the repository to poll for issues, in
 	// "owner/repo" format or as a full URL. When empty, the repository
@@ -346,11 +381,13 @@ type Jira struct {
 }
 
 // GitHubWebhook configures webhook-driven task spawning from GitHub events.
+// +kubebuilder:validation:XValidation:rule="!has(self.reporting) || !has(self.reporting.checks) || self.events.exists(e, e in ['pull_request', 'pull_request_review', 'pull_request_review_comment', 'pull_request_target'])",message="checks reporting requires at least one pull-request event type"
 type GitHubWebhook struct {
 	// Events is the list of GitHub event types to listen for.
 	// e.g., "issue_comment", "pull_request_review", "push", "issues"
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=20
 	Events []string `json:"events"`
 
 	// Repository restricts webhooks to a specific repository (owner/repo format).
@@ -375,6 +412,14 @@ type GitHubWebhook struct {
 	Reporting *GitHubReporting `json:"reporting,omitempty"`
 }
 
+// CommentOn values scope issue_comment-event filters to a specific subject.
+const (
+	// CommentOnIssue matches issue_comment events posted on plain issues.
+	CommentOnIssue = "Issue"
+	// CommentOnPullRequest matches issue_comment events posted on pull requests.
+	CommentOnPullRequest = "PullRequest"
+)
+
 // GitHubWebhookFilter defines filtering criteria for GitHub webhook events.
 type GitHubWebhookFilter struct {
 	// Event is the GitHub event type this filter applies to.
@@ -385,9 +430,31 @@ type GitHubWebhookFilter struct {
 	// +optional
 	Action string `json:"action,omitempty"`
 
-	// BodyContains filters by substring match on the comment/review body.
+	// BodyContains filters by case-sensitive substring match on the
+	// comment/review body.
+	// Deprecated: use BodyPattern instead, which supports regex.
 	// +optional
+	// +kubebuilder:validation:MaxLength=1024
 	BodyContains string `json:"bodyContains,omitempty"`
+
+	// BodyPattern requires the comment/review body to match the given
+	// regular expression. The pattern is matched against the full body
+	// using Go regexp syntax (re2).
+	// When both BodyPattern and ExcludeBodyPatterns are set, the body must
+	// match BodyPattern AND must not match any ExcludeBodyPatterns entry.
+	// +optional
+	// +kubebuilder:validation:MaxLength=1024
+	BodyPattern string `json:"bodyPattern,omitempty"`
+
+	// ExcludeBodyPatterns excludes events whose comment/review body matches
+	// any of the given regular expressions. Each entry is checked
+	// independently — the event is excluded if the body matches ANY entry.
+	// Patterns use Go regexp syntax (re2).
+	// +optional
+	// +kubebuilder:validation:MaxItems=10
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=1024
+	ExcludeBodyPatterns []string `json:"excludeBodyPatterns,omitempty"`
 
 	// Labels requires the issue/PR to have all of these labels.
 	// +optional
@@ -408,6 +475,14 @@ type GitHubWebhookFilter struct {
 	// Draft filters PRs by draft status. nil = don't filter.
 	// +optional
 	Draft *bool `json:"draft,omitempty"`
+
+	// CommentOn scopes issue_comment-event filters to comments posted on a
+	// specific subject. GitHub fires issue_comment for both plain issues
+	// and pull requests; "Issue" matches only the former, "PullRequest"
+	// only the latter. Empty matches both. Ignored for other events.
+	// +optional
+	// +kubebuilder:validation:Enum=Issue;PullRequest
+	CommentOn string `json:"commentOn,omitempty"`
 
 	// Author filters by the event sender's username.
 	// +optional
@@ -613,6 +688,49 @@ type HeaderFromSecret struct {
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
 	Key string `json:"key"`
+}
+// Slack triggers task spawning from Slack messages via the centralized
+// kelos-slack-server. The server connects to Slack via Socket Mode (outbound
+// WebSocket — no ingress required) and routes messages to matching
+// TaskSpawners. Authentication tokens (SLACK_BOT_TOKEN, SLACK_APP_TOKEN)
+// are configured on the server, not per-TaskSpawner.
+//
+// The bot must be invited to each channel it should listen in; the Channels
+// field is a post-delivery filter, not a privacy scope.
+//
+// Bot mention (@bot) is implicitly required by default. The handler knows its
+// own bot user ID from the Slack auth response. When Triggers are configured,
+// each trigger's regex pattern is AND'd with the implicit mention requirement
+// (unless MentionOptional is set). Multiple triggers use OR semantics.
+// Empty triggers = every bot mention fires.
+type Slack struct {
+	// Channels optionally restricts which Slack channels the bot listens in.
+	// Values are channel IDs (e.g., "C0123456789"). When empty, the bot
+	// listens in every channel it has been invited to.
+	// +optional
+	// +kubebuilder:validation:MaxItems=64
+	// +kubebuilder:validation:items:Pattern=`^[CG][A-Z0-9]{8,}$`
+	Channels []string `json:"channels,omitempty"`
+
+	// Triggers define regex patterns that must match the message text.
+	// Bot mention is implicitly required unless MentionOptional is set.
+	// Multiple triggers use OR semantics. When empty, every bot mention fires.
+	// +optional
+	// +kubebuilder:validation:MaxItems=8
+	Triggers []SlackTrigger `json:"triggers,omitempty"`
+}
+
+// SlackTrigger defines a regex pattern trigger for Slack messages.
+type SlackTrigger struct {
+	// Pattern is a Go RE2 regex matched against message text (unanchored).
+	// +optional
+	// +kubebuilder:validation:MaxLength=256
+	Pattern string `json:"pattern,omitempty"`
+
+	// MentionOptional, when true, fires the trigger on pattern match alone
+	// without requiring a bot @-mention.
+	// +optional
+	MentionOptional *bool `json:"mentionOptional,omitempty"`
 }
 
 // TaskTemplateMetadata holds optional labels and annotations for spawned Tasks.
