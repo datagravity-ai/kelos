@@ -3,6 +3,8 @@ package slack
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/go-logr/logr"
@@ -14,6 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/kelos-dev/kelos/api/v1alpha1"
+	"github.com/kelos-dev/kelos/internal/reporting"
 	"github.com/kelos-dev/kelos/internal/taskbuilder"
 )
 
@@ -75,15 +78,14 @@ func TestRouteMessageThreadContextBody(t *testing.T) {
 		{
 			name: "thread reply with context preserves thread body",
 			msg: &SlackMessageData{
-				UserID:           "U1",
-				ChannelID:        "C1",
-				Text:             "<@UBOT> can you take a look",
-				Body:             "Slack thread conversation:\n\nUser: original question\n\nUser: <@UBOT> can you take a look\n",
-				ThreadTS:         "1111111111.000000",
-				Timestamp:        "2222222222.222222",
-				HasThreadContext: true,
+				UserID:    "U1",
+				ChannelID: "C1",
+				Text:      "<@UBOT> can you take a look",
+				Body:      "Slack thread conversation:\n\nUser: original question\n\nUser: <@UBOT> can you take a look\n",
+				ThreadTS:  "1111111111.000000",
+				Timestamp: "2222222222.222222",
 			},
-			// HasThreadContext=true means the thread body is preserved as-is
+			// Thread reply with context body — the body is preserved as-is
 			wantBody: "Slack thread conversation:\n\nUser: original question\n\nUser: <@UBOT> can you take a look\n",
 		},
 	}
@@ -311,8 +313,106 @@ func TestCreateTaskAlreadyExists(t *testing.T) {
 		t.Fatalf("First createTask() error: %v", err)
 	}
 
+	// Verify Slack user ID annotation is set
+	taskList := &v1alpha1.TaskList{}
+	if err := cl.List(context.Background(), taskList); err != nil {
+		t.Fatalf("List tasks: %v", err)
+	}
+	if len(taskList.Items) != 1 {
+		t.Fatalf("Expected 1 task, got %d", len(taskList.Items))
+	}
+	got := taskList.Items[0].Annotations[reporting.AnnotationSlackUserID]
+	if got != "U123" {
+		t.Errorf("Expected slack-user-id annotation %q, got %q", "U123", got)
+	}
+
 	// Second call with same message should not return an error (AlreadyExists is handled)
 	if err := h.createTask(context.Background(), spawner, msg); err != nil {
 		t.Fatalf("Second createTask() should not error on AlreadyExists, got: %v", err)
 	}
+}
+
+func TestReadJoinMessage(t *testing.T) {
+	tests := []struct {
+		name        string
+		fileContent string
+		noFile      bool
+		wantMsg     string
+		wantErr     bool
+	}{
+		{
+			name:        "reads and trims message from file",
+			fileContent: "Hello! I'm Kelos bot. Mention me to get started.\n",
+			wantMsg:     "Hello! I'm Kelos bot. Mention me to get started.",
+		},
+		{
+			name:    "empty file path returns empty string",
+			noFile:  true,
+			wantMsg: "",
+		},
+		{
+			name:        "empty file content returns empty string",
+			fileContent: "   \n",
+			wantMsg:     "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := &SlackHandler{log: logr.Discard()}
+
+			if !tt.noFile {
+				dir := t.TempDir()
+				path := filepath.Join(dir, "join-message.txt")
+				if err := os.WriteFile(path, []byte(tt.fileContent), 0o644); err != nil {
+					t.Fatalf("WriteFile: %v", err)
+				}
+				h.joinMessageFile = path
+			}
+
+			got, err := h.readJoinMessage()
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("readJoinMessage() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if got != tt.wantMsg {
+				t.Errorf("readJoinMessage() = %q, want %q", got, tt.wantMsg)
+			}
+		})
+	}
+}
+
+func TestReadJoinMessageMissingFile(t *testing.T) {
+	h := &SlackHandler{
+		log:             logr.Discard(),
+		joinMessageFile: "/nonexistent/path/join-message.txt",
+	}
+
+	_, err := h.readJoinMessage()
+	if err == nil {
+		t.Fatal("Expected error for missing file, got nil")
+	}
+}
+
+func TestHandleMemberJoinedChannelIgnoresOtherUsers(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "join-message.txt")
+	if err := os.WriteFile(path, []byte("Welcome!"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	h := &SlackHandler{
+		log:             logr.Discard(),
+		botUserID:       "UBOT",
+		joinMessageFile: path,
+		// api is nil — if handleMemberJoinedChannel tries to post for a
+		// non-bot user it will panic, which is the desired failure mode here.
+	}
+
+	evt := &slackevents.MemberJoinedChannelEvent{
+		User:    "UOTHER",
+		Channel: "C123",
+	}
+
+	// Should return without attempting to post (no panic = pass).
+	h.handleMemberJoinedChannel(context.Background(), evt)
 }

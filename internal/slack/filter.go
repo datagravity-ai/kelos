@@ -2,13 +2,26 @@ package slack
 
 import (
 	"fmt"
-	"log"
 	"regexp"
 	"strings"
 	"sync"
 
 	"github.com/kelos-dev/kelos/api/v1alpha1"
 )
+
+var triggerRegexpCache sync.Map
+
+func getOrCompileTriggerRegexp(pattern string) (*regexp.Regexp, error) {
+	if cached, ok := triggerRegexpCache.Load(pattern); ok {
+		return cached.(*regexp.Regexp), nil
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil, err
+	}
+	triggerRegexpCache.Store(pattern, re)
+	return re, nil
+}
 
 // SlackMessageData holds the parsed fields from a Slack message or slash
 // command needed for matching and task creation.
@@ -38,50 +51,36 @@ type SlackMessageData struct {
 	SlashCommandID string
 }
 
-var regexpCache sync.Map
-
-type regexpCacheEntry struct {
-	re  *regexp.Regexp
-	err error
-}
-
-func getOrCompileTriggerRegexp(pattern string) (*regexp.Regexp, error) {
-	if cached, ok := regexpCache.Load(pattern); ok {
-		entry := cached.(*regexpCacheEntry)
-		return entry.re, entry.err
-	}
-	re, err := regexp.Compile(pattern)
-	if err != nil {
-		log.Printf("Invalid regex pattern %q: %v", pattern, err)
-	}
-	regexpCache.Store(pattern, &regexpCacheEntry{re: re, err: err})
-	return re, err
-}
-
 // MatchesSpawner checks whether a Slack message matches the given TaskSpawner's
-// Slack configuration (channels, bot mention, trigger patterns, and exclude
-// patterns).
-func MatchesSpawner(slackCfg *v1alpha1.Slack, msg *SlackMessageData, botUserID string) bool {
+// Slack configuration (channels). Trigger pattern matching is handled
+// separately via MatchesTriggers.
+func MatchesSpawner(slackCfg *v1alpha1.Slack, msg *SlackMessageData) bool {
 	if slackCfg == nil {
 		return false
 	}
 	if !matchesChannel(msg.ChannelID, slackCfg.Channels) {
 		return false
 	}
-	// Slash commands bypass mention, trigger, and exclude filters.
-	if msg.IsSlashCommand {
-		return true
-	}
-	var positiveMatch bool
-	if len(slackCfg.Triggers) == 0 {
-		positiveMatch = hasBotMention(msg.Text, botUserID)
-	} else {
-		positiveMatch = matchesTriggers(msg.Text, slackCfg.Triggers, botUserID)
-	}
-	if !positiveMatch {
+	return true
+}
+
+// MatchesTriggers checks whether a message should fire based on configured
+// triggers, bot mention, and exclude patterns. When triggers is empty, every
+// message is accepted. When triggers are set, a message fires if at least one
+// trigger matches (pattern matches AND (mention present OR MentionOptional)).
+// After positive matching, the message is rejected if it matches any exclude
+// pattern. botUserID is the Slack user ID of the bot (used for mention
+// detection).
+func MatchesTriggers(text string, triggers []v1alpha1.SlackTrigger, botUserID string, excludePatterns []string) bool {
+	if len(triggers) == 0 {
+		// No triggers configured: require a bot @-mention to fire.
+		if !hasBotMention(text, botUserID) {
+			return false
+		}
+	} else if !matchesTriggers(text, triggers, botUserID) {
 		return false
 	}
-	if matchesExcludePatterns(msg.Text, slackCfg.ExcludePatterns) {
+	if matchesExcludePatterns(text, excludePatterns) {
 		return false
 	}
 	return true
@@ -96,14 +95,9 @@ func ExtractSlackWorkItem(msg *SlackMessageData) map[string]interface{} {
 		id = msg.SlashCommandID
 	}
 
-	title := msg.Text
-	if idx := strings.Index(title, "\n"); idx != -1 {
-		title = title[:idx]
-	}
-
 	return map[string]interface{}{
 		"ID":    id,
-		"Title": title,
+		"Title": msg.UserName,
 		"Body":  msg.Body,
 		"URL":   msg.Permalink,
 		"Kind":  "SlackMessage",
@@ -134,18 +128,37 @@ func hasBotMention(text string, botUserID string) bool {
 		strings.Contains(text, fmt.Sprintf("<@%s|", botUserID))
 }
 
-// matchesExcludePatterns returns true if the message text matches any of
-// the given regular expressions.
+// stripLeadingMentions removes Slack mention tokens (<@USERID> or
+// <@USERID|display-name>) from the beginning of text so that exclude
+// pattern matching works regardless of mention placement.
+func stripLeadingMentions(text string) string {
+	s := text
+	for {
+		s = strings.TrimSpace(s)
+		if !strings.HasPrefix(s, "<@") {
+			return s
+		}
+		end := strings.Index(s, ">")
+		if end == -1 {
+			return s
+		}
+		s = s[end+1:]
+	}
+}
+
+// matchesExcludePatterns returns true if the message text (after stripping
+// leading @-mentions) matches any of the given regular expressions.
 func matchesExcludePatterns(text string, patterns []string) bool {
 	if len(patterns) == 0 {
 		return false
 	}
+	cleaned := stripLeadingMentions(text)
 	for _, p := range patterns {
 		re, err := getOrCompileTriggerRegexp(p)
 		if err != nil {
 			continue
 		}
-		if re.MatchString(text) {
+		if re.MatchString(cleaned) {
 			return true
 		}
 	}

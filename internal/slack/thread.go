@@ -11,6 +11,18 @@ import (
 
 const threadFetchTimeout = 10 * time.Second
 
+// BotParticipated returns true if any message in the thread was sent by the
+// given bot user ID. This prevents processing thread replies in conversations
+// the bot never participated in.
+func BotParticipated(msgs []goslack.Message, botUserID string) bool {
+	for _, m := range msgs {
+		if m.User == botUserID {
+			return true
+		}
+	}
+	return false
+}
+
 // FormatThreadContext formats a Slack thread's messages into a readable
 // conversation string for use as a follow-up task prompt. Messages from the
 // bot itself are labeled as "Agent" while all others use "User".

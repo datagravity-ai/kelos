@@ -7,6 +7,48 @@ import (
 	goslack "github.com/slack-go/slack"
 )
 
+func TestBotParticipated(t *testing.T) {
+	tests := []struct {
+		name      string
+		msgs      []goslack.Message
+		botUserID string
+		want      bool
+	}{
+		{
+			name:      "empty thread",
+			msgs:      nil,
+			botUserID: "UBOT",
+			want:      false,
+		},
+		{
+			name: "bot not in thread",
+			msgs: []goslack.Message{
+				{Msg: goslack.Msg{User: "U1", Text: "hello"}},
+				{Msg: goslack.Msg{User: "U2", Text: "world"}},
+			},
+			botUserID: "UBOT",
+			want:      false,
+		},
+		{
+			name: "bot in thread",
+			msgs: []goslack.Message{
+				{Msg: goslack.Msg{User: "U1", Text: "hello"}},
+				{Msg: goslack.Msg{User: "UBOT", Text: "I can help"}},
+			},
+			botUserID: "UBOT",
+			want:      true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := BotParticipated(tt.msgs, tt.botUserID); got != tt.want {
+				t.Errorf("BotParticipated() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestFormatThreadContext(t *testing.T) {
 	msgs := []goslack.Message{
 		{Msg: goslack.Msg{User: "U1", Text: "fix the bug please"}},
