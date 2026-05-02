@@ -311,6 +311,19 @@ func TestCreateTaskAlreadyExists(t *testing.T) {
 		t.Fatalf("First createTask() error: %v", err)
 	}
 
+	// Verify Slack user ID annotation is set
+	taskList := &v1alpha1.TaskList{}
+	if err := cl.List(context.Background(), taskList); err != nil {
+		t.Fatalf("List tasks: %v", err)
+	}
+	if len(taskList.Items) != 1 {
+		t.Fatalf("Expected 1 task, got %d", len(taskList.Items))
+	}
+	got := taskList.Items[0].Annotations[AnnotationSlackUserID]
+	if got != "U123" {
+		t.Errorf("Expected slack-user-id annotation %q, got %q", "U123", got)
+	}
+
 	// Second call with same message should not return an error (AlreadyExists is handled)
 	if err := h.createTask(context.Background(), spawner, msg); err != nil {
 		t.Fatalf("Second createTask() should not error on AlreadyExists, got: %v", err)

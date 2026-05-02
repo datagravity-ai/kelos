@@ -1,0 +1,132 @@
+package reporting
+
+import (
+	"context"
+	"encoding/base64"
+	"fmt"
+
+	"github.com/slack-go/slack"
+)
+
+// decodeResponse decodes a base64-encoded agent response from task results.
+// Returns the raw string if decoding fails (backward compatibility).
+func decodeResponse(encoded string) string {
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return encoded
+	}
+	return string(decoded)
+}
+
+// SlackMessage holds the components of a rich Slack message.
+type SlackMessage struct {
+	// Text is the fallback text shown in notifications and accessibility contexts.
+	Text string
+	// Blocks are the Block Kit blocks for rich formatting.
+	Blocks []slack.Block
+}
+
+// SlackReporter posts and updates thread replies in Slack channels.
+type SlackReporter struct {
+	// BotToken is the Bot User OAuth Token (xoxb-...).
+	BotToken string
+	client   *slack.Client
+}
+
+func (r *SlackReporter) api() *slack.Client {
+	if r.client == nil {
+		r.client = slack.New(r.BotToken)
+	}
+	return r.client
+}
+
+// PostThreadReply posts a new message as a thread reply and returns the
+// reply's message timestamp.
+func (r *SlackReporter) PostThreadReply(ctx context.Context, channel, threadTS string, msg SlackMessage) (string, error) {
+	opts := []slack.MsgOption{
+		slack.MsgOptionText(msg.Text, false),
+		slack.MsgOptionTS(threadTS),
+	}
+	if len(msg.Blocks) > 0 {
+		opts = append(opts, slack.MsgOptionBlocks(msg.Blocks...))
+	}
+	_, ts, err := r.api().PostMessageContext(ctx, channel, opts...)
+	if err != nil {
+		return "", fmt.Errorf("posting Slack thread reply: %w", err)
+	}
+	return ts, nil
+}
+
+// contextBlock returns a context block displaying the task name.
+func contextBlock(taskName string) *slack.ContextBlock {
+	return slack.NewContextBlock("",
+		slack.NewTextBlockObject(slack.MarkdownType, fmt.Sprintf("Task: `%s`", taskName), false, false),
+	)
+}
+
+// phaseHeaderText maps each phase to its leading Block Kit section text.
+// Phases without an entry (e.g. "succeeded") get no header block.
+var phaseHeaderText = map[string]string{
+	"accepted": ":hourglass_flowing_sand: *Working on your request...*",
+	"failed":   ":x: *Something went wrong*",
+}
+
+// phaseFallbackText maps each phase to its default fallback text (before the
+// "(Task: ...)" suffix) when no richer content is available.
+var phaseFallbackText = map[string]string{
+	"accepted":  "Working on your request...",
+	"succeeded": "Done!",
+	"failed":    "Failed.",
+}
+
+// FormatSlackTransitionMessage returns a rich Slack message for a task phase transition.
+func FormatSlackTransitionMessage(phase, taskName, message string, results map[string]string) SlackMessage {
+	fallbackText := fmt.Sprintf("%s (Task: %s)", phaseFallbackText[phase], taskName)
+	var blocks []slack.Block
+
+	if header, ok := phaseHeaderText[phase]; ok {
+		blocks = append(blocks, slack.NewSectionBlock(
+			slack.NewTextBlockObject(slack.MarkdownType, header, false, false),
+			nil, nil,
+		))
+	}
+
+	resp := results["response"]
+	decoded := decodeResponse(resp)
+
+	if resp != "" {
+		fallbackText = fmt.Sprintf("%s (Task: %s)", decoded, taskName)
+		blocks = append(blocks, responseToBlocks(decoded)...)
+	}
+
+	if pr := results["pr"]; pr != "" {
+		if resp != "" {
+			fallbackText = fmt.Sprintf("%s\nPR: %s (Task: %s)", decoded, pr, taskName)
+		} else {
+			fallbackText = fmt.Sprintf("PR: %s (Task: %s)", pr, taskName)
+		}
+		blocks = append(blocks, slack.NewSectionBlock(
+			slack.NewTextBlockObject(slack.MarkdownType, fmt.Sprintf(":link: *Pull Request:* <%s>", pr), false, false),
+			nil, nil,
+		))
+	}
+
+	if message != "" && phase == "failed" {
+		if resp != "" {
+			fallbackText = fmt.Sprintf("%s\nError: %s (Task: %s)", decoded, message, taskName)
+		} else {
+			fallbackText = fmt.Sprintf("Error: %s (Task: %s)", message, taskName)
+		}
+		blocks = append(blocks, slack.NewSectionBlock(
+			slack.NewTextBlockObject(slack.MarkdownType, fmt.Sprintf(":warning: *Error:* %s", message), false, false),
+			nil, nil,
+		))
+	}
+
+	blocks = append(blocks, contextBlock(taskName))
+
+	return SlackMessage{
+		Text:   fallbackText,
+		Blocks: blocks,
+	}
+}

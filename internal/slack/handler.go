@@ -33,6 +33,10 @@ const (
 	// AnnotationSlackThreadTS records the originating message timestamp,
 	// used as thread_ts for posting replies.
 	AnnotationSlackThreadTS = "kelos.dev/slack-thread-ts"
+
+	// AnnotationSlackUserID records the Slack user ID of the person who
+	// triggered the task.
+	AnnotationSlackUserID = "kelos.dev/slack-user-id"
 )
 
 const enrichCallTimeout = 5 * time.Second
@@ -307,6 +311,7 @@ func (h *SlackHandler) createTask(ctx context.Context, spawner *v1alpha1.TaskSpa
 	}
 	task.Annotations[AnnotationSlackReporting] = "enabled"
 	task.Annotations[AnnotationSlackChannel] = msg.ChannelID
+	task.Annotations[AnnotationSlackUserID] = msg.UserID
 
 	// Only set thread_ts for real message timestamps (not slash command composite IDs).
 	// Slash commands intentionally skip status reporting — there is no thread to reply to.
