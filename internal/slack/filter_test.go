@@ -180,6 +180,98 @@ func TestMatchesSpawner(t *testing.T) {
 			botUserID: "UBOT1",
 			want:      true,
 		},
+		{
+			name: "excludePatterns rejects matching message",
+			slackCfg: &v1alpha1.Slack{
+				ExcludePatterns: []string{"/solve"},
+			},
+			msg:       &SlackMessageData{UserID: "U1", ChannelID: "C1", Text: "<@UBOT1> /solve fix this"},
+			botUserID: "UBOT1",
+			want:      false,
+		},
+		{
+			name: "excludePatterns allows non-matching message",
+			slackCfg: &v1alpha1.Slack{
+				ExcludePatterns: []string{"/solve"},
+			},
+			msg:       &SlackMessageData{UserID: "U1", ChannelID: "C1", Text: "<@UBOT1> this is broken"},
+			botUserID: "UBOT1",
+			want:      true,
+		},
+		{
+			name: "excludePatterns multiple patterns OR semantics",
+			slackCfg: &v1alpha1.Slack{
+				ExcludePatterns: []string{"/solve", "/deploy"},
+			},
+			msg:       &SlackMessageData{UserID: "U1", ChannelID: "C1", Text: "<@UBOT1> /deploy now"},
+			botUserID: "UBOT1",
+			want:      false,
+		},
+		{
+			name: "excludePatterns not applied to slash commands",
+			slackCfg: &v1alpha1.Slack{
+				ExcludePatterns: []string{"/solve"},
+			},
+			msg:       &SlackMessageData{UserID: "U1", ChannelID: "C1", Text: "/solve fix this", IsSlashCommand: true},
+			botUserID: "UBOT1",
+			want:      true,
+		},
+		{
+			name: "excludePatterns applied to thread replies",
+			slackCfg: &v1alpha1.Slack{
+				ExcludePatterns: []string{"/solve"},
+			},
+			msg:       &SlackMessageData{UserID: "U1", ChannelID: "C1", Text: "<@UBOT1> /solve go", ThreadTS: "1234567890.123456"},
+			botUserID: "UBOT1",
+			want:      false,
+		},
+		{
+			name: "excludePatterns allows non-matching thread reply",
+			slackCfg: &v1alpha1.Slack{
+				ExcludePatterns: []string{"/solve"},
+			},
+			msg:       &SlackMessageData{UserID: "U1", ChannelID: "C1", Text: "<@UBOT1> more context", ThreadTS: "1234567890.123456"},
+			botUserID: "UBOT1",
+			want:      true,
+		},
+		{
+			name: "excludePatterns invalid regex skipped",
+			slackCfg: &v1alpha1.Slack{
+				ExcludePatterns: []string{"[invalid", "/solve"},
+			},
+			msg:       &SlackMessageData{UserID: "U1", ChannelID: "C1", Text: "<@UBOT1> /solve fix"},
+			botUserID: "UBOT1",
+			want:      false,
+		},
+		{
+			name: "excludePatterns empty list has no effect",
+			slackCfg: &v1alpha1.Slack{
+				ExcludePatterns: []string{},
+			},
+			msg:       &SlackMessageData{UserID: "U1", ChannelID: "C1", Text: "<@UBOT1> anything"},
+			botUserID: "UBOT1",
+			want:      true,
+		},
+		{
+			name: "excludePatterns with triggers both must pass",
+			slackCfg: &v1alpha1.Slack{
+				Triggers:        []v1alpha1.SlackTrigger{{Pattern: "fix"}},
+				ExcludePatterns: []string{"/solve"},
+			},
+			msg:       &SlackMessageData{UserID: "U1", ChannelID: "C1", Text: "<@UBOT1> fix the /solve issue"},
+			botUserID: "UBOT1",
+			want:      false,
+		},
+		{
+			name: "excludePatterns with triggers exclude does not match",
+			slackCfg: &v1alpha1.Slack{
+				Triggers:        []v1alpha1.SlackTrigger{{Pattern: "fix"}},
+				ExcludePatterns: []string{"/solve"},
+			},
+			msg:       &SlackMessageData{UserID: "U1", ChannelID: "C1", Text: "<@UBOT1> fix the login page"},
+			botUserID: "UBOT1",
+			want:      true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -428,12 +520,91 @@ func TestMatchesTriggers(t *testing.T) {
 			botUserID: "UBOT1",
 			want:      true,
 		},
+		{
+			name:      "anchored pattern matches after mention stripping",
+			text:      "<@UBOT1> deploy prod",
+			triggers:  []v1alpha1.SlackTrigger{{Pattern: "^deploy"}},
+			botUserID: "UBOT1",
+			want:      true,
+		},
+		{
+			name:      "anchored pattern with display-name mention",
+			text:      "<@UBOT1|kelos-bot> deploy prod",
+			triggers:  []v1alpha1.SlackTrigger{{Pattern: "^deploy"}},
+			botUserID: "UBOT1",
+			want:      true,
+		},
+		{
+			name:      "multiple leading mentions stripped for triggers",
+			text:      "<@UBOT1> <@U999> deploy prod",
+			triggers:  []v1alpha1.SlackTrigger{{Pattern: "^deploy", MentionOptional: boolPtr(true)}},
+			botUserID: "UBOT1",
+			want:      true,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := matchesTriggers(tt.text, tt.triggers, tt.botUserID); got != tt.want {
 				t.Errorf("matchesTriggers() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMatchesExcludePatterns(t *testing.T) {
+	tests := []struct {
+		name     string
+		text     string
+		patterns []string
+		want     bool
+	}{
+		{"empty list never matches", "/solve fix", nil, false},
+		{"anchored pattern matches", "/solve fix", []string{"^/solve"}, true},
+		{"non-matching pattern", "/triage check", []string{"^/solve"}, false},
+		{"unanchored pattern matches anywhere", "please /solve this", []string{"/solve"}, true},
+		{"anchored pattern does not match mid-text", "please /solve this", []string{"^/solve"}, false},
+		{"multiple patterns second matches", "/deploy now", []string{"^/solve", "^/deploy"}, true},
+		{"invalid regex skipped", "/solve fix", []string{"[invalid", "^/solve"}, true},
+		{"empty text", "", []string{"^/solve"}, false},
+		{"case insensitive regex", "Deploy to prod", []string{"(?i)^deploy"}, true},
+		{"leading mention stripped before anchored match", "<@UBOT1> /solve fix", []string{"^/solve"}, true},
+		{"leading mention with display name stripped", "<@UBOT1|kelos-bot> /solve fix", []string{"^/solve"}, true},
+		{"multiple leading mentions stripped", "<@UBOT1> <@U999> /solve fix", []string{"^/solve"}, true},
+		{"mid-text mention not stripped", "hey <@UBOT1> /solve fix", []string{"^/solve"}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := matchesExcludePatterns(tt.text, tt.patterns); got != tt.want {
+				t.Errorf("matchesExcludePatterns() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStripLeadingMentions(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+		want string
+	}{
+		{"no mention", "/solve fix", "/solve fix"},
+		{"single mention", "<@UBOT1> /solve fix", "/solve fix"},
+		{"mention with display name", "<@UBOT1|kelos-bot> /solve fix", "/solve fix"},
+		{"multiple mentions", "<@UBOT1> <@U999> /solve fix", "/solve fix"},
+		{"mention without space", "<@UBOT1>/solve fix", "/solve fix"},
+		{"mid-text mention preserved", "hey <@UBOT1> /solve fix", "hey <@UBOT1> /solve fix"},
+		{"only mention", "<@UBOT1>", ""},
+		{"empty text", "", ""},
+		{"unclosed mention", "<@UBOT1 /solve fix", "<@UBOT1 /solve fix"},
+		{"leading whitespace then mention", "  <@UBOT1> /solve fix", "/solve fix"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := stripLeadingMentions(tt.text); got != tt.want {
+				t.Errorf("stripLeadingMentions() = %q, want %q", got, tt.want)
 			}
 		})
 	}

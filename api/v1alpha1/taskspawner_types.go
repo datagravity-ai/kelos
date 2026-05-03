@@ -623,11 +623,25 @@ type Slack struct {
 	// +optional
 	// +kubebuilder:validation:MaxItems=8
 	Triggers []SlackTrigger `json:"triggers,omitempty"`
+
+	// ExcludePatterns rejects messages whose text matches any of the given
+	// regular expressions. Each entry is checked independently — the message
+	// is excluded if the text matches ANY entry. Patterns use Go regexp
+	// syntax (RE2, unanchored). Leading @-mentions are stripped before
+	// matching so patterns target semantic content. Does NOT apply to
+	// slash commands.
+	// +optional
+	// +kubebuilder:validation:MaxItems=10
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=256
+	ExcludePatterns []string `json:"excludePatterns,omitempty"`
 }
 
 // SlackTrigger defines a regex pattern trigger for Slack messages.
 type SlackTrigger struct {
 	// Pattern is a Go RE2 regex matched against message text (unanchored).
+	// Leading @-mentions are stripped before matching so patterns target
+	// semantic content.
 	// +optional
 	// +kubebuilder:validation:MaxLength=256
 	Pattern string `json:"pattern,omitempty"`

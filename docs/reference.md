@@ -197,6 +197,10 @@ GitHub Apps are preferred over PATs for production use because they offer fine-g
 | `spec.when.linearWebhook.filters[].states` | Filter by workflow state names (e.g., `"Todo"`, `"In Progress"`) | No |
 | `spec.when.linearWebhook.filters[].labels` | Require the issue to have all of these labels | No |
 | `spec.when.linearWebhook.filters[].excludeLabels` | Exclude issues with any of these labels | No |
+| `spec.when.slack.channels` | Restrict which Slack channels the bot listens in (channel IDs like `"C0123456789"`); when empty, listens in all invited channels | No |
+| `spec.when.slack.triggers[].pattern` | RE2 regex matched against message text (unanchored); leading `<@USER_ID>` mentions are stripped before matching; bot mention required unless `mentionOptional` is set; multiple triggers use OR semantics; when empty, every bot mention fires | No |
+| `spec.when.slack.triggers[].mentionOptional` | When `true`, fire on pattern match alone without requiring a bot @-mention | No |
+| `spec.when.slack.excludePatterns` | RE2 regex patterns that reject messages when any pattern matches (OR semantics); leading `<@USER_ID>` mentions are stripped before matching; does not apply to slash commands | No |
 | `spec.when.webhook.source` | Short identifier for the generic webhook source (lowercase alphanumeric with optional hyphens). Determines the URL path (`/webhook/<source>`). The endpoint is currently unauthenticated — see [#1040](https://github.com/kelos-dev/kelos/issues/1040) | Yes (when using webhook) |
 | `spec.when.webhook.fieldMapping` | Map of template variable name → JSONPath expression evaluated against the request body. Each key becomes a top-level template variable. Lowercase `id`, `title`, `body`, `url` are also exposed as `{{.ID}}`, `{{.Title}}`, `{{.Body}}`, `{{.URL}}`. The `id` key is required (used for delivery deduplication and Task naming) | Yes (when using webhook) |
 | `spec.when.webhook.filters[].field` | JSONPath expression selecting the payload field to match | Yes (per filter) |
