@@ -557,6 +557,15 @@ func (b *JobBuilder) buildAgentJob(task *kelosv1alpha1.Task, workspace *kelosv1a
 		}
 	}
 
+	// Build the final containers list: agent container plus any sidecars.
+	containers := []corev1.Container{mainContainer}
+	if po := task.Spec.PodOverrides; po != nil && len(po.SidecarContainers) > 0 {
+		if err := validateSidecarContainers(po.SidecarContainers); err != nil {
+			return nil, err
+		}
+		containers = append(containers, po.SidecarContainers...)
+	}
+
 	// PodFailurePolicy ensures only pod disruptions (e.g. node scale-down,
 	// preemption) consume the backoff budget while application crashes fail the
 	// Job immediately.
@@ -618,7 +627,7 @@ func (b *JobBuilder) buildAgentJob(task *kelosv1alpha1.Task, workspace *kelosv1a
 					ServiceAccountName: serviceAccountName,
 					InitContainers:     initContainers,
 					Volumes:            volumes,
-					Containers:         []corev1.Container{mainContainer},
+					Containers:         containers,
 					NodeSelector:       nodeSelector,
 				},
 			},
@@ -695,6 +704,31 @@ func validateUserVolumes(volumes []corev1.Volume) error {
 			return fmt.Errorf("podOverrides.volumes: duplicate volume name %q", v.Name)
 		}
 		seen[v.Name] = struct{}{}
+	}
+	return nil
+}
+
+// reservedContainerNames is the set of container names that Kelos uses
+// internally. SidecarContainers entries must not use these names.
+var reservedContainerNames = map[string]struct{}{
+	"agent":     {},
+	"git-clone": {},
+	"plugin":    {},
+	"skills":    {},
+}
+
+// validateSidecarContainers ensures no user-supplied sidecar container name
+// collides with a Kelos-reserved name or duplicates another sidecar name.
+func validateSidecarContainers(containers []corev1.Container) error {
+	seen := make(map[string]struct{}, len(containers))
+	for _, c := range containers {
+		if _, reserved := reservedContainerNames[c.Name]; reserved {
+			return fmt.Errorf("podOverrides.sidecarContainers: %q is a Kelos-reserved container name", c.Name)
+		}
+		if _, dup := seen[c.Name]; dup {
+			return fmt.Errorf("podOverrides.sidecarContainers: duplicate container name %q", c.Name)
+		}
+		seen[c.Name] = struct{}{}
 	}
 	return nil
 }
