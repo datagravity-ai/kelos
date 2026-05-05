@@ -116,6 +116,15 @@ type PodOverrides struct {
 	// PSS restricted namespace.
 	// +optional
 	ContainerSecurityContext *corev1.SecurityContext `json:"containerSecurityContext,omitempty"`
+
+	// SidecarContainers is a list of additional containers to run alongside
+	// the agent container in the same pod. These share the pod's network
+	// namespace (accessible via localhost) and can mount user-supplied
+	// volumes from the Volumes field. Sidecar container names must not
+	// collide with the agent container name ("agent") or any Kelos-reserved
+	// init container names.
+	// +optional
+	SidecarContainers []corev1.Container `json:"sidecarContainers,omitempty"`
 }
 
 // TaskSpec defines the desired state of Task.
