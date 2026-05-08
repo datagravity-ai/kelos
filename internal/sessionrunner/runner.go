@@ -221,19 +221,23 @@ func (r *Runner) processTask(ctx context.Context, taskName string) error {
 	// Invoke the agent entrypoint and capture outputs.
 	agentOutput, agentErr := r.runAgent(ctx, task)
 
-	// Parse and persist outputs to Task status regardless of success/failure.
-	if outputs := parseOutputs(agentOutput); len(outputs) > 0 {
-		results := resultsFromOutputs(outputs)
-		if err := r.updateTaskOutputs(ctx, taskName, outputs, results); err != nil {
-			fmt.Printf("Error updating task outputs: %v\n", err)
-		}
+	// Parse outputs and persist to Task status.
+	outputs := parseOutputs(agentOutput)
+	results := resultsFromOutputs(outputs)
+	if err := r.updateTaskStatus(ctx, taskName, outputs, results); err != nil {
+		fmt.Printf("Error updating task status: %v\n", err)
 	}
 
 	return agentErr
 }
 
+// tailBufferSize is the maximum bytes retained from agent stdout for output
+// marker parsing. The markers are always emitted at the end of the run by
+// kelos-capture, so only the tail is needed.
+const tailBufferSize = 256 * 1024
+
 // runAgent invokes the agent entrypoint with the task prompt.
-// It returns the captured stdout content and any execution error.
+// It returns the tail of captured stdout (for output parsing) and any execution error.
 func (r *Runner) runAgent(ctx context.Context, task *kelosv1alpha1.Task) (string, error) {
 	entrypoint := "/kelos_entrypoint.sh"
 
@@ -243,32 +247,45 @@ func (r *Runner) runAgent(ctx context.Context, task *kelosv1alpha1.Task) (string
 		env = append(env, fmt.Sprintf("KELOS_BRANCH=%s", task.Spec.Branch))
 	}
 
-	var buf bytes.Buffer
+	tail := newTailWriter(tailBufferSize)
 	cmd := exec.CommandContext(ctx, entrypoint, task.Spec.Prompt)
 	cmd.Dir = "/workspace/repo"
-	cmd.Stdout = io.MultiWriter(os.Stdout, &buf)
+	cmd.Stdout = io.MultiWriter(os.Stdout, tail)
 	cmd.Stderr = os.Stderr
 	cmd.Env = env
 
 	err := cmd.Run()
-	return buf.String(), err
+	return tail.String(), err
 }
 
-// updateTaskOutputs writes captured outputs and results to the Task status.
-func (r *Runner) updateTaskOutputs(ctx context.Context, taskName string, outputs []string, results map[string]string) error {
-	task, err := r.kelosClient.ApiV1alpha1().Tasks(r.config.PodNamespace).Get(ctx, taskName, metav1.GetOptions{})
-	if err != nil {
-		return err
+// updateTaskStatus writes completion timestamps and any captured outputs to the
+// Task status. It retries on conflict since the SessionReconciler may write
+// concurrently.
+func (r *Runner) updateTaskStatus(ctx context.Context, taskName string, outputs []string, results map[string]string) error {
+	const maxRetries = 3
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		task, err := r.kelosClient.ApiV1alpha1().Tasks(r.config.PodNamespace).Get(ctx, taskName, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+		now := metav1.Now()
+		if task.Status.StartTime == nil {
+			task.Status.StartTime = &now
+		}
+		task.Status.CompletionTime = &now
+		if len(outputs) > 0 {
+			task.Status.Outputs = outputs
+			task.Status.Results = results
+		}
+		_, err = r.kelosClient.ApiV1alpha1().Tasks(r.config.PodNamespace).UpdateStatus(ctx, task, metav1.UpdateOptions{})
+		if err == nil {
+			return nil
+		}
+		if !apierrors.IsConflict(err) {
+			return err
+		}
 	}
-	task.Status.Outputs = outputs
-	task.Status.Results = results
-	now := metav1.Now()
-	task.Status.CompletionTime = &now
-	if task.Status.StartTime == nil {
-		task.Status.StartTime = &now
-	}
-	_, err = r.kelosClient.ApiV1alpha1().Tasks(r.config.PodNamespace).UpdateStatus(ctx, task, metav1.UpdateOptions{})
-	return err
+	return fmt.Errorf("failed to update task status after %d retries", maxRetries)
 }
 
 // setTaskStatus sets the kelos.dev/task-status annotation on the pod.
@@ -298,6 +315,54 @@ func (r *Runner) setAnnotation(ctx context.Context, key, value string) error {
 		}
 	}
 	return fmt.Errorf("failed to set annotation %s after %d retries", key, maxRetries)
+}
+
+// tailWriter is a fixed-size ring buffer that retains only the last N bytes
+// written to it. This bounds memory usage when capturing verbose agent output.
+type tailWriter struct {
+	buf  []byte
+	size int
+	pos  int
+	full bool
+}
+
+func newTailWriter(size int) *tailWriter {
+	return &tailWriter{buf: make([]byte, size), size: size}
+}
+
+func (tw *tailWriter) Write(p []byte) (int, error) {
+	n := len(p)
+	if n >= tw.size {
+		copy(tw.buf, p[n-tw.size:])
+		tw.pos = 0
+		tw.full = true
+		return n, nil
+	}
+	space := tw.size - tw.pos
+	if n <= space {
+		copy(tw.buf[tw.pos:], p)
+		tw.pos += n
+	} else {
+		copy(tw.buf[tw.pos:], p[:space])
+		copy(tw.buf, p[space:])
+		tw.pos = n - space
+		tw.full = true
+	}
+	if tw.pos == tw.size {
+		tw.pos = 0
+		tw.full = true
+	}
+	return n, nil
+}
+
+func (tw *tailWriter) String() string {
+	if !tw.full {
+		return string(tw.buf[:tw.pos])
+	}
+	var b bytes.Buffer
+	b.Write(tw.buf[tw.pos:])
+	b.Write(tw.buf[:tw.pos])
+	return b.String()
 }
 
 const (

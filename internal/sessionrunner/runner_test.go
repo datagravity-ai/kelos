@@ -161,3 +161,59 @@ func TestResultsFromOutputs_Empty(t *testing.T) {
 		t.Errorf("expected nil, got %v", got)
 	}
 }
+
+func TestTailWriter_SmallWrite(t *testing.T) {
+	tw := newTailWriter(100)
+	tw.Write([]byte("hello"))
+	if got := tw.String(); got != "hello" {
+		t.Errorf("expected 'hello', got %q", got)
+	}
+}
+
+func TestTailWriter_ExactFit(t *testing.T) {
+	tw := newTailWriter(5)
+	tw.Write([]byte("hello"))
+	if got := tw.String(); got != "hello" {
+		t.Errorf("expected 'hello', got %q", got)
+	}
+}
+
+func TestTailWriter_Overflow(t *testing.T) {
+	tw := newTailWriter(5)
+	tw.Write([]byte("hello world"))
+	if got := tw.String(); got != "world" {
+		t.Errorf("expected 'world', got %q", got)
+	}
+}
+
+func TestTailWriter_MultipleWrites(t *testing.T) {
+	tw := newTailWriter(10)
+	tw.Write([]byte("aaaa"))
+	tw.Write([]byte("bbbb"))
+	tw.Write([]byte("cccc"))
+	got := tw.String()
+	// Total written: 12 bytes ("aaaabbbbcccc"), buffer is 10, so last 10 = "aabbbbcccc"
+	want := "aabbbbcccc"
+	if got != want {
+		t.Errorf("expected %q, got %q", want, got)
+	}
+}
+
+func TestTailWriter_PreservesOutputMarkers(t *testing.T) {
+	tw := newTailWriter(256)
+	// Write a bunch of noise first
+	for i := 0; i < 100; i++ {
+		tw.Write([]byte("noise line that should be evicted\n"))
+	}
+	// Then write the markers at the end
+	tw.Write([]byte("---KELOS_OUTPUTS_START---\nbranch: main\ncommit: abc\n---KELOS_OUTPUTS_END---\n"))
+
+	got := tw.String()
+	outputs := parseOutputs(got)
+	if len(outputs) != 2 {
+		t.Fatalf("expected 2 outputs, got %d from tail: %q", len(outputs), got[max(0, len(got)-200):])
+	}
+	if outputs[0] != "branch: main" {
+		t.Errorf("output[0]: expected 'branch: main', got %q", outputs[0])
+	}
+}
