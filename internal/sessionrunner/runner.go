@@ -213,6 +213,8 @@ func (r *Runner) processTask(ctx context.Context, taskName string) error {
 		return fmt.Errorf("failed to set task status to running: %w", err)
 	}
 
+	startTime := metav1.Now()
+
 	// Reset workspace.
 	if err := r.workspace.Reset(ctx, task.Spec.Branch); err != nil {
 		return fmt.Errorf("workspace reset failed: %w", err)
@@ -224,7 +226,7 @@ func (r *Runner) processTask(ctx context.Context, taskName string) error {
 	// Parse outputs and persist to Task status.
 	outputs := capture.ParseOutputs(agentOutput)
 	results := capture.ResultsFromOutputs(outputs)
-	if err := r.updateTaskStatus(ctx, taskName, outputs, results); err != nil {
+	if err := r.updateTaskStatus(ctx, taskName, &startTime, outputs, results); err != nil {
 		fmt.Printf("Error updating task status: %v\n", err)
 	}
 
@@ -261,17 +263,17 @@ func (r *Runner) runAgent(ctx context.Context, task *kelosv1alpha1.Task) (string
 // updateTaskStatus writes completion timestamps and any captured outputs to the
 // Task status. It retries on conflict since the SessionReconciler may write
 // concurrently.
-func (r *Runner) updateTaskStatus(ctx context.Context, taskName string, outputs []string, results map[string]string) error {
+func (r *Runner) updateTaskStatus(ctx context.Context, taskName string, startTime *metav1.Time, outputs []string, results map[string]string) error {
 	const maxRetries = 3
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		task, err := r.kelosClient.ApiV1alpha1().Tasks(r.config.PodNamespace).Get(ctx, taskName, metav1.GetOptions{})
 		if err != nil {
 			return err
 		}
-		now := metav1.Now()
 		if task.Status.StartTime == nil {
-			task.Status.StartTime = &now
+			task.Status.StartTime = startTime
 		}
+		now := metav1.Now()
 		task.Status.CompletionTime = &now
 		if len(outputs) > 0 {
 			task.Status.Outputs = outputs
