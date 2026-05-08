@@ -14,11 +14,64 @@ import (
 )
 
 const (
-	markerStart     = "---KELOS_OUTPUTS_START---"
-	markerEnd       = "---KELOS_OUTPUTS_END---"
+	markerStart = "---KELOS_OUTPUTS_START---"
+	markerEnd   = "---KELOS_OUTPUTS_END---"
+
 	agentOutputFile = "/tmp/agent-output.jsonl"
 	commandTimeout  = 30 * time.Second
 )
+
+// ParseOutputs extracts output lines from log data between the
+// ---KELOS_OUTPUTS_START--- and ---KELOS_OUTPUTS_END--- markers.
+func ParseOutputs(logData string) []string {
+	startIdx := strings.Index(logData, markerStart)
+	if startIdx == -1 {
+		return nil
+	}
+	endIdx := strings.Index(logData, markerEnd)
+	if endIdx == -1 || endIdx <= startIdx {
+		return nil
+	}
+
+	between := logData[startIdx+len(markerStart) : endIdx]
+	between = strings.TrimSpace(between)
+	if between == "" {
+		return nil
+	}
+
+	lines := strings.Split(between, "\n")
+	var result []string
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			result = append(result, line)
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+// ResultsFromOutputs builds a key-value map from output lines in "key: value" format.
+// Lines that do not contain ": " are skipped. If duplicate keys exist, the last value wins.
+func ResultsFromOutputs(outputs []string) map[string]string {
+	if len(outputs) == 0 {
+		return nil
+	}
+	var result map[string]string
+	for _, line := range outputs {
+		key, value, ok := strings.Cut(line, ": ")
+		if !ok || key == "" {
+			continue
+		}
+		if result == nil {
+			result = make(map[string]string)
+		}
+		result[key] = value
+	}
+	return result
+}
 
 // Run captures deterministic outputs (branch, commit, PRs, token usage) from
 // the workspace and emits them between markers to stdout. Returns 0 on success.

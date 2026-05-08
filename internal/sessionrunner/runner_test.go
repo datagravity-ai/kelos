@@ -4,6 +4,8 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/kelos-dev/kelos/internal/capture"
 )
 
 func TestConfigFromEnv_Defaults(t *testing.T) {
@@ -81,5 +83,139 @@ func TestConfigFromEnv_InvalidMaxTasks(t *testing.T) {
 
 	if cfg.MaxTasksPerSession != 0 {
 		t.Errorf("MaxTasksPerSession: expected 0 on invalid input, got %d", cfg.MaxTasksPerSession)
+	}
+}
+
+func TestParseOutputs(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		expect []string
+	}{
+		{
+			name:   "no markers",
+			input:  "some random log output\n",
+			expect: nil,
+		},
+		{
+			name:   "empty between markers",
+			input:  "---KELOS_OUTPUTS_START---\n---KELOS_OUTPUTS_END---\n",
+			expect: nil,
+		},
+		{
+			name:   "single output",
+			input:  "log line\n---KELOS_OUTPUTS_START---\nbranch: main\n---KELOS_OUTPUTS_END---\n",
+			expect: []string{"branch: main"},
+		},
+		{
+			name:   "multiple outputs",
+			input:  "---KELOS_OUTPUTS_START---\nbranch: feat\ncommit: abc123\nresponse: dGVzdA==\n---KELOS_OUTPUTS_END---\n",
+			expect: []string{"branch: feat", "commit: abc123", "response: dGVzdA=="},
+		},
+		{
+			name:   "start without end",
+			input:  "---KELOS_OUTPUTS_START---\nbranch: main\n",
+			expect: nil,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := capture.ParseOutputs(tc.input)
+			if tc.expect == nil {
+				if got != nil {
+					t.Errorf("expected nil, got %v", got)
+				}
+				return
+			}
+			if len(got) != len(tc.expect) {
+				t.Fatalf("expected %d outputs, got %d: %v", len(tc.expect), len(got), got)
+			}
+			for i, want := range tc.expect {
+				if got[i] != want {
+					t.Errorf("output[%d]: expected %q, got %q", i, want, got[i])
+				}
+			}
+		})
+	}
+}
+
+func TestResultsFromOutputs(t *testing.T) {
+	outputs := []string{"branch: main", "commit: abc123", "cost-usd: 0.05"}
+	results := capture.ResultsFromOutputs(outputs)
+
+	if results["branch"] != "main" {
+		t.Errorf("branch: expected 'main', got %q", results["branch"])
+	}
+	if results["commit"] != "abc123" {
+		t.Errorf("commit: expected 'abc123', got %q", results["commit"])
+	}
+	if results["cost-usd"] != "0.05" {
+		t.Errorf("cost-usd: expected '0.05', got %q", results["cost-usd"])
+	}
+}
+
+func TestResultsFromOutputs_Empty(t *testing.T) {
+	if got := capture.ResultsFromOutputs(nil); got != nil {
+		t.Errorf("expected nil, got %v", got)
+	}
+	if got := capture.ResultsFromOutputs([]string{}); got != nil {
+		t.Errorf("expected nil, got %v", got)
+	}
+}
+
+func TestTailWriter_SmallWrite(t *testing.T) {
+	tw := newTailWriter(100)
+	tw.Write([]byte("hello"))
+	if got := tw.String(); got != "hello" {
+		t.Errorf("expected 'hello', got %q", got)
+	}
+}
+
+func TestTailWriter_ExactFit(t *testing.T) {
+	tw := newTailWriter(5)
+	tw.Write([]byte("hello"))
+	if got := tw.String(); got != "hello" {
+		t.Errorf("expected 'hello', got %q", got)
+	}
+}
+
+func TestTailWriter_Overflow(t *testing.T) {
+	tw := newTailWriter(5)
+	tw.Write([]byte("hello world"))
+	if got := tw.String(); got != "world" {
+		t.Errorf("expected 'world', got %q", got)
+	}
+}
+
+func TestTailWriter_MultipleWrites(t *testing.T) {
+	tw := newTailWriter(10)
+	tw.Write([]byte("aaaa"))
+	tw.Write([]byte("bbbb"))
+	tw.Write([]byte("cccc"))
+	got := tw.String()
+	// Total written: 12 bytes ("aaaabbbbcccc"), buffer is 10, so last 10 = "aabbbbcccc"
+	want := "aabbbbcccc"
+	if got != want {
+		t.Errorf("expected %q, got %q", want, got)
+	}
+}
+
+func TestTailWriter_PreservesOutputMarkers(t *testing.T) {
+	tw := newTailWriter(256)
+	// Write a bunch of noise first
+	for i := 0; i < 100; i++ {
+		tw.Write([]byte("noise line that should be evicted\n"))
+	}
+	// Then write the markers at the end
+	tw.Write([]byte("---KELOS_OUTPUTS_START---\nbranch: main\ncommit: abc\n---KELOS_OUTPUTS_END---\n"))
+
+	got := tw.String()
+	outputs := capture.ParseOutputs(got)
+	if len(outputs) != 2 {
+		t.Fatalf("expected 2 outputs, got %d from tail: %q", len(outputs), got[max(0, len(got)-200):])
+	}
+	if outputs[0] != "branch: main" {
+		t.Errorf("output[0]: expected 'branch: main', got %q", outputs[0])
 	}
 }
