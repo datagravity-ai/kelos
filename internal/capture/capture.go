@@ -14,10 +14,8 @@ import (
 )
 
 const (
-	// MarkerStart is the sentinel line that begins the outputs block.
-	MarkerStart = "---KELOS_OUTPUTS_START---"
-	// MarkerEnd is the sentinel line that ends the outputs block.
-	MarkerEnd = "---KELOS_OUTPUTS_END---"
+	markerStart = "---KELOS_OUTPUTS_START---"
+	markerEnd   = "---KELOS_OUTPUTS_END---"
 
 	agentOutputFile = "/tmp/agent-output.jsonl"
 	commandTimeout  = 30 * time.Second
@@ -26,16 +24,16 @@ const (
 // ParseOutputs extracts output lines from log data between the
 // ---KELOS_OUTPUTS_START--- and ---KELOS_OUTPUTS_END--- markers.
 func ParseOutputs(logData string) []string {
-	startIdx := strings.Index(logData, MarkerStart)
+	startIdx := strings.Index(logData, markerStart)
 	if startIdx == -1 {
 		return nil
 	}
-	endIdx := strings.Index(logData, MarkerEnd)
+	endIdx := strings.Index(logData, markerEnd)
 	if endIdx == -1 || endIdx <= startIdx {
 		return nil
 	}
 
-	between := logData[startIdx+len(MarkerStart) : endIdx]
+	between := logData[startIdx+len(markerStart) : endIdx]
 	between = strings.TrimSpace(between)
 	if between == "" {
 		return nil
@@ -82,11 +80,11 @@ func Run() int {
 	if len(outputs) == 0 {
 		return 0
 	}
-	fmt.Println(MarkerStart)
+	fmt.Println(markerStart)
 	for _, line := range outputs {
 		fmt.Println(line)
 	}
-	fmt.Println(MarkerEnd)
+	fmt.Println(markerEnd)
 	return 0
 }
 
