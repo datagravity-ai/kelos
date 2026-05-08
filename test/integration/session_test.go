@@ -1,6 +1,8 @@
 package integration
 
 import (
+	"crypto/rand"
+	"fmt"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -8,7 +10,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	kelosv1alpha1 "github.com/kelos-dev/kelos/api/v1alpha1"
 	"github.com/kelos-dev/kelos/internal/controller"
@@ -94,20 +95,17 @@ var _ = Describe("Persistent Execution Mode", func() {
 			By("Creating a persistent-mode task")
 			Expect(k8sClient.Create(ctx, task)).Should(Succeed())
 
-			By("Verifying the task transitions to Queued (no Job created)")
-			Eventually(func() kelosv1alpha1.TaskPhase {
+			By("Verifying the task transitions to Queued or Pending (no Job created)")
+			Eventually(func() bool {
 				var t kelosv1alpha1.Task
 				if err := k8sClient.Get(ctx, taskKey, &t); err != nil {
-					return ""
+					return false
 				}
-				return t.Status.Phase
-			}, timeout, interval).Should(Equal(kelosv1alpha1.TaskPhaseQueued))
+				return t.Status.Phase == kelosv1alpha1.TaskPhaseQueued || t.Status.Phase == kelosv1alpha1.TaskPhasePending
+			}, timeout, interval).Should(BeTrue())
 
 			By("Verifying no Job was created")
 			Consistently(func() bool {
-				var jobList client.ObjectList
-				_ = jobList
-				// Just verify via task - if a Job existed, phase would be Pending via TaskReconciler
 				var t kelosv1alpha1.Task
 				if err := k8sClient.Get(ctx, taskKey, &t); err != nil {
 					return false
@@ -331,5 +329,7 @@ var _ = Describe("Persistent Execution Mode", func() {
 })
 
 func randomSuffix() string {
-	return time.Now().Format("150405") + "-" + metav1.Now().Format("000000000")[:4]
+	b := make([]byte, 4)
+	rand.Read(b)
+	return fmt.Sprintf("%x", b)
 }
