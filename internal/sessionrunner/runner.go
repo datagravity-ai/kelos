@@ -214,6 +214,14 @@ func (r *Runner) processTask(ctx context.Context, taskName string) error {
 	}
 
 	startTime := metav1.Now()
+	var outputs []string
+	var results map[string]string
+
+	defer func() {
+		if err := r.updateTaskStatus(ctx, taskName, &startTime, outputs, results); err != nil {
+			fmt.Printf("Error updating task status: %v\n", err)
+		}
+	}()
 
 	// Reset workspace.
 	if err := r.workspace.Reset(ctx, task.Spec.Branch); err != nil {
@@ -223,12 +231,9 @@ func (r *Runner) processTask(ctx context.Context, taskName string) error {
 	// Invoke the agent entrypoint and capture outputs.
 	agentOutput, agentErr := r.runAgent(ctx, task)
 
-	// Parse outputs and persist to Task status.
-	outputs := capture.ParseOutputs(agentOutput)
-	results := capture.ResultsFromOutputs(outputs)
-	if err := r.updateTaskStatus(ctx, taskName, &startTime, outputs, results); err != nil {
-		fmt.Printf("Error updating task status: %v\n", err)
-	}
+	// Parse outputs.
+	outputs = capture.ParseOutputs(agentOutput)
+	results = capture.ResultsFromOutputs(outputs)
 
 	return agentErr
 }

@@ -19,8 +19,6 @@ const (
 	// MarkerEnd is the sentinel line that ends the outputs block.
 	MarkerEnd = "---KELOS_OUTPUTS_END---"
 
-	markerStart     = MarkerStart
-	markerEnd       = MarkerEnd
 	agentOutputFile = "/tmp/agent-output.jsonl"
 	commandTimeout  = 30 * time.Second
 )
@@ -84,11 +82,11 @@ func Run() int {
 	if len(outputs) == 0 {
 		return 0
 	}
-	fmt.Println(markerStart)
+	fmt.Println(MarkerStart)
 	for _, line := range outputs {
 		fmt.Println(line)
 	}
-	fmt.Println(markerEnd)
+	fmt.Println(MarkerEnd)
 	return 0
 }
 
