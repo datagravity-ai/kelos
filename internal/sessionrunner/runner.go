@@ -218,7 +218,9 @@ func (r *Runner) processTask(ctx context.Context, taskName string) error {
 	var results map[string]string
 
 	defer func() {
-		if err := r.updateTaskStatus(ctx, taskName, &startTime, outputs, results); err != nil {
+		statusCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := r.updateTaskStatus(statusCtx, taskName, &startTime, outputs, results); err != nil {
 			fmt.Printf("Error updating task status: %v\n", err)
 		}
 	}()
