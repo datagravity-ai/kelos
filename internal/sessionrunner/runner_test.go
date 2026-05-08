@@ -4,6 +4,8 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/kelos-dev/kelos/internal/capture"
 )
 
 func TestConfigFromEnv_Defaults(t *testing.T) {
@@ -119,7 +121,7 @@ func TestParseOutputs(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := parseOutputs(tc.input)
+			got := capture.ParseOutputs(tc.input)
 			if tc.expect == nil {
 				if got != nil {
 					t.Errorf("expected nil, got %v", got)
@@ -140,7 +142,7 @@ func TestParseOutputs(t *testing.T) {
 
 func TestResultsFromOutputs(t *testing.T) {
 	outputs := []string{"branch: main", "commit: abc123", "cost-usd: 0.05"}
-	results := resultsFromOutputs(outputs)
+	results := capture.ResultsFromOutputs(outputs)
 
 	if results["branch"] != "main" {
 		t.Errorf("branch: expected 'main', got %q", results["branch"])
@@ -154,10 +156,10 @@ func TestResultsFromOutputs(t *testing.T) {
 }
 
 func TestResultsFromOutputs_Empty(t *testing.T) {
-	if got := resultsFromOutputs(nil); got != nil {
+	if got := capture.ResultsFromOutputs(nil); got != nil {
 		t.Errorf("expected nil, got %v", got)
 	}
-	if got := resultsFromOutputs([]string{}); got != nil {
+	if got := capture.ResultsFromOutputs([]string{}); got != nil {
 		t.Errorf("expected nil, got %v", got)
 	}
 }
@@ -209,7 +211,7 @@ func TestTailWriter_PreservesOutputMarkers(t *testing.T) {
 	tw.Write([]byte("---KELOS_OUTPUTS_START---\nbranch: main\ncommit: abc\n---KELOS_OUTPUTS_END---\n"))
 
 	got := tw.String()
-	outputs := parseOutputs(got)
+	outputs := capture.ParseOutputs(got)
 	if len(outputs) != 2 {
 		t.Fatalf("expected 2 outputs, got %d from tail: %q", len(outputs), got[max(0, len(got)-200):])
 	}

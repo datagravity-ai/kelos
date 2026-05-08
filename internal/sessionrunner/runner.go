@@ -24,7 +24,6 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
-	"strings"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -33,6 +32,7 @@ import (
 	"k8s.io/client-go/rest"
 
 	kelosv1alpha1 "github.com/kelos-dev/kelos/api/v1alpha1"
+	"github.com/kelos-dev/kelos/internal/capture"
 	kelosversioned "github.com/kelos-dev/kelos/pkg/generated/clientset/versioned"
 )
 
@@ -222,8 +222,8 @@ func (r *Runner) processTask(ctx context.Context, taskName string) error {
 	agentOutput, agentErr := r.runAgent(ctx, task)
 
 	// Parse outputs and persist to Task status.
-	outputs := parseOutputs(agentOutput)
-	results := resultsFromOutputs(outputs)
+	outputs := capture.ParseOutputs(agentOutput)
+	results := capture.ResultsFromOutputs(outputs)
 	if err := r.updateTaskStatus(ctx, taskName, outputs, results); err != nil {
 		fmt.Printf("Error updating task status: %v\n", err)
 	}
@@ -363,59 +363,4 @@ func (tw *tailWriter) String() string {
 	b.Write(tw.buf[tw.pos:])
 	b.Write(tw.buf[:tw.pos])
 	return b.String()
-}
-
-const (
-	outputStartMarker = "---KELOS_OUTPUTS_START---"
-	outputEndMarker   = "---KELOS_OUTPUTS_END---"
-)
-
-// parseOutputs extracts output lines from log data between markers.
-func parseOutputs(logData string) []string {
-	startIdx := strings.Index(logData, outputStartMarker)
-	if startIdx == -1 {
-		return nil
-	}
-	endIdx := strings.Index(logData, outputEndMarker)
-	if endIdx == -1 || endIdx <= startIdx {
-		return nil
-	}
-
-	between := logData[startIdx+len(outputStartMarker) : endIdx]
-	between = strings.TrimSpace(between)
-	if between == "" {
-		return nil
-	}
-
-	lines := strings.Split(between, "\n")
-	var result []string
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line != "" {
-			result = append(result, line)
-		}
-	}
-	if len(result) == 0 {
-		return nil
-	}
-	return result
-}
-
-// resultsFromOutputs builds a key-value map from output lines in "key: value" format.
-func resultsFromOutputs(outputs []string) map[string]string {
-	if len(outputs) == 0 {
-		return nil
-	}
-	var result map[string]string
-	for _, line := range outputs {
-		key, value, ok := strings.Cut(line, ": ")
-		if !ok || key == "" {
-			continue
-		}
-		if result == nil {
-			result = make(map[string]string)
-		}
-		result[key] = value
-	}
-	return result
 }
