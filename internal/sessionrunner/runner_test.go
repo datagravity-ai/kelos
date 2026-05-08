@@ -83,3 +83,81 @@ func TestConfigFromEnv_InvalidMaxTasks(t *testing.T) {
 		t.Errorf("MaxTasksPerSession: expected 0 on invalid input, got %d", cfg.MaxTasksPerSession)
 	}
 }
+
+func TestParseOutputs(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		expect []string
+	}{
+		{
+			name:   "no markers",
+			input:  "some random log output\n",
+			expect: nil,
+		},
+		{
+			name:   "empty between markers",
+			input:  "---KELOS_OUTPUTS_START---\n---KELOS_OUTPUTS_END---\n",
+			expect: nil,
+		},
+		{
+			name:   "single output",
+			input:  "log line\n---KELOS_OUTPUTS_START---\nbranch: main\n---KELOS_OUTPUTS_END---\n",
+			expect: []string{"branch: main"},
+		},
+		{
+			name:   "multiple outputs",
+			input:  "---KELOS_OUTPUTS_START---\nbranch: feat\ncommit: abc123\nresponse: dGVzdA==\n---KELOS_OUTPUTS_END---\n",
+			expect: []string{"branch: feat", "commit: abc123", "response: dGVzdA=="},
+		},
+		{
+			name:   "start without end",
+			input:  "---KELOS_OUTPUTS_START---\nbranch: main\n",
+			expect: nil,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseOutputs(tc.input)
+			if tc.expect == nil {
+				if got != nil {
+					t.Errorf("expected nil, got %v", got)
+				}
+				return
+			}
+			if len(got) != len(tc.expect) {
+				t.Fatalf("expected %d outputs, got %d: %v", len(tc.expect), len(got), got)
+			}
+			for i, want := range tc.expect {
+				if got[i] != want {
+					t.Errorf("output[%d]: expected %q, got %q", i, want, got[i])
+				}
+			}
+		})
+	}
+}
+
+func TestResultsFromOutputs(t *testing.T) {
+	outputs := []string{"branch: main", "commit: abc123", "cost-usd: 0.05"}
+	results := resultsFromOutputs(outputs)
+
+	if results["branch"] != "main" {
+		t.Errorf("branch: expected 'main', got %q", results["branch"])
+	}
+	if results["commit"] != "abc123" {
+		t.Errorf("commit: expected 'abc123', got %q", results["commit"])
+	}
+	if results["cost-usd"] != "0.05" {
+		t.Errorf("cost-usd: expected '0.05', got %q", results["cost-usd"])
+	}
+}
+
+func TestResultsFromOutputs_Empty(t *testing.T) {
+	if got := resultsFromOutputs(nil); got != nil {
+		t.Errorf("expected nil, got %v", got)
+	}
+	if got := resultsFromOutputs([]string{}); got != nil {
+		t.Errorf("expected nil, got %v", got)
+	}
+}

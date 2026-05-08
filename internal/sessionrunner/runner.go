@@ -17,11 +17,14 @@ limitations under the License.
 package sessionrunner
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -215,12 +218,23 @@ func (r *Runner) processTask(ctx context.Context, taskName string) error {
 		return fmt.Errorf("workspace reset failed: %w", err)
 	}
 
-	// Invoke the agent entrypoint.
-	return r.runAgent(ctx, task)
+	// Invoke the agent entrypoint and capture outputs.
+	agentOutput, agentErr := r.runAgent(ctx, task)
+
+	// Parse and persist outputs to Task status regardless of success/failure.
+	if outputs := parseOutputs(agentOutput); len(outputs) > 0 {
+		results := resultsFromOutputs(outputs)
+		if err := r.updateTaskOutputs(ctx, taskName, outputs, results); err != nil {
+			fmt.Printf("Error updating task outputs: %v\n", err)
+		}
+	}
+
+	return agentErr
 }
 
 // runAgent invokes the agent entrypoint with the task prompt.
-func (r *Runner) runAgent(ctx context.Context, task *kelosv1alpha1.Task) error {
+// It returns the captured stdout content and any execution error.
+func (r *Runner) runAgent(ctx context.Context, task *kelosv1alpha1.Task) (string, error) {
 	entrypoint := "/kelos_entrypoint.sh"
 
 	// Set branch env var if present.
@@ -229,13 +243,32 @@ func (r *Runner) runAgent(ctx context.Context, task *kelosv1alpha1.Task) error {
 		env = append(env, fmt.Sprintf("KELOS_BRANCH=%s", task.Spec.Branch))
 	}
 
+	var buf bytes.Buffer
 	cmd := exec.CommandContext(ctx, entrypoint, task.Spec.Prompt)
 	cmd.Dir = "/workspace/repo"
-	cmd.Stdout = os.Stdout
+	cmd.Stdout = io.MultiWriter(os.Stdout, &buf)
 	cmd.Stderr = os.Stderr
 	cmd.Env = env
 
-	return cmd.Run()
+	err := cmd.Run()
+	return buf.String(), err
+}
+
+// updateTaskOutputs writes captured outputs and results to the Task status.
+func (r *Runner) updateTaskOutputs(ctx context.Context, taskName string, outputs []string, results map[string]string) error {
+	task, err := r.kelosClient.ApiV1alpha1().Tasks(r.config.PodNamespace).Get(ctx, taskName, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+	task.Status.Outputs = outputs
+	task.Status.Results = results
+	now := metav1.Now()
+	task.Status.CompletionTime = &now
+	if task.Status.StartTime == nil {
+		task.Status.StartTime = &now
+	}
+	_, err = r.kelosClient.ApiV1alpha1().Tasks(r.config.PodNamespace).UpdateStatus(ctx, task, metav1.UpdateOptions{})
+	return err
 }
 
 // setTaskStatus sets the kelos.dev/task-status annotation on the pod.
@@ -265,4 +298,59 @@ func (r *Runner) setAnnotation(ctx context.Context, key, value string) error {
 		}
 	}
 	return fmt.Errorf("failed to set annotation %s after %d retries", key, maxRetries)
+}
+
+const (
+	outputStartMarker = "---KELOS_OUTPUTS_START---"
+	outputEndMarker   = "---KELOS_OUTPUTS_END---"
+)
+
+// parseOutputs extracts output lines from log data between markers.
+func parseOutputs(logData string) []string {
+	startIdx := strings.Index(logData, outputStartMarker)
+	if startIdx == -1 {
+		return nil
+	}
+	endIdx := strings.Index(logData, outputEndMarker)
+	if endIdx == -1 || endIdx <= startIdx {
+		return nil
+	}
+
+	between := logData[startIdx+len(outputStartMarker) : endIdx]
+	between = strings.TrimSpace(between)
+	if between == "" {
+		return nil
+	}
+
+	lines := strings.Split(between, "\n")
+	var result []string
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			result = append(result, line)
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+// resultsFromOutputs builds a key-value map from output lines in "key: value" format.
+func resultsFromOutputs(outputs []string) map[string]string {
+	if len(outputs) == 0 {
+		return nil
+	}
+	var result map[string]string
+	for _, line := range outputs {
+		key, value, ok := strings.Cut(line, ": ")
+		if !ok || key == "" {
+			continue
+		}
+		if result == nil {
+			result = make(map[string]string)
+		}
+		result[key] = value
+	}
+	return result
 }
