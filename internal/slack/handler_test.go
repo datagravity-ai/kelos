@@ -446,7 +446,7 @@ func TestShouldProcessAppMention(t *testing.T) {
 			want:  true,
 		},
 		{
-			name:  "self-mention with ouroboros but empty text is rejected",
+			name:  "self-mention with empty text is rejected",
 			event: &slackevents.AppMentionEvent{BotID: "B1", User: self, Text: ""},
 			want:  false,
 		},
