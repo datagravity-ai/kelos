@@ -238,12 +238,13 @@ func (h *SlackHandler) handleAppMentionEvent(ctx context.Context, event *slackev
 // shouldProcessAppMention decides whether an app_mention event should be processed.
 // It only accepts bot/workflow-originated mentions (BotID set) since regular user
 // mentions are already handled by handleMessageEvent. Self-mentions and empty text
-// are also filtered.
+// are also filtered. As an escape hatch, self-mentions containing the word
+// "ouroboros" are allowed through so operators can opt into bot-to-bot loops.
 func shouldProcessAppMention(event *slackevents.AppMentionEvent, selfUserID string) bool {
 	if event.BotID == "" {
 		return false
 	}
-	if event.User == selfUserID {
+	if event.User == selfUserID && !strings.Contains(strings.ToLower(event.Text), "ouroboros") {
 		return false
 	}
 	return event.Text != ""

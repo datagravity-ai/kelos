@@ -416,3 +416,57 @@ func TestHandleMemberJoinedChannelIgnoresOtherUsers(t *testing.T) {
 	// Should return without attempting to post (no panic = pass).
 	h.handleMemberJoinedChannel(context.Background(), evt)
 }
+
+func TestShouldProcessAppMention(t *testing.T) {
+	const self = "UBOT"
+
+	tests := []struct {
+		name  string
+		event *slackevents.AppMentionEvent
+		want  bool
+	}{
+		{
+			name:  "no BotID is rejected",
+			event: &slackevents.AppMentionEvent{User: "UOTHER", Text: "hi"},
+			want:  false,
+		},
+		{
+			name:  "self-mention without ouroboros is rejected",
+			event: &slackevents.AppMentionEvent{BotID: "B1", User: self, Text: "hello there"},
+			want:  false,
+		},
+		{
+			name:  "self-mention with ouroboros is allowed",
+			event: &slackevents.AppMentionEvent{BotID: "B1", User: self, Text: "ouroboros: keep going"},
+			want:  true,
+		},
+		{
+			name:  "self-mention with Ouroboros (case-insensitive) is allowed",
+			event: &slackevents.AppMentionEvent{BotID: "B1", User: self, Text: "Ouroboros loop"},
+			want:  true,
+		},
+		{
+			name:  "self-mention with ouroboros but empty text is rejected",
+			event: &slackevents.AppMentionEvent{BotID: "B1", User: self, Text: ""},
+			want:  false,
+		},
+		{
+			name:  "other bot mention with non-empty text is allowed",
+			event: &slackevents.AppMentionEvent{BotID: "B1", User: "UOTHER", Text: "hi"},
+			want:  true,
+		},
+		{
+			name:  "other bot mention with empty text is rejected",
+			event: &slackevents.AppMentionEvent{BotID: "B1", User: "UOTHER", Text: ""},
+			want:  false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shouldProcessAppMention(tc.event, self); got != tc.want {
+				t.Fatalf("shouldProcessAppMention() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
