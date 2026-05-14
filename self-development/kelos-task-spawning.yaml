@@ -1,0 +1,116 @@
+# Opt-in resources that let a Kelos Task spawn follow-up Tasks by POSTing
+# directly to the Kubernetes API. Use this when a webhook-driven re-trigger
+# is not possible — for example, GitHub does not redeliver issue_comment
+# events to the same App installation that authored the comment, so a bot
+# cannot re-trigger itself by @-mentioning its own account in a comment.
+#
+# How to use:
+#   1. Apply this file in the namespace where your TaskSpawner runs:
+#        kubectl apply -n <ns> -f self-development/kelos-task-spawning.yaml
+#   2. Reference the AgentConfig and ServiceAccount from your TaskSpawner's
+#      taskTemplate:
+#        spec:
+#          taskTemplate:
+#            agentConfigRefs:
+#              - name: kelos-dev-agent              # or your own base config
+#              - name: kelos-task-spawning-agent
+#            podOverrides:
+#              serviceAccountName: kelos-task-spawning-agent
+#
+# The Role is intentionally namespace-scoped and grants only the minimum
+# verbs needed to create and inspect Tasks. Spawned Tasks land in the same
+# namespace as the spawning Task.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kelos-task-spawning-agent
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kelos-task-spawning-agent
+rules:
+  - apiGroups: ["kelos.dev"]
+    resources: ["tasks"]
+    verbs: ["create", "get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kelos-task-spawning-agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kelos-task-spawning-agent
+subjects:
+  - kind: ServiceAccount
+    name: kelos-task-spawning-agent
+---
+apiVersion: kelos.dev/v1alpha1
+kind: AgentConfig
+metadata:
+  name: kelos-task-spawning-agent
+spec:
+  agentsMD: |
+    # Spawning follow-up Kelos Tasks
+
+    You can create new Kelos `Task` resources directly via the in-cluster
+    Kubernetes API. Use this when chaining work to another agent run, or
+    when a GitHub-side trigger will not fire (GitHub does not redeliver
+    `issue_comment` events that the bot itself authored, so self-mention
+    triggers do not work — spawn a Task instead).
+
+    ## How to spawn a Task
+
+    The pod runs with a ServiceAccount that has `create` permission on
+    `tasks.kelos.dev` in the current namespace. The token, CA bundle, and
+    namespace are auto-mounted at
+    `/var/run/secrets/kubernetes.io/serviceaccount/`.
+
+    ```bash
+    TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+    CACERT=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+    NAMESPACE=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)
+
+    curl -sSf \
+      --cacert "$CACERT" \
+      -H "Authorization: Bearer $TOKEN" \
+      -H "Content-Type: application/json" \
+      -X POST \
+      "https://kubernetes.default.svc/apis/kelos.dev/v1alpha1/namespaces/${NAMESPACE}/tasks" \
+      --data-binary @- <<'JSON'
+    {
+      "apiVersion": "kelos.dev/v1alpha1",
+      "kind": "Task",
+      "metadata": {"generateName": "spawned-"},
+      "spec": {
+        "type": "claude-code",
+        "prompt": "<prompt for the spawned task>",
+        "workspaceRef": {"name": "<workspace name>"},
+        "credentials": {
+          "type": "oauth",
+          "secretRef": {"name": "kelos-credentials"}
+        },
+        "ttlSecondsAfterFinished": 86400
+      }
+    }
+    JSON
+    ```
+
+    Inspect spawned Tasks the same way:
+
+    ```bash
+    curl -sSf \
+      --cacert "$CACERT" \
+      -H "Authorization: Bearer $TOKEN" \
+      "https://kubernetes.default.svc/apis/kelos.dev/v1alpha1/namespaces/${NAMESPACE}/tasks/<name>"
+    ```
+
+    ## Guardrails
+    - Always set a terminating condition in the spawned prompt — do not
+      spawn a Task whose prompt would itself unconditionally spawn another.
+    - Set `ttlSecondsAfterFinished` so completed Tasks are garbage
+      collected.
+    - This ServiceAccount only has access to `tasks` in its own
+      namespace. It cannot create TaskSpawners, modify RBAC, or touch
+      other namespaces.
