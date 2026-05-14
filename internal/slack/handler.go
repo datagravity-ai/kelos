@@ -534,7 +534,7 @@ func newSocketModeClient(api *goslack.Client) *socketmode.Client {
 // always filtered regardless of text.
 func shouldProcess(userID, subtype, text string, hasContent bool, selfUserID string) bool {
 	selfOuroboros := userID == selfUserID && strings.Contains(strings.ToLower(text), "ouroboros")
-	if userID == selfUserID && !selfOuroboros {
+	if userID == selfUserID && !strings.Contains(strings.ToLower(text), "ouroboros") {
 		return false
 	}
 	switch subtype {
