@@ -389,8 +389,17 @@ func TestShouldProcess(t *testing.T) {
 			want:       false,
 		},
 		{
-			name:       "bot_message subtype with ouroboros allowed",
+			name:       "third-party bot_message with ouroboros still filtered",
 			userID:     "U1",
+			subtype:    "bot_message",
+			text:       "Ouroboros: keep going",
+			hasContent: true,
+			selfUserID: "UBOT",
+			want:       false,
+		},
+		{
+			name:       "self bot_message with ouroboros allowed",
+			userID:     "UBOT",
 			subtype:    "bot_message",
 			text:       "Ouroboros: keep going",
 			hasContent: true,
@@ -425,14 +434,6 @@ func TestShouldProcess(t *testing.T) {
 		{
 			name:       "no content filtered",
 			userID:     "U1",
-			hasContent: false,
-			selfUserID: "UBOT",
-			want:       false,
-		},
-		{
-			name:       "self message with ouroboros but no content filtered",
-			userID:     "UBOT",
-			text:       "ouroboros",
 			hasContent: false,
 			selfUserID: "UBOT",
 			want:       false,

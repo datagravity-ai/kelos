@@ -436,17 +436,18 @@ func newSocketModeClient(api *goslack.Client) *socketmode.Client {
 // shouldProcess decides whether a Slack message should be processed.
 // It filters out bot messages, self-messages, and message subtypes we don't handle.
 // hasContent should be true when the message has text or attachments. As an
-// escape hatch, messages whose text contains "ouroboros" (case-insensitive)
-// bypass the self-message and bot_message filters so operators can opt into
-// bot-to-bot loops.
+// escape hatch, the bot's own messages whose text contains "ouroboros"
+// (case-insensitive) bypass the self-message and bot_message filters so
+// operators can opt into bot-to-bot loops. Third-party bot messages are
+// always filtered regardless of text.
 func shouldProcess(userID, subtype, text string, hasContent bool, selfUserID string) bool {
-	ouroboros := strings.Contains(strings.ToLower(text), "ouroboros")
-	if userID == selfUserID && !ouroboros {
+	selfOuroboros := userID == selfUserID && strings.Contains(strings.ToLower(text), "ouroboros")
+	if userID == selfUserID && !selfOuroboros {
 		return false
 	}
 	switch subtype {
 	case "bot_message":
-		if !ouroboros {
+		if !selfOuroboros {
 			return false
 		}
 	case "message_changed", "message_deleted", "message_replied":
