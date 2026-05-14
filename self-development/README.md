@@ -25,6 +25,12 @@ Each TaskSpawner references an `AgentConfig` that defines git identity, comment 
 | **kelos-image-update** | Cron (daily 03:00 UTC) | Sonnet | Checks for newer agent image versions (Claude Code, Codex, Gemini, etc.) and creates PRs to update them |
 | **kelos-squash-commits** | Webhook: PR comment `/kelos squash-commits` | Sonnet | Rebases and squashes PR branch commits into a single clean commit |
 
+Opt-in building blocks (not TaskSpawners themselves):
+
+| Resource | Purpose |
+|---|---|
+| **kelos-task-spawning-agent** | ServiceAccount + Role + AgentConfig that lets a running Task create follow-up Tasks via the in-cluster Kubernetes API. Use when self-triggering via GitHub @-mentions is not possible. |
+
 ### kelos-workers.yaml
 
 Picks up open GitHub issues when a maintainer posts `/kelos pick-up` and creates autonomous agent tasks to fix them.
@@ -308,6 +314,30 @@ Rebases and squashes PR branch commits into a single clean commit when a maintai
 ```bash
 kubectl apply -f self-development/kelos-squash-commits.yaml
 ```
+
+### kelos-task-spawning.yaml
+
+Opt-in building block, not a TaskSpawner. Provides a ServiceAccount + Role + `AgentConfig` that lets a running Task create follow-up Tasks by POSTing directly to the in-cluster Kubernetes API.
+
+Use this when a webhook-driven re-trigger is not possible. The motivating case: GitHub does not redeliver `issue_comment` events to the same GitHub App installation that authored the comment, so a bot that posts `@itself` in a PR comment cannot re-trigger itself through the webhook path. Spawning a `Task` directly bypasses GitHub entirely.
+
+**Deploy:**
+```bash
+kubectl apply -n <namespace> -f self-development/kelos-task-spawning.yaml
+```
+
+**Wire it into a TaskSpawner:**
+```yaml
+spec:
+  taskTemplate:
+    agentConfigRefs:
+      - name: kelos-dev-agent              # or your own base config
+      - name: kelos-task-spawning-agent
+    podOverrides:
+      serviceAccountName: kelos-task-spawning-agent
+```
+
+The merged `agentsMD` instructs the agent to POST a `Task` JSON document to `https://kubernetes.default.svc/apis/kelos.dev/v1alpha1/namespaces/<ns>/tasks` using the auto-mounted ServiceAccount token. The Role is namespace-scoped and only grants `create`/`get`/`list` on `tasks`.
 
 ## Prerequisites
 
