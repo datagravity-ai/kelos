@@ -182,7 +182,7 @@ func (h *SlackHandler) handleMessageEvent(ctx context.Context, innerEvent *slack
 
 	hasContent := innerEvent.Text != "" ||
 		(innerEvent.Message != nil && len(innerEvent.Message.Attachments) > 0)
-	if !shouldProcess(innerEvent.User, innerEvent.SubType, hasContent, h.botUserID) {
+	if !shouldProcess(innerEvent.User, innerEvent.SubType, innerEvent.Text, hasContent, h.botUserID) {
 		h.log.V(1).Info("Message filtered by shouldProcess",
 			"user", innerEvent.User, "subtype", innerEvent.SubType, "channel", innerEvent.Channel)
 		return
@@ -527,13 +527,22 @@ func newSocketModeClient(api *goslack.Client) *socketmode.Client {
 
 // shouldProcess decides whether a Slack message should be processed.
 // It filters out bot messages, self-messages, and message subtypes we don't handle.
-// hasContent should be true when the message has text or attachments.
-func shouldProcess(userID, subtype string, hasContent bool, selfUserID string) bool {
-	if userID == selfUserID {
+// hasContent should be true when the message has text or attachments. As an
+// escape hatch, the bot's own messages whose text contains "ouroboros"
+// (case-insensitive) bypass the self-message and bot_message filters so
+// operators can opt into bot-to-bot loops. Third-party bot messages are
+// always filtered regardless of text.
+func shouldProcess(userID, subtype, text string, hasContent bool, selfUserID string) bool {
+	selfOuroboros := userID == selfUserID && strings.Contains(strings.ToLower(text), "ouroboros")
+	if userID == selfUserID && !strings.Contains(strings.ToLower(text), "ouroboros") {
 		return false
 	}
 	switch subtype {
-	case "bot_message", "message_changed", "message_deleted", "message_replied":
+	case "bot_message":
+		if !selfOuroboros {
+			return false
+		}
+	case "message_changed", "message_deleted", "message_replied":
 		return false
 	}
 	return hasContent
