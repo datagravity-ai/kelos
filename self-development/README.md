@@ -335,9 +335,18 @@ spec:
       - name: kelos-task-spawning-agent
     podOverrides:
       serviceAccountName: kelos-task-spawning-agent
+      env:
+        - name: KELOS_WORKSPACE
+          value: kelos-agent                # workspaceRef.name to reuse
+        - name: KELOS_CREDENTIALS_SECRET
+          value: kelos-credentials          # credentials.secretRef.name to reuse
+        - name: KELOS_SPAWN_DEPTH
+          value: "0"                        # parent depth; spawned Tasks increment
+        - name: KELOS_SPAWN_DEPTH_MAX
+          value: "3"                        # refuse to spawn beyond this depth
 ```
 
-The merged `agentsMD` instructs the agent to POST a `Task` JSON document to `https://kubernetes.default.svc/apis/kelos.dev/v1alpha1/namespaces/<ns>/tasks` using the auto-mounted ServiceAccount token. The Role is namespace-scoped and only grants `create`/`get`/`list` on `tasks`.
+The merged `agentsMD` instructs the agent to POST a `Task` JSON document to `https://kubernetes.default.svc/apis/kelos.dev/v1alpha1/namespaces/<ns>/tasks` using the auto-mounted ServiceAccount token. The spawning recipe reads `KELOS_WORKSPACE` / `KELOS_CREDENTIALS_SECRET` (so the agent doesn't have to guess), enforces `KELOS_SPAWN_DEPTH < KELOS_SPAWN_DEPTH_MAX` before spawning, and propagates an incremented depth on the spawned Task via both env and a `kelos.dev/spawn-depth` label. For a hard cap on top of this, apply a namespace `ResourceQuota` on `tasks.kelos.dev` counts. The Role is namespace-scoped and only grants `create`/`get`/`list` on `tasks`.
 
 ## Prerequisites
 
