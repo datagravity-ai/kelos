@@ -1,0 +1,164 @@
+# Opt-in resources that let a Kelos Task spawn follow-up Tasks by POSTing
+# directly to the Kubernetes API. Use this when a webhook-driven re-trigger
+# is not possible — for example, GitHub does not redeliver issue_comment
+# events to the same App installation that authored the comment, so a bot
+# cannot re-trigger itself by @-mentioning its own account in a comment.
+#
+# How to use:
+#   1. Apply this file in the namespace where your TaskSpawner runs:
+#        kubectl apply -n <ns> -f self-development/kelos-task-spawning.yaml
+#   2. Reference the AgentConfig and ServiceAccount from your TaskSpawner's
+#      taskTemplate, and pass the parent's workspace/credentials through as
+#      env vars so the spawning recipe can read them at runtime:
+#        spec:
+#          taskTemplate:
+#            agentConfigRefs:
+#              - name: kelos-dev-agent              # or your own base config
+#              - name: kelos-task-spawning-agent
+#            podOverrides:
+#              serviceAccountName: kelos-task-spawning-agent
+#              env:
+#                - name: KELOS_WORKSPACE
+#                  value: kelos-agent                  # workspaceRef.name
+#                - name: KELOS_CREDENTIALS_SECRET
+#                  value: kelos-credentials            # credentials.secretRef.name
+#                - name: KELOS_SPAWN_DEPTH
+#                  value: "0"                          # parent depth; spawned Tasks must increment
+#                - name: KELOS_SPAWN_DEPTH_MAX
+#                  value: "3"                          # hard cap enforced by the recipe
+#
+# The Role is intentionally namespace-scoped and grants only the minimum
+# verbs needed to create and inspect Tasks. Spawned Tasks land in the same
+# namespace as the spawning Task.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kelos-task-spawning-agent
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kelos-task-spawning-agent
+rules:
+  - apiGroups: ["kelos.dev"]
+    resources: ["tasks"]
+    verbs: ["create", "get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kelos-task-spawning-agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kelos-task-spawning-agent
+subjects:
+  - kind: ServiceAccount
+    name: kelos-task-spawning-agent
+---
+apiVersion: kelos.dev/v1alpha1
+kind: AgentConfig
+metadata:
+  name: kelos-task-spawning-agent
+spec:
+  agentsMD: |
+    # Spawning follow-up Kelos Tasks
+
+    You can create new Kelos `Task` resources directly via the in-cluster
+    Kubernetes API. Use this when chaining work to another agent run, or
+    when a GitHub-side trigger will not fire (GitHub does not redeliver
+    `issue_comment` events that the bot itself authored, so self-mention
+    triggers do not work — spawn a Task instead).
+
+    ## How to spawn a Task
+
+    The pod runs with a ServiceAccount that has `create` permission on
+    `tasks.kelos.dev` in the current namespace. The token, CA bundle, and
+    namespace are auto-mounted at
+    `/var/run/secrets/kubernetes.io/serviceaccount/`. The parent
+    TaskSpawner is expected to expose `KELOS_WORKSPACE` and
+    `KELOS_CREDENTIALS_SECRET` via `podOverrides.env` so the spawning
+    recipe doesn't have to guess.
+
+    ### Depth cap (required)
+
+    Before spawning, **refuse to proceed** if `KELOS_SPAWN_DEPTH` is at or
+    above `KELOS_SPAWN_DEPTH_MAX`. The spawned Task must carry an
+    incremented `kelos.dev/spawn-depth` label so its own runtime sees the
+    new depth via the same mechanism (a downstream parent should read the
+    label from its own Pod metadata if needed, or the spawning TaskSpawner
+    can propagate it through env). This bounds runaway chains even if the
+    prose guardrails are ignored.
+
+    ```bash
+    : "${KELOS_SPAWN_DEPTH:=0}"
+    : "${KELOS_SPAWN_DEPTH_MAX:=3}"
+    if [ "$KELOS_SPAWN_DEPTH" -ge "$KELOS_SPAWN_DEPTH_MAX" ]; then
+      echo "Refusing to spawn: depth $KELOS_SPAWN_DEPTH >= max $KELOS_SPAWN_DEPTH_MAX" >&2
+      exit 1
+    fi
+    NEXT_DEPTH=$((KELOS_SPAWN_DEPTH + 1))
+
+    TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+    CACERT=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+    NAMESPACE=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)
+
+    curl -sSf \
+      --cacert "$CACERT" \
+      -H "Authorization: Bearer $TOKEN" \
+      -H "Content-Type: application/json" \
+      -X POST \
+      "https://kubernetes.default.svc/apis/kelos.dev/v1alpha1/namespaces/${NAMESPACE}/tasks" \
+      --data-binary @- <<JSON
+    {
+      "apiVersion": "kelos.dev/v1alpha1",
+      "kind": "Task",
+      "metadata": {
+        "generateName": "spawned-",
+        "labels": {
+          "kelos.dev/spawned-by": "kelos-task-spawning-agent",
+          "kelos.dev/spawn-depth": "${NEXT_DEPTH}"
+        }
+      },
+      "spec": {
+        "type": "claude-code",
+        "prompt": "<prompt for the spawned task>",
+        "workspaceRef": {"name": "${KELOS_WORKSPACE}"},
+        "credentials": {
+          "type": "oauth",
+          "secretRef": {"name": "${KELOS_CREDENTIALS_SECRET}"}
+        },
+        "ttlSecondsAfterFinished": 86400,
+        "podOverrides": {
+          "env": [
+            {"name": "KELOS_WORKSPACE",         "value": "${KELOS_WORKSPACE}"},
+            {"name": "KELOS_CREDENTIALS_SECRET","value": "${KELOS_CREDENTIALS_SECRET}"},
+            {"name": "KELOS_SPAWN_DEPTH",       "value": "${NEXT_DEPTH}"},
+            {"name": "KELOS_SPAWN_DEPTH_MAX",   "value": "${KELOS_SPAWN_DEPTH_MAX}"}
+          ]
+        }
+      }
+    }
+    JSON
+    ```
+
+    Inspect spawned Tasks the same way:
+
+    ```bash
+    curl -sSf \
+      --cacert "$CACERT" \
+      -H "Authorization: Bearer $TOKEN" \
+      "https://kubernetes.default.svc/apis/kelos.dev/v1alpha1/namespaces/${NAMESPACE}/tasks/<name>"
+    ```
+
+    ## Guardrails
+    - Always set a terminating condition in the spawned prompt — do not
+      spawn a Task whose prompt would itself unconditionally spawn another.
+    - Always honor `KELOS_SPAWN_DEPTH` / `KELOS_SPAWN_DEPTH_MAX`. Cluster
+      operators who want a hard limit on top of the prose guardrail can
+      apply a namespace `ResourceQuota` on `tasks.kelos.dev` counts.
+    - Set `ttlSecondsAfterFinished` so completed Tasks are garbage
+      collected.
+    - This ServiceAccount only has access to `tasks` in its own
+      namespace. It cannot create TaskSpawners, modify RBAC, or touch
+      other namespaces.
