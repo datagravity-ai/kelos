@@ -117,6 +117,14 @@ spec:
                       MaxSessionDuration is the maximum wall-clock time a session pod runs
                       before exiting. Defaults to 8h.
                     type: string
+                  maxSessionRetries:
+                    description: |-
+                      MaxSessionRetries is the maximum number of times a task can be
+                      re-queued due to session pod failures before being marked as Failed.
+                      Defaults to 3. Only used when RetryOnPodFailure is true.
+                    format: int32
+                    minimum: 0
+                    type: integer
                   maxTasksPerSession:
                     description: |-
                       MaxTasksPerSession limits the number of tasks a single session pod
@@ -132,6 +140,11 @@ spec:
                     format: int32
                     minimum: 1
                     type: integer
+                  retryOnPodFailure:
+                    description: |-
+                      RetryOnPodFailure controls whether tasks are re-queued when their
+                      session pod is deleted or crashes. Defaults to true.
+                    type: boolean
                   storageClassName:
                     description: |-
                       StorageClassName specifies the StorageClass for session PVCs. When

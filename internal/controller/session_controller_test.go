@@ -346,7 +346,7 @@ func TestSessionReconciler_DetectsFailedTask(t *testing.T) {
 	}
 }
 
-func TestSessionReconciler_MarksTaskFailedWhenPodDeleted(t *testing.T) {
+func TestSessionReconciler_RequeuesTaskWhenPodDeleted(t *testing.T) {
 	scheme := newTestScheme()
 	task := &kelosv1alpha1.Task{
 		ObjectMeta: metav1.ObjectMeta{
@@ -363,9 +363,19 @@ func TestSessionReconciler_MarksTaskFailedWhenPodDeleted(t *testing.T) {
 		},
 	}
 
+	spawner := &kelosv1alpha1.TaskSpawner{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "my-spawner",
+			Namespace: "default",
+		},
+		Spec: kelosv1alpha1.TaskSpawnerSpec{
+			SessionConfig: &kelosv1alpha1.SessionConfig{},
+		},
+	}
+
 	// Pod does NOT exist.
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).
-		WithObjects(task).
+		WithObjects(task, spawner).
 		WithStatusSubresource(task).
 		Build()
 
@@ -386,8 +396,205 @@ func TestSessionReconciler_MarksTaskFailedWhenPodDeleted(t *testing.T) {
 	if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: "orphaned-task", Namespace: "default"}, &updatedTask); err != nil {
 		t.Fatalf("Failed to get task: %v", err)
 	}
+	if updatedTask.Status.Phase != kelosv1alpha1.TaskPhaseQueued {
+		t.Errorf("Task phase: expected Queued, got %s", updatedTask.Status.Phase)
+	}
+	if updatedTask.Status.SessionRetryCount != 1 {
+		t.Errorf("SessionRetryCount: expected 1, got %d", updatedTask.Status.SessionRetryCount)
+	}
+	if updatedTask.Status.SessionPodName != "" {
+		t.Errorf("SessionPodName: expected empty, got %q", updatedTask.Status.SessionPodName)
+	}
+	if updatedTask.Status.LastSessionFailure != "session-my-spawner-0" {
+		t.Errorf("LastSessionFailure: expected 'session-my-spawner-0', got %q", updatedTask.Status.LastSessionFailure)
+	}
+}
+
+func TestSessionReconciler_FailsTaskWhenRetryLimitExhausted(t *testing.T) {
+	scheme := newTestScheme()
+	task := &kelosv1alpha1.Task{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "exhausted-task",
+			Namespace: "default",
+			Labels: map[string]string{
+				LabelExecutionMode:      string(kelosv1alpha1.ExecutionModePersistent),
+				"kelos.dev/taskspawner": "my-spawner",
+			},
+		},
+		Status: kelosv1alpha1.TaskStatus{
+			Phase:             kelosv1alpha1.TaskPhaseRunning,
+			SessionPodName:    "session-my-spawner-0",
+			SessionRetryCount: 3,
+		},
+	}
+
+	spawner := &kelosv1alpha1.TaskSpawner{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "my-spawner",
+			Namespace: "default",
+		},
+		Spec: kelosv1alpha1.TaskSpawnerSpec{
+			SessionConfig: &kelosv1alpha1.SessionConfig{},
+		},
+	}
+
+	// Pod does NOT exist.
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(task, spawner).
+		WithStatusSubresource(task).
+		Build()
+
+	r := &SessionReconciler{
+		Client:   fakeClient,
+		Scheme:   scheme,
+		Recorder: record.NewFakeRecorder(10),
+	}
+
+	_, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "exhausted-task", Namespace: "default"},
+	})
+	if err != nil {
+		t.Fatalf("Reconcile() returned error: %v", err)
+	}
+
+	var updatedTask kelosv1alpha1.Task
+	if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: "exhausted-task", Namespace: "default"}, &updatedTask); err != nil {
+		t.Fatalf("Failed to get task: %v", err)
+	}
 	if updatedTask.Status.Phase != kelosv1alpha1.TaskPhaseFailed {
 		t.Errorf("Task phase: expected Failed, got %s", updatedTask.Status.Phase)
+	}
+}
+
+func TestSessionReconciler_FailsTaskWhenRetryDisabled(t *testing.T) {
+	scheme := newTestScheme()
+	retryDisabled := false
+	task := &kelosv1alpha1.Task{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "no-retry-task",
+			Namespace: "default",
+			Labels: map[string]string{
+				LabelExecutionMode:      string(kelosv1alpha1.ExecutionModePersistent),
+				"kelos.dev/taskspawner": "my-spawner",
+			},
+		},
+		Status: kelosv1alpha1.TaskStatus{
+			Phase:          kelosv1alpha1.TaskPhaseRunning,
+			SessionPodName: "session-my-spawner-0",
+		},
+	}
+
+	spawner := &kelosv1alpha1.TaskSpawner{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "my-spawner",
+			Namespace: "default",
+		},
+		Spec: kelosv1alpha1.TaskSpawnerSpec{
+			SessionConfig: &kelosv1alpha1.SessionConfig{
+				RetryOnPodFailure: &retryDisabled,
+			},
+		},
+	}
+
+	// Pod does NOT exist.
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(task, spawner).
+		WithStatusSubresource(task).
+		Build()
+
+	r := &SessionReconciler{
+		Client:   fakeClient,
+		Scheme:   scheme,
+		Recorder: record.NewFakeRecorder(10),
+	}
+
+	_, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "no-retry-task", Namespace: "default"},
+	})
+	if err != nil {
+		t.Fatalf("Reconcile() returned error: %v", err)
+	}
+
+	var updatedTask kelosv1alpha1.Task
+	if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: "no-retry-task", Namespace: "default"}, &updatedTask); err != nil {
+		t.Fatalf("Failed to get task: %v", err)
+	}
+	if updatedTask.Status.Phase != kelosv1alpha1.TaskPhaseFailed {
+		t.Errorf("Task phase: expected Failed, got %s", updatedTask.Status.Phase)
+	}
+}
+
+func TestSessionReconciler_RequeuesTaskWhenPodFailed(t *testing.T) {
+	scheme := newTestScheme()
+	task := &kelosv1alpha1.Task{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "pod-failed-task",
+			Namespace: "default",
+			Labels: map[string]string{
+				LabelExecutionMode:      string(kelosv1alpha1.ExecutionModePersistent),
+				"kelos.dev/taskspawner": "my-spawner",
+			},
+		},
+		Status: kelosv1alpha1.TaskStatus{
+			Phase:          kelosv1alpha1.TaskPhaseRunning,
+			SessionPodName: "session-my-spawner-0",
+		},
+	}
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "session-my-spawner-0",
+			Namespace: "default",
+			Labels: map[string]string{
+				"kelos.dev/taskspawner": "my-spawner",
+				"kelos.dev/component":   SessionComponentLabel,
+			},
+			Annotations: map[string]string{
+				AnnotationAssignedTask: "pod-failed-task",
+			},
+		},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodFailed,
+		},
+	}
+
+	spawner := &kelosv1alpha1.TaskSpawner{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "my-spawner",
+			Namespace: "default",
+		},
+		Spec: kelosv1alpha1.TaskSpawnerSpec{
+			SessionConfig: &kelosv1alpha1.SessionConfig{},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(task, pod, spawner).
+		WithStatusSubresource(task).
+		Build()
+
+	r := &SessionReconciler{
+		Client:   fakeClient,
+		Scheme:   scheme,
+		Recorder: record.NewFakeRecorder(10),
+	}
+
+	_, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "pod-failed-task", Namespace: "default"},
+	})
+	if err != nil {
+		t.Fatalf("Reconcile() returned error: %v", err)
+	}
+
+	var updatedTask kelosv1alpha1.Task
+	if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: "pod-failed-task", Namespace: "default"}, &updatedTask); err != nil {
+		t.Fatalf("Failed to get task: %v", err)
+	}
+	if updatedTask.Status.Phase != kelosv1alpha1.TaskPhaseQueued {
+		t.Errorf("Task phase: expected Queued, got %s", updatedTask.Status.Phase)
+	}
+	if updatedTask.Status.SessionRetryCount != 1 {
+		t.Errorf("SessionRetryCount: expected 1, got %d", updatedTask.Status.SessionRetryCount)
 	}
 }
 

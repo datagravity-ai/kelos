@@ -84,6 +84,18 @@ type SessionConfig struct {
 	// WorkspaceReset controls how the workspace is cleaned between tasks.
 	// +optional
 	WorkspaceReset *WorkspaceResetConfig `json:"workspaceReset,omitempty"`
+
+	// RetryOnPodFailure controls whether tasks are re-queued when their
+	// session pod is deleted or crashes. Defaults to true.
+	// +optional
+	RetryOnPodFailure *bool `json:"retryOnPodFailure,omitempty"`
+
+	// MaxSessionRetries is the maximum number of times a task can be
+	// re-queued due to session pod failures before being marked as Failed.
+	// Defaults to 3. Only used when RetryOnPodFailure is true.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	MaxSessionRetries *int32 `json:"maxSessionRetries,omitempty"`
 }
 
 // When defines the conditions that trigger task spawning.
