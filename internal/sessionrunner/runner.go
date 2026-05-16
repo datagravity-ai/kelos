@@ -19,6 +19,7 @@ package sessionrunner
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -35,6 +36,10 @@ import (
 	"github.com/kelos-dev/kelos/internal/capture"
 	kelosversioned "github.com/kelos-dev/kelos/pkg/generated/clientset/versioned"
 )
+
+// errAgentReportedFailure is returned when the agent process exits cleanly
+// but reports is_error=true in its result JSON.
+var errAgentReportedFailure = errors.New("agent reported failure in result output")
 
 const (
 	annotationAssignedTask   = "kelos.dev/assigned-task"
@@ -53,6 +58,7 @@ type Config struct {
 	PodNamespace       string
 	AgentType          string
 	TaskSpawner        string
+	TokenSecret        string
 	IdleTimeout        time.Duration
 	MaxTasksPerSession int32
 	MaxSessionDuration time.Duration
@@ -65,6 +71,7 @@ func ConfigFromEnv() Config {
 		PodNamespace:       os.Getenv("KELOS_POD_NAMESPACE"),
 		AgentType:          os.Getenv("KELOS_AGENT_TYPE"),
 		TaskSpawner:        os.Getenv("KELOS_TASKSPAWNER"),
+		TokenSecret:        os.Getenv("KELOS_TOKEN_SECRET"),
 		IdleTimeout:        defaultIdleTimeout,
 		MaxSessionDuration: defaultMaxSessionDuration,
 	}
@@ -225,6 +232,11 @@ func (r *Runner) processTask(ctx context.Context, taskName string) error {
 		}
 	}()
 
+	// Refresh token from Secret before running the agent.
+	if err := r.refreshToken(ctx); err != nil {
+		fmt.Printf("Warning: failed to refresh token: %v\n", err)
+	}
+
 	// Reset workspace.
 	if err := r.workspace.Reset(ctx, task.Spec.Branch); err != nil {
 		return fmt.Errorf("workspace reset failed: %w", err)
@@ -237,7 +249,16 @@ func (r *Runner) processTask(ctx context.Context, taskName string) error {
 	outputs = capture.ParseOutputs(agentOutput)
 	results = capture.ResultsFromOutputs(outputs)
 
-	return agentErr
+	if agentErr != nil {
+		return agentErr
+	}
+
+	// Even if the process exited 0, check if the agent reported failure.
+	if capture.IsAgentError(r.config.AgentType) {
+		return errAgentReportedFailure
+	}
+
+	return nil
 }
 
 // tailBufferSize is the maximum bytes retained from agent stdout for output
@@ -265,6 +286,36 @@ func (r *Runner) runAgent(ctx context.Context, task *kelosv1alpha1.Task) (string
 
 	err := cmd.Run()
 	return tail.String(), err
+}
+
+// refreshToken reads the current GITHUB_TOKEN from the configured Secret and
+// updates the process environment. This ensures long-running sessions pick up
+// tokens that have been rotated by the controller.
+func (r *Runner) refreshToken(ctx context.Context) error {
+	if r.config.TokenSecret == "" {
+		return nil
+	}
+
+	secret, err := r.kubeClient.CoreV1().Secrets(r.config.PodNamespace).Get(ctx, r.config.TokenSecret, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("reading token secret %s: %w", r.config.TokenSecret, err)
+	}
+
+	token, ok := secret.Data["GITHUB_TOKEN"]
+	if !ok || len(token) == 0 {
+		return fmt.Errorf("secret %s missing GITHUB_TOKEN key", r.config.TokenSecret)
+	}
+
+	tokenStr := string(token)
+	os.Setenv("GITHUB_TOKEN", tokenStr)
+	// Update whichever GH CLI token env var is set.
+	if os.Getenv("GH_ENTERPRISE_TOKEN") != "" {
+		os.Setenv("GH_ENTERPRISE_TOKEN", tokenStr)
+	} else {
+		os.Setenv("GH_TOKEN", tokenStr)
+	}
+	fmt.Println("Refreshed GitHub token from secret")
+	return nil
 }
 
 // updateTaskStatus writes completion timestamps and any captured outputs to the

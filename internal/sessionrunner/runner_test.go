@@ -36,6 +36,7 @@ func TestConfigFromEnv_CustomValues(t *testing.T) {
 	t.Setenv("KELOS_POD_NAMESPACE", "test-ns")
 	t.Setenv("KELOS_AGENT_TYPE", "claude-code")
 	t.Setenv("KELOS_TASKSPAWNER", "my-spawner")
+	t.Setenv("KELOS_TOKEN_SECRET", "my-token-secret")
 	t.Setenv("KELOS_IDLE_TIMEOUT", "15m")
 	t.Setenv("KELOS_MAX_TASKS_PER_SESSION", "5")
 	t.Setenv("KELOS_MAX_SESSION_DURATION", "4h")
@@ -53,6 +54,9 @@ func TestConfigFromEnv_CustomValues(t *testing.T) {
 	}
 	if cfg.TaskSpawner != "my-spawner" {
 		t.Errorf("TaskSpawner: expected 'my-spawner', got %q", cfg.TaskSpawner)
+	}
+	if cfg.TokenSecret != "my-token-secret" {
+		t.Errorf("TokenSecret: expected 'my-token-secret', got %q", cfg.TokenSecret)
 	}
 	if cfg.IdleTimeout != 15*time.Minute {
 		t.Errorf("IdleTimeout: expected 15m, got %v", cfg.IdleTimeout)
