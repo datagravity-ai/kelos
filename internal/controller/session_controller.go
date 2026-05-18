@@ -318,6 +318,7 @@ func (r *SessionReconciler) requeueTask(ctx context.Context, task *kelosv1alpha1
 		sessionConfig := r.getSessionConfig(ctx, task)
 		if !r.shouldRetryOnPodFailure(sessionConfig, task) {
 			task.Status.Phase = kelosv1alpha1.TaskPhaseFailed
+			task.Status.SessionPodName = ""
 			task.Status.LastSessionFailure = failedPod
 			task.Status.Message = fmt.Sprintf("Session pod failure: %s (exhausted %d retries)", reason, task.Status.SessionRetryCount)
 			return r.Status().Update(ctx, task)
