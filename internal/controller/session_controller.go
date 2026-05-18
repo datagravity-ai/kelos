@@ -283,6 +283,9 @@ func (r *SessionReconciler) getSessionConfig(ctx context.Context, task *kelosv1a
 	}
 	var spawner kelosv1alpha1.TaskSpawner
 	if err := r.Get(ctx, client.ObjectKey{Namespace: task.Namespace, Name: spawnerName}, &spawner); err != nil {
+		if !apierrors.IsNotFound(err) {
+			log.FromContext(ctx).Error(err, "Failed to fetch TaskSpawner for session config", "spawner", spawnerName)
+		}
 		return nil
 	}
 	return spawner.Spec.SessionConfig
@@ -311,6 +314,13 @@ func (r *SessionReconciler) requeueTask(ctx context.Context, task *kelosv1alpha1
 	return ctrl.Result{}, retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		if getErr := r.Get(ctx, client.ObjectKeyFromObject(task), task); getErr != nil {
 			return getErr
+		}
+		sessionConfig := r.getSessionConfig(ctx, task)
+		if !r.shouldRetryOnPodFailure(sessionConfig, task) {
+			task.Status.Phase = kelosv1alpha1.TaskPhaseFailed
+			task.Status.LastSessionFailure = failedPod
+			task.Status.Message = fmt.Sprintf("Session pod failure: %s (exhausted %d retries)", reason, task.Status.SessionRetryCount)
+			return r.Status().Update(ctx, task)
 		}
 		task.Status.Phase = kelosv1alpha1.TaskPhaseQueued
 		task.Status.SessionPodName = ""
