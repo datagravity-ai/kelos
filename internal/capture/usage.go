@@ -241,6 +241,34 @@ func parseResponse(agentType string, lines [][]byte) string {
 	return result
 }
 
+// IsAgentError checks the agent output file for a result line indicating
+// the agent reported an error (is_error=true). Supported agent types are those
+// that emit {"type":"result","is_error":...} JSON lines.
+func IsAgentError(agentType string) bool {
+	return isAgentErrorFromFile(agentType, agentOutputFile)
+}
+
+func isAgentErrorFromFile(agentType, path string) bool {
+	switch agentType {
+	case "claude-code", "codex", "cursor":
+	default:
+		return false
+	}
+
+	lines := readLines(path)
+	if len(lines) == 0 {
+		return false
+	}
+
+	last := findLastByType(lines, "result")
+	if last == nil {
+		return false
+	}
+
+	isError, _ := last["is_error"].(bool)
+	return isError
+}
+
 // toInt64 converts a json.Number to int64, returning 0 on failure.
 func toInt64(v any) int64 {
 	n, ok := v.(json.Number)

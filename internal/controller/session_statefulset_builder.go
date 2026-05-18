@@ -178,6 +178,13 @@ func (b *SessionStatefulSetBuilder) Build(input SessionStatefulSetInput) (*appsv
 				Name:  "GH_CONFIG_DIR",
 				Value: GHConfigDir,
 			})
+
+			// Expose the secret name so the session runner can refresh the
+			// token mid-session when the controller rotates it.
+			envVars = append(envVars, corev1.EnvVar{
+				Name:  "KELOS_TOKEN_SECRET",
+				Value: workspace.SecretRef.Name,
+			})
 		}
 	}
 

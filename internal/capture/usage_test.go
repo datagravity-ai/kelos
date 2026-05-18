@@ -234,6 +234,75 @@ func TestParseResponse(t *testing.T) {
 	}
 }
 
+func TestIsAgentError(t *testing.T) {
+	tests := []struct {
+		name      string
+		agentType string
+		content   string
+		noFile    bool
+		want      bool
+	}{
+		{
+			name:      "claude-code is_error true",
+			agentType: "claude-code",
+			content:   `{"type":"result","subtype":"error","is_error":true,"result":"something went wrong"}` + "\n",
+			want:      true,
+		},
+		{
+			name:      "claude-code is_error false",
+			agentType: "claude-code",
+			content:   `{"type":"result","subtype":"success","is_error":false,"result":"done"}` + "\n",
+			want:      false,
+		},
+		{
+			name:      "claude-code no is_error field",
+			agentType: "claude-code",
+			content:   `{"type":"result","total_cost_usd":0.05}` + "\n",
+			want:      false,
+		},
+		{
+			name:      "unsupported agent type",
+			agentType: "gemini",
+			content:   `{"type":"result","is_error":true}` + "\n",
+			want:      false,
+		},
+		{
+			name:      "empty file",
+			agentType: "claude-code",
+			content:   "",
+			want:      false,
+		},
+		{
+			name:      "uses last result line",
+			agentType: "claude-code",
+			content: `{"type":"result","is_error":false,"result":"first"}
+{"type":"result","is_error":true,"result":"second failed"}` + "\n",
+			want: true,
+		},
+		{
+			name:      "nonexistent file",
+			agentType: "claude-code",
+			noFile:    true,
+			want:      false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var path string
+			if tt.noFile {
+				path = "/nonexistent/path/agent-output.jsonl"
+			} else {
+				path = writeTempFile(t, tt.content)
+			}
+			got := isAgentErrorFromFile(tt.agentType, path)
+			if got != tt.want {
+				t.Errorf("isAgentErrorFromFile() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func assertMapEqual(t *testing.T, want, got map[string]string) {
 	t.Helper()
 	if len(want) == 0 && len(got) == 0 {
