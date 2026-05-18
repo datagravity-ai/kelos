@@ -2064,6 +2064,20 @@ func TestBuildWebhookTaskName(t *testing.T) {
 			wantPrefix: "triage-myrepo-issue-42-",
 		},
 		{
+			name:      "GitHub repo name is lowercased and sanitized",
+			spawner:   "worker",
+			eventType: "pull_request",
+			parsed: &ParsedWebhook{
+				ID: "5",
+				GitHub: &GitHubEventData{
+					Number:         5,
+					RepositoryName: "DataQuality_App",
+				},
+			},
+			deliveryID: "delivery-uppercase",
+			wantPrefix: "worker-dataquality-app-pr-5-",
+		},
+		{
 			name:      "GitHub issue_comment on PR uses pr kind",
 			spawner:   "responder",
 			eventType: "issue_comment",

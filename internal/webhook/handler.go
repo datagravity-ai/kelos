@@ -433,9 +433,9 @@ func (h *WebhookHandler) processWebhook(ctx context.Context, eventType string, p
 		// same PR/issue (e.g., label added while a babysitter task is running).
 		sourceBranch := webhookBranch(parsed)
 		if sourceBranch != "" {
-			if active, err := h.hasActiveTaskForBranch(ctx, spawner, sourceBranch); err != nil {
-				spawnerLog.Error(err, "Failed to check for active tasks")
-				continue
+			active, err := h.hasActiveTaskForBranch(ctx, spawner, sourceBranch)
+			if err != nil {
+				spawnerLog.Error(err, "Failed to check for active tasks, proceeding with creation")
 			} else if active {
 				spawnerLog.Info("Active task already exists for this branch, skipping", "branch", sourceBranch)
 				continue
@@ -726,7 +726,8 @@ func buildWebhookTaskName(spawnerName, eventType string, parsed *ParsedWebhook, 
 		if eventType == "issues" || (eventType == "issue_comment" && parsed.GitHub.PullRequestAPIURL == "") {
 			kind = "issue"
 		}
-		return fmt.Sprintf("%s-%s-%s-%d-%s", spawnerName, parsed.GitHub.RepositoryName, kind, parsed.GitHub.Number, shortHash)
+		safeRepo := strings.ToLower(strings.ReplaceAll(parsed.GitHub.RepositoryName, "_", "-"))
+		return fmt.Sprintf("%s-%s-%s-%d-%s", spawnerName, safeRepo, kind, parsed.GitHub.Number, shortHash)
 	}
 
 	if parsed.Linear != nil && parsed.ID != "" {
