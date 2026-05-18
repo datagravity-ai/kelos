@@ -264,6 +264,22 @@ func (r *SessionReconciler) checkTaskCompletion(ctx context.Context, task *kelos
 		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 
 	default:
+		// If the task already has a CompletionTime, the session runner finished
+		// but failed to set the pod annotation. Mark as failed since the
+		// completion protocol was not followed correctly.
+		if task.Status.CompletionTime != nil {
+			logger.Info("Task has completion time but no status annotation, marking as failed",
+				"task", task.Name, "pod", pod.Name)
+			if result, err := r.updateTaskPhase(ctx, task, kelosv1alpha1.TaskPhaseFailed,
+				"Session runner completed but did not set status annotation"); err != nil {
+				return result, err
+			}
+			if err := r.clearPodAssignment(ctx, task.Namespace, pod.Name); err != nil {
+				logger.Error(err, "Failed to clear pod assignment after inferred completion")
+			}
+			return ctrl.Result{}, nil
+		}
+
 		if pod.Status.Phase == corev1.PodFailed {
 			sessionConfig := r.getSessionConfig(ctx, task)
 			if r.shouldRetryOnPodFailure(sessionConfig, task) {
@@ -343,6 +359,10 @@ func (r *SessionReconciler) requeueTask(ctx context.Context, task *kelosv1alpha1
 		task.Status.SessionPodName = ""
 		task.Status.SessionRetryCount++
 		task.Status.LastSessionFailure = failedPod
+		task.Status.StartTime = nil
+		task.Status.CompletionTime = nil
+		task.Status.Outputs = nil
+		task.Status.Results = nil
 		task.Status.Message = fmt.Sprintf("Re-queued after session pod failure: %s (attempt %d)", reason, task.Status.SessionRetryCount)
 		return r.Status().Update(ctx, task)
 	})
