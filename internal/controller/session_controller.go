@@ -197,6 +197,7 @@ func (r *SessionReconciler) assignTask(ctx context.Context, task *kelosv1alpha1.
 		logger.V(1).Info("Task already assigned by another reconcile, rolling back pod annotation", "task", task.Name, "pod", availablePod.Name)
 		if rollbackErr := r.clearPodAssignment(ctx, task.Namespace, availablePod.Name); rollbackErr != nil {
 			logger.Error(rollbackErr, "Failed to roll back pod assignment after race", "pod", availablePod.Name)
+			return ctrl.Result{}, rollbackErr
 		}
 		return ctrl.Result{}, nil
 	}
