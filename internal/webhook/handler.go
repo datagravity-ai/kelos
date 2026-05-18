@@ -726,7 +726,7 @@ func buildWebhookTaskName(spawnerName, eventType string, parsed *ParsedWebhook, 
 		if eventType == "issues" || (eventType == "issue_comment" && parsed.GitHub.PullRequestAPIURL == "") {
 			kind = "issue"
 		}
-		safeRepo := strings.ToLower(strings.ReplaceAll(parsed.GitHub.RepositoryName, "_", "-"))
+		safeRepo := sanitizeK8sNameSegment(parsed.GitHub.RepositoryName)
 		return fmt.Sprintf("%s-%s-%s-%d-%s", spawnerName, safeRepo, kind, parsed.GitHub.Number, shortHash)
 	}
 
@@ -741,10 +741,11 @@ func buildWebhookTaskName(spawnerName, eventType string, parsed *ParsedWebhook, 
 
 	if parsed.Generic != nil && parsed.ID != "" {
 		sanitizedID := sanitizeK8sNameSegment(parsed.ID)
-		return fmt.Sprintf("%s-%s-%s-%s", spawnerName, eventType, sanitizedID, shortHash)
+		sanitizedSource := sanitizeK8sNameSegment(eventType)
+		return fmt.Sprintf("%s-%s-%s-%s", spawnerName, sanitizedSource, sanitizedID, shortHash)
 	}
 
-	sanitizedEventType := strings.ReplaceAll(eventType, "_", "-")
+	sanitizedEventType := sanitizeK8sNameSegment(eventType)
 	return fmt.Sprintf("%s-%s-%s", spawnerName, sanitizedEventType, shortHash)
 }
 
