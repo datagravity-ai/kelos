@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -616,9 +617,76 @@ func TestSessionReconciler_RequeuesTaskWhenPodFailed(t *testing.T) {
 	}
 }
 
-func TestSessionReconciler_FailsTaskWhenCompletionTimeSetButNoAnnotation(t *testing.T) {
+func TestSessionReconciler_WaitsGracePeriodBeforeFailingOnMissingAnnotation(t *testing.T) {
 	scheme := newTestScheme()
 	completionTime := metav1.Now()
+	task := &kelosv1alpha1.Task{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "recent-task",
+			Namespace: "default",
+			Labels: map[string]string{
+				LabelExecutionMode:      string(kelosv1alpha1.ExecutionModePersistent),
+				"kelos.dev/taskspawner": "my-spawner",
+			},
+		},
+		Status: kelosv1alpha1.TaskStatus{
+			Phase:          kelosv1alpha1.TaskPhasePending,
+			SessionPodName: "session-my-spawner-0",
+			CompletionTime: &completionTime,
+		},
+	}
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "session-my-spawner-0",
+			Namespace: "default",
+			Labels: map[string]string{
+				"kelos.dev/taskspawner": "my-spawner",
+				"kelos.dev/component":   SessionComponentLabel,
+			},
+			Annotations: map[string]string{
+				AnnotationAssignedTask: "recent-task",
+			},
+		},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodRunning,
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(task, pod).
+		WithStatusSubresource(task).
+		Build()
+
+	r := &SessionReconciler{
+		Client:   fakeClient,
+		Scheme:   scheme,
+		Recorder: record.NewFakeRecorder(10),
+	}
+
+	result, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "recent-task", Namespace: "default"},
+	})
+	if err != nil {
+		t.Fatalf("Reconcile() returned error: %v", err)
+	}
+	if result.RequeueAfter == 0 {
+		t.Error("Expected RequeueAfter > 0 during grace period")
+	}
+
+	// Task should still be Pending (not Failed).
+	var updatedTask kelosv1alpha1.Task
+	if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: "recent-task", Namespace: "default"}, &updatedTask); err != nil {
+		t.Fatalf("Failed to get task: %v", err)
+	}
+	if updatedTask.Status.Phase != kelosv1alpha1.TaskPhasePending {
+		t.Errorf("Task phase: expected Pending during grace period, got %s", updatedTask.Status.Phase)
+	}
+}
+
+func TestSessionReconciler_FailsTaskWhenCompletionTimeSetButNoAnnotation(t *testing.T) {
+	scheme := newTestScheme()
+	completionTime := metav1.NewTime(time.Now().Add(-30 * time.Second))
 	task := &kelosv1alpha1.Task{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "stuck-task",
@@ -682,6 +750,9 @@ func TestSessionReconciler_FailsTaskWhenCompletionTimeSetButNoAnnotation(t *test
 	}
 	if updatedTask.Status.Message != "Session runner completed but did not set status annotation" {
 		t.Errorf("Unexpected message: %s", updatedTask.Status.Message)
+	}
+	if updatedTask.Status.CompletionTime != nil {
+		t.Error("CompletionTime: expected nil after marking failed")
 	}
 
 	// Verify pod assignment was cleared.

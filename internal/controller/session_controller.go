@@ -265,14 +265,28 @@ func (r *SessionReconciler) checkTaskCompletion(ctx context.Context, task *kelos
 
 	default:
 		// If the task already has a CompletionTime, the session runner finished
-		// but failed to set the pod annotation. Mark as failed since the
-		// completion protocol was not followed correctly.
+		// but may not have written the pod annotation yet. Wait briefly to
+		// allow for the race between task status PATCH and pod annotation PATCH,
+		// then mark as failed if the annotation still hasn't appeared.
 		if task.Status.CompletionTime != nil {
-			logger.Info("Task has completion time but no status annotation, marking as failed",
+			grace := 15 * time.Second
+			if time.Since(task.Status.CompletionTime.Time) < grace {
+				logger.V(1).Info("Task has completion time but no status annotation, waiting for grace period",
+					"task", task.Name, "pod", pod.Name)
+				return ctrl.Result{RequeueAfter: grace}, nil
+			}
+			logger.Info("Task has completion time but no status annotation after grace period, marking as failed",
 				"task", task.Name, "pod", pod.Name)
-			if result, err := r.updateTaskPhase(ctx, task, kelosv1alpha1.TaskPhaseFailed,
-				"Session runner completed but did not set status annotation"); err != nil {
-				return result, err
+			if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+				if getErr := r.Get(ctx, client.ObjectKeyFromObject(task), task); getErr != nil {
+					return getErr
+				}
+				task.Status.Phase = kelosv1alpha1.TaskPhaseFailed
+				task.Status.Message = "Session runner completed but did not set status annotation"
+				task.Status.CompletionTime = nil
+				return r.Status().Update(ctx, task)
+			}); err != nil {
+				return ctrl.Result{}, err
 			}
 			if err := r.clearPodAssignment(ctx, task.Namespace, pod.Name); err != nil {
 				logger.Error(err, "Failed to clear pod assignment after inferred completion")
