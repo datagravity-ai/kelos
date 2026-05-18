@@ -311,7 +311,7 @@ func (r *Runner) refreshToken(ctx context.Context) error {
 	// Update whichever GH CLI token env var is set.
 	if os.Getenv("GH_ENTERPRISE_TOKEN") != "" {
 		os.Setenv("GH_ENTERPRISE_TOKEN", tokenStr)
-	} else {
+	} else if os.Getenv("GH_TOKEN") != "" {
 		os.Setenv("GH_TOKEN", tokenStr)
 	}
 	fmt.Println("Refreshed GitHub token from secret")

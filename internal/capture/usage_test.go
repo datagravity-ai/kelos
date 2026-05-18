@@ -239,6 +239,7 @@ func TestIsAgentError(t *testing.T) {
 		name      string
 		agentType string
 		content   string
+		noFile    bool
 		want      bool
 	}{
 		{
@@ -281,6 +282,7 @@ func TestIsAgentError(t *testing.T) {
 		{
 			name:      "nonexistent file",
 			agentType: "claude-code",
+			noFile:    true,
 			want:      false,
 		},
 	}
@@ -288,12 +290,10 @@ func TestIsAgentError(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var path string
-			if tt.content != "" {
-				path = writeTempFile(t, tt.content)
-			} else if tt.name == "nonexistent file" {
+			if tt.noFile {
 				path = "/nonexistent/path/agent-output.jsonl"
 			} else {
-				path = writeTempFile(t, "")
+				path = writeTempFile(t, tt.content)
 			}
 			got := isAgentErrorFromFile(tt.agentType, path)
 			if got != tt.want {

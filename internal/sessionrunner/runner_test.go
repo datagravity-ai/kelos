@@ -1,9 +1,14 @@
 package sessionrunner
 
 import (
+	"context"
 	"os"
 	"testing"
 	"time"
+
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/fake"
 
 	"github.com/kelos-dev/kelos/internal/capture"
 )
@@ -221,5 +226,142 @@ func TestTailWriter_PreservesOutputMarkers(t *testing.T) {
 	}
 	if outputs[0] != "branch: main" {
 		t.Errorf("output[0]: expected 'branch: main', got %q", outputs[0])
+	}
+}
+
+func TestRefreshToken(t *testing.T) {
+	tests := []struct {
+		name        string
+		secret      *corev1.Secret
+		tokenSecret string
+		envBefore   map[string]string
+		wantErr     bool
+		wantGH      string
+		wantGHE     string
+	}{
+		{
+			name:        "no token secret configured",
+			tokenSecret: "",
+			wantErr:     false,
+		},
+		{
+			name:        "happy path sets GH_TOKEN",
+			tokenSecret: "my-secret",
+			secret: &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "my-secret", Namespace: "test-ns"},
+				Data:       map[string][]byte{"GITHUB_TOKEN": []byte("new-token-123")},
+			},
+			envBefore: map[string]string{"GH_TOKEN": "old-token"},
+			wantGH:    "new-token-123",
+		},
+		{
+			name:        "enterprise token",
+			tokenSecret: "my-secret",
+			secret: &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "my-secret", Namespace: "test-ns"},
+				Data:       map[string][]byte{"GITHUB_TOKEN": []byte("ent-token-456")},
+			},
+			envBefore: map[string]string{"GH_ENTERPRISE_TOKEN": "old-ent"},
+			wantGHE:   "ent-token-456",
+		},
+		{
+			name:        "neither GH var set does not inject",
+			tokenSecret: "my-secret",
+			secret: &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "my-secret", Namespace: "test-ns"},
+				Data:       map[string][]byte{"GITHUB_TOKEN": []byte("some-token")},
+			},
+			envBefore: map[string]string{},
+			wantGH:    "",
+			wantGHE:   "",
+		},
+		{
+			name:        "missing secret returns error",
+			tokenSecret: "nonexistent",
+			wantErr:     true,
+		},
+		{
+			name:        "empty GITHUB_TOKEN key returns error",
+			tokenSecret: "my-secret",
+			secret: &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "my-secret", Namespace: "test-ns"},
+				Data:       map[string][]byte{"GITHUB_TOKEN": {}},
+			},
+			wantErr: true,
+		},
+		{
+			name:        "missing GITHUB_TOKEN key returns error",
+			tokenSecret: "my-secret",
+			secret: &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "my-secret", Namespace: "test-ns"},
+				Data:       map[string][]byte{"OTHER_KEY": []byte("value")},
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Clean env.
+			t.Setenv("GH_TOKEN", "")
+			t.Setenv("GH_ENTERPRISE_TOKEN", "")
+			t.Setenv("GITHUB_TOKEN", "")
+			os.Unsetenv("GH_TOKEN")
+			os.Unsetenv("GH_ENTERPRISE_TOKEN")
+			os.Unsetenv("GITHUB_TOKEN")
+
+			for k, v := range tt.envBefore {
+				t.Setenv(k, v)
+			}
+
+			var client *fake.Clientset
+			if tt.secret != nil {
+				client = fake.NewSimpleClientset(tt.secret)
+			} else {
+				client = fake.NewSimpleClientset()
+			}
+
+			r := &Runner{
+				config: Config{
+					PodNamespace: "test-ns",
+					TokenSecret:  tt.tokenSecret,
+				},
+				kubeClient: client,
+			}
+
+			err := r.refreshToken(context.Background())
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if tt.tokenSecret == "" {
+				return
+			}
+
+			if tt.wantGH != "" {
+				if got := os.Getenv("GH_TOKEN"); got != tt.wantGH {
+					t.Errorf("GH_TOKEN: expected %q, got %q", tt.wantGH, got)
+				}
+			}
+			if tt.wantGHE != "" {
+				if got := os.Getenv("GH_ENTERPRISE_TOKEN"); got != tt.wantGHE {
+					t.Errorf("GH_ENTERPRISE_TOKEN: expected %q, got %q", tt.wantGHE, got)
+				}
+			}
+			if tt.wantGH == "" && tt.wantGHE == "" && tt.tokenSecret != "" {
+				if got := os.Getenv("GH_TOKEN"); got != "" {
+					t.Errorf("GH_TOKEN should not be set, got %q", got)
+				}
+				if got := os.Getenv("GH_ENTERPRISE_TOKEN"); got != "" {
+					t.Errorf("GH_ENTERPRISE_TOKEN should not be set, got %q", got)
+				}
+			}
+		})
 	}
 }
