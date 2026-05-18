@@ -264,6 +264,36 @@ func (r *SessionReconciler) checkTaskCompletion(ctx context.Context, task *kelos
 		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 
 	default:
+		// If the task already has a CompletionTime, the session runner finished
+		// but may not have written the pod annotation yet. Wait briefly to
+		// allow for the race between task status PATCH and pod annotation PATCH,
+		// then mark as failed if the annotation still hasn't appeared.
+		if task.Status.CompletionTime != nil {
+			grace := 15 * time.Second
+			if time.Since(task.Status.CompletionTime.Time) < grace {
+				logger.V(1).Info("Task has completion time but no status annotation, waiting for grace period",
+					"task", task.Name, "pod", pod.Name)
+				return ctrl.Result{RequeueAfter: grace}, nil
+			}
+			logger.Info("Task has completion time but no status annotation after grace period, marking as failed",
+				"task", task.Name, "pod", pod.Name)
+			if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+				if getErr := r.Get(ctx, client.ObjectKeyFromObject(task), task); getErr != nil {
+					return getErr
+				}
+				task.Status.Phase = kelosv1alpha1.TaskPhaseFailed
+				task.Status.Message = "Session runner completed but did not set status annotation"
+				task.Status.CompletionTime = nil
+				return r.Status().Update(ctx, task)
+			}); err != nil {
+				return ctrl.Result{}, err
+			}
+			if err := r.clearPodAssignment(ctx, task.Namespace, pod.Name); err != nil {
+				logger.Error(err, "Failed to clear pod assignment after inferred completion")
+			}
+			return ctrl.Result{}, nil
+		}
+
 		if pod.Status.Phase == corev1.PodFailed {
 			sessionConfig := r.getSessionConfig(ctx, task)
 			if r.shouldRetryOnPodFailure(sessionConfig, task) {
@@ -343,6 +373,10 @@ func (r *SessionReconciler) requeueTask(ctx context.Context, task *kelosv1alpha1
 		task.Status.SessionPodName = ""
 		task.Status.SessionRetryCount++
 		task.Status.LastSessionFailure = failedPod
+		task.Status.StartTime = nil
+		task.Status.CompletionTime = nil
+		task.Status.Outputs = nil
+		task.Status.Results = nil
 		task.Status.Message = fmt.Sprintf("Re-queued after session pod failure: %s (attempt %d)", reason, task.Status.SessionRetryCount)
 		return r.Status().Update(ctx, task)
 	})
