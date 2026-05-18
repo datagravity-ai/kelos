@@ -236,6 +236,16 @@ type TaskStatus struct {
 	// TaskSpawner.
 	// +optional
 	SessionPodName string `json:"sessionPodName,omitempty"`
+
+	// SessionRetryCount tracks how many times this Task has been re-queued
+	// due to session pod failures.
+	// +optional
+	SessionRetryCount int32 `json:"sessionRetryCount,omitempty"`
+
+	// LastSessionFailure records the name of the last session pod that failed
+	// while processing this task.
+	// +optional
+	LastSessionFailure string `json:"lastSessionFailure,omitempty"`
 }
 
 // +genclient

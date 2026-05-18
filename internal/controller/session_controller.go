@@ -66,6 +66,7 @@ type SessionReconciler struct {
 
 // +kubebuilder:rbac:groups=kelos.dev,resources=tasks,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=kelos.dev,resources=tasks/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=kelos.dev,resources=taskspawners,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;update;patch
 
 // Reconcile handles session-related reconciliation for persistent-mode Tasks.
@@ -217,9 +218,18 @@ func (r *SessionReconciler) checkTaskCompletion(ctx context.Context, task *kelos
 		Name:      task.Status.SessionPodName,
 	}, &pod); err != nil {
 		if apierrors.IsNotFound(err) {
-			// Pod is gone, mark task as failed.
-			logger.Info("Session pod not found, marking task as failed", "task", task.Name, "pod", task.Status.SessionPodName)
-			return r.updateTaskPhase(ctx, task, kelosv1alpha1.TaskPhaseFailed, "Session pod was deleted")
+			sessionConfig := r.getSessionConfig(ctx, task)
+			if r.shouldRetryOnPodFailure(sessionConfig, task) {
+				logger.Info("Session pod not found, re-queuing task",
+					"task", task.Name, "pod", task.Status.SessionPodName, "retryCount", task.Status.SessionRetryCount)
+				r.Recorder.Eventf(task, corev1.EventTypeWarning, "SessionPodLost",
+					"Session pod %s was deleted, re-queuing (attempt %d)", task.Status.SessionPodName, task.Status.SessionRetryCount+1)
+				return r.requeueTask(ctx, task, "session pod was deleted")
+			}
+			logger.Info("Session pod not found, marking task as failed (retry limit reached)",
+				"task", task.Name, "pod", task.Status.SessionPodName)
+			return r.updateTaskPhase(ctx, task, kelosv1alpha1.TaskPhaseFailed,
+				fmt.Sprintf("Session pod was deleted (exhausted %d retries)", task.Status.SessionRetryCount))
 		}
 		return ctrl.Result{}, err
 	}
@@ -255,9 +265,21 @@ func (r *SessionReconciler) checkTaskCompletion(ctx context.Context, task *kelos
 
 	default:
 		if pod.Status.Phase == corev1.PodFailed {
-			logger.Info("Session pod failed without reporting status, marking task failed",
+			sessionConfig := r.getSessionConfig(ctx, task)
+			if r.shouldRetryOnPodFailure(sessionConfig, task) {
+				logger.Info("Session pod failed, re-queuing task",
+					"task", task.Name, "pod", pod.Name, "retryCount", task.Status.SessionRetryCount)
+				r.Recorder.Eventf(task, corev1.EventTypeWarning, "SessionPodFailed",
+					"Session pod %s failed, re-queuing (attempt %d)", pod.Name, task.Status.SessionRetryCount+1)
+				if clearErr := r.clearPodAssignment(ctx, task.Namespace, pod.Name); clearErr != nil {
+					logger.Error(clearErr, "Failed to clear pod assignment before requeue")
+				}
+				return r.requeueTask(ctx, task, "session pod failed")
+			}
+			logger.Info("Session pod failed, marking task as failed (retry limit reached)",
 				"task", task.Name, "pod", pod.Name)
-			if result, err := r.updateTaskPhase(ctx, task, kelosv1alpha1.TaskPhaseFailed, "Session pod failed"); err != nil {
+			if result, err := r.updateTaskPhase(ctx, task, kelosv1alpha1.TaskPhaseFailed,
+				fmt.Sprintf("Session pod failed (exhausted %d retries)", task.Status.SessionRetryCount)); err != nil {
 				return result, err
 			}
 			if err := r.clearPodAssignment(ctx, task.Namespace, pod.Name); err != nil {
@@ -267,6 +289,63 @@ func (r *SessionReconciler) checkTaskCompletion(ctx context.Context, task *kelos
 		}
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
+}
+
+// getSessionConfig fetches the SessionConfig for a task's owning TaskSpawner.
+func (r *SessionReconciler) getSessionConfig(ctx context.Context, task *kelosv1alpha1.Task) *kelosv1alpha1.SessionConfig {
+	spawnerName := task.Labels["kelos.dev/taskspawner"]
+	if spawnerName == "" {
+		return nil
+	}
+	var spawner kelosv1alpha1.TaskSpawner
+	if err := r.Get(ctx, client.ObjectKey{Namespace: task.Namespace, Name: spawnerName}, &spawner); err != nil {
+		if !apierrors.IsNotFound(err) {
+			log.FromContext(ctx).Error(err, "Failed to fetch TaskSpawner for session config", "spawner", spawnerName)
+		}
+		return nil
+	}
+	return spawner.Spec.SessionConfig
+}
+
+// shouldRetryOnPodFailure determines whether a task should be re-queued based
+// on the SessionConfig and current retry count.
+func (r *SessionReconciler) shouldRetryOnPodFailure(config *kelosv1alpha1.SessionConfig, task *kelosv1alpha1.Task) bool {
+	if config == nil {
+		return task.Status.SessionRetryCount < 3
+	}
+	if config.RetryOnPodFailure != nil && !*config.RetryOnPodFailure {
+		return false
+	}
+	maxRetries := int32(3)
+	if config.MaxSessionRetries != nil {
+		maxRetries = *config.MaxSessionRetries
+	}
+	return task.Status.SessionRetryCount < maxRetries
+}
+
+// requeueTask resets a task back to Queued phase, clearing its pod assignment
+// and incrementing the retry counter.
+func (r *SessionReconciler) requeueTask(ctx context.Context, task *kelosv1alpha1.Task, reason string) (ctrl.Result, error) {
+	failedPod := task.Status.SessionPodName
+	return ctrl.Result{}, retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if getErr := r.Get(ctx, client.ObjectKeyFromObject(task), task); getErr != nil {
+			return getErr
+		}
+		sessionConfig := r.getSessionConfig(ctx, task)
+		if !r.shouldRetryOnPodFailure(sessionConfig, task) {
+			task.Status.Phase = kelosv1alpha1.TaskPhaseFailed
+			task.Status.SessionPodName = ""
+			task.Status.LastSessionFailure = failedPod
+			task.Status.Message = fmt.Sprintf("Session pod failure: %s (exhausted %d retries)", reason, task.Status.SessionRetryCount)
+			return r.Status().Update(ctx, task)
+		}
+		task.Status.Phase = kelosv1alpha1.TaskPhaseQueued
+		task.Status.SessionPodName = ""
+		task.Status.SessionRetryCount++
+		task.Status.LastSessionFailure = failedPod
+		task.Status.Message = fmt.Sprintf("Re-queued after session pod failure: %s (attempt %d)", reason, task.Status.SessionRetryCount)
+		return r.Status().Update(ctx, task)
+	})
 }
 
 // updateTaskPhase updates a Task's phase and message.
