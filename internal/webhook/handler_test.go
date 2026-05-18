@@ -2101,7 +2101,7 @@ func TestBuildWebhookTaskName(t *testing.T) {
 				Linear: &LinearEventData{Type: "Issue", ID: "LIN-99"},
 			},
 			deliveryID: "delivery-4",
-			wantPrefix: "linear-worker-issue-LIN-99-",
+			wantPrefix: "linear-worker-issue-lin-99-",
 		},
 		{
 			name:      "fallback uses event type",

@@ -735,16 +735,31 @@ func buildWebhookTaskName(spawnerName, eventType string, parsed *ParsedWebhook, 
 		if linearType == "" {
 			linearType = "linear"
 		}
-		return fmt.Sprintf("%s-%s-%s-%s", spawnerName, linearType, parsed.ID, shortHash)
+		safeID := sanitizeK8sNameSegment(parsed.ID)
+		return fmt.Sprintf("%s-%s-%s-%s", spawnerName, linearType, safeID, shortHash)
 	}
 
 	if parsed.Generic != nil && parsed.ID != "" {
-		sanitizedID := strings.ReplaceAll(parsed.ID, "_", "-")
+		sanitizedID := sanitizeK8sNameSegment(parsed.ID)
 		return fmt.Sprintf("%s-%s-%s-%s", spawnerName, eventType, sanitizedID, shortHash)
 	}
 
 	sanitizedEventType := strings.ReplaceAll(eventType, "_", "-")
 	return fmt.Sprintf("%s-%s-%s", spawnerName, sanitizedEventType, shortHash)
+}
+
+// sanitizeK8sNameSegment lowercases a string and strips characters that are
+// invalid in Kubernetes resource names (must match [a-z0-9-]).
+func sanitizeK8sNameSegment(s string) string {
+	s = strings.ToLower(s)
+	s = strings.ReplaceAll(s, "_", "-")
+	var b strings.Builder
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // webhookSourceKind determines the reporting source kind from a GitHub webhook event.
