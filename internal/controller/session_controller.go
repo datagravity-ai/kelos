@@ -171,9 +171,15 @@ func (r *SessionReconciler) assignTask(ctx context.Context, task *kelosv1alpha1.
 
 	// Update Task status. If this fails, roll back the pod annotation to avoid
 	// leaving the pod marked as assigned while the task remains Queued.
+	var alreadyAssigned bool
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		if getErr := r.Get(ctx, client.ObjectKeyFromObject(task), task); getErr != nil {
 			return getErr
+		}
+		// Another reconcile already assigned this task; bail out.
+		if task.Status.Phase != kelosv1alpha1.TaskPhaseQueued {
+			alreadyAssigned = true
+			return nil
 		}
 		task.Status.SessionPodName = availablePod.Name
 		task.Status.Phase = kelosv1alpha1.TaskPhasePending
@@ -184,6 +190,16 @@ func (r *SessionReconciler) assignTask(ctx context.Context, task *kelosv1alpha1.
 			logger.Error(rollbackErr, "Failed to roll back pod assignment after task status update failure", "pod", availablePod.Name)
 		}
 		return ctrl.Result{}, err
+	}
+
+	// Another reconcile won the race and assigned this task first; roll back our pod annotation.
+	if alreadyAssigned {
+		logger.V(1).Info("Task already assigned by another reconcile, rolling back pod annotation", "task", task.Name, "pod", availablePod.Name)
+		if rollbackErr := r.clearPodAssignment(ctx, task.Namespace, availablePod.Name); rollbackErr != nil {
+			logger.Error(rollbackErr, "Failed to roll back pod assignment after race", "pod", availablePod.Name)
+			return ctrl.Result{}, rollbackErr
+		}
+		return ctrl.Result{}, nil
 	}
 
 	r.Recorder.Eventf(task, corev1.EventTypeNormal, "SessionAssigned", "Task assigned to session pod %s", availablePod.Name)

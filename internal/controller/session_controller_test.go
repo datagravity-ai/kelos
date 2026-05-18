@@ -444,6 +444,83 @@ func TestSessionReconciler_SkipsNonRunningPods(t *testing.T) {
 	}
 }
 
+func TestSessionReconciler_RaceConditionRollsBackPodAnnotation(t *testing.T) {
+	scheme := newTestScheme()
+	// Task is already assigned (Pending) by a prior reconcile.
+	task := &kelosv1alpha1.Task{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "already-assigned-task",
+			Namespace: "default",
+			Labels: map[string]string{
+				LabelExecutionMode:      string(kelosv1alpha1.ExecutionModePersistent),
+				"kelos.dev/taskspawner": "my-spawner",
+			},
+		},
+		Status: kelosv1alpha1.TaskStatus{
+			Phase:          kelosv1alpha1.TaskPhasePending,
+			SessionPodName: "session-my-spawner-0",
+		},
+	}
+
+	// A second pod that the losing reconcile would pick.
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "session-my-spawner-1",
+			Namespace: "default",
+			Labels: map[string]string{
+				"kelos.dev/taskspawner": "my-spawner",
+				"kelos.dev/component":   SessionComponentLabel,
+			},
+		},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodRunning,
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(task, pod).
+		WithStatusSubresource(task).
+		Build()
+
+	r := &SessionReconciler{
+		Client:   fakeClient,
+		Scheme:   scheme,
+		Recorder: record.NewFakeRecorder(10),
+	}
+
+	// Simulate the losing reconcile calling assignTask on a task that's already
+	// been moved past Queued. We call assignTask directly with a stale copy.
+	staleTask := task.DeepCopy()
+	staleTask.Status.Phase = kelosv1alpha1.TaskPhaseQueued
+	staleTask.Status.SessionPodName = ""
+
+	_, err := r.assignTask(context.Background(), staleTask)
+	if err != nil {
+		t.Fatalf("assignTask() returned error: %v", err)
+	}
+
+	// The pod annotation should have been rolled back (cleared).
+	var updatedPod corev1.Pod
+	if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: pod.Name, Namespace: "default"}, &updatedPod); err != nil {
+		t.Fatalf("Failed to get pod: %v", err)
+	}
+	if _, exists := updatedPod.Annotations[AnnotationAssignedTask]; exists {
+		t.Error("Expected pod assignment annotation to be rolled back after race condition")
+	}
+
+	// The task should remain in Pending with its original assignment.
+	var updatedTask kelosv1alpha1.Task
+	if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: "already-assigned-task", Namespace: "default"}, &updatedTask); err != nil {
+		t.Fatalf("Failed to get task: %v", err)
+	}
+	if updatedTask.Status.Phase != kelosv1alpha1.TaskPhasePending {
+		t.Errorf("Task phase: expected Pending (unchanged), got %s", updatedTask.Status.Phase)
+	}
+	if updatedTask.Status.SessionPodName != "session-my-spawner-0" {
+		t.Errorf("Task sessionPodName: expected 'session-my-spawner-0' (unchanged), got %q", updatedTask.Status.SessionPodName)
+	}
+}
+
 func TestFindOldestQueuedTask(t *testing.T) {
 	scheme := newTestScheme()
 	now := metav1.Now()
