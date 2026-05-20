@@ -33,6 +33,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"sigs.k8s.io/yaml"
 
 	kelosv1alpha1 "github.com/kelos-dev/kelos/api/v1alpha1"
 	"github.com/kelos-dev/kelos/internal/capture"
@@ -257,17 +258,18 @@ func (r *Runner) processTask(ctx context.Context, taskName string) error {
 	defer refreshCancel()
 	r.startTokenRefreshLoop(refreshCtx)
 
+	// Reset workspace first while the pre-existing credential helper in
+	// .git/config is still intact for fetch/checkout operations.
+	if err := r.workspace.Reset(ctx, task.Spec.Branch); err != nil {
+		return fmt.Errorf("workspace reset failed: %w", err)
+	}
+
 	// Configure git to read credentials from the token file so that
 	// refreshed tokens are visible to the running agent subprocess.
 	if r.config.TokenSecret != "" {
 		if err := configureFileCredentialHelper(ctx); err != nil {
 			fmt.Printf("Warning: failed to configure file-based credential helper: %v\n", err)
 		}
-	}
-
-	// Reset workspace.
-	if err := r.workspace.Reset(ctx, task.Spec.Branch); err != nil {
-		return fmt.Errorf("workspace reset failed: %w", err)
 	}
 
 	// Invoke the agent entrypoint and capture outputs.
@@ -385,9 +387,14 @@ func (r *Runner) refreshToken(ctx context.Context) error {
 	return nil
 }
 
-// writeGHHostsFile writes the gh CLI hosts.yml so that `gh` reads the
-// refreshed token on each invocation rather than relying on env vars
-// inherited at process start.
+// ghHostEntry represents a single host entry in the gh CLI hosts.yml.
+type ghHostEntry struct {
+	OAuthToken string `json:"oauth_token"`
+	User       string `json:"user"`
+}
+
+// writeGHHostsFile merges the refreshed token into the gh CLI hosts.yml,
+// preserving any other host entries already present.
 func (r *Runner) writeGHHostsFile(token string) error {
 	ghConfigDir := os.Getenv("GH_CONFIG_DIR")
 	if ghConfigDir == "" {
@@ -399,13 +406,25 @@ func (r *Runner) writeGHHostsFile(token string) error {
 		host = "github.com"
 	}
 
-	hostsContent := fmt.Sprintf("%s:\n    oauth_token: %s\n    user: x-access-token\n", host, token)
 	hostsPath := filepath.Join(ghConfigDir, "hosts.yml")
 
 	if err := os.MkdirAll(ghConfigDir, 0700); err != nil {
 		return err
 	}
-	return os.WriteFile(hostsPath, []byte(hostsContent), 0600)
+
+	// Read existing hosts file if present.
+	hosts := make(map[string]ghHostEntry)
+	if data, err := os.ReadFile(hostsPath); err == nil {
+		_ = yaml.Unmarshal(data, &hosts)
+	}
+
+	hosts[host] = ghHostEntry{OAuthToken: token, User: "x-access-token"}
+
+	out, err := yaml.Marshal(hosts)
+	if err != nil {
+		return fmt.Errorf("marshaling hosts.yml: %w", err)
+	}
+	return os.WriteFile(hostsPath, out, 0600)
 }
 
 // configureFileCredentialHelper replaces the git credential helper in the

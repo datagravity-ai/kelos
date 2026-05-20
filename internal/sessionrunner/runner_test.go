@@ -443,6 +443,66 @@ func TestWriteGHHostsFile_Enterprise(t *testing.T) {
 	}
 }
 
+func TestWriteGHHostsFile_MergesExistingEntries(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("GH_CONFIG_DIR", tmpDir)
+	t.Setenv("GH_HOST", "github.com")
+
+	// Pre-populate hosts.yml with an enterprise entry.
+	existing := "github.enterprise.com:\n  oauth_token: enterprise-token\n  user: x-access-token\n"
+	if err := os.WriteFile(tmpDir+"/hosts.yml", []byte(existing), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &Runner{}
+	err := r.writeGHHostsFile("new-public-token")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	hostsContent, err := os.ReadFile(tmpDir + "/hosts.yml")
+	if err != nil {
+		t.Fatalf("Failed to read hosts.yml: %v", err)
+	}
+	content := string(hostsContent)
+	if !strings.Contains(content, "github.enterprise.com") {
+		t.Errorf("hosts.yml should preserve enterprise host, got: %s", content)
+	}
+	if !strings.Contains(content, "enterprise-token") {
+		t.Errorf("hosts.yml should preserve enterprise token, got: %s", content)
+	}
+	if !strings.Contains(content, "github.com") {
+		t.Errorf("hosts.yml should contain github.com, got: %s", content)
+	}
+	if !strings.Contains(content, "new-public-token") {
+		t.Errorf("hosts.yml should contain new token, got: %s", content)
+	}
+}
+
+func TestWriteGHHostsFile_HostWithPort(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("GH_CONFIG_DIR", tmpDir)
+	t.Setenv("GH_HOST", "github.corp.com:8080")
+
+	r := &Runner{}
+	err := r.writeGHHostsFile("port-token")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	hostsContent, err := os.ReadFile(tmpDir + "/hosts.yml")
+	if err != nil {
+		t.Fatalf("Failed to read hosts.yml: %v", err)
+	}
+	content := string(hostsContent)
+	if !strings.Contains(content, "github.corp.com:8080") {
+		t.Errorf("hosts.yml should contain host with port, got: %s", content)
+	}
+	if !strings.Contains(content, "port-token") {
+		t.Errorf("hosts.yml should contain token, got: %s", content)
+	}
+}
+
 func TestRefreshToken(t *testing.T) {
 	tmpDir := t.TempDir()
 	origTokenFilePath := tokenFilePath
