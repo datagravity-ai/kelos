@@ -616,11 +616,13 @@ func (r *TaskSpawnerReconciler) reconcileSessionStatefulSet(ctx context.Context,
 		logger.Info("Created session StatefulSet", "statefulset", stsName, "replicas", *desiredSts.Spec.Replicas)
 		r.recordEvent(ts, corev1.EventTypeNormal, "StatefulSetCreated", "Created session StatefulSet %s with %d replicas", stsName, *desiredSts.Spec.Replicas)
 	} else {
-		// Update replicas if changed. Skip when autoscaling is enabled —
-		// the HPA manages replicas and we must not overwrite its decisions.
+		// Update replicas if changed. Skip when autoscaling is enabled and
+		// not suspended — the HPA manages replicas and we must not overwrite
+		// its decisions. Always write replicas during suspension (scale to 0).
 		needsUpdate := false
-		autoscalingEnabled := ts.Spec.SessionConfig != nil && ts.Spec.SessionConfig.Autoscaling != nil
-		if !autoscalingEnabled {
+		autoscalingManagesReplicas := ts.Spec.SessionConfig != nil &&
+			ts.Spec.SessionConfig.Autoscaling != nil && !isSuspended
+		if !autoscalingManagesReplicas {
 			if existingSts.Spec.Replicas == nil || *existingSts.Spec.Replicas != *desiredSts.Spec.Replicas {
 				existingSts.Spec.Replicas = desiredSts.Spec.Replicas
 				needsUpdate = true
@@ -658,12 +660,19 @@ func (r *TaskSpawnerReconciler) reconcileSessionStatefulSet(ctx context.Context,
 	}
 
 	// Manage HPA when autoscaling is configured.
-	if ts.Spec.SessionConfig != nil && ts.Spec.SessionConfig.Autoscaling != nil && !isSuspended {
+	autoscalingEnabled := ts.Spec.SessionConfig != nil && ts.Spec.SessionConfig.Autoscaling != nil
+	if autoscalingEnabled && !isSuspended {
 		if err := r.reconcileSessionHPA(ctx, ts, stsName); err != nil {
 			logger.Error(err, "Unable to reconcile session HPA")
 			return ctrl.Result{}, err
 		}
-	} else if ts.Spec.SessionConfig != nil && ts.Spec.SessionConfig.Autoscaling == nil {
+	} else if autoscalingEnabled && isSuspended {
+		// Delete HPA during suspension so it doesn't enforce minReplicas
+		// while the StatefulSet is scaled to 0.
+		if err := r.deleteSessionHPA(ctx, ts); err != nil {
+			logger.Error(err, "Unable to delete session HPA during suspension")
+		}
+	} else if !autoscalingEnabled {
 		// Clean up HPA if autoscaling was removed.
 		if err := r.deleteSessionHPA(ctx, ts); err != nil {
 			logger.Error(err, "Unable to delete session HPA")
@@ -793,29 +802,17 @@ func (r *TaskSpawnerReconciler) reconcileSessionHPA(ctx context.Context, ts *kel
 		return err
 	}
 
-	// Update HPA if spec changed.
-	needsUpdate := false
-	if existingHPA.Spec.MinReplicas == nil || *existingHPA.Spec.MinReplicas != minReplicas {
-		existingHPA.Spec.MinReplicas = &minReplicas
-		needsUpdate = true
+	// Always overwrite the full spec from desired. The HPA is fully
+	// controller-owned so we reconcile all fields (MinReplicas, MaxReplicas,
+	// Metrics, Behavior) to avoid drift.
+	existingHPA.Spec.MinReplicas = desiredHPA.Spec.MinReplicas
+	existingHPA.Spec.MaxReplicas = desiredHPA.Spec.MaxReplicas
+	existingHPA.Spec.Metrics = desiredHPA.Spec.Metrics
+	existingHPA.Spec.Behavior = desiredHPA.Spec.Behavior
+	if err := r.Update(ctx, &existingHPA); err != nil {
+		return err
 	}
-	if existingHPA.Spec.MaxReplicas != autoscaling.MaxReplicas {
-		existingHPA.Spec.MaxReplicas = autoscaling.MaxReplicas
-		needsUpdate = true
-	}
-	if existingHPA.Spec.Behavior == nil ||
-		existingHPA.Spec.Behavior.ScaleDown == nil ||
-		existingHPA.Spec.Behavior.ScaleDown.StabilizationWindowSeconds == nil ||
-		*existingHPA.Spec.Behavior.ScaleDown.StabilizationWindowSeconds != stabilizationSeconds {
-		existingHPA.Spec.Behavior = desiredHPA.Spec.Behavior
-		needsUpdate = true
-	}
-	if needsUpdate {
-		if err := r.Update(ctx, &existingHPA); err != nil {
-			return err
-		}
-		logger.Info("Updated session HPA", "hpa", hpaName)
-	}
+	logger.V(1).Info("Reconciled session HPA", "hpa", hpaName)
 
 	return nil
 }
