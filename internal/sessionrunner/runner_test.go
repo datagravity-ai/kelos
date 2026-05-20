@@ -234,6 +234,46 @@ func TestTailWriter_PreservesOutputMarkers(t *testing.T) {
 	}
 }
 
+func TestRefreshToken_TrimsWhitespace(t *testing.T) {
+	tmpDir := t.TempDir()
+	origTokenFilePath := tokenFilePath
+	tokenFilePath = tmpDir + "/token"
+	t.Cleanup(func() { tokenFilePath = origTokenFilePath })
+
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-secret", Namespace: "test-ns"},
+		Data:       map[string][]byte{"GITHUB_TOKEN": []byte("  token-with-whitespace\n")},
+	}
+	client := fake.NewSimpleClientset(secret)
+
+	t.Setenv("GH_TOKEN", "old")
+	t.Setenv("GH_CONFIG_DIR", "")
+
+	r := &Runner{
+		config: Config{
+			PodNamespace: "test-ns",
+			TokenSecret:  "my-secret",
+		},
+		kubeClient: client,
+	}
+
+	err := r.refreshToken(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, err := os.ReadFile(tokenFilePath)
+	if err != nil {
+		t.Fatalf("Failed to read token file: %v", err)
+	}
+	if string(got) != "token-with-whitespace" {
+		t.Errorf("Token file should be trimmed, got %q", string(got))
+	}
+	if os.Getenv("GITHUB_TOKEN") != "token-with-whitespace" {
+		t.Errorf("GITHUB_TOKEN env should be trimmed, got %q", os.Getenv("GITHUB_TOKEN"))
+	}
+}
+
 func TestFilterTokenEnvVars(t *testing.T) {
 	env := []string{
 		"HOME=/home/user",

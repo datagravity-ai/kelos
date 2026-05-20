@@ -250,6 +250,7 @@ func (r *Runner) processTask(ctx context.Context, taskName string) error {
 	if err := r.refreshToken(ctx); err != nil {
 		fmt.Printf("Warning: failed to refresh token: %v\n", err)
 	}
+	defer os.Remove(tokenFilePath)
 
 	// Start periodic token refresh for long-running tasks.
 	refreshCtx, refreshCancel := context.WithCancel(ctx)
@@ -298,9 +299,14 @@ const tailBufferSize = 256 * 1024
 func (r *Runner) runAgent(ctx context.Context, task *kelosv1alpha1.Task) (string, error) {
 	entrypoint := "/kelos_entrypoint.sh"
 
-	// Build env for the subprocess, stripping token env vars so that `gh`
-	// falls back to reading from hosts.yml (which is periodically refreshed).
-	env := filterTokenEnvVars(os.Environ())
+	// Build env for the subprocess. Strip token env vars only when
+	// GH_CONFIG_DIR is set, so `gh` falls back to hosts.yml (which is
+	// periodically refreshed). Without GH_CONFIG_DIR there is no hosts.yml
+	// to fall back to, so keep env vars to avoid a regression.
+	env := os.Environ()
+	if os.Getenv("GH_CONFIG_DIR") != "" {
+		env = filterTokenEnvVars(env)
+	}
 	if task.Spec.Branch != "" {
 		env = append(env, fmt.Sprintf("KELOS_BRANCH=%s", task.Spec.Branch))
 	}
@@ -357,7 +363,7 @@ func (r *Runner) refreshToken(ctx context.Context) error {
 		return fmt.Errorf("secret %s missing GITHUB_TOKEN key", r.config.TokenSecret)
 	}
 
-	tokenStr := string(token)
+	tokenStr := strings.TrimSpace(string(token))
 
 	// Write token to file so subprocesses can read the latest value.
 	if err := os.WriteFile(tokenFilePath, []byte(tokenStr), 0600); err != nil {
