@@ -197,6 +197,7 @@ func (r *TaskReconciler) handleDeletion(ctx context.Context, task *kelosv1alpha1
 		if task.Status.SessionPodName != "" {
 			if err := r.clearSessionPodAssignment(ctx, task); err != nil {
 				logger.Error(err, "Failed to clear session pod assignment", "pod", task.Status.SessionPodName)
+				return ctrl.Result{}, err
 			}
 		}
 
@@ -230,6 +231,9 @@ func (r *TaskReconciler) clearSessionPodAssignment(ctx context.Context, task *ke
 			return nil
 		}
 		return err
+	}
+	if pod.Annotations == nil {
+		return nil
 	}
 	if pod.Annotations[AnnotationAssignedTask] != task.Name {
 		return nil
