@@ -660,13 +660,18 @@ func (r *TaskSpawnerReconciler) reconcileSessionStatefulSet(ctx context.Context,
 		}
 	}
 
-	if tokenRequeueAfter > 0 {
-		return ctrl.Result{RequeueAfter: tokenRequeueAfter}, nil
+	// Requeue periodically when autoscaling is enabled to re-evaluate scaling.
+	// Use the shorter of the autoscaling interval and the token requeue interval.
+	if ts.Spec.SessionConfig != nil && ts.Spec.SessionConfig.Autoscaling != nil {
+		requeueAfter := 15 * time.Second
+		if tokenRequeueAfter > 0 && tokenRequeueAfter < requeueAfter {
+			requeueAfter = tokenRequeueAfter
+		}
+		return ctrl.Result{RequeueAfter: requeueAfter}, nil
 	}
 
-	// Requeue periodically when autoscaling is enabled to re-evaluate scaling.
-	if ts.Spec.SessionConfig != nil && ts.Spec.SessionConfig.Autoscaling != nil {
-		return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
+	if tokenRequeueAfter > 0 {
+		return ctrl.Result{RequeueAfter: tokenRequeueAfter}, nil
 	}
 
 	return ctrl.Result{}, nil
@@ -721,8 +726,15 @@ func (r *TaskSpawnerReconciler) computeAutoscaledReplicas(ctx context.Context, t
 	}
 
 	var readyPods, busyPods, idlePods int32
-	var scaleDownEligible int32
 	now := time.Now()
+
+	// Track per-pod state for ordinal-aware scale-down.
+	type podState struct {
+		ordinal               int
+		busy                  bool
+		idlePastStabilization bool
+	}
+	var pods []podState
 
 	for i := range podList.Items {
 		pod := &podList.Items[i]
@@ -730,17 +742,20 @@ func (r *TaskSpawnerReconciler) computeAutoscaledReplicas(ctx context.Context, t
 			continue
 		}
 		readyPods++
+		ps := podState{ordinal: i}
 		if _, assigned := pod.Annotations[AnnotationAssignedTask]; assigned {
 			busyPods++
+			ps.busy = true
 		} else {
 			idlePods++
 			if idleSince, ok := pod.Annotations[AnnotationIdleSince]; ok {
 				t, err := time.Parse(time.RFC3339, idleSince)
 				if err == nil && now.Sub(t) >= time.Duration(stabilizationSeconds)*time.Second {
-					scaleDownEligible++
+					ps.idlePastStabilization = true
 				}
 			}
 		}
+		pods = append(pods, ps)
 	}
 
 	// Record metrics.
@@ -753,15 +768,20 @@ func (r *TaskSpawnerReconciler) computeAutoscaledReplicas(ctx context.Context, t
 	currentReplicas := readyPods
 	desired := currentReplicas
 
-	// Scale up: if there are queued tasks and no idle pods to handle them.
-	if queuedTasks > 0 && idlePods == 0 {
-		desired = currentReplicas + queuedTasks
+	// Scale up: if queued tasks exceed available idle pods.
+	if queuedTasks > idlePods {
+		desired = currentReplicas + (queuedTasks - idlePods)
 	}
 
-	// Scale down: reduce by the number of pods that have been idle beyond
-	// the stabilization window, but never below minReplicas.
-	if queuedTasks == 0 && scaleDownEligible > 0 {
-		desired = currentReplicas - scaleDownEligible
+	// Scale down: only reduce by 1 per reconcile cycle, and only when the
+	// highest-ordinal pod is idle past stabilization. StatefulSet removes
+	// pods in descending ordinal order, so we must verify the pod that will
+	// actually be removed is safe to terminate.
+	if queuedTasks == 0 && len(pods) > 0 {
+		highest := pods[len(pods)-1]
+		if !highest.busy && highest.idlePastStabilization {
+			desired = currentReplicas - 1
+		}
 	}
 
 	// Clamp to bounds.
@@ -780,7 +800,6 @@ func (r *TaskSpawnerReconciler) computeAutoscaledReplicas(ctx context.Context, t
 		"ready", readyPods,
 		"busy", busyPods,
 		"idle", idlePods,
-		"scaleDownEligible", scaleDownEligible,
 		"desired", desired,
 	)
 

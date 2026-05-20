@@ -20,25 +20,9 @@ import (
 func int32Ptr(i int32) *int32 { return &i }
 
 func newAutoscalingReconciler(scheme *runtime.Scheme, objs ...runtime.Object) *TaskSpawnerReconciler {
-	clientObjs := make([]runtime.Object, 0, len(objs))
-	clientObjs = append(clientObjs, objs...)
-
 	builder := fake.NewClientBuilder().WithScheme(scheme)
-	for _, obj := range clientObjs {
+	for _, obj := range objs {
 		builder = builder.WithRuntimeObjects(obj)
-	}
-	// Register status subresources for Tasks.
-	var tasks []*kelosv1alpha1.Task
-	for _, obj := range clientObjs {
-		if t, ok := obj.(*kelosv1alpha1.Task); ok {
-			tasks = append(tasks, t)
-		}
-	}
-	if len(tasks) > 0 {
-		statusObjs := make([]runtime.Object, 0, len(tasks))
-		for _, t := range tasks {
-			statusObjs = append(statusObjs, t)
-		}
 	}
 
 	fakeClient := builder.Build()
@@ -156,7 +140,7 @@ func TestComputeAutoscaledReplicas_ScaleUpCappedAtMax(t *testing.T) {
 	assert.Equal(t, int32(3), replicas)
 }
 
-func TestComputeAutoscaledReplicas_NoScaleUpWhenIdlePodsAvailable(t *testing.T) {
+func TestComputeAutoscaledReplicas_ScaleUpPartialCoverage(t *testing.T) {
 	scheme := newTestScheme()
 	spawnerName := "my-spawner"
 	ns := "default"
@@ -174,18 +158,51 @@ func TestComputeAutoscaledReplicas_NoScaleUpWhenIdlePodsAvailable(t *testing.T) 
 		},
 	}
 
-	// 1 busy pod, 1 idle pod, 2 queued tasks -> no scale up (idle pod available).
+	// 1 busy pod, 1 idle pod, 3 queued tasks -> scale up by 2 (3 queued - 1 idle).
 	idleTime := time.Now().Add(-10 * time.Second)
 	pod1 := makeSessionPod("pod-0", ns, spawnerName, true, nil)
 	pod2 := makeSessionPod("pod-1", ns, spawnerName, false, &idleTime)
 	task1 := makeQueuedTask("task-1", ns, spawnerName)
 	task2 := makeQueuedTask("task-2", ns, spawnerName)
+	task3 := makeQueuedTask("task-3", ns, spawnerName)
 
-	r := newAutoscalingReconciler(scheme, ts, pod1, pod2, task1, task2)
+	r := newAutoscalingReconciler(scheme, ts, pod1, pod2, task1, task2, task3)
 
 	replicas, err := r.computeAutoscaledReplicas(context.Background(), ts)
 	require.NoError(t, err)
-	assert.Equal(t, int32(2), replicas) // maintain current
+	assert.Equal(t, int32(4), replicas) // 2 current + 2 new (3 queued - 1 idle)
+}
+
+func TestComputeAutoscaledReplicas_NoScaleUpWhenIdleCoversDemand(t *testing.T) {
+	scheme := newTestScheme()
+	spawnerName := "my-spawner"
+	ns := "default"
+
+	ts := &kelosv1alpha1.TaskSpawner{
+		ObjectMeta: metav1.ObjectMeta{Name: spawnerName, Namespace: ns},
+		Spec: kelosv1alpha1.TaskSpawnerSpec{
+			ExecutionMode: kelosv1alpha1.ExecutionModePersistent,
+			SessionConfig: &kelosv1alpha1.SessionConfig{
+				Autoscaling: &kelosv1alpha1.SessionAutoscalingConfig{
+					MinReplicas: int32Ptr(1),
+					MaxReplicas: 5,
+				},
+			},
+		},
+	}
+
+	// 1 busy pod, 2 idle pods, 1 queued task -> no scale up (idle pods cover demand).
+	idleTime := time.Now().Add(-10 * time.Second)
+	pod1 := makeSessionPod("pod-0", ns, spawnerName, true, nil)
+	pod2 := makeSessionPod("pod-1", ns, spawnerName, false, &idleTime)
+	pod3 := makeSessionPod("pod-2", ns, spawnerName, false, &idleTime)
+	task1 := makeQueuedTask("task-1", ns, spawnerName)
+
+	r := newAutoscalingReconciler(scheme, ts, pod1, pod2, pod3, task1)
+
+	replicas, err := r.computeAutoscaledReplicas(context.Background(), ts)
+	require.NoError(t, err)
+	assert.Equal(t, int32(3), replicas) // maintain current
 }
 
 func TestComputeAutoscaledReplicas_ScaleDown(t *testing.T) {
@@ -207,7 +224,7 @@ func TestComputeAutoscaledReplicas_ScaleDown(t *testing.T) {
 		},
 	}
 
-	// 3 pods all idle for > 60s, no queued tasks -> scale down to min (1).
+	// 3 pods all idle for > 60s, no queued tasks -> scale down by 1 (highest ordinal).
 	longIdle := time.Now().Add(-2 * time.Minute)
 	pod1 := makeSessionPod("pod-0", ns, spawnerName, false, &longIdle)
 	pod2 := makeSessionPod("pod-1", ns, spawnerName, false, &longIdle)
@@ -217,7 +234,38 @@ func TestComputeAutoscaledReplicas_ScaleDown(t *testing.T) {
 
 	replicas, err := r.computeAutoscaledReplicas(context.Background(), ts)
 	require.NoError(t, err)
-	assert.Equal(t, int32(1), replicas) // clamped to min
+	assert.Equal(t, int32(2), replicas) // only scale down by 1 per cycle
+}
+
+func TestComputeAutoscaledReplicas_NoScaleDownWhenHighestOrdinalBusy(t *testing.T) {
+	scheme := newTestScheme()
+	spawnerName := "my-spawner"
+	ns := "default"
+
+	ts := &kelosv1alpha1.TaskSpawner{
+		ObjectMeta: metav1.ObjectMeta{Name: spawnerName, Namespace: ns},
+		Spec: kelosv1alpha1.TaskSpawnerSpec{
+			ExecutionMode: kelosv1alpha1.ExecutionModePersistent,
+			SessionConfig: &kelosv1alpha1.SessionConfig{
+				Autoscaling: &kelosv1alpha1.SessionAutoscalingConfig{
+					MinReplicas:                   int32Ptr(1),
+					MaxReplicas:                   5,
+					ScaleDownStabilizationSeconds: int32Ptr(60),
+				},
+			},
+		},
+	}
+
+	// pod-0 idle (eligible), pod-1 busy -> no scale down (highest ordinal is busy).
+	longIdle := time.Now().Add(-2 * time.Minute)
+	pod1 := makeSessionPod("pod-0", ns, spawnerName, false, &longIdle)
+	pod2 := makeSessionPod("pod-1", ns, spawnerName, true, nil)
+
+	r := newAutoscalingReconciler(scheme, ts, pod1, pod2)
+
+	replicas, err := r.computeAutoscaledReplicas(context.Background(), ts)
+	require.NoError(t, err)
+	assert.Equal(t, int32(2), replicas) // cannot scale down; highest ordinal is busy
 }
 
 func TestComputeAutoscaledReplicas_NoScaleDownBeforeStabilization(t *testing.T) {
@@ -278,7 +326,7 @@ func TestComputeAutoscaledReplicas_MinReplicasZero(t *testing.T) {
 
 	replicas, err := r.computeAutoscaledReplicas(context.Background(), ts)
 	require.NoError(t, err)
-	assert.Equal(t, int32(0), replicas)
+	assert.Equal(t, int32(0), replicas) // highest ordinal is idle, min is 0
 }
 
 func TestComputeAutoscaledReplicas_NoPods(t *testing.T) {
