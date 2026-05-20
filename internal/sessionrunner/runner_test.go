@@ -448,8 +448,8 @@ func TestWriteGHHostsFile_MergesExistingEntries(t *testing.T) {
 	t.Setenv("GH_CONFIG_DIR", tmpDir)
 	t.Setenv("GH_HOST", "github.com")
 
-	// Pre-populate hosts.yml with an enterprise entry.
-	existing := "github.enterprise.com:\n  oauth_token: enterprise-token\n  user: x-access-token\n"
+	// Pre-populate hosts.yml with an enterprise entry and extra fields.
+	existing := "github.enterprise.com:\n  oauth_token: enterprise-token\n  user: x-access-token\n  git_protocol: ssh\ngithub.com:\n  oauth_token: old-token\n  user: x-access-token\n  git_protocol: https\n"
 	if err := os.WriteFile(tmpDir+"/hosts.yml", []byte(existing), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -476,6 +476,16 @@ func TestWriteGHHostsFile_MergesExistingEntries(t *testing.T) {
 	}
 	if !strings.Contains(content, "new-public-token") {
 		t.Errorf("hosts.yml should contain new token, got: %s", content)
+	}
+	// Verify unknown fields are preserved.
+	if !strings.Contains(content, "git_protocol") {
+		t.Errorf("hosts.yml should preserve git_protocol field, got: %s", content)
+	}
+	if !strings.Contains(content, "ssh") {
+		t.Errorf("hosts.yml should preserve enterprise git_protocol: ssh, got: %s", content)
+	}
+	if !strings.Contains(content, "https") {
+		t.Errorf("hosts.yml should preserve github.com git_protocol: https, got: %s", content)
 	}
 }
 

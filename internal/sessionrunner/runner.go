@@ -387,14 +387,8 @@ func (r *Runner) refreshToken(ctx context.Context) error {
 	return nil
 }
 
-// ghHostEntry represents a single host entry in the gh CLI hosts.yml.
-type ghHostEntry struct {
-	OAuthToken string `json:"oauth_token"`
-	User       string `json:"user"`
-}
-
 // writeGHHostsFile merges the refreshed token into the gh CLI hosts.yml,
-// preserving any other host entries already present.
+// preserving all other host entries and fields (e.g. git_protocol).
 func (r *Runner) writeGHHostsFile(token string) error {
 	ghConfigDir := os.Getenv("GH_CONFIG_DIR")
 	if ghConfigDir == "" {
@@ -412,13 +406,19 @@ func (r *Runner) writeGHHostsFile(token string) error {
 		return err
 	}
 
-	// Read existing hosts file if present.
-	hosts := make(map[string]ghHostEntry)
+	// Use untyped maps to preserve unknown fields during round-trip.
+	hosts := make(map[string]map[string]interface{})
 	if data, err := os.ReadFile(hostsPath); err == nil {
 		_ = yaml.Unmarshal(data, &hosts)
 	}
 
-	hosts[host] = ghHostEntry{OAuthToken: token, User: "x-access-token"}
+	entry := hosts[host]
+	if entry == nil {
+		entry = make(map[string]interface{})
+	}
+	entry["oauth_token"] = token
+	entry["user"] = "x-access-token"
+	hosts[host] = entry
 
 	out, err := yaml.Marshal(hosts)
 	if err != nil {
