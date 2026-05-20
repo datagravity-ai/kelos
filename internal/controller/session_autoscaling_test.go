@@ -137,6 +137,18 @@ func TestReconcileSessionHPA_UpdatesExistingHPA(t *testing.T) {
 
 	assert.Equal(t, int32(3), *hpa.Spec.MinReplicas)
 	assert.Equal(t, int32(15), hpa.Spec.MaxReplicas)
+
+	// Verify Metrics are reconciled (overwritten from empty to correct spec).
+	require.Len(t, hpa.Spec.Metrics, 1)
+	assert.Equal(t, autoscalingv2.PodsMetricSourceType, hpa.Spec.Metrics[0].Type)
+	assert.Equal(t, "kelos_session_tasks_queued", hpa.Spec.Metrics[0].Pods.Metric.Name)
+
+	// Verify Behavior is reconciled (scale-down and scale-up rules applied).
+	require.NotNil(t, hpa.Spec.Behavior)
+	require.NotNil(t, hpa.Spec.Behavior.ScaleDown)
+	require.NotNil(t, hpa.Spec.Behavior.ScaleUp)
+	assert.Equal(t, int32(300), *hpa.Spec.Behavior.ScaleDown.StabilizationWindowSeconds)
+	require.Len(t, hpa.Spec.Behavior.ScaleUp.Policies, 2)
 }
 
 func TestDeleteSessionHPA(t *testing.T) {

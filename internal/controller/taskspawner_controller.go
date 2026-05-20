@@ -866,7 +866,10 @@ func (r *TaskSpawnerReconciler) recordSessionMetrics(ctx context.Context, ts *ke
 	var readyPods, busyPods, idlePods int32
 	for i := range podList.Items {
 		pod := &podList.Items[i]
-		if pod.Status.Phase != corev1.PodRunning || pod.DeletionTimestamp != nil {
+		if pod.DeletionTimestamp != nil {
+			continue
+		}
+		if !isPodReady(pod) {
 			continue
 		}
 		readyPods++
@@ -881,6 +884,16 @@ func (r *TaskSpawnerReconciler) recordSessionMetrics(ctx context.Context, ts *ke
 	sessionPodsBusy.WithLabelValues(ts.Namespace, ts.Name).Set(float64(busyPods))
 	sessionPodsIdle.WithLabelValues(ts.Namespace, ts.Name).Set(float64(idlePods))
 	sessionTasksQueued.WithLabelValues(ts.Namespace, ts.Name).Set(float64(queuedTasks))
+}
+
+// isPodReady returns true if the pod has the Ready condition set to True.
+func isPodReady(pod *corev1.Pod) bool {
+	for _, c := range pod.Status.Conditions {
+		if c.Type == corev1.PodReady {
+			return c.Status == corev1.ConditionTrue
+		}
+	}
+	return false
 }
 
 func intToQuantity(val int32) *resource.Quantity {
