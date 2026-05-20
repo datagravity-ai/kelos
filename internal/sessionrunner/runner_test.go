@@ -234,6 +234,34 @@ func TestTailWriter_PreservesOutputMarkers(t *testing.T) {
 	}
 }
 
+func TestFilterTokenEnvVars(t *testing.T) {
+	env := []string{
+		"HOME=/home/user",
+		"GITHUB_TOKEN=secret123",
+		"GH_TOKEN=secret456",
+		"GH_ENTERPRISE_TOKEN=secret789",
+		"PATH=/usr/bin",
+		"GH_CONFIG_DIR=/workspace/.gh-config",
+	}
+
+	filtered := filterTokenEnvVars(env)
+
+	expected := []string{
+		"HOME=/home/user",
+		"PATH=/usr/bin",
+		"GH_CONFIG_DIR=/workspace/.gh-config",
+	}
+
+	if len(filtered) != len(expected) {
+		t.Fatalf("expected %d vars, got %d: %v", len(expected), len(filtered), filtered)
+	}
+	for i, want := range expected {
+		if filtered[i] != want {
+			t.Errorf("filtered[%d]: expected %q, got %q", i, want, filtered[i])
+		}
+	}
+}
+
 func TestStartTokenRefreshLoop(t *testing.T) {
 	tmpDir := t.TempDir()
 	origTokenFilePath := tokenFilePath

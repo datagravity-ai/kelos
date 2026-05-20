@@ -26,6 +26,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -297,8 +298,9 @@ const tailBufferSize = 256 * 1024
 func (r *Runner) runAgent(ctx context.Context, task *kelosv1alpha1.Task) (string, error) {
 	entrypoint := "/kelos_entrypoint.sh"
 
-	// Set branch env var if present.
-	env := os.Environ()
+	// Build env for the subprocess, stripping token env vars so that `gh`
+	// falls back to reading from hosts.yml (which is periodically refreshed).
+	env := filterTokenEnvVars(os.Environ())
 	if task.Spec.Branch != "" {
 		env = append(env, fmt.Sprintf("KELOS_BRANCH=%s", task.Spec.Branch))
 	}
@@ -312,6 +314,28 @@ func (r *Runner) runAgent(ctx context.Context, task *kelosv1alpha1.Task) (string
 
 	err := cmd.Run()
 	return tail.String(), err
+}
+
+// tokenEnvVarPrefixes are the env vars that carry GitHub tokens. We strip
+// these from the agent subprocess so that `gh` falls back to hosts.yml.
+var tokenEnvVarPrefixes = []string{"GITHUB_TOKEN=", "GH_TOKEN=", "GH_ENTERPRISE_TOKEN="}
+
+// filterTokenEnvVars returns a copy of env with token-related variables removed.
+func filterTokenEnvVars(env []string) []string {
+	filtered := make([]string, 0, len(env))
+	for _, e := range env {
+		skip := false
+		for _, prefix := range tokenEnvVarPrefixes {
+			if strings.HasPrefix(e, prefix) {
+				skip = true
+				break
+			}
+		}
+		if !skip {
+			filtered = append(filtered, e)
+		}
+	}
+	return filtered
 }
 
 // refreshToken reads the current GITHUB_TOKEN from the configured Secret and
@@ -384,7 +408,18 @@ func (r *Runner) writeGHHostsFile(token string) error {
 func configureFileCredentialHelper(ctx context.Context) error {
 	helper := fmt.Sprintf(`!f() { echo "username=x-access-token"; echo "password=$(cat %s)"; }; f`, tokenFilePath)
 
-	cmd := exec.CommandContext(ctx, "git", "config", "--local", "credential.helper", "")
+	// Unset all existing credential helpers to avoid accumulation across tasks.
+	cmd := exec.CommandContext(ctx, "git", "config", "--local", "--unset-all", "credential.helper")
+	cmd.Dir = workspaceRepoPath
+	// --unset-all returns exit 5 if the key doesn't exist; ignore that.
+	if err := cmd.Run(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() != 5 {
+			return err
+		}
+	}
+
+	// Set the empty-string entry (disables system/global helpers) followed by our helper.
+	cmd = exec.CommandContext(ctx, "git", "config", "--local", "credential.helper", "")
 	cmd.Dir = workspaceRepoPath
 	if err := cmd.Run(); err != nil {
 		return err
