@@ -47,33 +47,36 @@ const (
 	annotationTasksCompleted = "kelos.dev/tasks-completed"
 	annotationSessionStart   = "kelos.dev/session-start-time"
 
-	defaultIdleTimeout        = 30 * time.Minute
-	defaultMaxSessionDuration = 8 * time.Hour
-	pollInterval              = 3 * time.Second
+	defaultIdleTimeout          = 30 * time.Minute
+	defaultMaxSessionDuration   = 8 * time.Hour
+	defaultTokenRefreshInterval = 30 * time.Minute
+	pollInterval                = 3 * time.Second
 )
 
 // Config holds the session runner configuration, typically from environment variables.
 type Config struct {
-	PodName            string
-	PodNamespace       string
-	AgentType          string
-	TaskSpawner        string
-	TokenSecret        string
-	IdleTimeout        time.Duration
-	MaxTasksPerSession int32
-	MaxSessionDuration time.Duration
+	PodName              string
+	PodNamespace         string
+	AgentType            string
+	TaskSpawner          string
+	TokenSecret          string
+	IdleTimeout          time.Duration
+	MaxTasksPerSession   int32
+	MaxSessionDuration   time.Duration
+	TokenRefreshInterval time.Duration
 }
 
 // ConfigFromEnv reads session runner configuration from environment variables.
 func ConfigFromEnv() Config {
 	cfg := Config{
-		PodName:            os.Getenv("KELOS_POD_NAME"),
-		PodNamespace:       os.Getenv("KELOS_POD_NAMESPACE"),
-		AgentType:          os.Getenv("KELOS_AGENT_TYPE"),
-		TaskSpawner:        os.Getenv("KELOS_TASKSPAWNER"),
-		TokenSecret:        os.Getenv("KELOS_TOKEN_SECRET"),
-		IdleTimeout:        defaultIdleTimeout,
-		MaxSessionDuration: defaultMaxSessionDuration,
+		PodName:              os.Getenv("KELOS_POD_NAME"),
+		PodNamespace:         os.Getenv("KELOS_POD_NAMESPACE"),
+		AgentType:            os.Getenv("KELOS_AGENT_TYPE"),
+		TaskSpawner:          os.Getenv("KELOS_TASKSPAWNER"),
+		TokenSecret:          os.Getenv("KELOS_TOKEN_SECRET"),
+		IdleTimeout:          defaultIdleTimeout,
+		MaxSessionDuration:   defaultMaxSessionDuration,
+		TokenRefreshInterval: defaultTokenRefreshInterval,
 	}
 
 	if v := os.Getenv("KELOS_IDLE_TIMEOUT"); v != "" {
@@ -89,6 +92,11 @@ func ConfigFromEnv() Config {
 	if v := os.Getenv("KELOS_MAX_SESSION_DURATION"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			cfg.MaxSessionDuration = d
+		}
+	}
+	if v := os.Getenv("KELOS_TOKEN_REFRESH_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.TokenRefreshInterval = d
 		}
 	}
 
@@ -237,6 +245,11 @@ func (r *Runner) processTask(ctx context.Context, taskName string) error {
 		fmt.Printf("Warning: failed to refresh token: %v\n", err)
 	}
 
+	// Start periodic token refresh for long-running tasks.
+	refreshCtx, refreshCancel := context.WithCancel(ctx)
+	defer refreshCancel()
+	r.startTokenRefreshLoop(refreshCtx)
+
 	// Reset workspace.
 	if err := r.workspace.Reset(ctx, task.Spec.Branch); err != nil {
 		return fmt.Errorf("workspace reset failed: %w", err)
@@ -316,6 +329,29 @@ func (r *Runner) refreshToken(ctx context.Context) error {
 	}
 	fmt.Println("Refreshed GitHub token from secret")
 	return nil
+}
+
+// startTokenRefreshLoop runs a background goroutine that periodically refreshes
+// the GitHub token from the configured Secret. It stops when ctx is cancelled.
+func (r *Runner) startTokenRefreshLoop(ctx context.Context) {
+	if r.config.TokenSecret == "" || r.config.TokenRefreshInterval <= 0 {
+		return
+	}
+
+	go func() {
+		ticker := time.NewTicker(r.config.TokenRefreshInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := r.refreshToken(ctx); err != nil {
+					fmt.Printf("Warning: periodic token refresh failed: %v\n", err)
+				}
+			}
+		}
+	}()
 }
 
 // updateTaskStatus writes completion timestamps and any captured outputs to the

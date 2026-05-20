@@ -45,6 +45,7 @@ func TestConfigFromEnv_CustomValues(t *testing.T) {
 	t.Setenv("KELOS_IDLE_TIMEOUT", "15m")
 	t.Setenv("KELOS_MAX_TASKS_PER_SESSION", "5")
 	t.Setenv("KELOS_MAX_SESSION_DURATION", "4h")
+	t.Setenv("KELOS_TOKEN_REFRESH_INTERVAL", "20m")
 
 	cfg := ConfigFromEnv()
 
@@ -71,6 +72,9 @@ func TestConfigFromEnv_CustomValues(t *testing.T) {
 	}
 	if cfg.MaxSessionDuration != 4*time.Hour {
 		t.Errorf("MaxSessionDuration: expected 4h, got %v", cfg.MaxSessionDuration)
+	}
+	if cfg.TokenRefreshInterval != 20*time.Minute {
+		t.Errorf("TokenRefreshInterval: expected 20m, got %v", cfg.TokenRefreshInterval)
 	}
 }
 
@@ -227,6 +231,55 @@ func TestTailWriter_PreservesOutputMarkers(t *testing.T) {
 	if outputs[0] != "branch: main" {
 		t.Errorf("output[0]: expected 'branch: main', got %q", outputs[0])
 	}
+}
+
+func TestStartTokenRefreshLoop(t *testing.T) {
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-secret", Namespace: "test-ns"},
+		Data:       map[string][]byte{"GITHUB_TOKEN": []byte("refreshed-token")},
+	}
+	client := fake.NewSimpleClientset(secret)
+
+	t.Setenv("GH_TOKEN", "old-token")
+	t.Setenv("GITHUB_TOKEN", "old-token")
+
+	r := &Runner{
+		config: Config{
+			PodNamespace:         "test-ns",
+			TokenSecret:          "my-secret",
+			TokenRefreshInterval: 50 * time.Millisecond,
+		},
+		kubeClient: client,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	r.startTokenRefreshLoop(ctx)
+
+	// Wait for at least one tick to fire.
+	time.Sleep(120 * time.Millisecond)
+	cancel()
+
+	if got := os.Getenv("GITHUB_TOKEN"); got != "refreshed-token" {
+		t.Errorf("GITHUB_TOKEN: expected 'refreshed-token', got %q", got)
+	}
+	if got := os.Getenv("GH_TOKEN"); got != "refreshed-token" {
+		t.Errorf("GH_TOKEN: expected 'refreshed-token', got %q", got)
+	}
+}
+
+func TestStartTokenRefreshLoop_NoSecret(t *testing.T) {
+	r := &Runner{
+		config: Config{
+			TokenSecret:          "",
+			TokenRefreshInterval: 50 * time.Millisecond,
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Should not panic or start goroutine.
+	r.startTokenRefreshLoop(ctx)
 }
 
 func TestRefreshToken(t *testing.T) {
