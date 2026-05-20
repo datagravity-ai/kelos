@@ -3,6 +3,7 @@ package sessionrunner
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -234,6 +235,11 @@ func TestTailWriter_PreservesOutputMarkers(t *testing.T) {
 }
 
 func TestStartTokenRefreshLoop(t *testing.T) {
+	tmpDir := t.TempDir()
+	origTokenFilePath := tokenFilePath
+	tokenFilePath = tmpDir + "/token"
+	t.Cleanup(func() { tokenFilePath = origTokenFilePath })
+
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: "my-secret", Namespace: "test-ns"},
 		Data:       map[string][]byte{"GITHUB_TOKEN": []byte("refreshed-token")},
@@ -242,6 +248,7 @@ func TestStartTokenRefreshLoop(t *testing.T) {
 
 	t.Setenv("GH_TOKEN", "old-token")
 	t.Setenv("GITHUB_TOKEN", "old-token")
+	t.Setenv("GH_CONFIG_DIR", "")
 
 	r := &Runner{
 		config: Config{
@@ -253,10 +260,21 @@ func TestStartTokenRefreshLoop(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		for os.Getenv("GITHUB_TOKEN") != "refreshed-token" {
+			time.Sleep(5 * time.Millisecond)
+		}
+		close(done)
+	}()
+
 	r.startTokenRefreshLoop(ctx)
 
-	// Wait for at least one tick to fire.
-	time.Sleep(120 * time.Millisecond)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timed out waiting for token refresh")
+	}
 	cancel()
 
 	if got := os.Getenv("GITHUB_TOKEN"); got != "refreshed-token" {
@@ -282,7 +300,87 @@ func TestStartTokenRefreshLoop_NoSecret(t *testing.T) {
 	r.startTokenRefreshLoop(ctx)
 }
 
+func TestRefreshToken_WritesTokenFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	origTokenFilePath := tokenFilePath
+	tokenFilePath = tmpDir + "/token"
+	t.Cleanup(func() { tokenFilePath = origTokenFilePath })
+
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-secret", Namespace: "test-ns"},
+		Data:       map[string][]byte{"GITHUB_TOKEN": []byte("file-token-123")},
+	}
+	client := fake.NewSimpleClientset(secret)
+
+	ghConfigDir := tmpDir + "/gh-config"
+	t.Setenv("GH_TOKEN", "old")
+	t.Setenv("GH_CONFIG_DIR", ghConfigDir)
+	t.Setenv("GH_HOST", "")
+
+	r := &Runner{
+		config: Config{
+			PodNamespace: "test-ns",
+			TokenSecret:  "my-secret",
+		},
+		kubeClient: client,
+	}
+
+	err := r.refreshToken(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify token file was written.
+	got, err := os.ReadFile(tokenFilePath)
+	if err != nil {
+		t.Fatalf("Failed to read token file: %v", err)
+	}
+	if string(got) != "file-token-123" {
+		t.Errorf("Token file: expected 'file-token-123', got %q", string(got))
+	}
+
+	// Verify gh hosts.yml was written.
+	hostsContent, err := os.ReadFile(ghConfigDir + "/hosts.yml")
+	if err != nil {
+		t.Fatalf("Failed to read hosts.yml: %v", err)
+	}
+	if !strings.Contains(string(hostsContent), "file-token-123") {
+		t.Errorf("hosts.yml should contain token, got: %s", hostsContent)
+	}
+	if !strings.Contains(string(hostsContent), "github.com") {
+		t.Errorf("hosts.yml should contain github.com, got: %s", hostsContent)
+	}
+}
+
+func TestWriteGHHostsFile_Enterprise(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("GH_CONFIG_DIR", tmpDir)
+	t.Setenv("GH_HOST", "github.enterprise.com")
+
+	r := &Runner{}
+	err := r.writeGHHostsFile("ent-token")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	hostsContent, err := os.ReadFile(tmpDir + "/hosts.yml")
+	if err != nil {
+		t.Fatalf("Failed to read hosts.yml: %v", err)
+	}
+	if !strings.Contains(string(hostsContent), "github.enterprise.com") {
+		t.Errorf("hosts.yml should contain enterprise host, got: %s", hostsContent)
+	}
+	if !strings.Contains(string(hostsContent), "ent-token") {
+		t.Errorf("hosts.yml should contain token, got: %s", hostsContent)
+	}
+}
+
 func TestRefreshToken(t *testing.T) {
+	tmpDir := t.TempDir()
+	origTokenFilePath := tokenFilePath
+	tokenFilePath = tmpDir + "/token"
+	t.Cleanup(func() { tokenFilePath = origTokenFilePath })
+
 	tests := []struct {
 		name        string
 		secret      *corev1.Secret

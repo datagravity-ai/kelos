@@ -24,6 +24,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"time"
 
@@ -52,6 +53,10 @@ const (
 	defaultTokenRefreshInterval = 30 * time.Minute
 	pollInterval                = 3 * time.Second
 )
+
+// tokenFilePath is the path where the refreshed token is written so that
+// subprocesses can read it. It is a var to allow overriding in tests.
+var tokenFilePath = "/workspace/.kelos-token"
 
 // Config holds the session runner configuration, typically from environment variables.
 type Config struct {
@@ -250,6 +255,14 @@ func (r *Runner) processTask(ctx context.Context, taskName string) error {
 	defer refreshCancel()
 	r.startTokenRefreshLoop(refreshCtx)
 
+	// Configure git to read credentials from the token file so that
+	// refreshed tokens are visible to the running agent subprocess.
+	if r.config.TokenSecret != "" {
+		if err := configureFileCredentialHelper(ctx); err != nil {
+			fmt.Printf("Warning: failed to configure file-based credential helper: %v\n", err)
+		}
+	}
+
 	// Reset workspace.
 	if err := r.workspace.Reset(ctx, task.Spec.Branch); err != nil {
 		return fmt.Errorf("workspace reset failed: %w", err)
@@ -302,8 +315,9 @@ func (r *Runner) runAgent(ctx context.Context, task *kelosv1alpha1.Task) (string
 }
 
 // refreshToken reads the current GITHUB_TOKEN from the configured Secret and
-// updates the process environment. This ensures long-running sessions pick up
-// tokens that have been rotated by the controller.
+// writes it to the token file on disk so that running subprocesses (git
+// credential helper, gh CLI) pick up the refreshed value. It also updates
+// the process environment for any direct use by the session runner itself.
 func (r *Runner) refreshToken(ctx context.Context) error {
 	if r.config.TokenSecret == "" {
 		return nil
@@ -320,8 +334,18 @@ func (r *Runner) refreshToken(ctx context.Context) error {
 	}
 
 	tokenStr := string(token)
+
+	// Write token to file so subprocesses can read the latest value.
+	if err := os.WriteFile(tokenFilePath, []byte(tokenStr), 0600); err != nil {
+		return fmt.Errorf("writing token file: %w", err)
+	}
+
+	// Update gh CLI hosts.yml so `gh` picks up the refreshed token.
+	if err := r.writeGHHostsFile(tokenStr); err != nil {
+		fmt.Printf("Warning: failed to update gh hosts.yml: %v\n", err)
+	}
+
 	os.Setenv("GITHUB_TOKEN", tokenStr)
-	// Update whichever GH CLI token env var is set.
 	if os.Getenv("GH_ENTERPRISE_TOKEN") != "" {
 		os.Setenv("GH_ENTERPRISE_TOKEN", tokenStr)
 	} else if os.Getenv("GH_TOKEN") != "" {
@@ -329,6 +353,46 @@ func (r *Runner) refreshToken(ctx context.Context) error {
 	}
 	fmt.Println("Refreshed GitHub token from secret")
 	return nil
+}
+
+// writeGHHostsFile writes the gh CLI hosts.yml so that `gh` reads the
+// refreshed token on each invocation rather than relying on env vars
+// inherited at process start.
+func (r *Runner) writeGHHostsFile(token string) error {
+	ghConfigDir := os.Getenv("GH_CONFIG_DIR")
+	if ghConfigDir == "" {
+		return nil
+	}
+
+	host := os.Getenv("GH_HOST")
+	if host == "" {
+		host = "github.com"
+	}
+
+	hostsContent := fmt.Sprintf("%s:\n    oauth_token: %s\n    user: x-access-token\n", host, token)
+	hostsPath := filepath.Join(ghConfigDir, "hosts.yml")
+
+	if err := os.MkdirAll(ghConfigDir, 0700); err != nil {
+		return err
+	}
+	return os.WriteFile(hostsPath, []byte(hostsContent), 0600)
+}
+
+// configureFileCredentialHelper replaces the git credential helper in the
+// workspace repo config to read the token from the on-disk file rather than
+// from the $GITHUB_TOKEN env var (which is stale in subprocesses).
+func configureFileCredentialHelper(ctx context.Context) error {
+	helper := fmt.Sprintf(`!f() { echo "username=x-access-token"; echo "password=$(cat %s)"; }; f`, tokenFilePath)
+
+	cmd := exec.CommandContext(ctx, "git", "config", "--local", "credential.helper", "")
+	cmd.Dir = workspaceRepoPath
+	if err := cmd.Run(); err != nil {
+		return err
+	}
+
+	cmd = exec.CommandContext(ctx, "git", "config", "--local", "--add", "credential.helper", helper)
+	cmd.Dir = workspaceRepoPath
+	return cmd.Run()
 }
 
 // startTokenRefreshLoop runs a background goroutine that periodically refreshes
