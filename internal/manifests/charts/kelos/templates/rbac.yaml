@@ -196,6 +196,12 @@ rules:
       - get
       - update
   - apiGroups:
+      - ""
+    resources:
+      - secrets
+    verbs:
+      - get
+  - apiGroups:
       - kelos.dev
     resources:
       - tasks
