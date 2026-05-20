@@ -157,6 +157,58 @@ func TestSessionReconciler_AssignsQueuedTaskToAvailablePod(t *testing.T) {
 	}
 }
 
+func TestSessionReconciler_AssignTaskReturnsRequeueAfter(t *testing.T) {
+	scheme := newTestScheme()
+	task := &kelosv1alpha1.Task{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "queued-task-requeue",
+			Namespace: "default",
+			Labels: map[string]string{
+				LabelExecutionMode:      string(kelosv1alpha1.ExecutionModePersistent),
+				"kelos.dev/taskspawner": "my-spawner",
+			},
+		},
+		Status: kelosv1alpha1.TaskStatus{
+			Phase: kelosv1alpha1.TaskPhaseQueued,
+		},
+	}
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "session-my-spawner-0",
+			Namespace: "default",
+			Labels: map[string]string{
+				"kelos.dev/taskspawner": "my-spawner",
+				"kelos.dev/component":   SessionComponentLabel,
+			},
+		},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodRunning,
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(task, pod).
+		WithStatusSubresource(task).
+		Build()
+
+	r := &SessionReconciler{
+		Client:   fakeClient,
+		Scheme:   scheme,
+		Recorder: record.NewFakeRecorder(10),
+	}
+
+	result, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "queued-task-requeue", Namespace: "default"},
+	})
+	if err != nil {
+		t.Fatalf("Reconcile() returned error: %v", err)
+	}
+	if result.RequeueAfter != 30*time.Second {
+		t.Errorf("Expected RequeueAfter=30s after successful assignment, got %v", result.RequeueAfter)
+	}
+}
+
 func TestSessionReconciler_RequeuesWhenNoPodAvailable(t *testing.T) {
 	scheme := newTestScheme()
 	task := &kelosv1alpha1.Task{

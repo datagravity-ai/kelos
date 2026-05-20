@@ -821,3 +821,142 @@ func TestUpdateStatusClearsStalePodNameWhenNoLivePodsRemain(t *testing.T) {
 		t.Fatalf("task.Status.PodName = %q, want empty", updated.Status.PodName)
 	}
 }
+
+func TestHandleDeletion_ClearsSessionPodAssignment(t *testing.T) {
+	scheme := runtime.NewScheme()
+	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+	utilruntime.Must(kelosv1alpha1.AddToScheme(scheme))
+
+	task := &kelosv1alpha1.Task{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "deleting-task",
+			Namespace:         "default",
+			Finalizers:        []string{taskFinalizer},
+			DeletionTimestamp: &metav1.Time{Time: time.Now()},
+		},
+		Spec: kelosv1alpha1.TaskSpec{
+			Type:   "claude-code",
+			Prompt: "test",
+			Credentials: kelosv1alpha1.Credentials{
+				Type: kelosv1alpha1.CredentialTypeNone,
+			},
+		},
+		Status: kelosv1alpha1.TaskStatus{
+			Phase:          kelosv1alpha1.TaskPhaseRunning,
+			SessionPodName: "session-pod-0",
+		},
+	}
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "session-pod-0",
+			Namespace: "default",
+			Annotations: map[string]string{
+				AnnotationAssignedTask: "deleting-task",
+				AnnotationTaskStatus:   "running",
+			},
+		},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodRunning,
+		},
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(task).
+		WithObjects(task, pod).
+		Build()
+
+	r := &TaskReconciler{
+		Client:       cl,
+		Scheme:       scheme,
+		BranchLocker: NewBranchLocker(),
+	}
+
+	_, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: client.ObjectKeyFromObject(task),
+	})
+	if err != nil {
+		t.Fatalf("Reconcile() error: %v", err)
+	}
+
+	// Verify pod annotations were cleared.
+	var updatedPod corev1.Pod
+	if err := cl.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "session-pod-0"}, &updatedPod); err != nil {
+		t.Fatalf("Failed to get pod: %v", err)
+	}
+	if _, exists := updatedPod.Annotations[AnnotationAssignedTask]; exists {
+		t.Error("Expected assigned-task annotation to be cleared on pod")
+	}
+	if _, exists := updatedPod.Annotations[AnnotationTaskStatus]; exists {
+		t.Error("Expected task-status annotation to be cleared on pod")
+	}
+}
+
+func TestHandleDeletion_SkipsClearWhenPodAssignedToDifferentTask(t *testing.T) {
+	scheme := runtime.NewScheme()
+	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+	utilruntime.Must(kelosv1alpha1.AddToScheme(scheme))
+
+	task := &kelosv1alpha1.Task{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "old-task",
+			Namespace:         "default",
+			Finalizers:        []string{taskFinalizer},
+			DeletionTimestamp: &metav1.Time{Time: time.Now()},
+		},
+		Spec: kelosv1alpha1.TaskSpec{
+			Type:   "claude-code",
+			Prompt: "test",
+			Credentials: kelosv1alpha1.Credentials{
+				Type: kelosv1alpha1.CredentialTypeNone,
+			},
+		},
+		Status: kelosv1alpha1.TaskStatus{
+			Phase:          kelosv1alpha1.TaskPhaseRunning,
+			SessionPodName: "session-pod-0",
+		},
+	}
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "session-pod-0",
+			Namespace: "default",
+			Annotations: map[string]string{
+				AnnotationAssignedTask: "different-task",
+				AnnotationTaskStatus:   "running",
+			},
+		},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodRunning,
+		},
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(task).
+		WithObjects(task, pod).
+		Build()
+
+	r := &TaskReconciler{
+		Client:       cl,
+		Scheme:       scheme,
+		BranchLocker: NewBranchLocker(),
+	}
+
+	_, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: client.ObjectKeyFromObject(task),
+	})
+	if err != nil {
+		t.Fatalf("Reconcile() error: %v", err)
+	}
+
+	// Pod should retain its annotations since it's assigned to a different task.
+	var updatedPod corev1.Pod
+	if err := cl.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "session-pod-0"}, &updatedPod); err != nil {
+		t.Fatalf("Failed to get pod: %v", err)
+	}
+	if updatedPod.Annotations[AnnotationAssignedTask] != "different-task" {
+		t.Errorf("Expected pod to retain assignment to 'different-task', got %q", updatedPod.Annotations[AnnotationAssignedTask])
+	}
+}

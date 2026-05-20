@@ -204,7 +204,7 @@ func (r *SessionReconciler) assignTask(ctx context.Context, task *kelosv1alpha1.
 	}
 
 	r.Recorder.Eventf(task, corev1.EventTypeNormal, "SessionAssigned", "Task assigned to session pod %s", availablePod.Name)
-	return ctrl.Result{}, nil
+	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 }
 
 // checkTaskCompletion reads the session pod's annotations to detect task

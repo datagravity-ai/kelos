@@ -193,6 +193,13 @@ func (r *TaskReconciler) handleDeletion(ctx context.Context, task *kelosv1alpha1
 			r.BranchLocker.Release(branchLockKey(task), task.Name)
 		}
 
+		// Clear session pod assignment if this is a persistent-mode task.
+		if task.Status.SessionPodName != "" {
+			if err := r.clearSessionPodAssignment(ctx, task); err != nil {
+				logger.Error(err, "Failed to clear session pod assignment", "pod", task.Status.SessionPodName)
+			}
+		}
+
 		// Delete the Job if it exists
 		var job batchv1.Job
 		if err := r.Get(ctx, client.ObjectKey{Namespace: task.Namespace, Name: task.Name}, &job); err == nil {
@@ -214,6 +221,22 @@ func (r *TaskReconciler) handleDeletion(ctx context.Context, task *kelosv1alpha1
 	}
 
 	return ctrl.Result{}, nil
+}
+
+func (r *TaskReconciler) clearSessionPodAssignment(ctx context.Context, task *kelosv1alpha1.Task) error {
+	var pod corev1.Pod
+	if err := r.Get(ctx, client.ObjectKey{Namespace: task.Namespace, Name: task.Status.SessionPodName}, &pod); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	if pod.Annotations[AnnotationAssignedTask] != task.Name {
+		return nil
+	}
+	delete(pod.Annotations, AnnotationAssignedTask)
+	delete(pod.Annotations, AnnotationTaskStatus)
+	return r.Update(ctx, &pod)
 }
 
 // createJob creates a Job for the Task.
