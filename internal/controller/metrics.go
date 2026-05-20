@@ -105,15 +105,6 @@ var (
 		},
 		[]string{"namespace", "spawner"},
 	)
-
-	// sessionDesiredReplicas tracks the computed desired replica count.
-	sessionDesiredReplicas = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Name: "kelos_session_desired_replicas",
-			Help: "Computed desired replica count for session StatefulSet",
-		},
-		[]string{"namespace", "spawner"},
-	)
 )
 
 func init() {
@@ -129,6 +120,5 @@ func init() {
 		sessionPodsBusy,
 		sessionPodsIdle,
 		sessionTasksQueued,
-		sessionDesiredReplicas,
 	)
 }

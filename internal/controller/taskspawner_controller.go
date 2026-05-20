@@ -9,10 +9,12 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -66,6 +68,7 @@ type TaskSpawnerReconciler struct {
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;delete
+// +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
 
 // isCronBased returns true if the TaskSpawner uses a cron schedule.
 func isCronBased(ts *kelosv1alpha1.TaskSpawner) bool {
@@ -561,16 +564,6 @@ func (r *TaskSpawnerReconciler) reconcileSessionStatefulSet(ctx context.Context,
 		return ctrl.Result{}, err
 	}
 
-	// Autoscaling: compute desired replicas based on queue depth and pod state.
-	if !isSuspended && ts.Spec.SessionConfig != nil && ts.Spec.SessionConfig.Autoscaling != nil {
-		autoscaledReplicas, err := r.computeAutoscaledReplicas(ctx, ts)
-		if err != nil {
-			logger.Error(err, "Unable to compute autoscaled replicas, using current")
-		} else {
-			desiredSts.Spec.Replicas = &autoscaledReplicas
-		}
-	}
-
 	// Suspend: scale to 0.
 	if isSuspended {
 		zero := int32(0)
@@ -623,11 +616,15 @@ func (r *TaskSpawnerReconciler) reconcileSessionStatefulSet(ctx context.Context,
 		logger.Info("Created session StatefulSet", "statefulset", stsName, "replicas", *desiredSts.Spec.Replicas)
 		r.recordEvent(ts, corev1.EventTypeNormal, "StatefulSetCreated", "Created session StatefulSet %s with %d replicas", stsName, *desiredSts.Spec.Replicas)
 	} else {
-		// Update replicas if changed.
+		// Update replicas if changed. Skip when autoscaling is enabled —
+		// the HPA manages replicas and we must not overwrite its decisions.
 		needsUpdate := false
-		if existingSts.Spec.Replicas == nil || *existingSts.Spec.Replicas != *desiredSts.Spec.Replicas {
-			existingSts.Spec.Replicas = desiredSts.Spec.Replicas
-			needsUpdate = true
+		autoscalingEnabled := ts.Spec.SessionConfig != nil && ts.Spec.SessionConfig.Autoscaling != nil
+		if !autoscalingEnabled {
+			if existingSts.Spec.Replicas == nil || *existingSts.Spec.Replicas != *desiredSts.Spec.Replicas {
+				existingSts.Spec.Replicas = desiredSts.Spec.Replicas
+				needsUpdate = true
+			}
 		}
 		// Update pod template (env vars, images, etc.) but not VolumeClaimTemplates (immutable).
 		// Compare specific fields rather than full container slices to avoid false
@@ -660,15 +657,21 @@ func (r *TaskSpawnerReconciler) reconcileSessionStatefulSet(ctx context.Context,
 		}
 	}
 
-	// Requeue periodically when autoscaling is enabled to re-evaluate scaling.
-	// Use the shorter of the autoscaling interval and the token requeue interval.
-	if ts.Spec.SessionConfig != nil && ts.Spec.SessionConfig.Autoscaling != nil {
-		requeueAfter := 15 * time.Second
-		if tokenRequeueAfter > 0 && tokenRequeueAfter < requeueAfter {
-			requeueAfter = tokenRequeueAfter
+	// Manage HPA when autoscaling is configured.
+	if ts.Spec.SessionConfig != nil && ts.Spec.SessionConfig.Autoscaling != nil && !isSuspended {
+		if err := r.reconcileSessionHPA(ctx, ts, stsName); err != nil {
+			logger.Error(err, "Unable to reconcile session HPA")
+			return ctrl.Result{}, err
 		}
-		return ctrl.Result{RequeueAfter: requeueAfter}, nil
+	} else if ts.Spec.SessionConfig != nil && ts.Spec.SessionConfig.Autoscaling == nil {
+		// Clean up HPA if autoscaling was removed.
+		if err := r.deleteSessionHPA(ctx, ts); err != nil {
+			logger.Error(err, "Unable to delete session HPA")
+		}
 	}
+
+	// Record session metrics for observability (and prometheus-adapter consumption).
+	r.recordSessionMetrics(ctx, ts)
 
 	if tokenRequeueAfter > 0 {
 		return ctrl.Result{RequeueAfter: tokenRequeueAfter}, nil
@@ -677,9 +680,15 @@ func (r *TaskSpawnerReconciler) reconcileSessionStatefulSet(ctx context.Context,
 	return ctrl.Result{}, nil
 }
 
-// computeAutoscaledReplicas determines the desired replica count based on
-// queued tasks and idle pod state.
-func (r *TaskSpawnerReconciler) computeAutoscaledReplicas(ctx context.Context, ts *kelosv1alpha1.TaskSpawner) (int32, error) {
+// sessionHPAName returns the HPA name for a TaskSpawner's session StatefulSet.
+func sessionHPAName(spawnerName string) string {
+	return sessionStatefulSetName(spawnerName)
+}
+
+// reconcileSessionHPA creates or updates an HPA targeting the session StatefulSet.
+// The HPA uses the custom metric kelos_session_tasks_queued (exposed via
+// prometheus-adapter) to scale pods based on task queue depth.
+func (r *TaskSpawnerReconciler) reconcileSessionHPA(ctx context.Context, ts *kelosv1alpha1.TaskSpawner, stsName string) error {
 	logger := log.FromContext(ctx)
 	autoscaling := ts.Spec.SessionConfig.Autoscaling
 
@@ -687,14 +696,145 @@ func (r *TaskSpawnerReconciler) computeAutoscaledReplicas(ctx context.Context, t
 	if autoscaling.MinReplicas != nil {
 		minReplicas = *autoscaling.MinReplicas
 	}
-	maxReplicas := autoscaling.MaxReplicas
 
 	stabilizationSeconds := int32(300)
 	if autoscaling.ScaleDownStabilizationSeconds != nil {
 		stabilizationSeconds = *autoscaling.ScaleDownStabilizationSeconds
 	}
 
-	// Count queued tasks for this spawner.
+	// Target value of 1 means: scale so each pod has at most 1 queued task.
+	targetValue := int32(1)
+
+	hpaName := sessionHPAName(ts.Name)
+	desiredHPA := &autoscalingv2.HorizontalPodAutoscaler{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      hpaName,
+			Namespace: ts.Namespace,
+			Labels: map[string]string{
+				"kelos.dev/taskspawner":    ts.Name,
+				"kelos.dev/managed-by":     "kelos-controller",
+				"kelos.dev/component":      "session-autoscaler",
+				"kelos.dev/execution-mode": string(kelosv1alpha1.ExecutionModePersistent),
+			},
+		},
+		Spec: autoscalingv2.HorizontalPodAutoscalerSpec{
+			ScaleTargetRef: autoscalingv2.CrossVersionObjectReference{
+				APIVersion: "apps/v1",
+				Kind:       "StatefulSet",
+				Name:       stsName,
+			},
+			MinReplicas: &minReplicas,
+			MaxReplicas: autoscaling.MaxReplicas,
+			Metrics: []autoscalingv2.MetricSpec{
+				{
+					Type: autoscalingv2.PodsMetricSourceType,
+					Pods: &autoscalingv2.PodsMetricSource{
+						Metric: autoscalingv2.MetricIdentifier{
+							Name: "kelos_session_tasks_queued",
+							Selector: &metav1.LabelSelector{
+								MatchLabels: map[string]string{
+									"spawner": ts.Name,
+								},
+							},
+						},
+						Target: autoscalingv2.MetricTarget{
+							Type:         autoscalingv2.AverageValueMetricType,
+							AverageValue: intToQuantity(targetValue),
+						},
+					},
+				},
+			},
+			Behavior: &autoscalingv2.HorizontalPodAutoscalerBehavior{
+				ScaleDown: &autoscalingv2.HPAScalingRules{
+					StabilizationWindowSeconds: &stabilizationSeconds,
+					Policies: []autoscalingv2.HPAScalingPolicy{
+						{
+							Type:          autoscalingv2.PodsScalingPolicy,
+							Value:         1,
+							PeriodSeconds: 60,
+						},
+					},
+				},
+				ScaleUp: &autoscalingv2.HPAScalingRules{
+					Policies: []autoscalingv2.HPAScalingPolicy{
+						{
+							Type:          autoscalingv2.PercentScalingPolicy,
+							Value:         100,
+							PeriodSeconds: 15,
+						},
+						{
+							Type:          autoscalingv2.PodsScalingPolicy,
+							Value:         4,
+							PeriodSeconds: 15,
+						},
+					},
+					SelectPolicy: selectMax(),
+				},
+			},
+		},
+	}
+
+	var existingHPA autoscalingv2.HorizontalPodAutoscaler
+	if err := r.Get(ctx, client.ObjectKey{Namespace: ts.Namespace, Name: hpaName}, &existingHPA); err != nil {
+		if apierrors.IsNotFound(err) {
+			if err := controllerutil.SetControllerReference(ts, desiredHPA, r.Scheme); err != nil {
+				return err
+			}
+			if err := r.Create(ctx, desiredHPA); err != nil {
+				if apierrors.IsAlreadyExists(err) {
+					return nil
+				}
+				return err
+			}
+			logger.Info("Created session HPA", "hpa", hpaName, "minReplicas", minReplicas, "maxReplicas", autoscaling.MaxReplicas)
+			r.recordEvent(ts, corev1.EventTypeNormal, "HPACreated", "Created session HPA %s (min=%d, max=%d)", hpaName, minReplicas, autoscaling.MaxReplicas)
+			return nil
+		}
+		return err
+	}
+
+	// Update HPA if spec changed.
+	needsUpdate := false
+	if existingHPA.Spec.MinReplicas == nil || *existingHPA.Spec.MinReplicas != minReplicas {
+		existingHPA.Spec.MinReplicas = &minReplicas
+		needsUpdate = true
+	}
+	if existingHPA.Spec.MaxReplicas != autoscaling.MaxReplicas {
+		existingHPA.Spec.MaxReplicas = autoscaling.MaxReplicas
+		needsUpdate = true
+	}
+	if existingHPA.Spec.Behavior == nil ||
+		existingHPA.Spec.Behavior.ScaleDown == nil ||
+		existingHPA.Spec.Behavior.ScaleDown.StabilizationWindowSeconds == nil ||
+		*existingHPA.Spec.Behavior.ScaleDown.StabilizationWindowSeconds != stabilizationSeconds {
+		existingHPA.Spec.Behavior = desiredHPA.Spec.Behavior
+		needsUpdate = true
+	}
+	if needsUpdate {
+		if err := r.Update(ctx, &existingHPA); err != nil {
+			return err
+		}
+		logger.Info("Updated session HPA", "hpa", hpaName)
+	}
+
+	return nil
+}
+
+// deleteSessionHPA removes the HPA for a TaskSpawner if it exists.
+func (r *TaskSpawnerReconciler) deleteSessionHPA(ctx context.Context, ts *kelosv1alpha1.TaskSpawner) error {
+	hpaName := sessionHPAName(ts.Name)
+	var hpa autoscalingv2.HorizontalPodAutoscaler
+	if err := r.Get(ctx, client.ObjectKey{Namespace: ts.Namespace, Name: hpaName}, &hpa); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	return r.Delete(ctx, &hpa)
+}
+
+// recordSessionMetrics records Prometheus gauges for session pod state.
+func (r *TaskSpawnerReconciler) recordSessionMetrics(ctx context.Context, ts *kelosv1alpha1.TaskSpawner) {
 	var taskList kelosv1alpha1.TaskList
 	if err := r.List(ctx, &taskList,
 		client.InNamespace(ts.Namespace),
@@ -703,7 +843,7 @@ func (r *TaskSpawnerReconciler) computeAutoscaledReplicas(ctx context.Context, t
 			LabelExecutionMode:      string(kelosv1alpha1.ExecutionModePersistent),
 		},
 	); err != nil {
-		return minReplicas, err
+		return
 	}
 
 	var queuedTasks int32
@@ -713,7 +853,6 @@ func (r *TaskSpawnerReconciler) computeAutoscaledReplicas(ctx context.Context, t
 		}
 	}
 
-	// List session pods for this spawner.
 	var podList corev1.PodList
 	if err := r.List(ctx, &podList,
 		client.InNamespace(ts.Namespace),
@@ -722,88 +861,37 @@ func (r *TaskSpawnerReconciler) computeAutoscaledReplicas(ctx context.Context, t
 			"kelos.dev/component":   SessionComponentLabel,
 		},
 	); err != nil {
-		return minReplicas, err
+		return
 	}
 
 	var readyPods, busyPods, idlePods int32
-	now := time.Now()
-
-	// Track per-pod state for ordinal-aware scale-down.
-	type podState struct {
-		ordinal               int
-		busy                  bool
-		idlePastStabilization bool
-	}
-	var pods []podState
-
 	for i := range podList.Items {
 		pod := &podList.Items[i]
 		if pod.Status.Phase != corev1.PodRunning || pod.DeletionTimestamp != nil {
 			continue
 		}
 		readyPods++
-		ps := podState{ordinal: i}
 		if _, assigned := pod.Annotations[AnnotationAssignedTask]; assigned {
 			busyPods++
-			ps.busy = true
 		} else {
 			idlePods++
-			if idleSince, ok := pod.Annotations[AnnotationIdleSince]; ok {
-				t, err := time.Parse(time.RFC3339, idleSince)
-				if err == nil && now.Sub(t) >= time.Duration(stabilizationSeconds)*time.Second {
-					ps.idlePastStabilization = true
-				}
-			}
 		}
-		pods = append(pods, ps)
 	}
 
-	// Record metrics.
 	sessionPodsReady.WithLabelValues(ts.Namespace, ts.Name).Set(float64(readyPods))
 	sessionPodsBusy.WithLabelValues(ts.Namespace, ts.Name).Set(float64(busyPods))
 	sessionPodsIdle.WithLabelValues(ts.Namespace, ts.Name).Set(float64(idlePods))
 	sessionTasksQueued.WithLabelValues(ts.Namespace, ts.Name).Set(float64(queuedTasks))
+}
 
-	// Compute desired replicas.
-	currentReplicas := readyPods
-	desired := currentReplicas
+func intToQuantity(val int32) *resource.Quantity {
+	q := resource.MustParse(fmt.Sprintf("%d", val))
+	return &q
+}
 
-	// Scale up: if queued tasks exceed available idle pods.
-	if queuedTasks > idlePods {
-		desired = currentReplicas + (queuedTasks - idlePods)
-	}
-
-	// Scale down: only reduce by 1 per reconcile cycle, and only when the
-	// highest-ordinal pod is idle past stabilization. StatefulSet removes
-	// pods in descending ordinal order, so we must verify the pod that will
-	// actually be removed is safe to terminate.
-	if queuedTasks == 0 && len(pods) > 0 {
-		highest := pods[len(pods)-1]
-		if !highest.busy && highest.idlePastStabilization {
-			desired = currentReplicas - 1
-		}
-	}
-
-	// Clamp to bounds.
-	if desired < minReplicas {
-		desired = minReplicas
-	}
-	if desired > maxReplicas {
-		desired = maxReplicas
-	}
-
-	sessionDesiredReplicas.WithLabelValues(ts.Namespace, ts.Name).Set(float64(desired))
-
-	logger.V(1).Info("Autoscaler computed desired replicas",
-		"spawner", ts.Name,
-		"queued", queuedTasks,
-		"ready", readyPods,
-		"busy", busyPods,
-		"idle", idlePods,
-		"desired", desired,
-	)
-
-	return desired, nil
+func selectMax() *autoscalingv2.ScalingPolicySelect {
+	s := autoscalingv2.MaxChangePolicySelect
+	return &s
 }
 
 // resolveSessionGitHubAppToken checks if the workspace secret is a GitHub App
