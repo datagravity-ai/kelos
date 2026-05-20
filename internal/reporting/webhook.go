@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -144,6 +146,7 @@ func (wr *WebhookReporter) sendWebhook(ctx context.Context, namespace string, ho
 		return fmt.Errorf("sending webhook to %s: %w", hook.Webhook.URL, err)
 	}
 	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
 
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("webhook %s returned status %d", hook.Webhook.URL, resp.StatusCode)
@@ -181,12 +184,12 @@ func buildWebhookPayload(task *kelosv1alpha1.Task) WebhookPayload {
 	return p
 }
 
-func phaseMatches(configured []kelosv1alpha1.TaskPhase, actual kelosv1alpha1.TaskPhase) bool {
+func phaseMatches(configured []kelosv1alpha1.TerminalTaskPhase, actual kelosv1alpha1.TaskPhase) bool {
 	if len(configured) == 0 {
 		return true
 	}
 	for _, p := range configured {
-		if p == actual {
+		if kelosv1alpha1.TaskPhase(p) == actual {
 			return true
 		}
 	}
@@ -195,19 +198,24 @@ func phaseMatches(configured []kelosv1alpha1.TaskPhase, actual kelosv1alpha1.Tas
 
 // persistAnnotationRetry updates annotations on a Task with retry on conflict.
 func persistAnnotationRetry(ctx context.Context, cl client.Client, task *kelosv1alpha1.Task, annotations map[string]string) error {
-	var current kelosv1alpha1.Task
-	if err := cl.Get(ctx, client.ObjectKeyFromObject(task), &current); err != nil {
-		return err
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var current kelosv1alpha1.Task
+		if err := cl.Get(ctx, client.ObjectKeyFromObject(task), &current); err != nil {
+			return err
+		}
+		if current.Annotations == nil {
+			current.Annotations = make(map[string]string)
+		}
+		for k, v := range annotations {
+			current.Annotations[k] = v
+		}
+		if err := cl.Update(ctx, &current); err != nil {
+			return err
+		}
+		task.Annotations = current.Annotations
+		return nil
+	}); err != nil {
+		return fmt.Errorf("persisting webhook annotations on task %s: %w", task.Name, err)
 	}
-	if current.Annotations == nil {
-		current.Annotations = make(map[string]string)
-	}
-	for k, v := range annotations {
-		current.Annotations[k] = v
-	}
-	if err := cl.Update(ctx, &current); err != nil {
-		return err
-	}
-	task.Annotations = current.Annotations
 	return nil
 }

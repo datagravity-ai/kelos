@@ -996,6 +996,10 @@ type TaskTemplate struct {
 	UpstreamRepo string `json:"upstreamRepo,omitempty"`
 }
 
+// TerminalTaskPhase is a TaskPhase restricted to terminal values.
+// +kubebuilder:validation:Enum=Succeeded;Failed
+type TerminalTaskPhase string
+
 // NotificationHook defines an outbound notification destination triggered
 // when a spawned Task reaches a terminal phase.
 type NotificationHook struct {
@@ -1006,9 +1010,8 @@ type NotificationHook struct {
 
 	// Phases specifies which terminal phases trigger this hook.
 	// Defaults to both Succeeded and Failed.
-	// +kubebuilder:validation:Items:Enum=Succeeded;Failed
 	// +optional
-	Phases []TaskPhase `json:"phases,omitempty"`
+	Phases []TerminalTaskPhase `json:"phases,omitempty"`
 
 	// Webhook sends an HTTP POST with task details to the given URL.
 	// +kubebuilder:validation:Required

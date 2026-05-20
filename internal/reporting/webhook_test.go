@@ -10,6 +10,10 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	kelosv1alpha1 "github.com/kelos-dev/kelos/api/v1alpha1"
 )
@@ -22,6 +26,12 @@ func (f *fakeSecretReader) ReadSecret(_ context.Context, namespace, name, key st
 	return f.secrets[namespace+"/"+name+"/"+key], nil
 }
 
+func newFakeClient(objs ...client.Object) client.Client {
+	scheme := runtime.NewScheme()
+	utilruntime.Must(kelosv1alpha1.AddToScheme(scheme))
+	return fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).WithStatusSubresource(&kelosv1alpha1.Task{}).Build()
+}
+
 func TestWebhookReporter_ReportWebhooks(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -30,6 +40,7 @@ func TestWebhookReporter_ReportWebhooks(t *testing.T) {
 		wantRequests   int
 		wantPayload    *WebhookPayload
 		wantAuthHeader string
+		wantAnnotation string
 	}{
 		{
 			name: "sends webhook on task succeeded",
@@ -66,6 +77,7 @@ func TestWebhookReporter_ReportWebhooks(t *testing.T) {
 				Outputs:   []string{"https://github.com/org/repo/pull/1"},
 				Results:   map[string]string{"cost-usd": "0.42"},
 			},
+			wantAnnotation: "Succeeded",
 		},
 		{
 			name: "sends webhook on task failed",
@@ -83,8 +95,9 @@ func TestWebhookReporter_ReportWebhooks(t *testing.T) {
 					Message: "OOM killed",
 				},
 			},
-			serverStatus: 200,
-			wantRequests: 1,
+			serverStatus:   200,
+			wantRequests:   1,
+			wantAnnotation: "Failed",
 		},
 		{
 			name: "skips non-terminal phase",
@@ -96,6 +109,7 @@ func TestWebhookReporter_ReportWebhooks(t *testing.T) {
 						AnnotationOnCompletion: `[{"name":"alert","webhook":{"url":"PLACEHOLDER"}}]`,
 					},
 				},
+				Spec:   kelosv1alpha1.TaskSpec{Type: "claude-code"},
 				Status: kelosv1alpha1.TaskStatus{Phase: kelosv1alpha1.TaskPhaseRunning},
 			},
 			serverStatus: 200,
@@ -112,6 +126,7 @@ func TestWebhookReporter_ReportWebhooks(t *testing.T) {
 						AnnotationWebhookReportPhase: "Succeeded",
 					},
 				},
+				Spec:   kelosv1alpha1.TaskSpec{Type: "claude-code"},
 				Status: kelosv1alpha1.TaskStatus{Phase: kelosv1alpha1.TaskPhaseSucceeded},
 			},
 			serverStatus: 200,
@@ -127,6 +142,7 @@ func TestWebhookReporter_ReportWebhooks(t *testing.T) {
 						AnnotationOnCompletion: `[{"name":"alert","phases":["Failed"],"webhook":{"url":"PLACEHOLDER"}}]`,
 					},
 				},
+				Spec:   kelosv1alpha1.TaskSpec{Type: "claude-code"},
 				Status: kelosv1alpha1.TaskStatus{Phase: kelosv1alpha1.TaskPhaseSucceeded},
 			},
 			serverStatus: 200,
@@ -148,6 +164,7 @@ func TestWebhookReporter_ReportWebhooks(t *testing.T) {
 			serverStatus:   200,
 			wantRequests:   1,
 			wantAuthHeader: "Bearer my-token",
+			wantAnnotation: "Succeeded",
 		},
 	}
 
@@ -181,6 +198,8 @@ func TestWebhookReporter_ReportWebhooks(t *testing.T) {
 				tt.task.Annotations[AnnotationOnCompletion] = string(updated)
 			}
 
+			cl := newFakeClient(tt.task)
+
 			secretReader := &fakeSecretReader{
 				secrets: map[string]string{
 					"default/webhook-secret/Authorization": "Bearer my-token",
@@ -188,39 +207,14 @@ func TestWebhookReporter_ReportWebhooks(t *testing.T) {
 			}
 
 			wr := &WebhookReporter{
-				Client:       nil, // persist is tested separately
+				Client:       cl,
 				HTTPClient:   server.Client(),
 				SecretReader: secretReader,
 			}
 
-			// Skip persist by calling sendWebhook directly for tests that need it,
-			// or test the full flow by not calling persistWebhookReportPhase.
-			// For simplicity, test the core dispatch logic without k8s client.
-			if tt.wantRequests == 0 {
-				err := wr.ReportWebhooks(context.Background(), tt.task)
-				if err != nil {
-					t.Fatalf("unexpected error: %v", err)
-				}
-				if requestCount != 0 {
-					t.Errorf("expected 0 requests, got %d", requestCount)
-				}
-				return
-			}
-
-			// For tests that expect requests, call the internal method directly
-			// to avoid needing a k8s client for annotation persistence.
-			var hooks []kelosv1alpha1.NotificationHook
-			json.Unmarshal([]byte(tt.task.Annotations[AnnotationOnCompletion]), &hooks)
-
-			payload := buildWebhookPayload(tt.task)
-			for _, hook := range hooks {
-				if !phaseMatches(hook.Phases, tt.task.Status.Phase) {
-					continue
-				}
-				err := wr.sendWebhook(context.Background(), tt.task.Namespace, hook, payload)
-				if err != nil {
-					t.Fatalf("unexpected error: %v", err)
-				}
+			err := wr.ReportWebhooks(context.Background(), tt.task)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
 			}
 
 			if requestCount != tt.wantRequests {
@@ -249,7 +243,68 @@ func TestWebhookReporter_ReportWebhooks(t *testing.T) {
 			if tt.wantAuthHeader != "" && lastAuthHeader != tt.wantAuthHeader {
 				t.Errorf("Authorization header = %q, want %q", lastAuthHeader, tt.wantAuthHeader)
 			}
+
+			// Verify annotation persistence for cases that dispatched webhooks.
+			if tt.wantAnnotation != "" {
+				var updated kelosv1alpha1.Task
+				if err := cl.Get(context.Background(), client.ObjectKeyFromObject(tt.task), &updated); err != nil {
+					t.Fatalf("fetching task: %v", err)
+				}
+				got := updated.Annotations[AnnotationWebhookReportPhase]
+				if got != tt.wantAnnotation {
+					t.Errorf("annotation %s = %q, want %q", AnnotationWebhookReportPhase, got, tt.wantAnnotation)
+				}
+			}
 		})
+	}
+}
+
+func TestReportWebhooks_Idempotency(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(200)
+	}))
+	defer server.Close()
+
+	task := &kelosv1alpha1.Task{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "idem-task",
+			Namespace: "default",
+			Annotations: map[string]string{
+				AnnotationOnCompletion: `[{"name":"hook","webhook":{"url":"` + server.URL + `"}}]`,
+			},
+		},
+		Spec:   kelosv1alpha1.TaskSpec{Type: "claude-code"},
+		Status: kelosv1alpha1.TaskStatus{Phase: kelosv1alpha1.TaskPhaseSucceeded},
+	}
+
+	cl := newFakeClient(task)
+	wr := &WebhookReporter{Client: cl, HTTPClient: server.Client()}
+
+	// First call should dispatch and persist.
+	if err := wr.ReportWebhooks(context.Background(), task); err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+
+	// Second call should be a no-op (annotation already set).
+	requestCount := 0
+	server2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requestCount++
+		w.WriteHeader(200)
+	}))
+	defer server2.Close()
+
+	// Re-read task with updated annotations.
+	var updated kelosv1alpha1.Task
+	if err := cl.Get(context.Background(), client.ObjectKeyFromObject(task), &updated); err != nil {
+		t.Fatalf("fetching task: %v", err)
+	}
+
+	wr2 := &WebhookReporter{Client: cl, HTTPClient: server2.Client()}
+	if err := wr2.ReportWebhooks(context.Background(), &updated); err != nil {
+		t.Fatalf("second call: %v", err)
+	}
+	if requestCount != 0 {
+		t.Errorf("expected 0 requests on second call, got %d", requestCount)
 	}
 }
 
@@ -307,15 +362,15 @@ func TestBuildWebhookPayload(t *testing.T) {
 
 func TestPhaseMatches(t *testing.T) {
 	tests := []struct {
-		configured []kelosv1alpha1.TaskPhase
+		configured []kelosv1alpha1.TerminalTaskPhase
 		actual     kelosv1alpha1.TaskPhase
 		want       bool
 	}{
 		{nil, kelosv1alpha1.TaskPhaseSucceeded, true},
 		{nil, kelosv1alpha1.TaskPhaseFailed, true},
-		{[]kelosv1alpha1.TaskPhase{kelosv1alpha1.TaskPhaseFailed}, kelosv1alpha1.TaskPhaseFailed, true},
-		{[]kelosv1alpha1.TaskPhase{kelosv1alpha1.TaskPhaseFailed}, kelosv1alpha1.TaskPhaseSucceeded, false},
-		{[]kelosv1alpha1.TaskPhase{kelosv1alpha1.TaskPhaseSucceeded, kelosv1alpha1.TaskPhaseFailed}, kelosv1alpha1.TaskPhaseSucceeded, true},
+		{[]kelosv1alpha1.TerminalTaskPhase{"Failed"}, kelosv1alpha1.TaskPhaseFailed, true},
+		{[]kelosv1alpha1.TerminalTaskPhase{"Failed"}, kelosv1alpha1.TaskPhaseSucceeded, false},
+		{[]kelosv1alpha1.TerminalTaskPhase{"Succeeded", "Failed"}, kelosv1alpha1.TaskPhaseSucceeded, true},
 	}
 
 	for _, tt := range tests {

@@ -733,7 +733,7 @@ func (in *NotificationHook) DeepCopyInto(out *NotificationHook) {
 	*out = *in
 	if in.Phases != nil {
 		in, out := &in.Phases, &out.Phases
-		*out = make([]TaskPhase, len(*in))
+		*out = make([]TerminalTaskPhase, len(*in))
 		copy(*out, *in)
 	}
 	in.Webhook.DeepCopyInto(&out.Webhook)

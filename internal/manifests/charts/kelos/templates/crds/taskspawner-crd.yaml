@@ -115,8 +115,11 @@ spec:
                             Phases specifies which terminal phases trigger this hook.
                             Defaults to both Succeeded and Failed.
                           items:
-                            description: TaskPhase represents the current phase of
-                              a Task.
+                            description: TerminalTaskPhase is a TaskPhase restricted
+                              to terminal values.
+                            enum:
+                            - Succeeded
+                            - Failed
                             type: string
                           type: array
                         webhook:
