@@ -671,11 +671,13 @@ func (r *TaskSpawnerReconciler) reconcileSessionStatefulSet(ctx context.Context,
 		// while the StatefulSet is scaled to 0.
 		if err := r.deleteSessionHPA(ctx, ts); err != nil {
 			logger.Error(err, "Unable to delete session HPA during suspension")
+			return ctrl.Result{}, err
 		}
 	} else if !autoscalingEnabled {
 		// Clean up HPA if autoscaling was removed.
 		if err := r.deleteSessionHPA(ctx, ts); err != nil {
 			logger.Error(err, "Unable to delete session HPA")
+			return ctrl.Result{}, err
 		}
 	}
 
