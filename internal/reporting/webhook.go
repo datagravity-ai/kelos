@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"time"
 
 	"k8s.io/client-go/util/retry"
@@ -47,6 +49,8 @@ type WebhookReporter struct {
 	HTTPClient *http.Client
 	// SecretReader resolves secret values. When nil, secretRef is ignored.
 	SecretReader SecretReader
+	// skipURLValidation disables SSRF checks (for testing only).
+	skipURLValidation bool
 }
 
 // SecretReader reads a key from a named Secret in a namespace.
@@ -117,6 +121,12 @@ func (wr *WebhookReporter) ReportWebhooks(ctx context.Context, task *kelosv1alph
 }
 
 func (wr *WebhookReporter) sendWebhook(ctx context.Context, namespace string, hook kelosv1alpha1.NotificationHook, payload WebhookPayload) error {
+	if !wr.skipURLValidation {
+		if err := validateWebhookURL(hook.Webhook.URL); err != nil {
+			return err
+		}
+	}
+
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("marshaling webhook payload: %w", err)
@@ -138,14 +148,11 @@ func (wr *WebhookReporter) sendWebhook(ctx context.Context, namespace string, ho
 		}
 	}
 
-	httpClient := wr.HTTPClient
-	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 10 * time.Second}
-	}
+	httpClient := wr.httpClient()
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("sending webhook to %s: %w", hook.Webhook.URL, err)
+		return fmt.Errorf("sending webhook to hook %q: %w", hook.Name, err)
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, resp.Body)
@@ -155,6 +162,63 @@ func (wr *WebhookReporter) sendWebhook(ctx context.Context, namespace string, ho
 	}
 
 	return nil
+}
+
+// httpClient returns the configured HTTP client or a shared default with
+// SSRF-safe redirect policy.
+func (wr *WebhookReporter) httpClient() *http.Client {
+	if wr.HTTPClient != nil {
+		return wr.HTTPClient
+	}
+	return defaultWebhookHTTPClient
+}
+
+var defaultWebhookHTTPClient = &http.Client{
+	Timeout: 10 * time.Second,
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		if err := validateWebhookURL(req.URL.String()); err != nil {
+			return err
+		}
+		if len(via) >= 10 {
+			return fmt.Errorf("too many redirects")
+		}
+		return nil
+	},
+}
+
+// validateWebhookURL rejects URLs that target private, loopback, or
+// link-local addresses to prevent SSRF attacks.
+func validateWebhookURL(rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid webhook URL: %w", err)
+	}
+	if u.Scheme != "https" {
+		return fmt.Errorf("webhook URL must use HTTPS")
+	}
+	host := u.Hostname()
+	if ip := net.ParseIP(host); ip != nil {
+		if isPrivateIP(ip) {
+			return fmt.Errorf("webhook URL must not target private/internal addresses")
+		}
+	}
+	return nil
+}
+
+func isPrivateIP(ip net.IP) bool {
+	privateRanges := []net.IPNet{
+		{IP: net.IPv4(10, 0, 0, 0), Mask: net.CIDRMask(8, 32)},
+		{IP: net.IPv4(172, 16, 0, 0), Mask: net.CIDRMask(12, 32)},
+		{IP: net.IPv4(192, 168, 0, 0), Mask: net.CIDRMask(16, 32)},
+		{IP: net.IPv4(169, 254, 0, 0), Mask: net.CIDRMask(16, 32)},
+		{IP: net.IPv4(127, 0, 0, 0), Mask: net.CIDRMask(8, 32)},
+	}
+	for _, r := range privateRanges {
+		if r.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 func (wr *WebhookReporter) persistWebhookReportPhase(ctx context.Context, task *kelosv1alpha1.Task, phase string) error {

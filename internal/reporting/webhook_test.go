@@ -208,9 +208,10 @@ func TestWebhookReporter_ReportWebhooks(t *testing.T) {
 			}
 
 			wr := &WebhookReporter{
-				Client:       cl,
-				HTTPClient:   server.Client(),
-				SecretReader: secretReader,
+				Client:            cl,
+				HTTPClient:        server.Client(),
+				SecretReader:      secretReader,
+				skipURLValidation: true,
 			}
 
 			err := wr.ReportWebhooks(context.Background(), tt.task)
@@ -279,7 +280,7 @@ func TestReportWebhooks_Idempotency(t *testing.T) {
 	}
 
 	cl := newFakeClient(task)
-	wr := &WebhookReporter{Client: cl, HTTPClient: server.Client()}
+	wr := &WebhookReporter{Client: cl, HTTPClient: server.Client(), skipURLValidation: true}
 
 	// First call should dispatch and persist.
 	if err := wr.ReportWebhooks(context.Background(), task); err != nil {
@@ -300,7 +301,7 @@ func TestReportWebhooks_Idempotency(t *testing.T) {
 		t.Fatalf("fetching task: %v", err)
 	}
 
-	wr2 := &WebhookReporter{Client: cl, HTTPClient: server2.Client()}
+	wr2 := &WebhookReporter{Client: cl, HTTPClient: server2.Client(), skipURLValidation: true}
 	if err := wr2.ReportWebhooks(context.Background(), &updated); err != nil {
 		t.Fatalf("second call: %v", err)
 	}
@@ -358,6 +359,28 @@ func TestBuildWebhookPayload(t *testing.T) {
 	}
 	if payload.Results["cost-usd"] != "0.42" {
 		t.Errorf("Results[cost-usd] = %q, want %q", payload.Results["cost-usd"], "0.42")
+	}
+}
+
+func TestValidateWebhookURL(t *testing.T) {
+	tests := []struct {
+		url     string
+		wantErr bool
+	}{
+		{"https://hooks.slack.com/services/T00/B00/xxx", false},
+		{"https://example.com/webhook", false},
+		{"http://example.com/webhook", true},
+		{"https://169.254.169.254/latest/meta-data/", true},
+		{"https://10.0.0.1/internal", true},
+		{"https://172.16.0.1/internal", true},
+		{"https://192.168.1.1/internal", true},
+		{"https://127.0.0.1/local", true},
+	}
+	for _, tt := range tests {
+		err := validateWebhookURL(tt.url)
+		if (err != nil) != tt.wantErr {
+			t.Errorf("validateWebhookURL(%q) error = %v, wantErr %v", tt.url, err, tt.wantErr)
+		}
 	}
 }
 

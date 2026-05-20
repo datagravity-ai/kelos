@@ -4261,8 +4261,8 @@ spec:
                               - name
                               type: object
                             url:
-                              description: URL is the webhook endpoint.
-                              pattern: ^https?://.+
+                              description: URL is the webhook endpoint. Must use HTTPS.
+                              pattern: ^https://.+
                               type: string
                           required:
                           - url

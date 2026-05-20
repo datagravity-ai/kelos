@@ -1020,9 +1020,9 @@ type NotificationHook struct {
 
 // WebhookNotification configures an HTTP webhook notification.
 type WebhookNotification struct {
-	// URL is the webhook endpoint.
+	// URL is the webhook endpoint. Must use HTTPS.
 	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:Pattern="^https?://.+"
+	// +kubebuilder:validation:Pattern="^https://.+"
 	URL string `json:"url"`
 
 	// SecretRef optionally references a Secret containing an "Authorization"
