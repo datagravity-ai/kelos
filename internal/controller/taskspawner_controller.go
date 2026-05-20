@@ -561,6 +561,16 @@ func (r *TaskSpawnerReconciler) reconcileSessionStatefulSet(ctx context.Context,
 		return ctrl.Result{}, err
 	}
 
+	// Autoscaling: compute desired replicas based on queue depth and pod state.
+	if !isSuspended && ts.Spec.SessionConfig != nil && ts.Spec.SessionConfig.Autoscaling != nil {
+		autoscaledReplicas, err := r.computeAutoscaledReplicas(ctx, ts)
+		if err != nil {
+			logger.Error(err, "Unable to compute autoscaled replicas, using current")
+		} else {
+			desiredSts.Spec.Replicas = &autoscaledReplicas
+		}
+	}
+
 	// Suspend: scale to 0.
 	if isSuspended {
 		zero := int32(0)
@@ -653,7 +663,128 @@ func (r *TaskSpawnerReconciler) reconcileSessionStatefulSet(ctx context.Context,
 	if tokenRequeueAfter > 0 {
 		return ctrl.Result{RequeueAfter: tokenRequeueAfter}, nil
 	}
+
+	// Requeue periodically when autoscaling is enabled to re-evaluate scaling.
+	if ts.Spec.SessionConfig != nil && ts.Spec.SessionConfig.Autoscaling != nil {
+		return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
+	}
+
 	return ctrl.Result{}, nil
+}
+
+// computeAutoscaledReplicas determines the desired replica count based on
+// queued tasks and idle pod state.
+func (r *TaskSpawnerReconciler) computeAutoscaledReplicas(ctx context.Context, ts *kelosv1alpha1.TaskSpawner) (int32, error) {
+	logger := log.FromContext(ctx)
+	autoscaling := ts.Spec.SessionConfig.Autoscaling
+
+	minReplicas := int32(1)
+	if autoscaling.MinReplicas != nil {
+		minReplicas = *autoscaling.MinReplicas
+	}
+	maxReplicas := autoscaling.MaxReplicas
+
+	stabilizationSeconds := int32(300)
+	if autoscaling.ScaleDownStabilizationSeconds != nil {
+		stabilizationSeconds = *autoscaling.ScaleDownStabilizationSeconds
+	}
+
+	// Count queued tasks for this spawner.
+	var taskList kelosv1alpha1.TaskList
+	if err := r.List(ctx, &taskList,
+		client.InNamespace(ts.Namespace),
+		client.MatchingLabels{
+			"kelos.dev/taskspawner": ts.Name,
+			LabelExecutionMode:      string(kelosv1alpha1.ExecutionModePersistent),
+		},
+	); err != nil {
+		return minReplicas, err
+	}
+
+	var queuedTasks int32
+	for i := range taskList.Items {
+		if taskList.Items[i].Status.Phase == kelosv1alpha1.TaskPhaseQueued {
+			queuedTasks++
+		}
+	}
+
+	// List session pods for this spawner.
+	var podList corev1.PodList
+	if err := r.List(ctx, &podList,
+		client.InNamespace(ts.Namespace),
+		client.MatchingLabels{
+			"kelos.dev/taskspawner": ts.Name,
+			"kelos.dev/component":   SessionComponentLabel,
+		},
+	); err != nil {
+		return minReplicas, err
+	}
+
+	var readyPods, busyPods, idlePods int32
+	var scaleDownEligible int32
+	now := time.Now()
+
+	for i := range podList.Items {
+		pod := &podList.Items[i]
+		if pod.Status.Phase != corev1.PodRunning || pod.DeletionTimestamp != nil {
+			continue
+		}
+		readyPods++
+		if _, assigned := pod.Annotations[AnnotationAssignedTask]; assigned {
+			busyPods++
+		} else {
+			idlePods++
+			if idleSince, ok := pod.Annotations[AnnotationIdleSince]; ok {
+				t, err := time.Parse(time.RFC3339, idleSince)
+				if err == nil && now.Sub(t) >= time.Duration(stabilizationSeconds)*time.Second {
+					scaleDownEligible++
+				}
+			}
+		}
+	}
+
+	// Record metrics.
+	sessionPodsReady.WithLabelValues(ts.Namespace, ts.Name).Set(float64(readyPods))
+	sessionPodsBusy.WithLabelValues(ts.Namespace, ts.Name).Set(float64(busyPods))
+	sessionPodsIdle.WithLabelValues(ts.Namespace, ts.Name).Set(float64(idlePods))
+	sessionTasksQueued.WithLabelValues(ts.Namespace, ts.Name).Set(float64(queuedTasks))
+
+	// Compute desired replicas.
+	currentReplicas := readyPods
+	desired := currentReplicas
+
+	// Scale up: if there are queued tasks and no idle pods to handle them.
+	if queuedTasks > 0 && idlePods == 0 {
+		desired = currentReplicas + queuedTasks
+	}
+
+	// Scale down: reduce by the number of pods that have been idle beyond
+	// the stabilization window, but never below minReplicas.
+	if queuedTasks == 0 && scaleDownEligible > 0 {
+		desired = currentReplicas - scaleDownEligible
+	}
+
+	// Clamp to bounds.
+	if desired < minReplicas {
+		desired = minReplicas
+	}
+	if desired > maxReplicas {
+		desired = maxReplicas
+	}
+
+	sessionDesiredReplicas.WithLabelValues(ts.Namespace, ts.Name).Set(float64(desired))
+
+	logger.V(1).Info("Autoscaler computed desired replicas",
+		"spawner", ts.Name,
+		"queued", queuedTasks,
+		"ready", readyPods,
+		"busy", busyPods,
+		"idle", idlePods,
+		"scaleDownEligible", scaleDownEligible,
+		"desired", desired,
+	)
+
+	return desired, nil
 }
 
 // resolveSessionGitHubAppToken checks if the workspace secret is a GitHub App

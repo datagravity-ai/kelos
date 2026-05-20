@@ -52,6 +52,10 @@ const (
 	// AnnotationSessionStartTime records when the session pod started processing tasks.
 	AnnotationSessionStartTime = "kelos.dev/session-start-time"
 
+	// AnnotationIdleSince records when a session pod became idle (RFC3339).
+	// Used by the autoscaler to determine scale-down eligibility.
+	AnnotationIdleSince = "kelos.dev/idle-since"
+
 	// LabelExecutionMode is set on Tasks to indicate their execution mode.
 	LabelExecutionMode = "kelos.dev/execution-mode"
 )
@@ -165,6 +169,7 @@ func (r *SessionReconciler) assignTask(ctx context.Context, task *kelosv1alpha1.
 		availablePod.Annotations = make(map[string]string)
 	}
 	availablePod.Annotations[AnnotationAssignedTask] = task.Name
+	delete(availablePod.Annotations, AnnotationIdleSince)
 	if err := r.Update(ctx, availablePod); err != nil {
 		logger.Error(err, "Failed to assign task to pod", "pod", availablePod.Name)
 		return ctrl.Result{}, err
@@ -394,7 +399,8 @@ func (r *SessionReconciler) updateTaskPhase(ctx context.Context, task *kelosv1al
 	})
 }
 
-// clearPodAssignment removes the task assignment annotations from a session pod.
+// clearPodAssignment removes the task assignment annotations from a session pod
+// and sets the idle-since annotation for autoscaler scale-down tracking.
 func (r *SessionReconciler) clearPodAssignment(ctx context.Context, namespace, podName string) error {
 	var pod corev1.Pod
 	if err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: podName}, &pod); err != nil {
@@ -405,11 +411,12 @@ func (r *SessionReconciler) clearPodAssignment(ctx context.Context, namespace, p
 	}
 
 	if pod.Annotations == nil {
-		return nil
+		pod.Annotations = make(map[string]string)
 	}
 
 	delete(pod.Annotations, AnnotationAssignedTask)
 	delete(pod.Annotations, AnnotationTaskStatus)
+	pod.Annotations[AnnotationIdleSince] = time.Now().UTC().Format(time.RFC3339)
 	return r.Update(ctx, &pod)
 }
 

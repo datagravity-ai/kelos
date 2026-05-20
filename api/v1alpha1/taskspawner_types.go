@@ -46,6 +46,30 @@ type WorkspaceResetConfig struct {
 	PreserveDirectories []string `json:"preserveDirectories,omitempty"`
 }
 
+// SessionAutoscalingConfig configures dynamic replica scaling for persistent
+// session pods based on task queue depth.
+type SessionAutoscalingConfig struct {
+	// MinReplicas is the minimum number of session pods to maintain.
+	// The autoscaler will not scale below this value. Defaults to 1.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:default=1
+	MinReplicas *int32 `json:"minReplicas,omitempty"`
+
+	// MaxReplicas is the maximum number of session pods allowed.
+	// The autoscaler will not scale above this value.
+	// +kubebuilder:validation:Minimum=1
+	MaxReplicas int32 `json:"maxReplicas"`
+
+	// ScaleDownStabilizationSeconds is the duration a pod must be idle
+	// before it becomes eligible for scale-down. Prevents flapping
+	// when tasks arrive in bursts. Defaults to 300 (5 minutes).
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:default=300
+	ScaleDownStabilizationSeconds *int32 `json:"scaleDownStabilizationSeconds,omitempty"`
+}
+
 // SessionConfig configures persistent execution mode sessions.
 type SessionConfig struct {
 	// IdleTimeout is how long a session pod waits without a task assignment
@@ -84,6 +108,11 @@ type SessionConfig struct {
 	// WorkspaceReset controls how the workspace is cleaned between tasks.
 	// +optional
 	WorkspaceReset *WorkspaceResetConfig `json:"workspaceReset,omitempty"`
+
+	// Autoscaling configures dynamic replica scaling based on task queue depth.
+	// When set, overrides the static Replicas field for scaling decisions.
+	// +optional
+	Autoscaling *SessionAutoscalingConfig `json:"autoscaling,omitempty"`
 
 	// RetryOnPodFailure controls whether tasks are re-queued when their
 	// session pod is deleted or crashes. Defaults to true.

@@ -3243,6 +3243,38 @@ spec:
                   SessionConfig configures persistent execution mode. Only valid when
                   executionMode is "persistent".
                 properties:
+                  autoscaling:
+                    description: |-
+                      Autoscaling configures dynamic replica scaling based on task queue depth.
+                      When set, overrides the static Replicas field for scaling decisions.
+                    properties:
+                      maxReplicas:
+                        description: |-
+                          MaxReplicas is the maximum number of session pods allowed.
+                          The autoscaler will not scale above this value.
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      minReplicas:
+                        default: 1
+                        description: |-
+                          MinReplicas is the minimum number of session pods to maintain.
+                          The autoscaler will not scale below this value. Defaults to 1.
+                        format: int32
+                        minimum: 0
+                        type: integer
+                      scaleDownStabilizationSeconds:
+                        default: 300
+                        description: |-
+                          ScaleDownStabilizationSeconds is the duration a pod must be idle
+                          before it becomes eligible for scale-down. Prevents flapping
+                          when tasks arrive in bursts. Defaults to 300 (5 minutes).
+                        format: int32
+                        minimum: 0
+                        type: integer
+                    required:
+                    - maxReplicas
+                    type: object
                   idleTimeout:
                     description: |-
                       IdleTimeout is how long a session pod waits without a task assignment

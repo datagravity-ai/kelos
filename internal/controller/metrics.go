@@ -69,6 +69,51 @@ var (
 		},
 		[]string{"namespace", "type", "spawner", "model"},
 	)
+
+	// sessionPodsReady tracks the number of ready session pods per spawner.
+	sessionPodsReady = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "kelos_session_pods_ready",
+			Help: "Number of ready session pods",
+		},
+		[]string{"namespace", "spawner"},
+	)
+
+	// sessionPodsBusy tracks the number of session pods with assigned tasks.
+	sessionPodsBusy = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "kelos_session_pods_busy",
+			Help: "Number of session pods with assigned tasks",
+		},
+		[]string{"namespace", "spawner"},
+	)
+
+	// sessionPodsIdle tracks the number of session pods without assigned tasks.
+	sessionPodsIdle = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "kelos_session_pods_idle",
+			Help: "Number of session pods without assigned tasks",
+		},
+		[]string{"namespace", "spawner"},
+	)
+
+	// sessionTasksQueued tracks the number of queued tasks per spawner.
+	sessionTasksQueued = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "kelos_session_tasks_queued",
+			Help: "Number of tasks in Queued phase for persistent-mode spawners",
+		},
+		[]string{"namespace", "spawner"},
+	)
+
+	// sessionDesiredReplicas tracks the computed desired replica count.
+	sessionDesiredReplicas = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "kelos_session_desired_replicas",
+			Help: "Computed desired replica count for session StatefulSet",
+		},
+		[]string{"namespace", "spawner"},
+	)
 )
 
 func init() {
@@ -80,5 +125,10 @@ func init() {
 		taskCostUSD,
 		taskInputTokens,
 		taskOutputTokens,
+		sessionPodsReady,
+		sessionPodsBusy,
+		sessionPodsIdle,
+		sessionTasksQueued,
+		sessionDesiredReplicas,
 	)
 }
