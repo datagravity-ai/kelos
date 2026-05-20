@@ -128,6 +128,13 @@ func runOnce(ctx context.Context, cl client.Client, key types.NamespacedName, cf
 		}
 	}
 
+	// Run onCompletion webhook reporting when configured.
+	if ts.Spec.OnCompletion != nil && len(ts.Spec.OnCompletion.Hooks) > 0 {
+		if err := runWebhookReportingCycle(ctx, cl, key, cfg.HTTPClient); err != nil {
+			ctrl.Log.WithName("spawner").Error(err, "Webhook reporting cycle failed")
+		}
+	}
+
 	return resolvedPollInterval(&ts), nil
 }
 

@@ -996,6 +996,47 @@ type TaskTemplate struct {
 	UpstreamRepo string `json:"upstreamRepo,omitempty"`
 }
 
+// NotificationHook defines an outbound notification destination triggered
+// when a spawned Task reaches a terminal phase.
+type NotificationHook struct {
+	// Name identifies this hook for logging and status reporting.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+
+	// Phases specifies which terminal phases trigger this hook.
+	// Defaults to both Succeeded and Failed.
+	// +kubebuilder:validation:Items:Enum=Succeeded;Failed
+	// +optional
+	Phases []TaskPhase `json:"phases,omitempty"`
+
+	// Webhook sends an HTTP POST with task details to the given URL.
+	// +kubebuilder:validation:Required
+	Webhook WebhookNotification `json:"webhook"`
+}
+
+// WebhookNotification configures an HTTP webhook notification.
+type WebhookNotification struct {
+	// URL is the webhook endpoint.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Pattern="^https?://.+"
+	URL string `json:"url"`
+
+	// SecretRef optionally references a Secret containing an "Authorization"
+	// key whose value is sent as the Authorization header.
+	// +optional
+	SecretRef *SecretReference `json:"secretRef,omitempty"`
+}
+
+// OnCompletion configures outbound notifications when spawned Tasks
+// reach terminal phases.
+type OnCompletion struct {
+	// Hooks is a list of notification destinations.
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=8
+	Hooks []NotificationHook `json:"hooks"`
+}
+
 // TaskSpawnerSpec defines the desired state of TaskSpawner.
 // +kubebuilder:validation:XValidation:rule="!(has(self.when.githubIssues) || has(self.when.githubPullRequests) || has(self.when.githubWebhook) || has(self.when.linearWebhook)) || has(self.taskTemplate.workspaceRef)",message="taskTemplate.workspaceRef is required when using githubIssues, githubPullRequests, githubWebhook, or linearWebhook source"
 // +kubebuilder:validation:XValidation:rule="!has(self.sessionConfig) || (has(self.executionMode) && self.executionMode == 'persistent')",message="sessionConfig is only allowed when executionMode is persistent"
@@ -1052,6 +1093,11 @@ type TaskSpawnerSpec struct {
 	// executionMode is "persistent".
 	// +optional
 	SessionConfig *SessionConfig `json:"sessionConfig,omitempty"`
+
+	// OnCompletion configures outbound notifications when spawned Tasks
+	// reach terminal phases (Succeeded or Failed).
+	// +optional
+	OnCompletion *OnCompletion `json:"onCompletion,omitempty"`
 }
 
 // TaskSpawnerStatus defines the observed state of TaskSpawner.
