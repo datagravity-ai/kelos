@@ -145,8 +145,9 @@ func TestWebhookReporter_ReportWebhooks(t *testing.T) {
 				Spec:   kelosv1alpha1.TaskSpec{Type: "claude-code"},
 				Status: kelosv1alpha1.TaskStatus{Phase: kelosv1alpha1.TaskPhaseSucceeded},
 			},
-			serverStatus: 200,
-			wantRequests: 0,
+			serverStatus:   200,
+			wantRequests:   0,
+			wantAnnotation: "Succeeded",
 		},
 		{
 			name: "includes auth header from secret",

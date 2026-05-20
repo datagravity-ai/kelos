@@ -103,7 +103,9 @@ func (wr *WebhookReporter) ReportWebhooks(ctx context.Context, task *kelosv1alph
 	}
 
 	if dispatched == 0 {
-		return nil
+		// All hooks were filtered out by phase — persist the annotation to
+		// avoid re-evaluating this task on every reporting cycle.
+		return wr.persistWebhookReportPhase(ctx, task, string(task.Status.Phase))
 	}
 
 	// Only persist the reported phase if all hooks succeeded.
@@ -149,7 +151,7 @@ func (wr *WebhookReporter) sendWebhook(ctx context.Context, namespace string, ho
 	_, _ = io.Copy(io.Discard, resp.Body)
 
 	if resp.StatusCode >= 300 {
-		return fmt.Errorf("webhook %s returned status %d", hook.Webhook.URL, resp.StatusCode)
+		return fmt.Errorf("webhook %q returned status %d", hook.Name, resp.StatusCode)
 	}
 
 	return nil
