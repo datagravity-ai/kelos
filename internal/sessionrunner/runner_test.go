@@ -513,6 +513,49 @@ func TestWriteGHHostsFile_HostWithPort(t *testing.T) {
 	}
 }
 
+func TestWriteGHHostsFile_MalformedYAML(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("GH_CONFIG_DIR", tmpDir)
+	t.Setenv("GH_HOST", "github.com")
+
+	// Write invalid YAML to hosts.yml.
+	if err := os.WriteFile(tmpDir+"/hosts.yml", []byte("{{invalid yaml"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &Runner{}
+	err := r.writeGHHostsFile("some-token")
+	if err == nil {
+		t.Fatal("expected error for malformed YAML, got nil")
+	}
+	if !strings.Contains(err.Error(), "parsing existing hosts.yml") {
+		t.Errorf("error should mention parsing, got: %v", err)
+	}
+}
+
+func TestAtomicWriteFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := tmpDir + "/test-file"
+
+	if err := atomicWriteFile(path, []byte("hello"), 0600); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("Failed to read file: %v", err)
+	}
+	if string(got) != "hello" {
+		t.Errorf("expected 'hello', got %q", string(got))
+	}
+
+	// Verify no temp files left behind.
+	entries, _ := os.ReadDir(tmpDir)
+	if len(entries) != 1 {
+		t.Errorf("expected 1 file in dir, got %d", len(entries))
+	}
+}
+
 func TestRefreshToken(t *testing.T) {
 	tmpDir := t.TempDir()
 	origTokenFilePath := tokenFilePath

@@ -27,6 +27,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -251,12 +252,18 @@ func (r *Runner) processTask(ctx context.Context, taskName string) error {
 	if err := r.refreshToken(ctx); err != nil {
 		fmt.Printf("Warning: failed to refresh token: %v\n", err)
 	}
-	defer os.Remove(tokenFilePath)
 
 	// Start periodic token refresh for long-running tasks.
 	refreshCtx, refreshCancel := context.WithCancel(ctx)
-	defer refreshCancel()
-	r.startTokenRefreshLoop(refreshCtx)
+	refreshWg := r.startTokenRefreshLoop(refreshCtx)
+
+	// On return: cancel the refresh loop, wait for it to finish, then
+	// remove the token file so no stale credential lingers on disk.
+	defer func() {
+		refreshCancel()
+		refreshWg.Wait()
+		os.Remove(tokenFilePath)
+	}()
 
 	// Reset workspace first while the pre-existing credential helper in
 	// .git/config is still intact for fetch/checkout operations.
@@ -367,8 +374,9 @@ func (r *Runner) refreshToken(ctx context.Context) error {
 
 	tokenStr := strings.TrimSpace(string(token))
 
-	// Write token to file so subprocesses can read the latest value.
-	if err := os.WriteFile(tokenFilePath, []byte(tokenStr), 0600); err != nil {
+	// Write token atomically (temp file + rename) so readers never see
+	// a partially-written or empty file.
+	if err := atomicWriteFile(tokenFilePath, []byte(tokenStr), 0600); err != nil {
 		return fmt.Errorf("writing token file: %w", err)
 	}
 
@@ -409,7 +417,9 @@ func (r *Runner) writeGHHostsFile(token string) error {
 	// Use untyped maps to preserve unknown fields during round-trip.
 	hosts := make(map[string]map[string]interface{})
 	if data, err := os.ReadFile(hostsPath); err == nil {
-		_ = yaml.Unmarshal(data, &hosts)
+		if err := yaml.Unmarshal(data, &hosts); err != nil {
+			return fmt.Errorf("parsing existing hosts.yml: %w", err)
+		}
 	}
 
 	entry := hosts[host]
@@ -455,14 +465,45 @@ func configureFileCredentialHelper(ctx context.Context) error {
 	return cmd.Run()
 }
 
+// atomicWriteFile writes data to a temp file in the same directory and renames
+// it to path, ensuring readers never see a partially-written file.
+func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	f, err := os.CreateTemp(dir, ".kelos-token-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := f.Name()
+
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := f.Chmod(perm); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	return os.Rename(tmpPath, path)
+}
+
 // startTokenRefreshLoop runs a background goroutine that periodically refreshes
 // the GitHub token from the configured Secret. It stops when ctx is cancelled.
-func (r *Runner) startTokenRefreshLoop(ctx context.Context) {
+// The returned WaitGroup is done when the goroutine exits.
+func (r *Runner) startTokenRefreshLoop(ctx context.Context) *sync.WaitGroup {
+	var wg sync.WaitGroup
 	if r.config.TokenSecret == "" || r.config.TokenRefreshInterval <= 0 {
-		return
+		return &wg
 	}
 
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		ticker := time.NewTicker(r.config.TokenRefreshInterval)
 		defer ticker.Stop()
 		for {
@@ -476,6 +517,7 @@ func (r *Runner) startTokenRefreshLoop(ctx context.Context) {
 			}
 		}
 	}()
+	return &wg
 }
 
 // updateTaskStatus writes completion timestamps and any captured outputs to the
