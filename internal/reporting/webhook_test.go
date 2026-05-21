@@ -34,15 +34,15 @@ func newFakeClient(objs ...client.Object) client.Client {
 
 func TestWebhookReporter_ReportWebhooks(t *testing.T) {
 	tests := []struct {
-		name              string
-		task              *kelosv1alpha1.Task
-		serverStatus      int
-		wantRequests      int
-		wantPayload       *WebhookPayload
-		wantAuthHeader    string
-		wantAnnotation    string
-		wantErr           bool
-		wantNoAnnotation  bool
+		name             string
+		task             *kelosv1alpha1.Task
+		serverStatus     int
+		wantRequests     int
+		wantPayload      *WebhookPayload
+		wantAuthHeader   string
+		wantAnnotation   string
+		wantErr          bool
+		wantNoAnnotation bool
 	}{
 		{
 			name: "sends webhook on task succeeded",
