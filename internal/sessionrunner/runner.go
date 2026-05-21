@@ -434,7 +434,7 @@ func (r *Runner) writeGHHostsFile(token string) error {
 	if err != nil {
 		return fmt.Errorf("marshaling hosts.yml: %w", err)
 	}
-	return os.WriteFile(hostsPath, out, 0600)
+	return atomicWriteFile(hostsPath, out, 0600)
 }
 
 // configureFileCredentialHelper replaces the git credential helper in the
