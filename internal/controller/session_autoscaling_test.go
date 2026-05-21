@@ -257,6 +257,47 @@ func TestSessionReconciler_SetsIdleSinceOnClearAssignment(t *testing.T) {
 	assert.NoError(t, parseErr)
 }
 
+func TestSessionReconciler_ClearAssignmentPreservesExistingIdleSince(t *testing.T) {
+	scheme := newTestScheme()
+	ns := "default"
+
+	existingIdleTime := time.Now().Add(-10 * time.Minute).UTC().Format(time.RFC3339)
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "session-pod-0",
+			Namespace: ns,
+			Labels: map[string]string{
+				"kelos.dev/component": SessionComponentLabel,
+			},
+			Annotations: map[string]string{
+				AnnotationIdleSince: existingIdleTime,
+			},
+		},
+		Status: corev1.PodStatus{Phase: corev1.PodRunning},
+	}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(pod).
+		Build()
+
+	r := &SessionReconciler{
+		Client:   fakeClient,
+		Scheme:   scheme,
+		Recorder: record.NewFakeRecorder(10),
+	}
+
+	err := r.clearPodAssignment(context.Background(), ns, "session-pod-0")
+	require.NoError(t, err)
+
+	var updatedPod corev1.Pod
+	err = fakeClient.Get(context.Background(), types.NamespacedName{
+		Name: "session-pod-0", Namespace: ns,
+	}, &updatedPod)
+	require.NoError(t, err)
+
+	assert.Equal(t, existingIdleTime, updatedPod.Annotations[AnnotationIdleSince])
+}
+
 func TestSessionReconciler_RemovesIdleSinceOnAssignment(t *testing.T) {
 	scheme := newTestScheme()
 	ns := "default"

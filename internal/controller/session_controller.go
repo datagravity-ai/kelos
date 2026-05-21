@@ -416,7 +416,9 @@ func (r *SessionReconciler) clearPodAssignment(ctx context.Context, namespace, p
 
 	delete(pod.Annotations, AnnotationAssignedTask)
 	delete(pod.Annotations, AnnotationTaskStatus)
-	pod.Annotations[AnnotationIdleSince] = time.Now().UTC().Format(time.RFC3339)
+	if _, alreadyIdle := pod.Annotations[AnnotationIdleSince]; !alreadyIdle {
+		pod.Annotations[AnnotationIdleSince] = time.Now().UTC().Format(time.RFC3339)
+	}
 	return r.Update(ctx, &pod)
 }
 

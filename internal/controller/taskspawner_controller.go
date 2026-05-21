@@ -1058,6 +1058,14 @@ func (r *TaskSpawnerReconciler) handleDeletion(ctx context.Context, ts *kelosv1a
 	logger := log.FromContext(ctx)
 
 	if controllerutil.ContainsFinalizer(ts, taskSpawnerFinalizer) {
+		// Clean up session metrics to avoid stale time-series in Prometheus.
+		if ts.Spec.ExecutionMode == kelosv1alpha1.ExecutionModePersistent {
+			sessionPodsReady.DeleteLabelValues(ts.Namespace, ts.Name)
+			sessionPodsBusy.DeleteLabelValues(ts.Namespace, ts.Name)
+			sessionPodsIdle.DeleteLabelValues(ts.Namespace, ts.Name)
+			sessionTasksQueued.DeleteLabelValues(ts.Namespace, ts.Name)
+		}
+
 		// The Deployment or CronJob will be garbage collected via owner reference,
 		// but we remove the finalizer to allow the TaskSpawner to be deleted.
 		controllerutil.RemoveFinalizer(ts, taskSpawnerFinalizer)
