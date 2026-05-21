@@ -24,13 +24,17 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"sigs.k8s.io/yaml"
 
 	kelosv1alpha1 "github.com/kelos-dev/kelos/api/v1alpha1"
 	"github.com/kelos-dev/kelos/internal/capture"
@@ -47,33 +51,40 @@ const (
 	annotationTasksCompleted = "kelos.dev/tasks-completed"
 	annotationSessionStart   = "kelos.dev/session-start-time"
 
-	defaultIdleTimeout        = 30 * time.Minute
-	defaultMaxSessionDuration = 8 * time.Hour
-	pollInterval              = 3 * time.Second
+	defaultIdleTimeout          = 30 * time.Minute
+	defaultMaxSessionDuration   = 8 * time.Hour
+	defaultTokenRefreshInterval = 30 * time.Minute
+	pollInterval                = 3 * time.Second
 )
+
+// tokenFilePath is the path where the refreshed token is written so that
+// subprocesses can read it. It is a var to allow overriding in tests.
+var tokenFilePath = "/workspace/.kelos-token"
 
 // Config holds the session runner configuration, typically from environment variables.
 type Config struct {
-	PodName            string
-	PodNamespace       string
-	AgentType          string
-	TaskSpawner        string
-	TokenSecret        string
-	IdleTimeout        time.Duration
-	MaxTasksPerSession int32
-	MaxSessionDuration time.Duration
+	PodName              string
+	PodNamespace         string
+	AgentType            string
+	TaskSpawner          string
+	TokenSecret          string
+	IdleTimeout          time.Duration
+	MaxTasksPerSession   int32
+	MaxSessionDuration   time.Duration
+	TokenRefreshInterval time.Duration
 }
 
 // ConfigFromEnv reads session runner configuration from environment variables.
 func ConfigFromEnv() Config {
 	cfg := Config{
-		PodName:            os.Getenv("KELOS_POD_NAME"),
-		PodNamespace:       os.Getenv("KELOS_POD_NAMESPACE"),
-		AgentType:          os.Getenv("KELOS_AGENT_TYPE"),
-		TaskSpawner:        os.Getenv("KELOS_TASKSPAWNER"),
-		TokenSecret:        os.Getenv("KELOS_TOKEN_SECRET"),
-		IdleTimeout:        defaultIdleTimeout,
-		MaxSessionDuration: defaultMaxSessionDuration,
+		PodName:              os.Getenv("KELOS_POD_NAME"),
+		PodNamespace:         os.Getenv("KELOS_POD_NAMESPACE"),
+		AgentType:            os.Getenv("KELOS_AGENT_TYPE"),
+		TaskSpawner:          os.Getenv("KELOS_TASKSPAWNER"),
+		TokenSecret:          os.Getenv("KELOS_TOKEN_SECRET"),
+		IdleTimeout:          defaultIdleTimeout,
+		MaxSessionDuration:   defaultMaxSessionDuration,
+		TokenRefreshInterval: defaultTokenRefreshInterval,
 	}
 
 	if v := os.Getenv("KELOS_IDLE_TIMEOUT"); v != "" {
@@ -89,6 +100,11 @@ func ConfigFromEnv() Config {
 	if v := os.Getenv("KELOS_MAX_SESSION_DURATION"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			cfg.MaxSessionDuration = d
+		}
+	}
+	if v := os.Getenv("KELOS_TOKEN_REFRESH_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.TokenRefreshInterval = d
 		}
 	}
 
@@ -237,9 +253,30 @@ func (r *Runner) processTask(ctx context.Context, taskName string) error {
 		fmt.Printf("Warning: failed to refresh token: %v\n", err)
 	}
 
-	// Reset workspace.
+	// Start periodic token refresh for long-running tasks.
+	refreshCtx, refreshCancel := context.WithCancel(ctx)
+	refreshWg := r.startTokenRefreshLoop(refreshCtx)
+
+	// On return: cancel the refresh loop, wait for it to finish, then
+	// remove the token file so no stale credential lingers on disk.
+	defer func() {
+		refreshCancel()
+		refreshWg.Wait()
+		os.Remove(tokenFilePath)
+	}()
+
+	// Reset workspace first while the pre-existing credential helper in
+	// .git/config is still intact for fetch/checkout operations.
 	if err := r.workspace.Reset(ctx, task.Spec.Branch); err != nil {
 		return fmt.Errorf("workspace reset failed: %w", err)
+	}
+
+	// Configure git to read credentials from the token file so that
+	// refreshed tokens are visible to the running agent subprocess.
+	if r.config.TokenSecret != "" {
+		if err := configureFileCredentialHelper(ctx); err != nil {
+			fmt.Printf("Warning: failed to configure file-based credential helper: %v\n", err)
+		}
 	}
 
 	// Invoke the agent entrypoint and capture outputs.
@@ -271,8 +308,14 @@ const tailBufferSize = 256 * 1024
 func (r *Runner) runAgent(ctx context.Context, task *kelosv1alpha1.Task) (string, error) {
 	entrypoint := "/kelos_entrypoint.sh"
 
-	// Set branch env var if present.
+	// Build env for the subprocess. Strip token env vars only when
+	// GH_CONFIG_DIR is set, so `gh` falls back to hosts.yml (which is
+	// periodically refreshed). Without GH_CONFIG_DIR there is no hosts.yml
+	// to fall back to, so keep env vars to avoid a regression.
 	env := os.Environ()
+	if os.Getenv("GH_CONFIG_DIR") != "" {
+		env = filterTokenEnvVars(env)
+	}
 	if task.Spec.Branch != "" {
 		env = append(env, fmt.Sprintf("KELOS_BRANCH=%s", task.Spec.Branch))
 	}
@@ -288,9 +331,32 @@ func (r *Runner) runAgent(ctx context.Context, task *kelosv1alpha1.Task) (string
 	return tail.String(), err
 }
 
+// tokenEnvVarPrefixes are the env vars that carry GitHub tokens. We strip
+// these from the agent subprocess so that `gh` falls back to hosts.yml.
+var tokenEnvVarPrefixes = []string{"GITHUB_TOKEN=", "GH_TOKEN=", "GH_ENTERPRISE_TOKEN="}
+
+// filterTokenEnvVars returns a copy of env with token-related variables removed.
+func filterTokenEnvVars(env []string) []string {
+	filtered := make([]string, 0, len(env))
+	for _, e := range env {
+		skip := false
+		for _, prefix := range tokenEnvVarPrefixes {
+			if strings.HasPrefix(e, prefix) {
+				skip = true
+				break
+			}
+		}
+		if !skip {
+			filtered = append(filtered, e)
+		}
+	}
+	return filtered
+}
+
 // refreshToken reads the current GITHUB_TOKEN from the configured Secret and
-// updates the process environment. This ensures long-running sessions pick up
-// tokens that have been rotated by the controller.
+// writes it to the token file on disk so that running subprocesses (git
+// credential helper, gh CLI) pick up the refreshed value. It also updates
+// the process environment for any direct use by the session runner itself.
 func (r *Runner) refreshToken(ctx context.Context) error {
 	if r.config.TokenSecret == "" {
 		return nil
@@ -306,9 +372,20 @@ func (r *Runner) refreshToken(ctx context.Context) error {
 		return fmt.Errorf("secret %s missing GITHUB_TOKEN key", r.config.TokenSecret)
 	}
 
-	tokenStr := string(token)
+	tokenStr := strings.TrimSpace(string(token))
+
+	// Write token atomically (temp file + rename) so readers never see
+	// a partially-written or empty file.
+	if err := atomicWriteFile(tokenFilePath, []byte(tokenStr), 0600); err != nil {
+		return fmt.Errorf("writing token file: %w", err)
+	}
+
+	// Update gh CLI hosts.yml so `gh` picks up the refreshed token.
+	if err := r.writeGHHostsFile(tokenStr); err != nil {
+		fmt.Printf("Warning: failed to update gh hosts.yml: %v\n", err)
+	}
+
 	os.Setenv("GITHUB_TOKEN", tokenStr)
-	// Update whichever GH CLI token env var is set.
 	if os.Getenv("GH_ENTERPRISE_TOKEN") != "" {
 		os.Setenv("GH_ENTERPRISE_TOKEN", tokenStr)
 	} else if os.Getenv("GH_TOKEN") != "" {
@@ -316,6 +393,131 @@ func (r *Runner) refreshToken(ctx context.Context) error {
 	}
 	fmt.Println("Refreshed GitHub token from secret")
 	return nil
+}
+
+// writeGHHostsFile merges the refreshed token into the gh CLI hosts.yml,
+// preserving all other host entries and fields (e.g. git_protocol).
+func (r *Runner) writeGHHostsFile(token string) error {
+	ghConfigDir := os.Getenv("GH_CONFIG_DIR")
+	if ghConfigDir == "" {
+		return nil
+	}
+
+	host := os.Getenv("GH_HOST")
+	if host == "" {
+		host = "github.com"
+	}
+
+	hostsPath := filepath.Join(ghConfigDir, "hosts.yml")
+
+	if err := os.MkdirAll(ghConfigDir, 0700); err != nil {
+		return err
+	}
+
+	// Use untyped maps to preserve unknown fields during round-trip.
+	hosts := make(map[string]map[string]interface{})
+	if data, err := os.ReadFile(hostsPath); err == nil {
+		if err := yaml.Unmarshal(data, &hosts); err != nil {
+			return fmt.Errorf("parsing existing hosts.yml: %w", err)
+		}
+	}
+
+	entry := hosts[host]
+	if entry == nil {
+		entry = make(map[string]interface{})
+	}
+	entry["oauth_token"] = token
+	entry["user"] = "x-access-token"
+	hosts[host] = entry
+
+	out, err := yaml.Marshal(hosts)
+	if err != nil {
+		return fmt.Errorf("marshaling hosts.yml: %w", err)
+	}
+	return atomicWriteFile(hostsPath, out, 0600)
+}
+
+// configureFileCredentialHelper replaces the git credential helper in the
+// workspace repo config to read the token from the on-disk file rather than
+// from the $GITHUB_TOKEN env var (which is stale in subprocesses).
+func configureFileCredentialHelper(ctx context.Context) error {
+	helper := fmt.Sprintf(`!f() { echo "username=x-access-token"; echo "password=$(cat %s)"; }; f`, tokenFilePath)
+
+	// Unset all existing credential helpers to avoid accumulation across tasks.
+	cmd := exec.CommandContext(ctx, "git", "config", "--local", "--unset-all", "credential.helper")
+	cmd.Dir = workspaceRepoPath
+	// --unset-all returns exit 5 if the key doesn't exist; ignore that.
+	if err := cmd.Run(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() != 5 {
+			return err
+		}
+	}
+
+	// Set the empty-string entry (disables system/global helpers) followed by our helper.
+	cmd = exec.CommandContext(ctx, "git", "config", "--local", "credential.helper", "")
+	cmd.Dir = workspaceRepoPath
+	if err := cmd.Run(); err != nil {
+		return err
+	}
+
+	cmd = exec.CommandContext(ctx, "git", "config", "--local", "--add", "credential.helper", helper)
+	cmd.Dir = workspaceRepoPath
+	return cmd.Run()
+}
+
+// atomicWriteFile writes data to a temp file in the same directory and renames
+// it to path, ensuring readers never see a partially-written file.
+func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	f, err := os.CreateTemp(dir, ".kelos-token-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := f.Name()
+
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := f.Chmod(perm); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	return os.Rename(tmpPath, path)
+}
+
+// startTokenRefreshLoop runs a background goroutine that periodically refreshes
+// the GitHub token from the configured Secret. It stops when ctx is cancelled.
+// The returned WaitGroup is done when the goroutine exits.
+func (r *Runner) startTokenRefreshLoop(ctx context.Context) *sync.WaitGroup {
+	var wg sync.WaitGroup
+	if r.config.TokenSecret == "" || r.config.TokenRefreshInterval <= 0 {
+		return &wg
+	}
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ticker := time.NewTicker(r.config.TokenRefreshInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := r.refreshToken(ctx); err != nil {
+					fmt.Printf("Warning: periodic token refresh failed: %v\n", err)
+				}
+			}
+		}
+	}()
+	return &wg
 }
 
 // updateTaskStatus writes completion timestamps and any captured outputs to the

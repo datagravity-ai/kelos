@@ -3,6 +3,7 @@ package sessionrunner
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -45,6 +46,7 @@ func TestConfigFromEnv_CustomValues(t *testing.T) {
 	t.Setenv("KELOS_IDLE_TIMEOUT", "15m")
 	t.Setenv("KELOS_MAX_TASKS_PER_SESSION", "5")
 	t.Setenv("KELOS_MAX_SESSION_DURATION", "4h")
+	t.Setenv("KELOS_TOKEN_REFRESH_INTERVAL", "20m")
 
 	cfg := ConfigFromEnv()
 
@@ -71,6 +73,9 @@ func TestConfigFromEnv_CustomValues(t *testing.T) {
 	}
 	if cfg.MaxSessionDuration != 4*time.Hour {
 		t.Errorf("MaxSessionDuration: expected 4h, got %v", cfg.MaxSessionDuration)
+	}
+	if cfg.TokenRefreshInterval != 20*time.Minute {
+		t.Errorf("TokenRefreshInterval: expected 20m, got %v", cfg.TokenRefreshInterval)
 	}
 }
 
@@ -229,7 +234,334 @@ func TestTailWriter_PreservesOutputMarkers(t *testing.T) {
 	}
 }
 
+func TestRefreshToken_TrimsWhitespace(t *testing.T) {
+	tmpDir := t.TempDir()
+	origTokenFilePath := tokenFilePath
+	tokenFilePath = tmpDir + "/token"
+	t.Cleanup(func() { tokenFilePath = origTokenFilePath })
+
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-secret", Namespace: "test-ns"},
+		Data:       map[string][]byte{"GITHUB_TOKEN": []byte("  token-with-whitespace\n")},
+	}
+	client := fake.NewSimpleClientset(secret)
+
+	t.Setenv("GH_TOKEN", "old")
+	t.Setenv("GH_CONFIG_DIR", "")
+
+	r := &Runner{
+		config: Config{
+			PodNamespace: "test-ns",
+			TokenSecret:  "my-secret",
+		},
+		kubeClient: client,
+	}
+
+	err := r.refreshToken(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, err := os.ReadFile(tokenFilePath)
+	if err != nil {
+		t.Fatalf("Failed to read token file: %v", err)
+	}
+	if string(got) != "token-with-whitespace" {
+		t.Errorf("Token file should be trimmed, got %q", string(got))
+	}
+	if os.Getenv("GITHUB_TOKEN") != "token-with-whitespace" {
+		t.Errorf("GITHUB_TOKEN env should be trimmed, got %q", os.Getenv("GITHUB_TOKEN"))
+	}
+}
+
+func TestFilterTokenEnvVars(t *testing.T) {
+	env := []string{
+		"HOME=/home/user",
+		"GITHUB_TOKEN=secret123",
+		"GH_TOKEN=secret456",
+		"GH_ENTERPRISE_TOKEN=secret789",
+		"PATH=/usr/bin",
+		"GH_CONFIG_DIR=/workspace/.gh-config",
+	}
+
+	filtered := filterTokenEnvVars(env)
+
+	expected := []string{
+		"HOME=/home/user",
+		"PATH=/usr/bin",
+		"GH_CONFIG_DIR=/workspace/.gh-config",
+	}
+
+	if len(filtered) != len(expected) {
+		t.Fatalf("expected %d vars, got %d: %v", len(expected), len(filtered), filtered)
+	}
+	for i, want := range expected {
+		if filtered[i] != want {
+			t.Errorf("filtered[%d]: expected %q, got %q", i, want, filtered[i])
+		}
+	}
+}
+
+func TestStartTokenRefreshLoop(t *testing.T) {
+	tmpDir := t.TempDir()
+	origTokenFilePath := tokenFilePath
+	tokenFilePath = tmpDir + "/token"
+	t.Cleanup(func() { tokenFilePath = origTokenFilePath })
+
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-secret", Namespace: "test-ns"},
+		Data:       map[string][]byte{"GITHUB_TOKEN": []byte("refreshed-token")},
+	}
+	client := fake.NewSimpleClientset(secret)
+
+	t.Setenv("GH_TOKEN", "old-token")
+	t.Setenv("GITHUB_TOKEN", "old-token")
+	t.Setenv("GH_CONFIG_DIR", "")
+
+	r := &Runner{
+		config: Config{
+			PodNamespace:         "test-ns",
+			TokenSecret:          "my-secret",
+			TokenRefreshInterval: 50 * time.Millisecond,
+		},
+		kubeClient: client,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		for os.Getenv("GITHUB_TOKEN") != "refreshed-token" {
+			time.Sleep(5 * time.Millisecond)
+		}
+		close(done)
+	}()
+
+	r.startTokenRefreshLoop(ctx)
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timed out waiting for token refresh")
+	}
+	cancel()
+
+	if got := os.Getenv("GITHUB_TOKEN"); got != "refreshed-token" {
+		t.Errorf("GITHUB_TOKEN: expected 'refreshed-token', got %q", got)
+	}
+	if got := os.Getenv("GH_TOKEN"); got != "refreshed-token" {
+		t.Errorf("GH_TOKEN: expected 'refreshed-token', got %q", got)
+	}
+}
+
+func TestStartTokenRefreshLoop_NoSecret(t *testing.T) {
+	r := &Runner{
+		config: Config{
+			TokenSecret:          "",
+			TokenRefreshInterval: 50 * time.Millisecond,
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Should not panic or start goroutine.
+	r.startTokenRefreshLoop(ctx)
+}
+
+func TestRefreshToken_WritesTokenFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	origTokenFilePath := tokenFilePath
+	tokenFilePath = tmpDir + "/token"
+	t.Cleanup(func() { tokenFilePath = origTokenFilePath })
+
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-secret", Namespace: "test-ns"},
+		Data:       map[string][]byte{"GITHUB_TOKEN": []byte("file-token-123")},
+	}
+	client := fake.NewSimpleClientset(secret)
+
+	ghConfigDir := tmpDir + "/gh-config"
+	t.Setenv("GH_TOKEN", "old")
+	t.Setenv("GH_CONFIG_DIR", ghConfigDir)
+	t.Setenv("GH_HOST", "")
+
+	r := &Runner{
+		config: Config{
+			PodNamespace: "test-ns",
+			TokenSecret:  "my-secret",
+		},
+		kubeClient: client,
+	}
+
+	err := r.refreshToken(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify token file was written.
+	got, err := os.ReadFile(tokenFilePath)
+	if err != nil {
+		t.Fatalf("Failed to read token file: %v", err)
+	}
+	if string(got) != "file-token-123" {
+		t.Errorf("Token file: expected 'file-token-123', got %q", string(got))
+	}
+
+	// Verify gh hosts.yml was written.
+	hostsContent, err := os.ReadFile(ghConfigDir + "/hosts.yml")
+	if err != nil {
+		t.Fatalf("Failed to read hosts.yml: %v", err)
+	}
+	if !strings.Contains(string(hostsContent), "file-token-123") {
+		t.Errorf("hosts.yml should contain token, got: %s", hostsContent)
+	}
+	if !strings.Contains(string(hostsContent), "github.com") {
+		t.Errorf("hosts.yml should contain github.com, got: %s", hostsContent)
+	}
+}
+
+func TestWriteGHHostsFile_Enterprise(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("GH_CONFIG_DIR", tmpDir)
+	t.Setenv("GH_HOST", "github.enterprise.com")
+
+	r := &Runner{}
+	err := r.writeGHHostsFile("ent-token")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	hostsContent, err := os.ReadFile(tmpDir + "/hosts.yml")
+	if err != nil {
+		t.Fatalf("Failed to read hosts.yml: %v", err)
+	}
+	if !strings.Contains(string(hostsContent), "github.enterprise.com") {
+		t.Errorf("hosts.yml should contain enterprise host, got: %s", hostsContent)
+	}
+	if !strings.Contains(string(hostsContent), "ent-token") {
+		t.Errorf("hosts.yml should contain token, got: %s", hostsContent)
+	}
+}
+
+func TestWriteGHHostsFile_MergesExistingEntries(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("GH_CONFIG_DIR", tmpDir)
+	t.Setenv("GH_HOST", "github.com")
+
+	// Pre-populate hosts.yml with an enterprise entry and extra fields.
+	existing := "github.enterprise.com:\n  oauth_token: enterprise-token\n  user: x-access-token\n  git_protocol: ssh\ngithub.com:\n  oauth_token: old-token\n  user: x-access-token\n  git_protocol: https\n"
+	if err := os.WriteFile(tmpDir+"/hosts.yml", []byte(existing), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &Runner{}
+	err := r.writeGHHostsFile("new-public-token")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	hostsContent, err := os.ReadFile(tmpDir + "/hosts.yml")
+	if err != nil {
+		t.Fatalf("Failed to read hosts.yml: %v", err)
+	}
+	content := string(hostsContent)
+	if !strings.Contains(content, "github.enterprise.com") {
+		t.Errorf("hosts.yml should preserve enterprise host, got: %s", content)
+	}
+	if !strings.Contains(content, "enterprise-token") {
+		t.Errorf("hosts.yml should preserve enterprise token, got: %s", content)
+	}
+	if !strings.Contains(content, "github.com") {
+		t.Errorf("hosts.yml should contain github.com, got: %s", content)
+	}
+	if !strings.Contains(content, "new-public-token") {
+		t.Errorf("hosts.yml should contain new token, got: %s", content)
+	}
+	// Verify unknown fields are preserved.
+	if !strings.Contains(content, "git_protocol") {
+		t.Errorf("hosts.yml should preserve git_protocol field, got: %s", content)
+	}
+	if !strings.Contains(content, "ssh") {
+		t.Errorf("hosts.yml should preserve enterprise git_protocol: ssh, got: %s", content)
+	}
+	if !strings.Contains(content, "https") {
+		t.Errorf("hosts.yml should preserve github.com git_protocol: https, got: %s", content)
+	}
+}
+
+func TestWriteGHHostsFile_HostWithPort(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("GH_CONFIG_DIR", tmpDir)
+	t.Setenv("GH_HOST", "github.corp.com:8080")
+
+	r := &Runner{}
+	err := r.writeGHHostsFile("port-token")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	hostsContent, err := os.ReadFile(tmpDir + "/hosts.yml")
+	if err != nil {
+		t.Fatalf("Failed to read hosts.yml: %v", err)
+	}
+	content := string(hostsContent)
+	if !strings.Contains(content, "github.corp.com:8080") {
+		t.Errorf("hosts.yml should contain host with port, got: %s", content)
+	}
+	if !strings.Contains(content, "port-token") {
+		t.Errorf("hosts.yml should contain token, got: %s", content)
+	}
+}
+
+func TestWriteGHHostsFile_MalformedYAML(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("GH_CONFIG_DIR", tmpDir)
+	t.Setenv("GH_HOST", "github.com")
+
+	// Write invalid YAML to hosts.yml.
+	if err := os.WriteFile(tmpDir+"/hosts.yml", []byte("{{invalid yaml"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &Runner{}
+	err := r.writeGHHostsFile("some-token")
+	if err == nil {
+		t.Fatal("expected error for malformed YAML, got nil")
+	}
+	if !strings.Contains(err.Error(), "parsing existing hosts.yml") {
+		t.Errorf("error should mention parsing, got: %v", err)
+	}
+}
+
+func TestAtomicWriteFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := tmpDir + "/test-file"
+
+	if err := atomicWriteFile(path, []byte("hello"), 0600); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("Failed to read file: %v", err)
+	}
+	if string(got) != "hello" {
+		t.Errorf("expected 'hello', got %q", string(got))
+	}
+
+	// Verify no temp files left behind.
+	entries, _ := os.ReadDir(tmpDir)
+	if len(entries) != 1 {
+		t.Errorf("expected 1 file in dir, got %d", len(entries))
+	}
+}
+
 func TestRefreshToken(t *testing.T) {
+	tmpDir := t.TempDir()
+	origTokenFilePath := tokenFilePath
+	tokenFilePath = tmpDir + "/token"
+	t.Cleanup(func() { tokenFilePath = origTokenFilePath })
+
 	tests := []struct {
 		name        string
 		secret      *corev1.Secret
