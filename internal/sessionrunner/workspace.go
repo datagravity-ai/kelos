@@ -129,6 +129,9 @@ func (wm *WorkspaceManager) checkoutBranch(ctx context.Context, branch string) e
 
 // gitCmd dispatches to the configured git command runner.
 func (wm *WorkspaceManager) gitCmd(ctx context.Context, args ...string) error {
+	if wm.runGitCmd == nil {
+		return wm.gitCmdExec(ctx, args...)
+	}
 	return wm.runGitCmd(ctx, args...)
 }
 
