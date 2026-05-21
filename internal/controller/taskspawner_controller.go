@@ -813,6 +813,7 @@ func (r *TaskSpawnerReconciler) reconcileSessionHPA(ctx context.Context, ts *kel
 	// Always overwrite the full spec from desired. The HPA is fully
 	// controller-owned so we reconcile all fields (MinReplicas, MaxReplicas,
 	// Metrics, Behavior) to avoid drift.
+	existingHPA.Spec.ScaleTargetRef = desiredHPA.Spec.ScaleTargetRef
 	existingHPA.Spec.MinReplicas = desiredHPA.Spec.MinReplicas
 	existingHPA.Spec.MaxReplicas = desiredHPA.Spec.MaxReplicas
 	existingHPA.Spec.Metrics = desiredHPA.Spec.Metrics
@@ -840,6 +841,8 @@ func (r *TaskSpawnerReconciler) deleteSessionHPA(ctx context.Context, ts *kelosv
 
 // recordSessionMetrics records Prometheus gauges for session pod state.
 func (r *TaskSpawnerReconciler) recordSessionMetrics(ctx context.Context, ts *kelosv1alpha1.TaskSpawner) {
+	logger := log.FromContext(ctx)
+
 	var taskList kelosv1alpha1.TaskList
 	if err := r.List(ctx, &taskList,
 		client.InNamespace(ts.Namespace),
@@ -848,6 +851,7 @@ func (r *TaskSpawnerReconciler) recordSessionMetrics(ctx context.Context, ts *ke
 			LabelExecutionMode:      string(kelosv1alpha1.ExecutionModePersistent),
 		},
 	); err != nil {
+		logger.Error(err, "Failed to list tasks for session metrics")
 		return
 	}
 
@@ -866,6 +870,7 @@ func (r *TaskSpawnerReconciler) recordSessionMetrics(ctx context.Context, ts *ke
 			"kelos.dev/component":   SessionComponentLabel,
 		},
 	); err != nil {
+		logger.Error(err, "Failed to list pods for session metrics")
 		return
 	}
 
