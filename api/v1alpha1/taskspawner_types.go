@@ -1019,8 +1019,13 @@ type NotificationHook struct {
 }
 
 // WebhookNotification configures an HTTP webhook notification.
+// Note: The URL is stored in a Task annotation for dispatch. Do not embed
+// secrets in the URL path; use SecretRef for authentication instead.
 type WebhookNotification struct {
-	// URL is the webhook endpoint. Must use HTTPS.
+	// URL is the webhook endpoint. Must use HTTPS. This value is stored
+	// in the spawned Task's annotations and is visible to anyone with
+	// read access to the Task resource. Do not use URLs with embedded
+	// tokens; use secretRef for authentication.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:Pattern="^https://.+"
 	URL string `json:"url"`

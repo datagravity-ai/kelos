@@ -284,20 +284,23 @@ func phaseMatches(configured []kelosv1alpha1.TerminalTaskPhase, actual kelosv1al
 	return false
 }
 
-// persistAnnotationRetry updates annotations on a Task with retry on conflict.
+// persistAnnotationRetry updates annotations on a Task using a merge patch
+// with retry on conflict, avoiding full-object writes that could clobber
+// concurrent changes from other controllers.
 func persistAnnotationRetry(ctx context.Context, cl client.Client, task *kelosv1alpha1.Task, annotations map[string]string) error {
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var current kelosv1alpha1.Task
 		if err := cl.Get(ctx, client.ObjectKeyFromObject(task), &current); err != nil {
 			return err
 		}
+		base := current.DeepCopy()
 		if current.Annotations == nil {
 			current.Annotations = make(map[string]string)
 		}
 		for k, v := range annotations {
 			current.Annotations[k] = v
 		}
-		if err := cl.Update(ctx, &current); err != nil {
+		if err := cl.Patch(ctx, &current, client.MergeFrom(base)); err != nil {
 			return err
 		}
 		task.Annotations = current.Annotations
