@@ -34,13 +34,15 @@ func newFakeClient(objs ...client.Object) client.Client {
 
 func TestWebhookReporter_ReportWebhooks(t *testing.T) {
 	tests := []struct {
-		name           string
-		task           *kelosv1alpha1.Task
-		serverStatus   int
-		wantRequests   int
-		wantPayload    *WebhookPayload
-		wantAuthHeader string
-		wantAnnotation string
+		name              string
+		task              *kelosv1alpha1.Task
+		serverStatus      int
+		wantRequests      int
+		wantPayload       *WebhookPayload
+		wantAuthHeader    string
+		wantAnnotation    string
+		wantErr           bool
+		wantNoAnnotation  bool
 	}{
 		{
 			name: "sends webhook on task succeeded",
@@ -150,6 +152,24 @@ func TestWebhookReporter_ReportWebhooks(t *testing.T) {
 			wantAnnotation: "Succeeded",
 		},
 		{
+			name: "does not persist annotation on delivery failure",
+			task: &kelosv1alpha1.Task{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-task-fail-delivery",
+					Namespace: "default",
+					Annotations: map[string]string{
+						AnnotationOnCompletion: `[{"name":"alert","webhook":{"url":"PLACEHOLDER"}}]`,
+					},
+				},
+				Spec:   kelosv1alpha1.TaskSpec{Type: "claude-code"},
+				Status: kelosv1alpha1.TaskStatus{Phase: kelosv1alpha1.TaskPhaseSucceeded},
+			},
+			serverStatus:     500,
+			wantRequests:     1,
+			wantErr:          true,
+			wantNoAnnotation: true,
+		},
+		{
 			name: "includes auth header from secret",
 			task: &kelosv1alpha1.Task{
 				ObjectMeta: metav1.ObjectMeta{
@@ -215,7 +235,11 @@ func TestWebhookReporter_ReportWebhooks(t *testing.T) {
 			}
 
 			err := wr.ReportWebhooks(context.Background(), tt.task)
-			if err != nil {
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+			} else if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
 
@@ -255,6 +279,16 @@ func TestWebhookReporter_ReportWebhooks(t *testing.T) {
 				got := updated.Annotations[AnnotationWebhookReportPhase]
 				if got != tt.wantAnnotation {
 					t.Errorf("annotation %s = %q, want %q", AnnotationWebhookReportPhase, got, tt.wantAnnotation)
+				}
+			}
+
+			if tt.wantNoAnnotation {
+				var updated kelosv1alpha1.Task
+				if err := cl.Get(context.Background(), client.ObjectKeyFromObject(tt.task), &updated); err != nil {
+					t.Fatalf("fetching task: %v", err)
+				}
+				if got, exists := updated.Annotations[AnnotationWebhookReportPhase]; exists {
+					t.Errorf("expected no %s annotation, got %q", AnnotationWebhookReportPhase, got)
 				}
 			}
 		})
