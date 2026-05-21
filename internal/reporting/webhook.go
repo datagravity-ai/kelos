@@ -164,26 +164,34 @@ func (wr *WebhookReporter) sendWebhook(ctx context.Context, namespace string, ho
 	return nil
 }
 
-// httpClient returns the configured HTTP client or a shared default with
-// SSRF-safe redirect policy.
+// httpClient returns an HTTP client with SSRF-safe redirect policy applied.
+// If no client is configured, a shared default is used. If an injected client
+// lacks a CheckRedirect, a shallow copy with the policy is returned.
 func (wr *WebhookReporter) httpClient() *http.Client {
-	if wr.HTTPClient != nil {
+	if wr.HTTPClient == nil {
+		return defaultWebhookHTTPClient
+	}
+	if wr.HTTPClient.CheckRedirect != nil {
 		return wr.HTTPClient
 	}
-	return defaultWebhookHTTPClient
+	clone := *wr.HTTPClient
+	clone.CheckRedirect = ssrfCheckRedirect
+	return &clone
 }
 
 var defaultWebhookHTTPClient = &http.Client{
-	Timeout: 10 * time.Second,
-	CheckRedirect: func(req *http.Request, via []*http.Request) error {
-		if err := validateWebhookURL(req.URL.String()); err != nil {
-			return err
-		}
-		if len(via) >= 10 {
-			return fmt.Errorf("too many redirects")
-		}
-		return nil
-	},
+	Timeout:       10 * time.Second,
+	CheckRedirect: ssrfCheckRedirect,
+}
+
+func ssrfCheckRedirect(req *http.Request, via []*http.Request) error {
+	if err := validateWebhookURL(req.URL.String()); err != nil {
+		return err
+	}
+	if len(via) >= 10 {
+		return fmt.Errorf("too many redirects")
+	}
+	return nil
 }
 
 // validateWebhookURL rejects URLs that target private, loopback, or

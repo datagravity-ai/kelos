@@ -362,6 +362,28 @@ func TestBuildWebhookPayload(t *testing.T) {
 	}
 }
 
+func TestHttpClient_AppliesRedirectGuard(t *testing.T) {
+	injected := &http.Client{Timeout: 5 * time.Second}
+	wr := &WebhookReporter{HTTPClient: injected}
+	cl := wr.httpClient()
+	if cl.CheckRedirect == nil {
+		t.Fatal("expected CheckRedirect to be set on injected client without one")
+	}
+	if cl == injected {
+		t.Fatal("expected a clone, not the original client")
+	}
+
+	withRedirect := &http.Client{
+		Timeout:       5 * time.Second,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return nil },
+	}
+	wr2 := &WebhookReporter{HTTPClient: withRedirect}
+	cl2 := wr2.httpClient()
+	if cl2 != withRedirect {
+		t.Fatal("expected original client to be returned when CheckRedirect is already set")
+	}
+}
+
 func TestValidateWebhookURL(t *testing.T) {
 	tests := []struct {
 		url     string
