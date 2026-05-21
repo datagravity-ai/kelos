@@ -32,6 +32,9 @@ type WorkspaceManager struct {
 	resetGit     bool
 	preserveDirs []string
 	baseBranch   string
+
+	// runGitCmd executes a git command. Defaults to gitCmdExec; override in tests.
+	runGitCmd func(ctx context.Context, args ...string) error
 }
 
 // NewWorkspaceManager creates a new WorkspaceManager configured from environment variables.
@@ -51,6 +54,8 @@ func NewWorkspaceManager() *WorkspaceManager {
 			wm.preserveDirs = dirs
 		}
 	}
+
+	wm.runGitCmd = wm.gitCmdExec
 
 	return wm
 }
@@ -76,13 +81,9 @@ func (wm *WorkspaceManager) Reset(ctx context.Context, branch string) error {
 		baseBranch = "main"
 	}
 
-	// Checkout base branch and reset to origin.
-	if err := wm.gitCmd(ctx, "checkout", baseBranch); err != nil {
-		return fmt.Errorf("failed to checkout base branch %s: %w", baseBranch, err)
-	}
-
-	if err := wm.gitCmd(ctx, "reset", "--hard", "origin/"+baseBranch); err != nil {
-		return fmt.Errorf("failed to reset to origin/%s: %w", baseBranch, err)
+	// Discard tracked-file modifications so checkout won't abort on a dirty tree.
+	if err := wm.gitCmd(ctx, "reset", "--hard", "HEAD"); err != nil {
+		return fmt.Errorf("failed to reset working tree: %w", err)
 	}
 
 	// Clean untracked files, preserving specified directories.
@@ -92,6 +93,15 @@ func (wm *WorkspaceManager) Reset(ctx context.Context, branch string) error {
 	}
 	if err := wm.gitCmd(ctx, cleanArgs...); err != nil {
 		return fmt.Errorf("failed to clean workspace: %w", err)
+	}
+
+	// Checkout base branch and sync to remote.
+	if err := wm.gitCmd(ctx, "checkout", baseBranch); err != nil {
+		return fmt.Errorf("failed to checkout base branch %s: %w", baseBranch, err)
+	}
+
+	if err := wm.gitCmd(ctx, "reset", "--hard", "origin/"+baseBranch); err != nil {
+		return fmt.Errorf("failed to reset to origin/%s: %w", baseBranch, err)
 	}
 
 	// Checkout task branch if specified.
@@ -117,8 +127,13 @@ func (wm *WorkspaceManager) checkoutBranch(ctx context.Context, branch string) e
 	return wm.gitCmd(ctx, "checkout", "-b", branch)
 }
 
-// gitCmd runs a git command in the workspace directory.
+// gitCmd dispatches to the configured git command runner.
 func (wm *WorkspaceManager) gitCmd(ctx context.Context, args ...string) error {
+	return wm.runGitCmd(ctx, args...)
+}
+
+// gitCmdExec runs a git command in the workspace directory.
+func (wm *WorkspaceManager) gitCmdExec(ctx context.Context, args ...string) error {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = workspaceRepoPath
 	cmd.Stdout = os.Stdout
