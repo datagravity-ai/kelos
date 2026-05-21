@@ -397,6 +397,9 @@ func TestValidateWebhookURL(t *testing.T) {
 		{"https://172.16.0.1/internal", true},
 		{"https://192.168.1.1/internal", true},
 		{"https://127.0.0.1/local", true},
+		{"https://[::1]:8080/exfil", true},
+		{"https://[fe80::1]/link-local", true},
+		{"https://[fd00::1]/unique-local", true},
 	}
 	for _, tt := range tests {
 		err := validateWebhookURL(tt.url)

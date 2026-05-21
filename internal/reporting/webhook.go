@@ -220,6 +220,9 @@ func isPrivateIP(ip net.IP) bool {
 		{IP: net.IPv4(192, 168, 0, 0), Mask: net.CIDRMask(16, 32)},
 		{IP: net.IPv4(169, 254, 0, 0), Mask: net.CIDRMask(16, 32)},
 		{IP: net.IPv4(127, 0, 0, 0), Mask: net.CIDRMask(8, 32)},
+		{IP: net.ParseIP("::1"), Mask: net.CIDRMask(128, 128)},
+		{IP: net.ParseIP("fe80::"), Mask: net.CIDRMask(10, 128)},
+		{IP: net.ParseIP("fc00::"), Mask: net.CIDRMask(7, 128)},
 	}
 	for _, r := range privateRanges {
 		if r.Contains(ip) {
