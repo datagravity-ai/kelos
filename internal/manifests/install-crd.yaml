@@ -4261,7 +4261,11 @@ spec:
                               - name
                               type: object
                             url:
-                              description: URL is the webhook endpoint. Must use HTTPS.
+                              description: |-
+                                URL is the webhook endpoint. Must use HTTPS. This value is stored
+                                in the spawned Task's annotations and is visible to anyone with
+                                read access to the Task resource. Do not use URLs with embedded
+                                tokens; use secretRef for authentication.
                               pattern: ^https://.+
                               type: string
                           required:
