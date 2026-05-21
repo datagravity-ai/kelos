@@ -51,8 +51,10 @@ type WorkspaceResetConfig struct {
 type SessionAutoscalingConfig struct {
 	// MinReplicas is the minimum number of session pods to maintain.
 	// The autoscaler will not scale below this value. Defaults to 1.
+	// Must be at least 1 because the HPA uses a pods-type metric that
+	// requires running pods to produce metric values for scale-up decisions.
 	// +optional
-	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:default=1
 	MinReplicas *int32 `json:"minReplicas,omitempty"`
 
