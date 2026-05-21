@@ -195,7 +195,8 @@ func ssrfCheckRedirect(req *http.Request, via []*http.Request) error {
 }
 
 // validateWebhookURL rejects URLs that target private, loopback, or
-// link-local addresses to prevent SSRF attacks.
+// link-local addresses to prevent SSRF attacks. Domain names are resolved
+// and all resulting IPs are checked.
 func validateWebhookURL(rawURL string) error {
 	u, err := url.Parse(rawURL)
 	if err != nil {
@@ -206,6 +207,16 @@ func validateWebhookURL(rawURL string) error {
 	}
 	host := u.Hostname()
 	if ip := net.ParseIP(host); ip != nil {
+		if isPrivateIP(ip) {
+			return fmt.Errorf("webhook URL must not target private/internal addresses")
+		}
+		return nil
+	}
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return fmt.Errorf("resolving webhook host %q: %w", host, err)
+	}
+	for _, ip := range ips {
 		if isPrivateIP(ip) {
 			return fmt.Errorf("webhook URL must not target private/internal addresses")
 		}

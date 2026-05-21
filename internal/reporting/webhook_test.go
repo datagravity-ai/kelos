@@ -400,6 +400,7 @@ func TestValidateWebhookURL(t *testing.T) {
 		{"https://[::1]:8080/exfil", true},
 		{"https://[fe80::1]/link-local", true},
 		{"https://[fd00::1]/unique-local", true},
+		{"https://localhost/ssrf", true},
 	}
 	for _, tt := range tests {
 		err := validateWebhookURL(tt.url)
