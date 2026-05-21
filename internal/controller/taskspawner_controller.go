@@ -125,6 +125,12 @@ func (r *TaskSpawnerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		if result, err := r.reconcileSessionStatefulSet(ctx, req, &ts, isSuspended); err != nil || result.Requeue || result.RequeueAfter > 0 {
 			return result, err
 		}
+	} else {
+		// Clean up stale session metrics if mode changed from persistent.
+		sessionPodsReady.DeleteLabelValues(ts.Namespace, ts.Name)
+		sessionPodsBusy.DeleteLabelValues(ts.Namespace, ts.Name)
+		sessionPodsIdle.DeleteLabelValues(ts.Namespace, ts.Name)
+		sessionTasksQueued.DeleteLabelValues(ts.Namespace, ts.Name)
 	}
 
 	// Cron-based TaskSpawners use a CronJob instead of a Deployment.

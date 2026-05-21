@@ -61,9 +61,10 @@ type SessionAutoscalingConfig struct {
 	// +kubebuilder:validation:Minimum=1
 	MaxReplicas int32 `json:"maxReplicas"`
 
-	// ScaleDownStabilizationSeconds is the duration a pod must be idle
-	// before it becomes eligible for scale-down. Prevents flapping
-	// when tasks arrive in bursts. Defaults to 300 (5 minutes).
+	// ScaleDownStabilizationSeconds is the HPA stabilization window for
+	// scale-down decisions. The HPA looks at the history of desired-replica
+	// recommendations over this window and picks the highest, preventing
+	// flapping when queue depth fluctuates. Defaults to 300 (5 minutes).
 	// +optional
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:default=300
