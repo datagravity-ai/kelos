@@ -136,6 +136,8 @@ func (h *SlackHandler) handleEventsAPI(ctx context.Context, evt socketmode.Event
 		h.handleMemberJoinedChannel(ctx, inner)
 	case *slackevents.MessageEvent:
 		h.handleMessageEvent(ctx, inner)
+	case *slackevents.AppMentionEvent:
+		h.handleAppMentionEvent(ctx, inner)
 	default:
 		return
 	}
@@ -166,7 +168,7 @@ func (h *SlackHandler) handleMemberJoinedChannel(ctx context.Context, evt *slack
 func (h *SlackHandler) handleMessageEvent(ctx context.Context, innerEvent *slackevents.MessageEvent) {
 	hasContent := innerEvent.Text != "" ||
 		(innerEvent.Message != nil && len(innerEvent.Message.Attachments) > 0)
-	if !shouldProcess(innerEvent.User, innerEvent.SubType, hasContent, h.botUserID) {
+	if !shouldProcess(innerEvent.User, innerEvent.SubType, innerEvent.Text, hasContent, h.botUserID) {
 		h.log.V(1).Info("Message filtered by shouldProcess",
 			"user", innerEvent.User, "subtype", innerEvent.SubType, "channel", innerEvent.Channel)
 		return
@@ -190,6 +192,91 @@ func (h *SlackHandler) handleMessageEvent(ctx context.Context, innerEvent *slack
 	}
 
 	h.routeMessage(ctx, msg)
+}
+
+// handleAppMentionEvent handles app_mention events, which fire when the bot is
+// @-mentioned. This is specifically for bot/workflow-originated mentions that
+// are filtered out by handleMessageEvent (subtype "bot_message"). Regular user
+// mentions (BotID empty) are already processed via handleMessageEvent, so we
+// skip them here to avoid creating duplicate tasks.
+func (h *SlackHandler) handleAppMentionEvent(ctx context.Context, event *slackevents.AppMentionEvent) {
+	if !shouldProcessAppMention(event, h.botUserID) {
+		h.log.V(1).Info("Skipping app_mention event",
+			"user", event.User, "botID", event.BotID, "channel", event.Channel)
+		return
+	}
+
+	msg := h.enrichAppMention(ctx, event)
+
+	if event.ThreadTimeStamp != "" {
+		body, err := FetchThreadContext(ctx, h.api, event.Channel, event.ThreadTimeStamp, h.botUserID)
+		if err != nil {
+			h.log.Error(err, "Failed to fetch thread context for app_mention",
+				"channel", event.Channel, "threadTS", event.ThreadTimeStamp)
+			return
+		}
+		msg.Body = body
+		msg.HasThreadContext = true
+	}
+
+	h.routeMessage(ctx, msg)
+}
+
+// shouldProcessAppMention decides whether an app_mention event should be processed.
+// It only accepts bot/workflow-originated mentions (BotID set) since regular user
+// mentions are already handled by handleMessageEvent. Self-mentions and empty text
+// are also filtered. As an escape hatch, self-mentions containing the word
+// "ouroboros" are allowed through so operators can opt into bot-to-bot loops.
+func shouldProcessAppMention(event *slackevents.AppMentionEvent, selfUserID string) bool {
+	if event.BotID == "" {
+		return false
+	}
+	if event.User == selfUserID && !strings.Contains(strings.ToLower(event.Text), "ouroboros") {
+		return false
+	}
+	return event.Text != ""
+}
+
+// enrichAppMention builds a SlackMessageData from an app_mention event,
+// enriching it with user info and permalink.
+func (h *SlackHandler) enrichAppMention(ctx context.Context, event *slackevents.AppMentionEvent) *SlackMessageData {
+	userName := event.User
+	if event.User != "" {
+		userCtx, userCancel := context.WithTimeout(ctx, enrichCallTimeout)
+		defer userCancel()
+		if info, err := h.api.GetUserInfoContext(userCtx, event.User); err == nil {
+			userName = info.RealName
+			if userName == "" {
+				userName = info.Name
+			}
+		}
+	}
+
+	permalink := ""
+	linkCtx, linkCancel := context.WithTimeout(ctx, enrichCallTimeout)
+	defer linkCancel()
+	if link, err := h.api.GetPermalinkContext(linkCtx, &goslack.PermalinkParameters{
+		Channel: event.Channel,
+		Ts:      event.TimeStamp,
+	}); err == nil {
+		permalink = link
+	}
+
+	threadTS := event.ThreadTimeStamp
+	if threadTS == "" {
+		threadTS = event.TimeStamp
+	}
+
+	return &SlackMessageData{
+		UserID:    event.User,
+		ChannelID: event.Channel,
+		UserName:  userName,
+		Text:      event.Text,
+		ThreadTS:  threadTS,
+		Timestamp: event.TimeStamp,
+		Permalink: permalink,
+		Body:      event.Text,
+	}
 }
 
 func (h *SlackHandler) handleSlashCommand(ctx context.Context, evt socketmode.Event) {
@@ -432,13 +519,21 @@ func newSocketModeClient(api *goslack.Client) *socketmode.Client {
 
 // shouldProcess decides whether a Slack message should be processed.
 // It filters out bot messages, self-messages, and message subtypes we don't handle.
-// hasContent should be true when the message has text or attachments.
-func shouldProcess(userID, subtype string, hasContent bool, selfUserID string) bool {
-	if userID == selfUserID {
+// hasContent should be true when the message has text or attachments. As an
+// escape hatch, the bot's own messages whose text contains "ouroboros"
+// (case-insensitive) bypass the self-message and bot_message filters so
+// operators can opt into bot-to-bot loops.
+func shouldProcess(userID, subtype, text string, hasContent bool, selfUserID string) bool {
+	selfOuroboros := userID == selfUserID && strings.Contains(strings.ToLower(text), "ouroboros")
+	if userID == selfUserID && !strings.Contains(strings.ToLower(text), "ouroboros") {
 		return false
 	}
 	switch subtype {
-	case "bot_message", "message_changed", "message_deleted", "message_replied":
+	case "bot_message":
+		if !selfOuroboros {
+			return false
+		}
+	case "message_changed", "message_deleted", "message_replied":
 		return false
 	}
 	return hasContent

@@ -353,6 +353,7 @@ func TestShouldProcess(t *testing.T) {
 		name       string
 		userID     string
 		subtype    string
+		text       string
 		hasContent bool
 		selfUserID string
 		want       bool
@@ -360,6 +361,7 @@ func TestShouldProcess(t *testing.T) {
 		{
 			name:       "normal message",
 			userID:     "U1",
+			text:       "hello",
 			hasContent: true,
 			selfUserID: "UBOT",
 			want:       true,
@@ -367,6 +369,7 @@ func TestShouldProcess(t *testing.T) {
 		{
 			name:       "self message filtered",
 			userID:     "UBOT",
+			text:       "hello",
 			hasContent: true,
 			selfUserID: "UBOT",
 			want:       false,
@@ -375,6 +378,7 @@ func TestShouldProcess(t *testing.T) {
 			name:       "bot_message subtype filtered",
 			userID:     "U1",
 			subtype:    "bot_message",
+			text:       "hello",
 			hasContent: true,
 			selfUserID: "UBOT",
 			want:       false,
@@ -383,6 +387,7 @@ func TestShouldProcess(t *testing.T) {
 			name:       "message_changed subtype filtered",
 			userID:     "U1",
 			subtype:    "message_changed",
+			text:       "hello",
 			hasContent: true,
 			selfUserID: "UBOT",
 			want:       false,
@@ -391,6 +396,7 @@ func TestShouldProcess(t *testing.T) {
 			name:       "message_deleted subtype filtered",
 			userID:     "U1",
 			subtype:    "message_deleted",
+			text:       "hello",
 			hasContent: true,
 			selfUserID: "UBOT",
 			want:       false,
@@ -399,6 +405,7 @@ func TestShouldProcess(t *testing.T) {
 			name:       "message_replied subtype filtered",
 			userID:     "U1",
 			subtype:    "message_replied",
+			text:       "hello",
 			hasContent: true,
 			selfUserID: "UBOT",
 			want:       false,
@@ -410,11 +417,28 @@ func TestShouldProcess(t *testing.T) {
 			selfUserID: "UBOT",
 			want:       false,
 		},
+		{
+			name:       "self ouroboros message allowed",
+			userID:     "UBOT",
+			text:       "ouroboros: continue the task",
+			hasContent: true,
+			selfUserID: "UBOT",
+			want:       true,
+		},
+		{
+			name:       "self ouroboros bot_message allowed",
+			userID:     "UBOT",
+			subtype:    "bot_message",
+			text:       "Ouroboros loop",
+			hasContent: true,
+			selfUserID: "UBOT",
+			want:       true,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := shouldProcess(tt.userID, tt.subtype, tt.hasContent, tt.selfUserID)
+			got := shouldProcess(tt.userID, tt.subtype, tt.text, tt.hasContent, tt.selfUserID)
 			if got != tt.want {
 				t.Errorf("shouldProcess() = %v, want %v", got, tt.want)
 			}
