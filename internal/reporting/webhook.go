@@ -53,9 +53,11 @@ type WebhookReporter struct {
 	skipURLValidation bool
 }
 
-// SecretReader reads a key from a named Secret in a namespace.
+// SecretReader reads headers from a named Secret in a namespace.
 type SecretReader interface {
-	ReadSecret(ctx context.Context, namespace, name, key string) (string, error)
+	// ReadHeaders returns all key-value pairs from the named Secret.
+	// Each key is used as an HTTP header name and the value as its value.
+	ReadHeaders(ctx context.Context, namespace, name string) (map[string]string, error)
 }
 
 // ReportWebhooks checks whether the task has onCompletion hooks configured
@@ -139,12 +141,12 @@ func (wr *WebhookReporter) sendWebhook(ctx context.Context, namespace string, ho
 	req.Header.Set("Content-Type", "application/json")
 
 	if hook.Webhook.SecretRef != nil && wr.SecretReader != nil {
-		authValue, err := wr.SecretReader.ReadSecret(ctx, namespace, hook.Webhook.SecretRef.Name, "Authorization")
+		headers, err := wr.SecretReader.ReadHeaders(ctx, namespace, hook.Webhook.SecretRef.Name)
 		if err != nil {
 			return fmt.Errorf("reading webhook secret %q: %w", hook.Webhook.SecretRef.Name, err)
 		}
-		if authValue != "" {
-			req.Header.Set("Authorization", authValue)
+		for k, v := range headers {
+			req.Header.Set(k, v)
 		}
 	}
 

@@ -1030,8 +1030,9 @@ type WebhookNotification struct {
 	// +kubebuilder:validation:Pattern="^https://.+"
 	URL string `json:"url"`
 
-	// SecretRef optionally references a Secret containing an "Authorization"
-	// key whose value is sent as the Authorization header.
+	// SecretRef optionally references a Secret whose keys are sent as HTTP
+	// headers. For example, a Secret with keys "Authorization" and "X-Api-Key"
+	// will set both as request headers with their respective values.
 	// +optional
 	SecretRef *SecretReference `json:"secretRef,omitempty"`
 }

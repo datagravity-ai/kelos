@@ -13,14 +13,14 @@ type KubeSecretReader struct {
 	Client client.Client
 }
 
-func (r *KubeSecretReader) ReadSecret(ctx context.Context, namespace, name, key string) (string, error) {
+func (r *KubeSecretReader) ReadHeaders(ctx context.Context, namespace, name string) (map[string]string, error) {
 	var secret corev1.Secret
 	if err := r.Client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &secret); err != nil {
-		return "", fmt.Errorf("getting secret %s/%s: %w", namespace, name, err)
+		return nil, fmt.Errorf("getting secret %s/%s: %w", namespace, name, err)
 	}
-	data, ok := secret.Data[key]
-	if !ok {
-		return "", fmt.Errorf("key %q not found in secret %s/%s", key, namespace, name)
+	headers := make(map[string]string, len(secret.Data))
+	for k, v := range secret.Data {
+		headers[k] = string(v)
 	}
-	return string(data), nil
+	return headers, nil
 }

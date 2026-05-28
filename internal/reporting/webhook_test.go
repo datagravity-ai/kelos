@@ -19,11 +19,11 @@ import (
 )
 
 type fakeSecretReader struct {
-	secrets map[string]string
+	headers map[string]map[string]string // namespace/name -> headers
 }
 
-func (f *fakeSecretReader) ReadSecret(_ context.Context, namespace, name, key string) (string, error) {
-	return f.secrets[namespace+"/"+name+"/"+key], nil
+func (f *fakeSecretReader) ReadHeaders(_ context.Context, namespace, name string) (map[string]string, error) {
+	return f.headers[namespace+"/"+name], nil
 }
 
 func newFakeClient(objs ...client.Object) client.Client {
@@ -40,6 +40,7 @@ func TestWebhookReporter_ReportWebhooks(t *testing.T) {
 		wantRequests     int
 		wantPayload      *WebhookPayload
 		wantAuthHeader   string
+		wantHeaders      map[string]string
 		wantAnnotation   string
 		wantErr          bool
 		wantNoAnnotation bool
@@ -187,6 +188,27 @@ func TestWebhookReporter_ReportWebhooks(t *testing.T) {
 			wantAuthHeader: "Bearer my-token",
 			wantAnnotation: "Succeeded",
 		},
+		{
+			name: "sets multiple headers from secret",
+			task: &kelosv1alpha1.Task{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-task-7",
+					Namespace: "default",
+					Annotations: map[string]string{
+						AnnotationOnCompletion: `[{"name":"alert","webhook":{"url":"PLACEHOLDER","secretRef":{"name":"multi-header-secret"}}}]`,
+					},
+				},
+				Spec:   kelosv1alpha1.TaskSpec{Type: "claude-code"},
+				Status: kelosv1alpha1.TaskStatus{Phase: kelosv1alpha1.TaskPhaseSucceeded},
+			},
+			serverStatus: 200,
+			wantRequests: 1,
+			wantHeaders: map[string]string{
+				"Authorization": "Bearer multi-token",
+				"X-Api-Key":     "key-123",
+			},
+			wantAnnotation: "Succeeded",
+		},
 	}
 
 	for _, tt := range tests {
@@ -194,10 +216,12 @@ func TestWebhookReporter_ReportWebhooks(t *testing.T) {
 			requestCount := 0
 			var lastBody []byte
 			var lastAuthHeader string
+			var lastHeaders http.Header
 
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				requestCount++
 				lastAuthHeader = r.Header.Get("Authorization")
+				lastHeaders = r.Header.Clone()
 				lastBody, _ = io.ReadAll(r.Body)
 				w.WriteHeader(tt.serverStatus)
 			}))
@@ -222,8 +246,14 @@ func TestWebhookReporter_ReportWebhooks(t *testing.T) {
 			cl := newFakeClient(tt.task)
 
 			secretReader := &fakeSecretReader{
-				secrets: map[string]string{
-					"default/webhook-secret/Authorization": "Bearer my-token",
+				headers: map[string]map[string]string{
+					"default/webhook-secret": {
+						"Authorization": "Bearer my-token",
+					},
+					"default/multi-header-secret": {
+						"Authorization": "Bearer multi-token",
+						"X-Api-Key":     "key-123",
+					},
 				},
 			}
 
@@ -268,6 +298,12 @@ func TestWebhookReporter_ReportWebhooks(t *testing.T) {
 
 			if tt.wantAuthHeader != "" && lastAuthHeader != tt.wantAuthHeader {
 				t.Errorf("Authorization header = %q, want %q", lastAuthHeader, tt.wantAuthHeader)
+			}
+
+			for k, v := range tt.wantHeaders {
+				if got := lastHeaders.Get(k); got != v {
+					t.Errorf("header %s = %q, want %q", k, got, v)
+				}
 			}
 
 			// Verify annotation persistence for cases that dispatched webhooks.
