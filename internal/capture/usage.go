@@ -304,7 +304,7 @@ func isAuthFailureFromFile(agentType, path string, extraPatterns []string) bool 
 		"credentials expired",
 		"token expired",
 		"Bad credentials",
-		"is invalid",
+		"The token in",
 	}
 	authIndicators = append(authIndicators, extraPatterns...)
 

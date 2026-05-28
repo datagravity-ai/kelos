@@ -311,14 +311,15 @@ func (r *Runner) processTask(ctx context.Context, taskName string) error {
 		return agentErr
 	}
 
+	// Check auth failure first (more specific) before the generic error check,
+	// so token-expiry is detected regardless of the is_error field value.
+	if capture.IsAuthFailure(r.config.AgentType, r.config.AuthFailurePatterns) {
+		return errTokenExpired
+	}
+
 	// Even if the process exited 0, check if the agent reported failure.
 	if capture.IsAgentError(r.config.AgentType) {
 		return errAgentReportedFailure
-	}
-
-	// Check if the agent session ended due to auth failure.
-	if capture.IsAuthFailure(r.config.AgentType, r.config.AuthFailurePatterns) {
-		return errTokenExpired
 	}
 
 	return nil

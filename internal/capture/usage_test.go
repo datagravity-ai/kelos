@@ -314,13 +314,13 @@ func TestIsAuthFailure(t *testing.T) {
 		{
 			name:      "token expired in result text",
 			agentType: "claude-code",
-			content:   `{"type":"result","is_error":true,"result":"The babysitter session must end — GitHub credentials expired (HTTP 401)"}` + "\n",
+			content:   `{"type":"result","is_error":false,"result":"The babysitter session must end — GitHub credentials expired (HTTP 401)"}` + "\n",
 			want:      true,
 		},
 		{
 			name:      "bad credentials standalone",
 			agentType: "claude-code",
-			content:   `{"type":"result","is_error":true,"result":"Bad credentials (HTTP 401)"}` + "\n",
+			content:   `{"type":"result","is_error":false,"result":"Bad credentials (HTTP 401)"}` + "\n",
 			want:      true,
 		},
 		{
@@ -332,33 +332,39 @@ func TestIsAuthFailure(t *testing.T) {
 		{
 			name:          "session failed with custom extra pattern",
 			agentType:     "claude-code",
-			content:       `{"type":"result","is_error":true,"result":"Session failed — custom auth error XYZ"}` + "\n",
+			content:       `{"type":"result","is_error":false,"result":"Session failed — custom auth error XYZ"}` + "\n",
 			extraPatterns: []string{"custom auth error XYZ"},
 			want:          true,
 		},
 		{
 			name:      "unsupported agent type",
 			agentType: "gemini",
-			content:   `{"type":"result","is_error":true,"result":"Session failed — token expired (HTTP 401)"}` + "\n",
+			content:   `{"type":"result","is_error":false,"result":"Session failed — token expired (HTTP 401)"}` + "\n",
 			want:      false,
 		},
 		{
 			name:      "session failed with token expired",
 			agentType: "cursor",
-			content:   `{"type":"result","is_error":true,"result":"Session failed — GitHub token expired (HTTP 401)"}` + "\n",
+			content:   `{"type":"result","is_error":false,"result":"Session failed — GitHub token expired (HTTP 401)"}` + "\n",
 			want:      true,
 		},
 		{
 			name:      "auth indicator without session ending phrase",
 			agentType: "claude-code",
-			content:   `{"type":"result","is_error":true,"result":"Got HTTP 401 from API"}` + "\n",
+			content:   `{"type":"result","is_error":false,"result":"Got HTTP 401 from API"}` + "\n",
 			want:      false,
 		},
 		{
 			name:      "empty result field",
 			agentType: "claude-code",
-			content:   `{"type":"result","is_error":true}` + "\n",
+			content:   `{"type":"result","is_error":false}` + "\n",
 			want:      false,
+		},
+		{
+			name:      "auth failure detected even with is_error true",
+			agentType: "claude-code",
+			content:   `{"type":"result","is_error":true,"result":"Session failed — GitHub token expired (HTTP 401)"}` + "\n",
+			want:      true,
 		},
 	}
 
