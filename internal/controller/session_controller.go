@@ -54,6 +54,9 @@ const (
 
 	// LabelExecutionMode is set on Tasks to indicate their execution mode.
 	LabelExecutionMode = "kelos.dev/execution-mode"
+
+	// AnnotationTaskFailureReason is set by the session runner to indicate why a task failed.
+	AnnotationTaskFailureReason = "kelos.dev/task-failure-reason"
 )
 
 // SessionReconciler assigns queued Tasks to available persistent session pods
@@ -248,6 +251,21 @@ func (r *SessionReconciler) checkTaskCompletion(ctx context.Context, task *kelos
 		return ctrl.Result{}, nil
 
 	case "failed":
+		failureReason := pod.Annotations[AnnotationTaskFailureReason]
+		if isRetriableFailure(failureReason) {
+			sessionConfig := r.getSessionConfig(ctx, task)
+			if r.shouldRetryOnPodFailure(sessionConfig, task) {
+				logger.Info("Task failed with retriable reason, re-queuing",
+					"task", task.Name, "pod", pod.Name, "reason", failureReason,
+					"retryCount", task.Status.SessionRetryCount)
+				r.Recorder.Eventf(task, corev1.EventTypeWarning, "TaskFailedRetriable",
+					"Task failed (%s), re-queuing (attempt %d)", failureReason, task.Status.SessionRetryCount+1)
+				if clearErr := r.clearPodAssignment(ctx, task.Namespace, pod.Name); clearErr != nil {
+					logger.Error(clearErr, "Failed to clear pod assignment before requeue")
+				}
+				return r.requeueTask(ctx, task, failureReason)
+			}
+		}
 		logger.Info("Task failed via session runner", "task", task.Name)
 		if result, err := r.updateTaskPhase(ctx, task, kelosv1alpha1.TaskPhaseFailed, "Task failed"); err != nil {
 			return result, err
@@ -353,6 +371,16 @@ func (r *SessionReconciler) shouldRetryOnPodFailure(config *kelosv1alpha1.Sessio
 	return task.Status.SessionRetryCount < maxRetries
 }
 
+// retriableFailureReasons are failure reasons that warrant re-queuing.
+var retriableFailureReasons = map[string]bool{
+	"token-expired": true,
+}
+
+// isRetriableFailure returns true if the failure reason indicates a transient issue.
+func isRetriableFailure(reason string) bool {
+	return retriableFailureReasons[reason]
+}
+
 // requeueTask resets a task back to Queued phase, clearing its pod assignment
 // and incrementing the retry counter.
 func (r *SessionReconciler) requeueTask(ctx context.Context, task *kelosv1alpha1.Task, reason string) (ctrl.Result, error) {
@@ -410,6 +438,7 @@ func (r *SessionReconciler) clearPodAssignment(ctx context.Context, namespace, p
 
 	delete(pod.Annotations, AnnotationAssignedTask)
 	delete(pod.Annotations, AnnotationTaskStatus)
+	delete(pod.Annotations, AnnotationTaskFailureReason)
 	return r.Update(ctx, &pod)
 }
 

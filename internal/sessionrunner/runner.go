@@ -50,11 +50,12 @@ var errAgentReportedFailure = errors.New("agent reported failure in result outpu
 var errTokenExpired = errors.New("agent session failed due to GitHub token expiration")
 
 const (
-	annotationAssignedTask   = "kelos.dev/assigned-task"
-	annotationTaskStatus      = "kelos.dev/task-status"
-	annotationTasksCompleted  = "kelos.dev/tasks-completed"
-	annotationSessionStart    = "kelos.dev/session-start-time"
-	annotationTokenExpiresAt  = "kelos.dev/token-expires-at"
+	annotationAssignedTask      = "kelos.dev/assigned-task"
+	annotationTaskStatus        = "kelos.dev/task-status"
+	annotationTasksCompleted    = "kelos.dev/tasks-completed"
+	annotationSessionStart      = "kelos.dev/session-start-time"
+	annotationTokenExpiresAt    = "kelos.dev/token-expires-at"
+	annotationTaskFailureReason = "kelos.dev/task-failure-reason"
 
 	defaultIdleTimeout          = 30 * time.Minute
 	defaultMaxSessionDuration   = 8 * time.Hour
@@ -210,6 +211,11 @@ func (r *Runner) Run(ctx context.Context) error {
 
 		if err := r.processTask(ctx, taskName); err != nil {
 			fmt.Printf("Task %s failed: %v\n", taskName, err)
+			if errors.Is(err, errTokenExpired) {
+				if annErr := r.setAnnotation(ctx, annotationTaskFailureReason, "token-expired"); annErr != nil {
+					fmt.Printf("Error setting failure reason annotation: %v\n", annErr)
+				}
+			}
 			if setErr := r.setTaskStatus(ctx, "failed"); setErr != nil {
 				fmt.Printf("Error setting task status to failed: %v\n", setErr)
 			}
