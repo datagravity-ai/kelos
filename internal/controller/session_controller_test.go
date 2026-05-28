@@ -870,7 +870,7 @@ func TestSessionReconciler_SkipsNonRunningPods(t *testing.T) {
 	}
 }
 
-func TestSessionReconciler_RaceConditionRollsBackPodAnnotation(t *testing.T) {
+func TestSessionReconciler_RaceConditionSkipsPodAnnotation(t *testing.T) {
 	scheme := newTestScheme()
 	// Task is already assigned (Pending) by a prior reconcile.
 	task := &kelosv1alpha1.Task{
@@ -915,7 +915,8 @@ func TestSessionReconciler_RaceConditionRollsBackPodAnnotation(t *testing.T) {
 	}
 
 	// Simulate the losing reconcile calling assignTask on a task that's already
-	// been moved past Queued. We call assignTask directly with a stale copy.
+	// been moved past Queued. The task claim (status update) will see the task
+	// is no longer Queued and bail out without annotating the pod.
 	staleTask := task.DeepCopy()
 	staleTask.Status.Phase = kelosv1alpha1.TaskPhaseQueued
 	staleTask.Status.SessionPodName = ""
@@ -925,13 +926,13 @@ func TestSessionReconciler_RaceConditionRollsBackPodAnnotation(t *testing.T) {
 		t.Fatalf("assignTask() returned error: %v", err)
 	}
 
-	// The pod annotation should have been rolled back (cleared).
+	// The pod should never have been annotated (task claim acts as mutex).
 	var updatedPod corev1.Pod
 	if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: pod.Name, Namespace: "default"}, &updatedPod); err != nil {
 		t.Fatalf("Failed to get pod: %v", err)
 	}
 	if _, exists := updatedPod.Annotations[AnnotationAssignedTask]; exists {
-		t.Error("Expected pod assignment annotation to be rolled back after race condition")
+		t.Error("Expected pod to have no assignment annotation when task claim fails due to race")
 	}
 
 	// The task should remain in Pending with its original assignment.
