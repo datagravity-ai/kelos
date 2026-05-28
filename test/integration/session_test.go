@@ -303,6 +303,121 @@ var _ = Describe("Persistent Execution Mode", func() {
 			Expect(finalTask.Status.Results).To(HaveKeyWithValue("response", "SGVsbG8gd29ybGQ="))
 		})
 
+		It("should requeue task when session runner reports retriable failure", func() {
+			By("Creating a TaskSpawner for retry config")
+			spawner := &kelosv1alpha1.TaskSpawner{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "my-spawner",
+					Namespace: ns.Name,
+				},
+				Spec: kelosv1alpha1.TaskSpawnerSpec{
+					TaskTemplate: kelosv1alpha1.TaskTemplate{
+						Type: "claude-code",
+						Credentials: kelosv1alpha1.Credentials{
+							Type: kelosv1alpha1.CredentialTypeNone,
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, spawner)).Should(Succeed())
+
+			By("Creating a session pod in Running state")
+			Expect(k8sClient.Create(ctx, pod)).Should(Succeed())
+			Eventually(func() error {
+				if err := k8sClient.Get(ctx, podKey, pod); err != nil {
+					return err
+				}
+				pod.Status.Phase = corev1.PodRunning
+				return k8sClient.Status().Update(ctx, pod)
+			}, timeout, interval).Should(Succeed())
+
+			By("Creating a persistent-mode task")
+			Expect(k8sClient.Create(ctx, task)).Should(Succeed())
+
+			By("Waiting for task to be assigned")
+			Eventually(func() kelosv1alpha1.TaskPhase {
+				var t kelosv1alpha1.Task
+				if err := k8sClient.Get(ctx, taskKey, &t); err != nil {
+					return ""
+				}
+				return t.Status.Phase
+			}, timeout, interval).Should(Equal(kelosv1alpha1.TaskPhasePending))
+
+			By("Simulating session runner reporting retriable failure (token-expired)")
+			Eventually(func() error {
+				if err := k8sClient.Get(ctx, podKey, pod); err != nil {
+					return err
+				}
+				if pod.Annotations == nil {
+					pod.Annotations = make(map[string]string)
+				}
+				pod.Annotations[controller.AnnotationTaskStatus] = "failed"
+				pod.Annotations[controller.AnnotationTaskFailureReason] = "token-expired"
+				return k8sClient.Update(ctx, pod)
+			}, timeout, interval).Should(Succeed())
+
+			By("Verifying task is requeued (not Failed) and retry count incremented")
+			Eventually(func() int32 {
+				var t kelosv1alpha1.Task
+				if err := k8sClient.Get(ctx, taskKey, &t); err != nil {
+					return -1
+				}
+				return t.Status.SessionRetryCount
+			}, timeout, interval).Should(BeNumerically(">=", int32(1)))
+
+			By("Verifying task is not in terminal Failed state")
+			var requeuedTask kelosv1alpha1.Task
+			Expect(k8sClient.Get(ctx, taskKey, &requeuedTask)).Should(Succeed())
+			Expect(requeuedTask.Status.Phase).NotTo(Equal(kelosv1alpha1.TaskPhaseFailed))
+
+		})
+
+		It("should mark task as terminal Failed when failure reason is not retriable", func() {
+			By("Creating a session pod in Running state")
+			Expect(k8sClient.Create(ctx, pod)).Should(Succeed())
+			Eventually(func() error {
+				if err := k8sClient.Get(ctx, podKey, pod); err != nil {
+					return err
+				}
+				pod.Status.Phase = corev1.PodRunning
+				return k8sClient.Status().Update(ctx, pod)
+			}, timeout, interval).Should(Succeed())
+
+			By("Creating a persistent-mode task")
+			Expect(k8sClient.Create(ctx, task)).Should(Succeed())
+
+			By("Waiting for task to be assigned")
+			Eventually(func() kelosv1alpha1.TaskPhase {
+				var t kelosv1alpha1.Task
+				if err := k8sClient.Get(ctx, taskKey, &t); err != nil {
+					return ""
+				}
+				return t.Status.Phase
+			}, timeout, interval).Should(Equal(kelosv1alpha1.TaskPhasePending))
+
+			By("Simulating session runner reporting non-retriable failure")
+			Eventually(func() error {
+				if err := k8sClient.Get(ctx, podKey, pod); err != nil {
+					return err
+				}
+				if pod.Annotations == nil {
+					pod.Annotations = make(map[string]string)
+				}
+				pod.Annotations[controller.AnnotationTaskStatus] = "failed"
+				// No failure reason annotation = not retriable
+				return k8sClient.Update(ctx, pod)
+			}, timeout, interval).Should(Succeed())
+
+			By("Verifying task transitions to Failed (terminal)")
+			Eventually(func() kelosv1alpha1.TaskPhase {
+				var t kelosv1alpha1.Task
+				if err := k8sClient.Get(ctx, taskKey, &t); err != nil {
+					return ""
+				}
+				return t.Status.Phase
+			}, timeout, interval).Should(Equal(kelosv1alpha1.TaskPhaseFailed))
+		})
+
 		It("should requeue when no session pod is available", func() {
 			By("Creating a persistent-mode task without a session pod")
 			Expect(k8sClient.Create(ctx, task)).Should(Succeed())
