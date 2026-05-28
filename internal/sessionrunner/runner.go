@@ -211,13 +211,12 @@ func (r *Runner) Run(ctx context.Context) error {
 
 		if err := r.processTask(ctx, taskName); err != nil {
 			fmt.Printf("Task %s failed: %v\n", taskName, err)
+			annotations := map[string]string{annotationTaskStatus: "failed"}
 			if errors.Is(err, errTokenExpired) {
-				if annErr := r.setAnnotation(ctx, annotationTaskFailureReason, "token-expired"); annErr != nil {
-					fmt.Printf("Error setting failure reason annotation: %v\n", annErr)
-				}
+				annotations[annotationTaskFailureReason] = "token-expired"
 			}
-			if setErr := r.setTaskStatus(ctx, "failed"); setErr != nil {
-				fmt.Printf("Error setting task status to failed: %v\n", setErr)
+			if setErr := r.setAnnotations(ctx, annotations); setErr != nil {
+				fmt.Printf("Error setting task status annotations: %v\n", setErr)
 			}
 		} else {
 			fmt.Printf("Task %s completed successfully\n", taskName)
@@ -597,6 +596,31 @@ func (r *Runner) updateTaskStatus(ctx context.Context, taskName string, startTim
 // setTaskStatus sets the kelos.dev/task-status annotation on the pod.
 func (r *Runner) setTaskStatus(ctx context.Context, status string) error {
 	return r.setAnnotation(ctx, annotationTaskStatus, status)
+}
+
+// setAnnotations sets multiple annotations on the pod atomically with retry-on-conflict.
+func (r *Runner) setAnnotations(ctx context.Context, annotations map[string]string) error {
+	const maxRetries = 3
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		pod, err := r.kubeClient.CoreV1().Pods(r.config.PodNamespace).Get(ctx, r.config.PodName, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+		if pod.Annotations == nil {
+			pod.Annotations = make(map[string]string)
+		}
+		for k, v := range annotations {
+			pod.Annotations[k] = v
+		}
+		_, err = r.kubeClient.CoreV1().Pods(r.config.PodNamespace).Update(ctx, pod, metav1.UpdateOptions{})
+		if err == nil {
+			return nil
+		}
+		if !apierrors.IsConflict(err) {
+			return err
+		}
+	}
+	return fmt.Errorf("failed to set annotations after %d retries", maxRetries)
 }
 
 // setAnnotation sets a single annotation on the pod with retry-on-conflict.
