@@ -79,6 +79,62 @@ func TestConfigFromEnv_CustomValues(t *testing.T) {
 	}
 }
 
+func TestConfigFromEnv_AuthFailurePatterns(t *testing.T) {
+	tests := []struct {
+		name    string
+		envVal  string
+		want    []string
+	}{
+		{
+			name:   "empty env var",
+			envVal: "",
+			want:   nil,
+		},
+		{
+			name:   "single pattern",
+			envVal: "custom error",
+			want:   []string{"custom error"},
+		},
+		{
+			name:   "multiple patterns with whitespace",
+			envVal: " pattern one , pattern two , pattern three ",
+			want:   []string{"pattern one", "pattern two", "pattern three"},
+		},
+		{
+			name:   "trailing comma ignored",
+			envVal: "foo,bar,",
+			want:   []string{"foo", "bar"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.envVal != "" {
+				t.Setenv("KELOS_AUTH_FAILURE_PATTERNS", tt.envVal)
+			} else {
+				os.Unsetenv("KELOS_AUTH_FAILURE_PATTERNS")
+			}
+
+			cfg := ConfigFromEnv()
+
+			if tt.want == nil {
+				if cfg.AuthFailurePatterns != nil {
+					t.Errorf("expected nil, got %v", cfg.AuthFailurePatterns)
+				}
+				return
+			}
+			if len(cfg.AuthFailurePatterns) != len(tt.want) {
+				t.Fatalf("expected %d patterns, got %d: %v", len(tt.want), len(cfg.AuthFailurePatterns), cfg.AuthFailurePatterns)
+			}
+			for i, want := range tt.want {
+				if cfg.AuthFailurePatterns[i] != want {
+					t.Errorf("pattern[%d]: expected %q, got %q", i, want, cfg.AuthFailurePatterns[i])
+				}
+			}
+		})
+	}
+}
+
 func TestConfigFromEnv_InvalidDuration(t *testing.T) {
 	t.Setenv("KELOS_IDLE_TIMEOUT", "not-a-duration")
 

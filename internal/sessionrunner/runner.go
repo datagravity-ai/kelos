@@ -45,6 +45,10 @@ import (
 // but reports is_error=true in its result JSON.
 var errAgentReportedFailure = errors.New("agent reported failure in result output")
 
+// errTokenExpired is returned when the agent session ended due to GitHub
+// token expiration detected in the agent output.
+var errTokenExpired = errors.New("agent session failed due to GitHub token expiration")
+
 const (
 	annotationAssignedTask   = "kelos.dev/assigned-task"
 	annotationTaskStatus      = "kelos.dev/task-status"
@@ -75,6 +79,7 @@ type Config struct {
 	MaxTasksPerSession   int32
 	MaxSessionDuration   time.Duration
 	TokenRefreshInterval time.Duration
+	AuthFailurePatterns  []string
 }
 
 // ConfigFromEnv reads session runner configuration from environment variables.
@@ -108,6 +113,13 @@ func ConfigFromEnv() Config {
 	if v := os.Getenv("KELOS_TOKEN_REFRESH_INTERVAL"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			cfg.TokenRefreshInterval = d
+		}
+	}
+	if v := os.Getenv("KELOS_AUTH_FAILURE_PATTERNS"); v != "" {
+		for _, p := range strings.Split(v, ",") {
+			if trimmed := strings.TrimSpace(p); trimmed != "" {
+				cfg.AuthFailurePatterns = append(cfg.AuthFailurePatterns, trimmed)
+			}
 		}
 	}
 
@@ -296,6 +308,11 @@ func (r *Runner) processTask(ctx context.Context, taskName string) error {
 	// Even if the process exited 0, check if the agent reported failure.
 	if capture.IsAgentError(r.config.AgentType) {
 		return errAgentReportedFailure
+	}
+
+	// Check if the agent session ended due to auth failure.
+	if capture.IsAuthFailure(r.config.AgentType, r.config.AuthFailurePatterns) {
+		return errTokenExpired
 	}
 
 	return nil

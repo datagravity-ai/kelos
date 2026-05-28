@@ -269,6 +269,79 @@ func isAgentErrorFromFile(agentType, path string) bool {
 	return isError
 }
 
+// IsAuthFailure checks the agent output file for a result line indicating
+// the agent session ended due to GitHub auth failure. Supported agent types
+// are "claude-code", "codex", and "cursor".
+func IsAuthFailure(agentType string, extraPatterns []string) bool {
+	return isAuthFailureFromFile(agentType, agentOutputFile, extraPatterns)
+}
+
+func isAuthFailureFromFile(agentType, path string, extraPatterns []string) bool {
+	switch agentType {
+	case "claude-code", "codex", "cursor":
+	default:
+		return false
+	}
+
+	lines := readLines(path)
+	if len(lines) == 0 {
+		return false
+	}
+
+	last := findLastByType(lines, "result")
+	if last == nil {
+		return false
+	}
+
+	result, ok := last["result"].(string)
+	if !ok || result == "" {
+		return false
+	}
+
+	// Auth indicators (case-sensitive).
+	authIndicators := []string{
+		"HTTP 401",
+		"credentials expired",
+		"token expired",
+		"Bad credentials",
+		"is invalid",
+	}
+	authIndicators = append(authIndicators, extraPatterns...)
+
+	// Standalone match: "Bad credentials (HTTP 401)" without session-ending phrase.
+	if strings.Contains(result, "Bad credentials") && strings.Contains(result, "HTTP 401") {
+		return true
+	}
+
+	// Session-ending indicators (case-insensitive).
+	sessionIndicators := []string{
+		"session failed",
+		"session must end",
+		"cannot continue",
+		"must end",
+	}
+
+	lower := strings.ToLower(result)
+	hasSession := false
+	for _, s := range sessionIndicators {
+		if strings.Contains(lower, s) {
+			hasSession = true
+			break
+		}
+	}
+	if !hasSession {
+		return false
+	}
+
+	for _, a := range authIndicators {
+		if strings.Contains(result, a) {
+			return true
+		}
+	}
+
+	return false
+}
+
 // toInt64 converts a json.Number to int64, returning 0 on failure.
 func toInt64(v any) int64 {
 	n, ok := v.(json.Number)
