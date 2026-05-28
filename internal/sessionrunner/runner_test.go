@@ -81,9 +81,9 @@ func TestConfigFromEnv_CustomValues(t *testing.T) {
 
 func TestConfigFromEnv_AuthFailurePatterns(t *testing.T) {
 	tests := []struct {
-		name    string
-		envVal  string
-		want    []string
+		name   string
+		envVal string
+		want   []string
 	}{
 		{
 			name:   "empty env var",
