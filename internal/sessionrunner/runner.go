@@ -47,13 +47,16 @@ var errAgentReportedFailure = errors.New("agent reported failure in result outpu
 
 const (
 	annotationAssignedTask   = "kelos.dev/assigned-task"
-	annotationTaskStatus     = "kelos.dev/task-status"
-	annotationTasksCompleted = "kelos.dev/tasks-completed"
-	annotationSessionStart   = "kelos.dev/session-start-time"
+	annotationTaskStatus      = "kelos.dev/task-status"
+	annotationTasksCompleted  = "kelos.dev/tasks-completed"
+	annotationSessionStart    = "kelos.dev/session-start-time"
+	annotationTokenExpiresAt  = "kelos.dev/token-expires-at"
 
 	defaultIdleTimeout          = 30 * time.Minute
 	defaultMaxSessionDuration   = 8 * time.Hour
-	defaultTokenRefreshInterval = 30 * time.Minute
+	defaultTokenRefreshInterval = 10 * time.Minute
+	tokenExpiryMargin           = 5 * time.Minute
+	tokenRefreshRetryInterval   = 30 * time.Second
 	pollInterval                = 3 * time.Second
 )
 
@@ -372,6 +375,18 @@ func (r *Runner) refreshToken(ctx context.Context) error {
 		return fmt.Errorf("secret %s missing GITHUB_TOKEN key", r.config.TokenSecret)
 	}
 
+	// If the Secret carries an expiry annotation, reject tokens that are
+	// already expired or about to expire so the caller can retry sooner.
+	if expiresAtStr, hasExpiry := secret.Annotations[annotationTokenExpiresAt]; hasExpiry {
+		expiresAt, err := time.Parse(time.RFC3339, expiresAtStr)
+		if err != nil {
+			return fmt.Errorf("parsing %s annotation: %w", annotationTokenExpiresAt, err)
+		}
+		if time.Until(expiresAt) < tokenExpiryMargin {
+			return fmt.Errorf("token in secret %s is expired or expiring within %v", r.config.TokenSecret, tokenExpiryMargin)
+		}
+	}
+
 	tokenStr := strings.TrimSpace(string(token))
 
 	// Write token atomically (temp file + rename) so readers never see
@@ -513,6 +528,11 @@ func (r *Runner) startTokenRefreshLoop(ctx context.Context) *sync.WaitGroup {
 			case <-ticker.C:
 				if err := r.refreshToken(ctx); err != nil {
 					fmt.Printf("Warning: periodic token refresh failed: %v\n", err)
+					// Retry sooner while the controller regenerates the token.
+					ticker.Reset(tokenRefreshRetryInterval)
+				} else {
+					// Restore normal interval after a successful refresh.
+					ticker.Reset(r.config.TokenRefreshInterval)
 				}
 			}
 		}

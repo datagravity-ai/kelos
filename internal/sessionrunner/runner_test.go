@@ -697,3 +697,133 @@ func TestRefreshToken(t *testing.T) {
 		})
 	}
 }
+
+func TestRefreshToken_SkipsExpiredToken(t *testing.T) {
+	tmpDir := t.TempDir()
+	origTokenFilePath := tokenFilePath
+	tokenFilePath = tmpDir + "/token"
+	t.Cleanup(func() { tokenFilePath = origTokenFilePath })
+
+	// Token expired 10 minutes ago.
+	expiredAt := time.Now().Add(-10 * time.Minute).UTC().Format(time.RFC3339)
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "my-secret",
+			Namespace: "test-ns",
+			Annotations: map[string]string{
+				"kelos.dev/token-expires-at": expiredAt,
+			},
+		},
+		Data: map[string][]byte{"GITHUB_TOKEN": []byte("stale-token")},
+	}
+	client := fake.NewSimpleClientset(secret)
+
+	t.Setenv("GH_CONFIG_DIR", "")
+
+	r := &Runner{
+		config: Config{
+			PodNamespace: "test-ns",
+			TokenSecret:  "my-secret",
+		},
+		kubeClient: client,
+	}
+
+	err := r.refreshToken(context.Background())
+	if err == nil {
+		t.Fatal("Expected error for expired token, got nil")
+	}
+	if !strings.Contains(err.Error(), "expired") {
+		t.Errorf("Error should mention 'expired', got: %v", err)
+	}
+
+	// Token file should NOT be written.
+	if _, statErr := os.Stat(tokenFilePath); statErr == nil {
+		t.Error("Token file should not have been written for expired token")
+	}
+}
+
+func TestRefreshToken_AcceptsNonExpiredToken(t *testing.T) {
+	tmpDir := t.TempDir()
+	origTokenFilePath := tokenFilePath
+	tokenFilePath = tmpDir + "/token"
+	t.Cleanup(func() { tokenFilePath = origTokenFilePath })
+
+	// Token expires 30 minutes from now.
+	expiresAt := time.Now().Add(30 * time.Minute).UTC().Format(time.RFC3339)
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "my-secret",
+			Namespace: "test-ns",
+			Annotations: map[string]string{
+				"kelos.dev/token-expires-at": expiresAt,
+			},
+		},
+		Data: map[string][]byte{"GITHUB_TOKEN": []byte("fresh-token")},
+	}
+	client := fake.NewSimpleClientset(secret)
+
+	t.Setenv("GH_CONFIG_DIR", "")
+	t.Setenv("GH_TOKEN", "")
+
+	r := &Runner{
+		config: Config{
+			PodNamespace: "test-ns",
+			TokenSecret:  "my-secret",
+		},
+		kubeClient: client,
+	}
+
+	err := r.refreshToken(context.Background())
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	got, err := os.ReadFile(tokenFilePath)
+	if err != nil {
+		t.Fatalf("Failed to read token file: %v", err)
+	}
+	if string(got) != "fresh-token" {
+		t.Errorf("Token file: expected 'fresh-token', got %q", string(got))
+	}
+}
+
+func TestRefreshToken_NoAnnotationStillWorks(t *testing.T) {
+	tmpDir := t.TempDir()
+	origTokenFilePath := tokenFilePath
+	tokenFilePath = tmpDir + "/token"
+	t.Cleanup(func() { tokenFilePath = origTokenFilePath })
+
+	// No annotation at all — backwards compatibility.
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "my-secret",
+			Namespace: "test-ns",
+		},
+		Data: map[string][]byte{"GITHUB_TOKEN": []byte("legacy-token")},
+	}
+	client := fake.NewSimpleClientset(secret)
+
+	t.Setenv("GH_CONFIG_DIR", "")
+	t.Setenv("GH_TOKEN", "")
+
+	r := &Runner{
+		config: Config{
+			PodNamespace: "test-ns",
+			TokenSecret:  "my-secret",
+		},
+		kubeClient: client,
+	}
+
+	err := r.refreshToken(context.Background())
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	got, err := os.ReadFile(tokenFilePath)
+	if err != nil {
+		t.Fatalf("Failed to read token file: %v", err)
+	}
+	if string(got) != "legacy-token" {
+		t.Errorf("Token file: expected 'legacy-token', got %q", string(got))
+	}
+}
