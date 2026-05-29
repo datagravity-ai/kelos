@@ -135,7 +135,7 @@ func main() {
 	}
 
 	if oneShot {
-		if _, err := runOnce(ctx, cl, key, cfgArgs); err != nil {
+		if _, err := runOnce(ctx, cl, key, cfgArgs, nil); err != nil {
 			log.Error(err, "Cycle failed")
 			os.Exit(1)
 		}
@@ -158,9 +158,10 @@ func main() {
 	}
 
 	if err := (&spawnerReconciler{
-		Client: cl,
-		Key:    key,
-		Config: cfgArgs,
+		Client:           cl,
+		Key:              key,
+		Config:           cfgArgs,
+		persistentSource: nil,
 	}).SetupWithManager(mgr); err != nil {
 		log.Error(err, "Unable to create controller")
 		os.Exit(1)
@@ -393,10 +394,11 @@ func runCycleWithSourceCore(ctx context.Context, cl client.Client, key types.Nam
 			&ts.Spec.TaskTemplate,
 			templateVars,
 			&taskbuilder.SpawnerRef{
-				Name:       ts.Name,
-				UID:        string(ts.UID),
-				APIVersion: kelosv1alpha1.GroupVersion.String(),
-				Kind:       "TaskSpawner",
+				Name:          ts.Name,
+				UID:           string(ts.UID),
+				APIVersion:    kelosv1alpha1.GroupVersion.String(),
+				Kind:          "TaskSpawner",
+				ExecutionMode: ts.Spec.ExecutionMode,
 			},
 		)
 		if err != nil {
@@ -491,10 +493,24 @@ func runCycleWithSourceCore(ctx context.Context, cl client.Client, key types.Nam
 	return nil
 }
 
-// sourceAnnotations returns annotations that stamp GitHub source metadata
-// onto a spawned Task. These annotations enable downstream consumers (such
-// as the reporting watcher) to identify the originating issue or PR.
+// sourceAnnotations returns annotations that stamp source metadata onto a
+// spawned Task. These annotations enable downstream consumers (such as the
+// reporting watcher) to identify the originating issue, PR, or Slack message.
 func sourceAnnotations(ts *kelosv1alpha1.TaskSpawner, item source.WorkItem) map[string]string {
+	if ts.Spec.When.Slack != nil && len(item.Labels) >= 2 {
+		annotations := map[string]string{
+			reporting.AnnotationSlackReporting: "enabled",
+			reporting.AnnotationSlackChannel:   item.Labels[1],
+		}
+		// Only set thread_ts when the item ID is a valid Slack message
+		// timestamp (e.g. "1234567890.123456"). Slash command IDs are
+		// compound strings containing colons and are not valid timestamps.
+		if isSlackTimestamp(item.ID) {
+			annotations[reporting.AnnotationSlackThreadTS] = item.ID
+		}
+		return annotations
+	}
+
 	if ts.Spec.When.GitHubIssues == nil && ts.Spec.When.GitHubPullRequests == nil {
 		return nil
 	}
@@ -803,6 +819,24 @@ func parseOwnerRepo(repoURL string) (string, string) {
 		return parts[len(parts)-2], parts[len(parts)-1]
 	}
 	return "", ""
+}
+
+// isSlackTimestamp returns true when s looks like a Slack message timestamp
+// (e.g. "1234567890.123456"). Slash command work-item IDs are compound
+// strings like "C123:/cmd:trigger" and must not be used as thread_ts.
+func isSlackTimestamp(s string) bool {
+	parts := strings.SplitN(s, ".", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return false
+	}
+	for _, p := range parts {
+		for _, c := range p {
+			if c < '0' || c > '9' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func parsePollInterval(s string) time.Duration {
