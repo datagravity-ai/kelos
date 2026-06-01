@@ -2,6 +2,7 @@ package capture
 
 import (
 	"bufio"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -141,8 +142,8 @@ func (a *sumAccumulator) result() map[string]string {
 	return tokenResult(a.in, a.out)
 }
 
-// extractClaudeCode reads cost and token counts from a claude-code
-// {"type":"result","total_cost_usd":N,"usage":{"input_tokens":N,"output_tokens":N}} line.
+// extractClaudeCode reads cost, token counts, and the agent response from a claude-code
+// {"type":"result","total_cost_usd":N,"usage":{"input_tokens":N,"output_tokens":N},"result":"..."} line.
 func extractClaudeCode(m map[string]any) map[string]string {
 	result := make(map[string]string)
 	if v, ok := m["total_cost_usd"]; ok {
@@ -156,14 +157,17 @@ func extractClaudeCode(m map[string]any) map[string]string {
 			result["output-tokens"] = formatNumber(v)
 		}
 	}
+	if resp, ok := m["result"].(string); ok && resp != "" {
+		result["response"] = base64.StdEncoding.EncodeToString([]byte(resp))
+	}
 	if len(result) == 0 {
 		return nil
 	}
 	return result
 }
 
-// extractCursor reads token counts from a cursor
-// {"type":"result","usage":{"inputTokens":N,"outputTokens":N}} line.
+// extractCursor reads token counts and the agent response from a cursor
+// {"type":"result","usage":{"inputTokens":N,"outputTokens":N},"result":"..."} line.
 // Cursor uses camelCase field names instead of claude-code's snake_case.
 func extractCursor(m map[string]any) map[string]string {
 	result := make(map[string]string)
@@ -174,6 +178,9 @@ func extractCursor(m map[string]any) map[string]string {
 		if v, ok := usage["outputTokens"]; ok {
 			result["output-tokens"] = formatNumber(v)
 		}
+	}
+	if resp, ok := m["result"].(string); ok && resp != "" {
+		result["response"] = base64.StdEncoding.EncodeToString([]byte(resp))
 	}
 	if len(result) == 0 {
 		return nil

@@ -39,6 +39,19 @@ func TestStreamUsage(t *testing.T) {
 			},
 		},
 		{
+			name:      "claude-code captures response",
+			agentType: "claude-code",
+			content: `{"type":"assistant","message":"thinking..."}
+{"type":"result","total_cost_usd":0.05,"result":"Here are the PRs I opened.","usage":{"input_tokens":200,"output_tokens":100}}
+`,
+			want: map[string]string{
+				"cost-usd":      "0.05",
+				"input-tokens":  "200",
+				"output-tokens": "100",
+				"response":      "SGVyZSBhcmUgdGhlIFBScyBJIG9wZW5lZC4=", // base64("Here are the PRs I opened.")
+			},
+		},
+		{
 			name:      "codex sums turns",
 			agentType: "codex",
 			content: `{"type":"turn.started"}
@@ -90,6 +103,7 @@ func TestStreamUsage(t *testing.T) {
 			want: map[string]string{
 				"input-tokens":  "36067",
 				"output-tokens": "227",
+				"response":      "ZG9uZQ==", // base64("done")
 			},
 		},
 		{
