@@ -229,11 +229,20 @@ func (r *Runner) Run(ctx context.Context) error {
 			}
 		}
 
-		lastProcessedAssignment = assignment
 		lastTaskTime = time.Now()
 		tasksCompleted++
 		if setErr := r.setAnnotation(ctx, annotationTasksCompleted, strconv.Itoa(int(tasksCompleted))); setErr != nil {
 			fmt.Printf("Error updating tasks completed count: %v\n", setErr)
+		}
+
+		// Re-read the pod to capture the current ResourceVersion after all
+		// annotation writes. Without this, the runner's own writes bump the
+		// ResourceVersion, causing the next poll to see the same task name
+		// with a different ResourceVersion and re-process it.
+		if updated, err := r.getAssignedTask(ctx); err == nil {
+			lastProcessedAssignment = updated
+		} else {
+			lastProcessedAssignment = assignment
 		}
 	}
 }

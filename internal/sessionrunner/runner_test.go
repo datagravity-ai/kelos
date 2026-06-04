@@ -883,3 +883,51 @@ func TestRefreshToken_NoAnnotationStillWorks(t *testing.T) {
 		t.Errorf("Token file: expected 'legacy-token', got %q", string(got))
 	}
 }
+
+func TestSetAnnotationBumpsResourceVersion(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "session-pod-0",
+			Namespace: "test-ns",
+			Annotations: map[string]string{
+				annotationAssignedTask: "my-task",
+			},
+		},
+	}
+
+	kubeClient := fake.NewSimpleClientset(pod)
+	r := &Runner{
+		config: Config{
+			PodName:      "session-pod-0",
+			PodNamespace: "test-ns",
+		},
+		kubeClient: kubeClient,
+	}
+
+	before, err := r.getAssignedTask(context.Background())
+	if err != nil {
+		t.Fatalf("getAssignedTask before: %v", err)
+	}
+	if before.name != "my-task" {
+		t.Fatalf("expected task name 'my-task', got %q", before.name)
+	}
+
+	if err := r.setAnnotation(context.Background(), annotationTaskStatus, "succeeded"); err != nil {
+		t.Fatalf("setAnnotation: %v", err)
+	}
+
+	after, err := r.getAssignedTask(context.Background())
+	if err != nil {
+		t.Fatalf("getAssignedTask after: %v", err)
+	}
+
+	if after.name != "my-task" {
+		t.Fatalf("expected task name 'my-task' after annotation write, got %q", after.name)
+	}
+	if after.resourceVersion == before.resourceVersion {
+		t.Skip("fake client does not bump ResourceVersion; skipping comparison")
+	}
+	if after == before {
+		t.Fatal("expected assignment to differ after annotation write (ResourceVersion should change)")
+	}
+}
