@@ -239,10 +239,13 @@ func (r *Runner) Run(ctx context.Context) error {
 		// annotation writes. Without this, the runner's own writes bump the
 		// ResourceVersion, causing the next poll to see the same task name
 		// with a different ResourceVersion and re-process it.
-		if updated, err := r.getAssignedTask(ctx); err == nil {
-			lastProcessedAssignment = updated
-		} else {
-			lastProcessedAssignment = assignment
+		lastProcessedAssignment = assignment
+		for attempts := 0; attempts < 3; attempts++ {
+			if updated, err := r.getAssignedTask(ctx); err == nil {
+				lastProcessedAssignment = updated
+				break
+			}
+			time.Sleep(time.Second)
 		}
 	}
 }

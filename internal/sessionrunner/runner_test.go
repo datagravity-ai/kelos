@@ -3,13 +3,17 @@ package sessionrunner
 import (
 	"context"
 	"os"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/kelos-dev/kelos/internal/capture"
 )
@@ -887,8 +891,9 @@ func TestRefreshToken_NoAnnotationStillWorks(t *testing.T) {
 func TestSetAnnotationBumpsResourceVersion(t *testing.T) {
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "session-pod-0",
-			Namespace: "test-ns",
+			Name:            "session-pod-0",
+			Namespace:       "test-ns",
+			ResourceVersion: "1",
 			Annotations: map[string]string{
 				annotationAssignedTask: "my-task",
 			},
@@ -896,6 +901,18 @@ func TestSetAnnotationBumpsResourceVersion(t *testing.T) {
 	}
 
 	kubeClient := fake.NewSimpleClientset(pod)
+
+	// Add a reactor that bumps ResourceVersion on updates, simulating real
+	// API server behavior that the default fake client doesn't provide.
+	var rvCounter atomic.Int64
+	rvCounter.Store(1)
+	kubeClient.PrependReactor("update", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		updateAction := action.(k8stesting.UpdateAction)
+		obj := updateAction.GetObject().(*corev1.Pod)
+		obj.ResourceVersion = strconv.FormatInt(rvCounter.Add(1), 10)
+		return false, obj, nil
+	})
+
 	r := &Runner{
 		config: Config{
 			PodName:      "session-pod-0",
@@ -925,7 +942,7 @@ func TestSetAnnotationBumpsResourceVersion(t *testing.T) {
 		t.Fatalf("expected task name 'my-task' after annotation write, got %q", after.name)
 	}
 	if after.resourceVersion == before.resourceVersion {
-		t.Skip("fake client does not bump ResourceVersion; skipping comparison")
+		t.Fatalf("expected ResourceVersion to change after annotation write, both are %q", before.resourceVersion)
 	}
 	if after == before {
 		t.Fatal("expected assignment to differ after annotation write (ResourceVersion should change)")
