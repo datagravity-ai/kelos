@@ -139,6 +139,11 @@ func TestCollect(t *testing.T) {
 			Spec:       kelos.SessionSpec{Worker: kelos.WorkerSpec{Type: "claude-code"}},
 			Status:     kelos.SessionStatus{Phase: kelos.SessionPhasePending},
 		},
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "session-4", Namespace: "ns-d"},
+			Spec:       kelos.SessionSpec{Worker: kelos.WorkerSpec{Type: "codex"}},
+			Status:     kelos.SessionStatus{Phase: kelos.SessionPhaseSuspended},
+		},
 	}
 
 	sessionSpawners := []kelos.SessionSpawner{
@@ -279,16 +284,16 @@ func TestCollect(t *testing.T) {
 		t.Errorf("TaskSpawners.BySource[cron] = %d, want 1", report.TaskSpawners.BySource["cron"])
 	}
 
-	if report.Sessions.Total != 3 {
-		t.Errorf("Sessions.Total = %d, want 3", report.Sessions.Total)
+	if report.Sessions.Total != 4 {
+		t.Errorf("Sessions.Total = %d, want 4", report.Sessions.Total)
 	}
-	if report.Sessions.ByType["codex"] != 2 {
-		t.Errorf("Sessions.ByType[codex] = %d, want 2", report.Sessions.ByType["codex"])
+	if report.Sessions.ByType["codex"] != 3 {
+		t.Errorf("Sessions.ByType[codex] = %d, want 3", report.Sessions.ByType["codex"])
 	}
 	if report.Sessions.ByType["claude-code"] != 1 {
 		t.Errorf("Sessions.ByType[claude-code] = %d, want 1", report.Sessions.ByType["claude-code"])
 	}
-	for _, phase := range []string{"Ready", "Failed", "Pending"} {
+	for _, phase := range []string{"Ready", "Failed", "Pending", "Suspended"} {
 		if report.Sessions.ByPhase[phase] != 1 {
 			t.Errorf("Sessions.ByPhase[%s] = %d, want 1", phase, report.Sessions.ByPhase[phase])
 		}
@@ -315,7 +320,7 @@ func TestCollect(t *testing.T) {
 
 	expectedResources := ResourceReport{
 		"agentconfigs":    1,
-		"sessions":        3,
+		"sessions":        4,
 		"sessionspawners": 1,
 		"taskbudgets":     1,
 		"taskrecords":     1,

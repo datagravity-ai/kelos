@@ -14,6 +14,8 @@ const (
 	SessionPhasePending SessionPhase = "Pending"
 	// SessionPhaseReady means the Session runtime is ready for clients.
 	SessionPhaseReady SessionPhase = "Ready"
+	// SessionPhaseSuspended means the Session runtime is suspended.
+	SessionPhaseSuspended SessionPhase = "Suspended"
 	// SessionPhaseFailed means the Session cannot accept clients.
 	SessionPhaseFailed SessionPhase = "Failed"
 )
@@ -57,6 +59,12 @@ type SessionPullRequest struct {
 type SessionSpec struct {
 	// Worker defines the agent and execution environment for this Session.
 	Worker WorkerSpec `json:"worker"`
+
+	// Suspend stops the Session runtime without deleting the Session.
+	// Set this field back to false to resume the runtime. Defaults to false.
+	// +optional
+	// +kubebuilder:default=false
+	Suspend *bool `json:"suspend,omitempty"`
 
 	// InitialBranch is the git branch to check out when initializing the Session
 	// workspace. If the branch exists on the origin remote, the Session checks
@@ -140,7 +148,10 @@ type Session struct {
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
 	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="Session spec is immutable after creation"
+	// +kubebuilder:validation:XValidation:rule="self.worker == oldSelf.worker",message="worker is immutable"
+	// +kubebuilder:validation:XValidation:rule="has(self.initialBranch) == has(oldSelf.initialBranch) && (!has(self.initialBranch) || self.initialBranch == oldSelf.initialBranch)",message="initialBranch is immutable"
+	// +kubebuilder:validation:XValidation:rule="has(self.initialPrompt) == has(oldSelf.initialPrompt) && (!has(self.initialPrompt) || self.initialPrompt == oldSelf.initialPrompt)",message="initialPrompt is immutable"
+	// +kubebuilder:validation:XValidation:rule="has(self.volumeClaimTemplate) == has(oldSelf.volumeClaimTemplate) && (!has(self.volumeClaimTemplate) || self.volumeClaimTemplate == oldSelf.volumeClaimTemplate)",message="volumeClaimTemplate is immutable"
 	Spec   SessionSpec   `json:"spec"`
 	Status SessionStatus `json:"status,omitempty"`
 }

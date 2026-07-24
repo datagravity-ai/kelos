@@ -121,11 +121,31 @@ func (r *SessionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if err := r.ensureSessionWorkspaceClaimOwnership(ctx, &session, &statefulSet); err != nil {
 		return ctrl.Result{}, err
 	}
+	if sessionSuspended(&session) {
+		if err := r.setSessionReplicas(ctx, &statefulSet, 0); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, r.updateSessionStatus(ctx, &session, nil, kelos.SessionPhaseSuspended, "Session runtime is suspended", "RuntimeSuspended")
+	}
+	runtimeStopped := statefulSet.Spec.Replicas != nil && *statefulSet.Spec.Replicas == 0
 	if err := r.ensureSessionService(ctx, &session); err != nil {
 		message := fmt.Sprintf("Failed to prepare Session governing Service: %v", err)
 		return ctrl.Result{}, r.updateSessionStatus(ctx, &session, nil, kelos.SessionPhaseFailed, message, "ServiceFailed")
 	}
 	if err := r.ensureSessionRuntime(ctx, &session, &statefulSet, serviceAccountName); err != nil {
+		return ctrl.Result{}, err
+	}
+	result := ctrl.Result{}
+	if next, err := r.refreshSessionGitHubAppTokenIfNeeded(ctx, &session, &statefulSet.Spec.Template.Spec); err != nil {
+		logger.Error(err, "Unable to refresh Session GitHub App token", "session", session.Name)
+		if runtimeStopped {
+			return ctrl.Result{RequeueAfter: tokenRefreshRetryInterval}, nil
+		}
+		result.RequeueAfter = tokenRefreshRetryInterval
+	} else if next > 0 {
+		result.RequeueAfter = next
+	}
+	if err := r.setSessionReplicas(ctx, &statefulSet, 1); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -157,13 +177,6 @@ func (r *SessionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	phase, message, reason := sessionPhaseForPod(&pod)
 	if err := r.updateSessionStatus(ctx, &session, &pod, phase, message, reason); err != nil {
 		return ctrl.Result{}, err
-	}
-	result := ctrl.Result{}
-	if next, err := r.refreshSessionGitHubAppTokenIfNeeded(ctx, &session, &pod.Spec); err != nil {
-		logger.Error(err, "Unable to refresh Session GitHub App token", "session", session.Name)
-		result.RequeueAfter = tokenRefreshRetryInterval
-	} else if next > 0 {
-		result.RequeueAfter = next
 	}
 	updateResult, waitingForUpdate, err := r.reconcileSessionRuntimeUpdate(ctx, &session, &statefulSet, &pod, phase)
 	if err != nil {
@@ -237,7 +250,15 @@ func (r *SessionReconciler) createSessionStatefulSet(ctx context.Context, sessio
 	if r.Recorder != nil {
 		r.Recorder.Eventf(session, corev1.EventTypeNormal, "StatefulSetCreated", "Created StatefulSet %s for Session", statefulSet.Name)
 	}
-	if err := r.updateSessionStatus(ctx, session, nil, kelos.SessionPhasePending, "Session Pod is starting", "PodStarting"); err != nil {
+	phase := kelos.SessionPhasePending
+	message := "Session Pod is starting"
+	reason := "PodStarting"
+	if sessionSuspended(session) {
+		phase = kelos.SessionPhaseSuspended
+		message = "Session runtime is suspended"
+		reason = "RuntimeSuspended"
+	}
+	if err := r.updateSessionStatus(ctx, session, nil, phase, message, reason); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -448,14 +469,29 @@ func (r *SessionReconciler) deleteSessionWorkspaceForReset(ctx context.Context, 
 }
 
 func (r *SessionReconciler) startSessionAfterReset(ctx context.Context, session *kelos.Session, statefulSet *appsv1.StatefulSet) (ctrl.Result, error) {
-	if err := r.updateSessionStatus(ctx, session, nil, kelos.SessionPhasePending, "Session Pod is starting with a fresh workspace", "ResetStarting"); err != nil {
-		return ctrl.Result{}, err
-	}
 	if statefulSet == nil {
 		return r.createSessionStatefulSet(ctx, session)
 	}
 	if statefulSet.DeletionTimestamp != nil {
 		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+	}
+	if sessionSuspended(session) {
+		if err := r.setSessionReplicas(ctx, statefulSet, 0); err != nil {
+			return ctrl.Result{}, err
+		}
+		if err := r.updateSessionStatus(ctx, session, nil, kelos.SessionPhaseSuspended, "Session runtime is suspended", "RuntimeSuspended"); err != nil {
+			return ctrl.Result{}, err
+		}
+		if err := r.clearSessionReset(ctx, session); err != nil {
+			return ctrl.Result{}, err
+		}
+		if r.Recorder != nil {
+			r.Recorder.Event(session, corev1.EventTypeNormal, "ResetCompleted", "Completed Session workspace reset")
+		}
+		return ctrl.Result{Requeue: true}, nil
+	}
+	if err := r.updateSessionStatus(ctx, session, nil, kelos.SessionPhasePending, "Session Pod is starting with a fresh workspace", "ResetStarting"); err != nil {
+		return ctrl.Result{}, err
 	}
 	if err := r.ensureSessionResetStartPrerequisites(ctx, session, statefulSet); err != nil {
 		return ctrl.Result{}, err
@@ -520,6 +556,17 @@ func (r *SessionReconciler) setSessionReplicas(ctx context.Context, statefulSet 
 		return fmt.Errorf("scaling Session StatefulSet %q to %d replicas: %w", statefulSet.Name, replicas, err)
 	}
 	return nil
+}
+
+func sessionSuspended(session *kelos.Session) bool {
+	return ptr.Deref(session.Spec.Suspend, false)
+}
+
+func sessionRuntimeReplicas(session *kelos.Session) int32 {
+	if sessionSuspended(session) {
+		return 0
+	}
+	return 1
 }
 
 func (r *SessionReconciler) setSessionResetState(ctx context.Context, session *kelos.Session, value string) error {
@@ -1099,7 +1146,7 @@ func (r *SessionReconciler) buildSessionStatefulSet(session *kelos.Session, work
 			Labels:    labels,
 		},
 		Spec: appsv1.StatefulSetSpec{
-			Replicas:                             ptr.To(int32(1)),
+			Replicas:                             ptr.To(sessionRuntimeReplicas(session)),
 			ServiceName:                          sessionWorkloadName(session),
 			Selector:                             &metav1.LabelSelector{MatchLabels: selector},
 			UpdateStrategy:                       appsv1.StatefulSetUpdateStrategy{Type: appsv1.OnDeleteStatefulSetStrategyType},
@@ -1266,6 +1313,10 @@ func (r *SessionReconciler) updateSessionStatus(ctx context.Context, session *ke
 	session.Status.ObservedGeneration = session.Generation
 	session.Status.Phase = phase
 	session.Status.Message = message
+	if phase == kelos.SessionPhaseSuspended {
+		session.Status.PodName = ""
+		session.Status.PodUID = ""
+	}
 	if pod == nil || phase != kelos.SessionPhaseReady || session.Status.PodUID != pod.UID {
 		session.Status.Branch = ""
 		session.Status.PullRequest = nil
@@ -1276,12 +1327,18 @@ func (r *SessionReconciler) updateSessionStatus(ctx context.Context, session *ke
 				session.Status.LastActivityTime = &lastActivityTime
 			}
 		}
+		activeReason := "RuntimeStatusUnknown"
+		activeMessage := "Session runtime activity has not been reported"
+		if phase == kelos.SessionPhaseSuspended {
+			activeReason = "RuntimeSuspended"
+			activeMessage = "Session runtime is suspended"
+		}
 		apiMeta.SetStatusCondition(&session.Status.Conditions, metav1.Condition{
 			Type:               kelos.SessionConditionActive,
 			Status:             metav1.ConditionUnknown,
 			ObservedGeneration: session.Generation,
-			Reason:             "RuntimeStatusUnknown",
-			Message:            "Session runtime activity has not been reported",
+			Reason:             activeReason,
+			Message:            activeMessage,
 		})
 	}
 	if pod != nil {

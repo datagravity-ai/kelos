@@ -353,7 +353,10 @@ func normalizeTaskPhase(phase kelos.TaskPhase) string {
 
 func normalizeSessionPhase(phase kelos.SessionPhase) string {
 	switch phase {
-	case kelos.SessionPhasePending, kelos.SessionPhaseReady, kelos.SessionPhaseFailed:
+	case kelos.SessionPhasePending,
+		kelos.SessionPhaseReady,
+		kelos.SessionPhaseSuspended,
+		kelos.SessionPhaseFailed:
 		return string(phase)
 	default:
 		return "Unknown"
