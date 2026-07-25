@@ -122,6 +122,149 @@ func TestSessionReconcilerUpdatesStatefulSetRuntime(t *testing.T) {
 	}
 }
 
+func TestSessionReconcilerKeepsRuntimeStoppedWhenCredentialRefreshFails(t *testing.T) {
+	t.Parallel()
+	scheme := runtime.NewScheme()
+	if err := appsv1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := rbacv1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := kelos.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+
+	session := testSession("resume", "codex")
+	statefulSet := testSessionStatefulSet(session)
+	statefulSet.Spec.Replicas = ptr.To(int32(0))
+	statefulSet.Spec.Template.Spec.InitContainers[0].Image = "runtime:old"
+	tokenSecretName := sessionGitHubTokenSecretName(session.Name)
+	statefulSet.Spec.Template.Spec.Volumes = append(statefulSet.Spec.Template.Spec.Volumes, corev1.Volume{
+		Name: GitHubTokenVolumeName,
+		VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
+			SecretName: tokenSecretName,
+		}},
+	})
+	tokenSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      tokenSecretName,
+			Namespace: session.Namespace,
+			Annotations: map[string]string{
+				githubAppSecretAnnotation: "github-app",
+				tokenExpiresAtAnnotation:  time.Now().Add(-time.Hour).UTC().Format(time.RFC3339),
+			},
+		},
+		Data: map[string][]byte{GitHubTokenSecretKey: []byte("expired")},
+	}
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&kelos.Session{}, &corev1.Pod{}, &appsv1.StatefulSet{}).
+		WithObjects(session, statefulSet, tokenSecret).
+		Build()
+	reconciler := testSessionReconciler(cl, scheme)
+	result, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(session)})
+	if err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if result.RequeueAfter != tokenRefreshRetryInterval {
+		t.Fatalf("Reconcile() requeueAfter = %s, want %s", result.RequeueAfter, tokenRefreshRetryInterval)
+	}
+
+	var updated appsv1.StatefulSet
+	if err := cl.Get(context.Background(), client.ObjectKeyFromObject(statefulSet), &updated); err != nil {
+		t.Fatalf("getting updated Session StatefulSet: %v", err)
+	}
+	if updated.Spec.Replicas == nil || *updated.Spec.Replicas != 0 {
+		t.Fatalf("StatefulSet replicas = %v, want 0", updated.Spec.Replicas)
+	}
+	if got := updated.Spec.Template.Spec.InitContainers[0].Image; got != "runtime:test" {
+		t.Fatalf("runtime init container image = %q, want %q", got, "runtime:test")
+	}
+}
+
+func TestSessionReconcilerCompletesSuspendedResetWithoutRefreshingCredentials(t *testing.T) {
+	t.Parallel()
+	scheme := runtime.NewScheme()
+	if err := appsv1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := rbacv1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := kelos.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+
+	resetState, err := sessionreset.EncodeState(sessionreset.State{RequestID: "reset-1", Phase: sessionreset.PhaseStarting})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := testSession("suspended-reset", "codex")
+	session.Spec.Suspend = ptr.To(true)
+	session.Annotations = map[string]string{
+		sessionreset.RequestAnnotation: "reset-1",
+		sessionreset.StateAnnotation:   resetState,
+	}
+	statefulSet := testSessionStatefulSet(session)
+	statefulSet.Spec.Replicas = ptr.To(int32(0))
+	tokenSecretName := sessionGitHubTokenSecretName(session.Name)
+	statefulSet.Spec.Template.Spec.Volumes = append(statefulSet.Spec.Template.Spec.Volumes, corev1.Volume{
+		Name: GitHubTokenVolumeName,
+		VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
+			SecretName: tokenSecretName,
+		}},
+	})
+	tokenSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      tokenSecretName,
+			Namespace: session.Namespace,
+			Annotations: map[string]string{
+				githubAppSecretAnnotation: "github-app",
+				tokenExpiresAtAnnotation:  time.Now().Add(-time.Hour).UTC().Format(time.RFC3339),
+			},
+		},
+		Data: map[string][]byte{GitHubTokenSecretKey: []byte("expired")},
+	}
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&kelos.Session{}, &corev1.Pod{}, &appsv1.StatefulSet{}).
+		WithObjects(session, statefulSet, tokenSecret).
+		Build()
+	reconciler := testSessionReconciler(cl, scheme)
+	result, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(session)})
+	if err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if !result.Requeue {
+		t.Fatal("Reconcile() did not requeue after completing the suspended reset")
+	}
+
+	var updated kelos.Session
+	if err := cl.Get(context.Background(), client.ObjectKeyFromObject(session), &updated); err != nil {
+		t.Fatalf("getting updated Session: %v", err)
+	}
+	if updated.Status.Phase != kelos.SessionPhaseSuspended {
+		t.Fatalf("Session phase = %q, want %q", updated.Status.Phase, kelos.SessionPhaseSuspended)
+	}
+	if updated.Annotations[sessionreset.RequestAnnotation] != "" || updated.Annotations[sessionreset.StateAnnotation] != "" {
+		t.Fatalf("Session reset annotations were not cleared: %#v", updated.Annotations)
+	}
+	var updatedStatefulSet appsv1.StatefulSet
+	if err := cl.Get(context.Background(), client.ObjectKeyFromObject(statefulSet), &updatedStatefulSet); err != nil {
+		t.Fatalf("getting updated Session StatefulSet: %v", err)
+	}
+	if updatedStatefulSet.Spec.Replicas == nil || *updatedStatefulSet.Spec.Replicas != 0 {
+		t.Fatalf("StatefulSet replicas = %v, want 0", updatedStatefulSet.Spec.Replicas)
+	}
+}
+
 func TestSessionReconcilerMigratesWorkspaceClaimOwnership(t *testing.T) {
 	t.Parallel()
 	scheme := runtime.NewScheme()

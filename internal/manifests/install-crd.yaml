@@ -711,6 +711,12 @@ spec:
                   from being submitted again after Pod replacement. An emptyDir workspace
                   loses that history and may submit the prompt again after Pod replacement.
                 type: string
+              suspend:
+                default: false
+                description: |-
+                  Suspend stops the Session runtime without deleting the Session.
+                  Set this field back to false to resume the runtime. Defaults to false.
+                type: boolean
               volumeClaimTemplate:
                 description: |-
                   VolumeClaimTemplate defines persistent storage for the Session workspace.
@@ -7797,8 +7803,18 @@ spec:
             - worker
             type: object
             x-kubernetes-validations:
-            - message: Session spec is immutable after creation
-              rule: self == oldSelf
+            - message: worker is immutable
+              rule: self.worker == oldSelf.worker
+            - message: initialBranch is immutable
+              rule: has(self.initialBranch) == has(oldSelf.initialBranch) && (!has(self.initialBranch)
+                || self.initialBranch == oldSelf.initialBranch)
+            - message: initialPrompt is immutable
+              rule: has(self.initialPrompt) == has(oldSelf.initialPrompt) && (!has(self.initialPrompt)
+                || self.initialPrompt == oldSelf.initialPrompt)
+            - message: volumeClaimTemplate is immutable
+              rule: has(self.volumeClaimTemplate) == has(oldSelf.volumeClaimTemplate)
+                && (!has(self.volumeClaimTemplate) || self.volumeClaimTemplate ==
+                oldSelf.volumeClaimTemplate)
             - message: worker.type must be claude-code, codex, or opencode
               rule: has(self.worker.type) && self.worker.type in ['claude-code', 'codex',
                 'opencode']
@@ -8003,6 +8019,12 @@ spec:
                       from being submitted again after Pod replacement. An emptyDir workspace
                       loses that history and may submit the prompt again after Pod replacement.
                     type: string
+                  suspend:
+                    default: false
+                    description: |-
+                      Suspend stops the Session runtime without deleting the Session.
+                      Set this field back to false to resume the runtime. Defaults to false.
+                    type: boolean
                   volumeClaimTemplate:
                     description: |-
                       VolumeClaimTemplate defines persistent storage for the Session workspace.

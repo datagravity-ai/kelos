@@ -939,6 +939,7 @@ function setSourceWorkspace(workspaceRef) {
 }
 
 function sourceFitsForm(manifest) {
+  if (manifest.spec.suspend === true) return false;
   const worker = manifest.spec.worker;
   const allowedWorkerFields = new Set(['type', 'credentials', 'model', 'workspaceRef', 'agentConfigRefs']);
   if (Object.keys(worker).some(key => !allowedWorkerFields.has(key))) return false;

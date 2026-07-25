@@ -119,6 +119,7 @@ func TestSessionSourceJavaScriptPreservesSelectedSource(t *testing.T) {
 		"explicit StorageClass tracking":      "state.sourceStorageClassNamePresent = Boolean(claim && 'storageClassName' in claim);",
 		"explicit empty StorageClass copy":    "if (storageClassName || state.sourceStorageClassNamePresent) {\n          payload.volumeClaimTemplate.storageClassName = storageClassName;\n        }",
 		"advanced reference warning":          "in YAML for additional namespace-scoped references.",
+		"suspended source YAML requirement":   "if (manifest.spec.suspend === true) return false;",
 		"source initial branch population":    "elements.form.elements.initialBranch.value = manifest.spec.initialBranch || '';",
 		"source initial prompt population":    "elements.form.elements.initialPrompt.value = manifest.spec.initialPrompt || '';",
 		"initial branch form submission":      "const initialBranch = values.get('initialBranch').trim();\n      if (initialBranch) payload.initialBranch = initialBranch;",
@@ -1388,6 +1389,32 @@ func TestConnectSessionBridgesReadySession(t *testing.T) {
 	case <-bridged:
 	case <-time.After(time.Second):
 		t.Fatal("bridge did not complete")
+	}
+}
+
+func TestConnectSessionRejectsSuspendedSession(t *testing.T) {
+	server := testServer(t)
+	session := &kelos.Session{
+		ObjectMeta: metav1.ObjectMeta{Name: "chat", Namespace: "team-a"},
+		Spec: kelos.SessionSpec{Worker: kelos.WorkerSpec{
+			Type:        "codex",
+			Credentials: &kelos.Credentials{Type: kelos.CredentialTypeNone},
+		}},
+		Status: kelos.SessionStatus{Phase: kelos.SessionPhaseSuspended},
+	}
+	if err := server.client.Create(t.Context(), session); err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/api/sessions/team-a/chat/connect", nil)
+	request.Header.Set("Authorization", "Bearer secret-token")
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("suspended Session status = %d body = %s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "is suspended") {
+		t.Fatalf("suspended Session body = %q", response.Body.String())
 	}
 }
 
