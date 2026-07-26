@@ -69,6 +69,48 @@ func TestSessionTerminalRendersANSIEvents(t *testing.T) {
 	}
 }
 
+func TestSessionTerminalSeparatesStreamedTextBlocks(t *testing.T) {
+	var events bytes.Buffer
+	encoder := json.NewEncoder(&events)
+	for _, event := range []sessionruntime.Event{
+		{Type: sessionruntime.EventHistoryEnd},
+		{Type: sessionruntime.EventAssistantDelta, Text: "First block"},
+		{Type: sessionruntime.EventAssistantMessage, Text: "First block"},
+		{Type: sessionruntime.EventAssistantDelta, Text: "Second block"},
+		{Type: sessionruntime.EventAssistantMessage, Text: "Second block"},
+		{Type: sessionruntime.EventTurnCompleted},
+	} {
+		if err := encoder.Encode(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	input, inputWriter := io.Pipe()
+	defer input.Close()
+	defer inputWriter.Close()
+	var output bytes.Buffer
+	var requests bytes.Buffer
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	if err := runSessionTerminal(ctx, input, &output, &events, &requests, false); err != nil {
+		t.Fatal(err)
+	}
+
+	got := output.String()
+	// Each streamed block closes on its assistant.message and renders on its own
+	// prefixed line, so the two blocks are not concatenated into one bubble.
+	if want := "agent › First block\nagent › Second block\n"; !strings.Contains(got, want) {
+		t.Fatalf("terminal output = %q, want it to contain %q", got, want)
+	}
+	// The closing assistant.message must not re-print the streamed block text.
+	if n := strings.Count(got, "First block"); n != 1 {
+		t.Fatalf("terminal output contains %q %d times, want 1", "First block", n)
+	}
+	if n := strings.Count(got, "Second block"); n != 1 {
+		t.Fatalf("terminal output contains %q %d times, want 1", "Second block", n)
+	}
+}
+
 func TestSessionTerminalFormatterUsesANSIStyles(t *testing.T) {
 	formatter := sessionTerminalFormatter{color: true}
 	if got, want := formatter.userMessage("hello"), "\x1b[7m  hello  \x1b[0m"; got != want {
