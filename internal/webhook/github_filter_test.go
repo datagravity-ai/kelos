@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -1836,14 +1837,114 @@ func TestMatchesGitHubEvent_FilePatterns(t *testing.T) {
 	}
 }
 
-func TestExtractGitHubWorkItemNoChangedFiles(t *testing.T) {
+func TestExtractGitHubWorkItemChangedFilesEmpty(t *testing.T) {
 	eventData := &GitHubEventData{
 		Event: "issues",
 	}
 
-	vars := ExtractGitHubWorkItem(eventData)
-	if _, ok := vars["ChangedFiles"]; ok {
-		t.Error("ChangedFiles should not be set in template vars")
+	// ChangedFiles is always present so {{.ChangedFiles}} never trips
+	// missingkey=error, but it is empty when the caller passes no files.
+	vars := ExtractGitHubWorkItem(eventData, nil)
+	files, ok := vars["ChangedFiles"]
+	if !ok {
+		t.Fatal("ChangedFiles should always be present in template vars")
+	}
+	if got := files.([]string); len(got) != 0 {
+		t.Errorf("ChangedFiles = %v, want empty", got)
+	}
+}
+
+func TestExtractGitHubWorkItemChangedFilesPopulated(t *testing.T) {
+	eventData := &GitHubEventData{
+		Event: "pull_request",
+	}
+
+	vars := ExtractGitHubWorkItem(eventData, []string{"main.go", "docs/guide.md"})
+	files, ok := vars["ChangedFiles"].([]string)
+	if !ok {
+		t.Fatal("ChangedFiles should be a []string in template vars")
+	}
+	if len(files) != 2 || files[0] != "main.go" || files[1] != "docs/guide.md" {
+		t.Errorf("ChangedFiles = %v, want [main.go docs/guide.md]", files)
+	}
+}
+
+// TestChangedFilesForSpawner locks in the order-independence contract: the
+// changed-file list on eventData is a delivery-scoped cache shared across
+// spawners, and must only be surfaced to a spawner that relies on it.
+func TestChangedFilesForSpawner(t *testing.T) {
+	// A populated cache simulates a list already fetched for an earlier spawner.
+	prEvent := &GitHubEventData{
+		Event:        "pull_request",
+		Action:       "opened",
+		ChangedFiles: []string{"main.go", "docs/guide.md"},
+	}
+	pushEvent := &GitHubEventData{
+		Event:        "push",
+		ChangedFiles: []string{"main.go"},
+	}
+
+	withFilePatterns := &kelos.GitHubWebhook{
+		Events: []string{"pull_request"},
+		Filters: []kelos.GitHubWebhookFilter{
+			{Event: "pull_request", FilePatterns: &kelos.FilePatterns{Include: []string{"**/*.go"}}},
+		},
+	}
+	withoutFilePatterns := &kelos.GitHubWebhook{
+		Events: []string{"pull_request"},
+		Filters: []kelos.GitHubWebhookFilter{
+			{Event: "pull_request", Action: "opened"},
+		},
+	}
+	pushSpawner := &kelos.GitHubWebhook{
+		Events:  []string{"push"},
+		Filters: []kelos.GitHubWebhookFilter{{Event: "push"}},
+	}
+
+	tests := []struct {
+		name      string
+		spawner   *kelos.GitHubWebhook
+		eventType string
+		eventData *GitHubEventData
+		want      []string
+	}{
+		{
+			name:      "PR spawner with filePatterns receives the files",
+			spawner:   withFilePatterns,
+			eventType: "pull_request",
+			eventData: prEvent,
+			want:      []string{"main.go", "docs/guide.md"},
+		},
+		{
+			name:      "PR spawner without filePatterns does not receive the leaked cache",
+			spawner:   withoutFilePatterns,
+			eventType: "pull_request",
+			eventData: prEvent,
+			want:      nil,
+		},
+		{
+			name:      "push spawner receives payload files regardless of filePatterns",
+			spawner:   pushSpawner,
+			eventType: "push",
+			eventData: pushEvent,
+			want:      []string{"main.go"},
+		},
+		{
+			name:      "nil spawner on a non-push event receives nothing",
+			spawner:   nil,
+			eventType: "pull_request",
+			eventData: prEvent,
+			want:      nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := changedFilesForSpawner(tt.spawner, tt.eventType, tt.eventData)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("changedFilesForSpawner() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -2033,7 +2134,7 @@ func TestExtractGitHubWorkItemCommentFields(t *testing.T) {
 		CommentURL:  "https://github.com/org/repo/pull/99#discussion_r456",
 	}
 
-	vars := ExtractGitHubWorkItem(eventData)
+	vars := ExtractGitHubWorkItem(eventData, nil)
 	if vars["CommentBody"] != "nit: rename this" {
 		t.Errorf("CommentBody = %v, want %q", vars["CommentBody"], "nit: rename this")
 	}
@@ -2047,7 +2148,7 @@ func TestExtractGitHubWorkItemNoCommentFields(t *testing.T) {
 		Event: "push",
 	}
 
-	vars := ExtractGitHubWorkItem(eventData)
+	vars := ExtractGitHubWorkItem(eventData, nil)
 	if _, ok := vars["CommentBody"]; ok {
 		t.Error("CommentBody should not be set for non-comment events")
 	}
@@ -2619,7 +2720,7 @@ func TestExtractGitHubWorkItem_CreateTagEvent(t *testing.T) {
 		RepositoryName:  "repo",
 	}
 
-	vars := ExtractGitHubWorkItem(eventData)
+	vars := ExtractGitHubWorkItem(eventData, nil)
 
 	if vars["Tag"] != "v1.0.0" {
 		t.Errorf("Tag = %v, want v1.0.0", vars["Tag"])
@@ -2650,7 +2751,7 @@ func TestExtractGitHubWorkItem_ReleaseEvent(t *testing.T) {
 		RepositoryName:  "repo",
 	}
 
-	vars := ExtractGitHubWorkItem(eventData)
+	vars := ExtractGitHubWorkItem(eventData, nil)
 
 	if vars["Tag"] != "v2.0.0" {
 		t.Errorf("Tag = %v, want v2.0.0", vars["Tag"])

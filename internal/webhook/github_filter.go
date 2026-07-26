@@ -46,9 +46,9 @@ type GitHubEventData struct {
 	// ChangedFiles lists file paths modified by the event.
 	// For push events, populated from the payload. For PR events, lazily
 	// fetched from the GitHub API when a webhook filter uses FilePatterns.
-	// NOTE: intentionally not exposed in ExtractGitHubWorkItem template vars
-	// yet — the {{.ChangedFiles}} template variable is deferred to a follow-up
-	// to resolve API design questions (slice vs pre-joined string, fetch gating).
+	// Exposed to prompt templates as {{.ChangedFiles}} via ExtractGitHubWorkItem.
+	// Because PR fetching is gated on FilePatterns, {{.ChangedFiles}} is only
+	// populated for PR events when a filter's filePatterns forced the fetch.
 	ChangedFiles []string
 	// Tag is the tag name for create (ref_type=tag) and release events.
 	Tag string
@@ -339,6 +339,23 @@ func githubWebhookNeedsChangedFiles(spawner *kelos.GitHubWebhook, eventType stri
 	}
 
 	return false
+}
+
+// changedFilesForSpawner returns the changed-file list to expose to a spawner's
+// prompt template as {{.ChangedFiles}}. The list lives on eventData as a
+// delivery-scoped fetch cache shared across every spawner, so it must only be
+// surfaced to a spawner that actually relies on it: a push event (files come
+// from the payload) or a spawner whose matching filter declares filePatterns.
+// Returning it unconditionally would leak a list fetched for one spawner into
+// another spawner's prompt depending on iteration order. Returns nil otherwise.
+func changedFilesForSpawner(spawner *kelos.GitHubWebhook, eventType string, eventData *GitHubEventData) []string {
+	if eventData == nil {
+		return nil
+	}
+	if eventType == "push" || githubWebhookNeedsChangedFiles(spawner, eventType, eventData) {
+		return eventData.ChangedFiles
+	}
+	return nil
 }
 
 // matchesFilter checks if event data matches a specific filter.
@@ -673,8 +690,13 @@ func needsBranchEnrichment(eventData *GitHubEventData) bool {
 	return eventData.Branch == "" && eventData.PullRequestAPIURL != ""
 }
 
-// ExtractGitHubWorkItem extracts template variables from GitHub webhook events for task creation.
-func ExtractGitHubWorkItem(eventData *GitHubEventData) map[string]interface{} {
+// ExtractGitHubWorkItem extracts template variables from GitHub webhook events
+// for task creation. changedFiles is the changed-file list to surface as
+// {{.ChangedFiles}}; callers pass it explicitly (rather than reading
+// eventData.ChangedFiles) because that field is a delivery-scoped fetch cache
+// shared across spawners and must only be surfaced to a spawner that relies on
+// it — see changedFilesForSpawner.
+func ExtractGitHubWorkItem(eventData *GitHubEventData, changedFiles []string) map[string]interface{} {
 	vars := map[string]interface{}{
 		"Event":           eventData.Event,
 		"Action":          eventData.Action,
@@ -688,6 +710,11 @@ func ExtractGitHubWorkItem(eventData *GitHubEventData) map[string]interface{} {
 		"ID":    eventData.ID,
 		"Title": eventData.Title,
 		"Kind":  "webhook",
+		// ChangedFiles is the list of changed file paths. It is always present
+		// (so {{.ChangedFiles}} never trips missingkey=error) but is only
+		// populated when this spawner relies on changed files (a push event, or
+		// a matching filter that declares filePatterns); otherwise it is empty.
+		"ChangedFiles": changedFiles,
 	}
 
 	// Add number, body, URL if available

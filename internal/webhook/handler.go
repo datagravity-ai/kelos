@@ -563,7 +563,8 @@ func (h *WebhookHandler) createTask(ctx context.Context, spawner *kelos.TaskSpaw
 
 	switch h.source {
 	case GitHubSource:
-		templateVars = ExtractGitHubWorkItem(parsed.GitHub)
+		changedFiles := changedFilesForSpawner(spawner.Spec.When.GitHubWebhook, eventType, parsed.GitHub)
+		templateVars = ExtractGitHubWorkItem(parsed.GitHub, changedFiles)
 
 	case LinearSource:
 		templateVars = ExtractLinearWorkItem(parsed.Linear)
@@ -727,7 +728,8 @@ func (h *WebhookHandler) processSessionSpawner(ctx context.Context, spawner *kel
 		return false, nil
 	}
 
-	templateVars := ExtractGitHubWorkItem(eventData)
+	changedFiles := changedFilesForSpawner(githubWebhook, eventType, eventData)
+	templateVars := ExtractGitHubWorkItem(eventData, changedFiles)
 	sessionName := webhookSpawnName(spawner.Name, eventType, deliveryID)
 	gvks, _, gvkErr := h.client.Scheme().ObjectKinds(spawner)
 	if gvkErr != nil {
