@@ -40,6 +40,8 @@ import (
 
 	kelos "github.com/kelos-dev/kelos/api/v1alpha2"
 	"github.com/kelos-dev/kelos/internal/sessionreset"
+	"github.com/kelos-dev/kelos/internal/sessionruntime"
+	"github.com/kelos-dev/kelos/internal/sessionsuspend"
 )
 
 const (
@@ -75,7 +77,7 @@ type Server struct {
 	secureCookie     bool
 	handler          http.Handler
 	upgrader         websocket.Upgrader
-	bridge           func(context.Context, *sessionSocket, string, string) error
+	bridge           func(context.Context, *sessionSocket, string, string, func() error) error
 }
 
 type sessionSocket struct {
@@ -111,6 +113,7 @@ type sessionSummary struct {
 	PullRequest     *kelos.SessionPullRequest `json:"pullRequest,omitempty"`
 	Section         string                    `json:"section,omitempty"`
 	Resetting       bool                      `json:"resetting,omitempty"`
+	IdleSuspended   bool                      `json:"idleSuspended,omitempty"`
 }
 
 type sessionOptions struct {
@@ -324,6 +327,10 @@ func (s *Server) api(writer http.ResponseWriter, request *http.Request) {
 	}
 	if len(parts) == 4 && parts[3] == "reset" && request.Method == http.MethodPost {
 		s.resetSession(writer, request, namespace, name)
+		return
+	}
+	if len(parts) == 4 && parts[3] == "resume" && request.Method == http.MethodPost {
+		s.resumeSession(writer, request, namespace, name)
 		return
 	}
 	if len(parts) == 4 && parts[3] == "section" && request.Method == http.MethodPatch {
@@ -607,6 +614,32 @@ func (s *Server) resetSession(writer http.ResponseWriter, request *http.Request,
 	writeJSON(writer, http.StatusAccepted, summarize(session))
 }
 
+func (s *Server) resumeSession(writer http.ResponseWriter, request *http.Request, namespace, name string) {
+	session, _, err := sessionsuspend.RequestResume(
+		request.Context(),
+		s.client,
+		client.ObjectKey{Namespace: namespace, Name: name},
+	)
+	if err != nil {
+		status := http.StatusInternalServerError
+		switch {
+		case apierrors.IsNotFound(err):
+			status = http.StatusNotFound
+		case apierrors.IsForbidden(err):
+			status = http.StatusForbidden
+		case apierrors.IsConflict(err):
+			status = http.StatusConflict
+		}
+		writeError(writer, status, err.Error())
+		return
+	}
+	if session.Status.Phase == kelos.SessionPhaseSuspended && !sessionsuspend.IsIdlePolicySuspended(session) {
+		writeError(writer, http.StatusConflict, fmt.Sprintf("Session %q is suspended by user request", name))
+		return
+	}
+	writeJSON(writer, http.StatusAccepted, summarize(session))
+}
+
 func (s *Server) updateSessionSection(writer http.ResponseWriter, request *http.Request, namespace, name string) {
 	var payload updateSessionSectionRequest
 	if err := decodeJSON(request.Body, &payload); err != nil {
@@ -682,6 +715,7 @@ func summarize(session *kelos.Session) sessionSummary {
 		PullRequest:    session.Status.PullRequest,
 		Section:        session.Annotations[sessionSectionAnnotation],
 		Resetting:      session.Annotations[sessionreset.RequestAnnotation] != "",
+		IdleSuspended:  sessionsuspend.IsIdlePolicySuspended(session),
 	}
 	if !session.CreationTimestamp.IsZero() {
 		createdAt := session.CreationTimestamp
@@ -734,12 +768,20 @@ func (s *Server) connectSession(writer http.ResponseWriter, request *http.Reques
 	}
 	socket := &sessionSocket{Conn: connection}
 	defer socket.Close()
-	if err := s.bridge(request.Context(), socket, namespace, session.Status.PodName); err != nil {
+	var acknowledgeResume func() error
+	if sessionsuspend.ResumeRequested(&session) {
+		requestValue := session.Annotations[sessionsuspend.ResumeRequestAnnotation]
+		acknowledgeResume = func() error {
+			_, err := sessionsuspend.AcknowledgeResume(request.Context(), s.client, client.ObjectKeyFromObject(&session), requestValue)
+			return err
+		}
+	}
+	if err := s.bridge(request.Context(), socket, namespace, session.Status.PodName, acknowledgeResume); err != nil {
 		_ = socket.WriteJSON(map[string]any{"type": "error", "text": err.Error(), "status": "failed"})
 	}
 }
 
-func (s *Server) bridgeExec(ctx context.Context, connection *sessionSocket, namespace, podName string) error {
+func (s *Server) bridgeExec(ctx context.Context, connection *sessionSocket, namespace, podName string, acknowledgeResume func() error) error {
 	request := s.clientset.CoreV1().RESTClient().Post().
 		Resource("pods").
 		Namespace(namespace).
@@ -781,6 +823,7 @@ func (s *Server) bridgeExec(ctx context.Context, connection *sessionSocket, name
 	}()
 
 	outputDone := make(chan error, 2)
+	resumeAcknowledged := acknowledgeResume == nil
 	forward := func(reader io.Reader, stderr bool) {
 		scanner := newJSONLineScanner(reader)
 		for scanner.Scan() {
@@ -793,6 +836,16 @@ func (s *Server) bridgeExec(ctx context.Context, connection *sessionSocket, name
 			if err != nil {
 				outputDone <- err
 				return
+			}
+			if !stderr && !resumeAcknowledged {
+				var event sessionruntime.Event
+				if json.Unmarshal(payload, &event) == nil && event.Type == sessionruntime.EventHistoryEnd {
+					if err := acknowledgeResume(); err != nil {
+						outputDone <- err
+						return
+					}
+					resumeAcknowledged = true
+				}
 			}
 		}
 		outputDone <- scanner.Err()

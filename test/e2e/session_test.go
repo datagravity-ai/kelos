@@ -33,6 +33,7 @@ import (
 	kelos "github.com/kelos-dev/kelos/api/v1alpha2"
 	"github.com/kelos-dev/kelos/internal/sessionreset"
 	"github.com/kelos-dev/kelos/internal/sessionruntime"
+	"github.com/kelos-dev/kelos/internal/sessionsuspend"
 	"github.com/kelos-dev/kelos/internal/sessionupdate"
 	"github.com/kelos-dev/kelos/test/e2e/framework"
 )
@@ -754,6 +755,59 @@ var _ = Describe("Session remote control", func() {
 		waitForSessionDeletion(f, f.Namespace, sessionName)
 		waitForPodDeletion(f, f.Namespace, current.Status.PodName)
 		waitForPVCDeletion(f, f.Namespace, claimName)
+	})
+
+	It("suspends and resumes a Session after the idle suspend policy elapses", func() {
+		const sessionName = "idle-suspend"
+		const idleTTL = 30 * time.Second
+		configMapName := sessionName + "-provider"
+		mode := int32(0555)
+		_, err := f.Clientset.CoreV1().ConfigMaps(f.Namespace).Create(context.TODO(), &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: configMapName, Namespace: f.Namespace},
+			Data:       map[string]string{"claude": fakeClaude},
+		}, metav1.CreateOptions{})
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() {
+			_ = f.Clientset.CoreV1().ConfigMaps(f.Namespace).Delete(context.TODO(), configMapName, metav1.DeleteOptions{})
+		})
+
+		createSession(f, &kelos.Session{
+			ObjectMeta: metav1.ObjectMeta{Name: sessionName},
+			Spec: kelos.SessionSpec{
+				Worker:              fakeProviderWorker(configMapName, mode),
+				IdlePolicy:          &kelos.SessionIdlePolicy{SuspendAfterSeconds: ptr.To(int32(idleTTL / time.Second))},
+				VolumeClaimTemplate: sessionTestVolumeClaimTemplate(),
+			},
+		})
+		DeferCleanup(func() {
+			_ = f.KelosClientset.ApiV1alpha2().Sessions(f.Namespace).Delete(context.TODO(), sessionName, metav1.DeleteOptions{})
+		})
+		DeferCleanup(func() {
+			if CurrentSpecReport().Failed() {
+				collectSessionDebugInfo(f, f.Namespace, sessionName)
+			}
+		})
+
+		ready := waitForSessionPhase(f, f.Namespace, sessionName, kelos.SessionPhaseReady)
+		pod, err := f.Clientset.CoreV1().Pods(f.Namespace).Get(context.TODO(), ready.Status.PodName, metav1.GetOptions{})
+		Expect(err).NotTo(HaveOccurred())
+		claimName := sessionWorkspaceClaimName(pod)
+		Expect(claimName).NotTo(BeEmpty())
+		waitForSessionActivity(f, f.Namespace, sessionName, metav1.ConditionFalse)
+
+		suspended := waitForSessionPhase(f, f.Namespace, sessionName, kelos.SessionPhaseSuspended)
+		Expect(ptr.Deref(suspended.Spec.Suspend, false)).To(BeFalse())
+		readyCondition := apiMeta.FindStatusCondition(suspended.Status.Conditions, kelos.SessionConditionReady)
+		Expect(readyCondition).NotTo(BeNil())
+		Expect(readyCondition.Reason).To(Equal(sessionsuspend.IdlePolicyReason))
+		waitForPodDeletion(f, f.Namespace, ready.Status.PodName)
+		_, err = f.Clientset.CoreV1().PersistentVolumeClaims(f.Namespace).Get(context.TODO(), claimName, metav1.GetOptions{})
+		Expect(err).NotTo(HaveOccurred())
+
+		By("resuming the idle-suspended Session from a terminal connection")
+		runTerminalTurn(f.Namespace, sessionName, "after-idle-resume", ContainSubstring("agent › turn 1: after-idle-resume"))
+		_, err = f.Clientset.CoreV1().PersistentVolumeClaims(f.Namespace).Get(context.TODO(), claimName, metav1.GetOptions{})
+		Expect(err).NotTo(HaveOccurred())
 	})
 
 	It("does not reap an idle-policy Session while a turn is active", func() {
