@@ -655,7 +655,7 @@ func (r *WorkerPoolReconciler) buildStatefulSet(pool *kelos.WorkerPool, stsName,
 		Name:            kelos.AgentContainerName,
 		Image:           agentImage,
 		ImagePullPolicy: agentPullPolicy,
-		Command:         []string{workerRunnerMountPath + "/kelos-worker-runner"},
+		Command:         agentProcessCommand(workerRunnerMountPath + "/kelos-worker-runner"),
 		Env:             envVars,
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: WorkspaceVolumeName, MountPath: WorkspaceMountPath},

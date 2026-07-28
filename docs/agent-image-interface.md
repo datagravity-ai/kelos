@@ -14,8 +14,17 @@ replacement for the default agents.
 ### 1. Entrypoint
 
 The image must provide an executable at `/kelos_entrypoint.sh`. Kelos sets
-`Command: ["/kelos_entrypoint.sh"]` on the container, overriding any
-`ENTRYPOINT` in the Dockerfile.
+the container command to launch this executable, overriding any `ENTRYPOINT`
+in the Dockerfile.
+
+Kelos uses `/usr/bin/tini` with process-group signal forwarding when that path
+is executable. Task Jobs launch `/kelos_entrypoint.sh` beneath Tini;
+WorkerPools and Sessions launch their long-running Kelos runtimes beneath the
+same init process. The bundled agent images install Tini. Custom images should
+also install Tini at `/usr/bin/tini` so orphaned processes are reaped and
+termination signals reach the agent process group. For backward compatibility,
+Kelos launches the configured process directly when a custom image does not
+provide Tini.
 
 ### 2. Prompt argument
 

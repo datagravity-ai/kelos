@@ -479,7 +479,7 @@ func (b *JobBuilder) buildAgentJob(task *kelos.Task, workspace *kelos.WorkspaceS
 		Name:            kelos.AgentContainerName,
 		Image:           image,
 		ImagePullPolicy: pullPolicy,
-		Command:         []string{"/kelos_entrypoint.sh"},
+		Command:         agentProcessCommand("/kelos_entrypoint.sh"),
 		Args:            []string{prompt},
 		Env:             envVars,
 	}
