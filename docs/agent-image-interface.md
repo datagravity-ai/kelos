@@ -17,14 +17,15 @@ The image must provide an executable at `/kelos_entrypoint.sh`. Kelos sets
 the container command to launch this executable, overriding any `ENTRYPOINT`
 in the Dockerfile.
 
-Kelos uses `/usr/bin/tini` with process-group signal forwarding when that path
-is executable. Task Jobs launch `/kelos_entrypoint.sh` beneath Tini;
-WorkerPools and Sessions launch their long-running Kelos runtimes beneath the
-same init process. The bundled agent images install Tini. Custom images should
-also install Tini at `/usr/bin/tini` so orphaned processes are reaped and
-termination signals reach the agent process group. For backward compatibility,
-Kelos launches the configured process directly when a custom image does not
-provide Tini.
+Kelos launches processes in the bundled agent images beneath `/usr/bin/tini`
+with process-group signal forwarding. Task Jobs launch `/kelos_entrypoint.sh`
+beneath Tini; WorkerPools and Sessions launch their long-running Kelos runtimes
+beneath the same init process. The bundled agent images install Tini.
+
+Kelos launches custom and configured non-bundled images directly. This
+preserves compatibility with images that provide only the required executable:
+custom images do not need `/bin/sh` or Tini. A custom Task image can implement
+its own init behavior in `/kelos_entrypoint.sh` if desired.
 
 ### 2. Prompt argument
 

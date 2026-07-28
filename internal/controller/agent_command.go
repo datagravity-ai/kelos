@@ -1,13 +1,31 @@
 package controller
 
-const (
-	tiniPath = "/usr/bin/tini"
+import "strings"
 
-	// agentProcessScript keeps custom images that do not yet include Tini
-	// compatible while ensuring the bundled images use Tini as PID 1.
-	agentProcessScript = `if [ -x ` + tiniPath + ` ]; then exec ` + tiniPath + ` -g -- "$@"; fi; exec "$@"`
-)
+const tiniPath = "/usr/bin/tini"
 
-func agentProcessCommand(program string) []string {
-	return []string{"/bin/sh", "-c", agentProcessScript, "--", program}
+var bundledAgentImageRepositories = []string{
+	ClaudeCodeImageRepository,
+	CodexImageRepository,
+	GeminiImageRepository,
+	OpenCodeImageRepository,
+	CursorImageRepository,
+}
+
+func isBundledAgentImage(image string) bool {
+	for _, repository := range bundledAgentImageRepositories {
+		if image == repository ||
+			strings.HasPrefix(image, repository+":") ||
+			strings.HasPrefix(image, repository+"@") {
+			return true
+		}
+	}
+	return false
+}
+
+func agentProcessCommand(program string, useTini bool) []string {
+	if !useTini {
+		return []string{program}
+	}
+	return []string{tiniPath, "-g", "--", program}
 }

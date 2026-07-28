@@ -890,7 +890,7 @@ func TestSessionReconcilerCreatesStatefulSetAndObservesPod(t *testing.T) {
 	if len(podSpec.Containers) == 0 {
 		t.Fatal("Session Pod has no containers")
 	}
-	assertAgentProcessCommand(t, podSpec.Containers[0].Command, sessionRuntimeBinary)
+	assertAgentProcessCommand(t, podSpec.Containers[0].Command, sessionRuntimeBinary, false)
 	if podSpec.SecurityContext == nil || podSpec.SecurityContext.FSGroup == nil || *podSpec.SecurityContext.FSGroup != AgentUID {
 		t.Fatalf("pod FSGroup = %#v, want %d", podSpec.SecurityContext, AgentUID)
 	}

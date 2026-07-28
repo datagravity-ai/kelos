@@ -2,7 +2,6 @@ package controller
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -10,19 +9,52 @@ import (
 )
 
 func TestAgentProcessCommand(t *testing.T) {
-	got := agentProcessCommand("/usr/bin/printf")
-	want := []string{"/bin/sh", "-c", agentProcessScript, "--", "/usr/bin/printf"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("agentProcessCommand() = %v, want %v", got, want)
+	tests := []struct {
+		name    string
+		useTini bool
+		want    []string
+	}{
+		{
+			name:    "bundled image",
+			useTini: true,
+			want:    []string{tiniPath, "-g", "--", "/kelos_entrypoint.sh"},
+		},
+		{
+			name:    "custom image",
+			useTini: false,
+			want:    []string{"/kelos_entrypoint.sh"},
+		},
 	}
 
-	command := exec.Command(got[0], append(got[1:], "%s", "hello")...)
-	output, err := command.Output()
-	if err != nil {
-		t.Fatalf("running wrapped command: %v", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := agentProcessCommand("/kelos_entrypoint.sh", tt.useTini)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("agentProcessCommand() = %v, want %v", got, tt.want)
+			}
+		})
 	}
-	if string(output) != "hello" {
-		t.Fatalf("wrapped command output = %q, want %q", output, "hello")
+}
+
+func TestIsBundledAgentImage(t *testing.T) {
+	tests := []struct {
+		image string
+		want  bool
+	}{
+		{image: ClaudeCodeImageRepository, want: true},
+		{image: CodexImage, want: true},
+		{image: GeminiImageRepository + "@sha256:abc", want: true},
+		{image: "mirror.example/kelos-dev/opencode:latest", want: false},
+		{image: CursorImageRepository + "-custom:latest", want: false},
+		{image: "custom-agent:latest", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.image, func(t *testing.T) {
+			if got := isBundledAgentImage(tt.image); got != tt.want {
+				t.Fatalf("isBundledAgentImage(%q) = %t, want %t", tt.image, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -56,9 +88,9 @@ func TestBundledAgentImagesUseTini(t *testing.T) {
 	}
 }
 
-func assertAgentProcessCommand(t *testing.T, got []string, program string) {
+func assertAgentProcessCommand(t *testing.T, got []string, program string, useTini bool) {
 	t.Helper()
-	want := agentProcessCommand(program)
+	want := agentProcessCommand(program, useTini)
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("agent command = %v, want %v", got, want)
 	}

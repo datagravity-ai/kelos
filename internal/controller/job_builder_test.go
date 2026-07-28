@@ -45,7 +45,7 @@ func TestBuildClaudeCodeJob_DefaultImage(t *testing.T) {
 		t.Errorf("Expected image %q, got %q", ClaudeCodeImage, container.Image)
 	}
 
-	assertAgentProcessCommand(t, container.Command, "/kelos_entrypoint.sh")
+	assertAgentProcessCommand(t, container.Command, "/kelos_entrypoint.sh", true)
 
 	// Args should be just the prompt.
 	if len(container.Args) != 1 || container.Args[0] != "Hello world" {
@@ -98,7 +98,7 @@ func TestBuildClaudeCodeJob_CustomImage(t *testing.T) {
 		t.Errorf("Expected image %q, got %q", "my-custom-agent:latest", container.Image)
 	}
 
-	assertAgentProcessCommand(t, container.Command, "/kelos_entrypoint.sh")
+	assertAgentProcessCommand(t, container.Command, "/kelos_entrypoint.sh", false)
 
 	// Args should be just the prompt.
 	if len(container.Args) != 1 || container.Args[0] != "Fix the bug" {
@@ -633,11 +633,11 @@ func TestBuildClaudeCodeJob_CustomImageWithWorkspace(t *testing.T) {
 
 	container := job.Spec.Template.Spec.Containers[0]
 
-	// Custom images use the same Tini-with-fallback wrapper.
+	// Custom images keep the direct executable interface.
 	if container.Image != "my-agent:v1" {
 		t.Errorf("Expected image %q, got %q", "my-agent:v1", container.Image)
 	}
-	assertAgentProcessCommand(t, container.Command, "/kelos_entrypoint.sh")
+	assertAgentProcessCommand(t, container.Command, "/kelos_entrypoint.sh", false)
 	if len(container.Args) != 1 || container.Args[0] != "Fix the bug" {
 		t.Errorf("Expected args [Fix the bug], got %v", container.Args)
 	}
@@ -1109,7 +1109,7 @@ func TestBuildCodexJob_DefaultImage(t *testing.T) {
 		t.Errorf("Expected container name %q, got %q", kelos.AgentContainerName, container.Name)
 	}
 
-	assertAgentProcessCommand(t, container.Command, "/kelos_entrypoint.sh")
+	assertAgentProcessCommand(t, container.Command, "/kelos_entrypoint.sh", true)
 
 	// Args should be just the prompt.
 	if len(container.Args) != 1 || container.Args[0] != "Fix the bug" {
@@ -1185,7 +1185,7 @@ func TestBuildCodexJob_CustomImage(t *testing.T) {
 		t.Errorf("Expected image %q, got %q", "my-codex:v2", container.Image)
 	}
 
-	assertAgentProcessCommand(t, container.Command, "/kelos_entrypoint.sh")
+	assertAgentProcessCommand(t, container.Command, "/kelos_entrypoint.sh", false)
 }
 
 func TestBuildCodexJob_WithWorkspace(t *testing.T) {
@@ -1350,7 +1350,7 @@ func TestBuildGeminiJob_DefaultImage(t *testing.T) {
 		t.Errorf("Expected container name %q, got %q", kelos.AgentContainerName, container.Name)
 	}
 
-	assertAgentProcessCommand(t, container.Command, "/kelos_entrypoint.sh")
+	assertAgentProcessCommand(t, container.Command, "/kelos_entrypoint.sh", true)
 
 	// Args should be just the prompt.
 	if len(container.Args) != 1 || container.Args[0] != "Fix the bug" {
@@ -1429,7 +1429,7 @@ func TestBuildGeminiJob_CustomImage(t *testing.T) {
 		t.Errorf("Expected image %q, got %q", "my-gemini:v2", container.Image)
 	}
 
-	assertAgentProcessCommand(t, container.Command, "/kelos_entrypoint.sh")
+	assertAgentProcessCommand(t, container.Command, "/kelos_entrypoint.sh", false)
 }
 
 func TestBuildGeminiJob_WithWorkspace(t *testing.T) {
@@ -1597,7 +1597,7 @@ func TestBuildOpenCodeJob_DefaultImage(t *testing.T) {
 		t.Errorf("Expected container name %q, got %q", kelos.AgentContainerName, container.Name)
 	}
 
-	assertAgentProcessCommand(t, container.Command, "/kelos_entrypoint.sh")
+	assertAgentProcessCommand(t, container.Command, "/kelos_entrypoint.sh", true)
 
 	// Args should be just the prompt.
 	if len(container.Args) != 1 || container.Args[0] != "Fix the bug" {
@@ -1679,7 +1679,7 @@ func TestBuildOpenCodeJob_CustomImage(t *testing.T) {
 		t.Errorf("Expected image %q, got %q", "my-opencode:v2", container.Image)
 	}
 
-	assertAgentProcessCommand(t, container.Command, "/kelos_entrypoint.sh")
+	assertAgentProcessCommand(t, container.Command, "/kelos_entrypoint.sh", false)
 }
 
 func TestBuildOpenCodeJob_WithWorkspace(t *testing.T) {
@@ -1852,7 +1852,7 @@ func TestBuildCursorJob_DefaultImage(t *testing.T) {
 		t.Errorf("Expected container name %q, got %q", kelos.AgentContainerName, container.Name)
 	}
 
-	assertAgentProcessCommand(t, container.Command, "/kelos_entrypoint.sh")
+	assertAgentProcessCommand(t, container.Command, "/kelos_entrypoint.sh", true)
 
 	if len(container.Args) != 1 || container.Args[0] != "Fix the bug" {
 		t.Errorf("Expected args [Fix the bug], got %v", container.Args)
@@ -1930,7 +1930,7 @@ func TestBuildCursorJob_CustomImage(t *testing.T) {
 		t.Errorf("Expected image %q, got %q", "my-cursor:v2", container.Image)
 	}
 
-	assertAgentProcessCommand(t, container.Command, "/kelos_entrypoint.sh")
+	assertAgentProcessCommand(t, container.Command, "/kelos_entrypoint.sh", false)
 }
 
 func TestBuildCursorJob_OAuthCredentials(t *testing.T) {
