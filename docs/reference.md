@@ -281,8 +281,9 @@ strong text, strikethrough, and inline code; ordered, unordered, and task lists;
 blockquotes and horizontal rules; HTTP(S) links; fenced or indented code blocks;
 and pipe tables with optional column alignment. The renderer does not
 interpret raw HTML or load embedded images. Fenced code may include a language
-label, and wide tables and long code lines scroll horizontally. Tables that
-would render more than 10,000 cells remain plain text.
+label, each code block has a copy control, and wide tables and long code lines
+scroll horizontally. Tables that would render more than 10,000 cells remain
+plain text.
 
 If the Session Pod is deleted or evicted, clients reconnect after its
 replacement is ready. Work active at the time of failure is reported as
