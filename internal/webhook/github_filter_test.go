@@ -2766,3 +2766,192 @@ func TestExtractGitHubWorkItem_ReleaseEvent(t *testing.T) {
 		t.Errorf("URL = %v, want release URL", vars["URL"])
 	}
 }
+
+// checkRunPayload builds a check_run webhook payload for the given check name
+// and conclusion, associated with PR #7 on branch "feature-branch".
+func checkRunPayload(name, conclusion string) string {
+	return fmt.Sprintf(`{
+		"action":"completed",
+		"sender":{"login":"github-actions[bot]"},
+		"repository":{"full_name":"org/repo","name":"repo","owner":{"login":"org"}},
+		"check_run":{
+			"id":9876,
+			"name":%q,
+			"head_sha":"abc123def456",
+			"html_url":"https://github.com/org/repo/runs/9876",
+			"status":"completed",
+			"conclusion":%q,
+			"app":{"name":"GitHub Actions"},
+			"pull_requests":[{"number":7,"head":{"ref":"feature-branch"}}]
+		}
+	}`, name, conclusion)
+}
+
+func TestMatchesGitHubEvent_CheckRunConclusionAndName(t *testing.T) {
+	spawner := &kelos.GitHubWebhook{
+		Events: []string{"check_run"},
+		Filters: []kelos.GitHubWebhookFilter{
+			{
+				Event:      "check_run",
+				Action:     "completed",
+				Conclusion: "failure",
+				CheckName:  "lint*",
+			},
+		},
+	}
+
+	tests := []struct {
+		name       string
+		checkName  string
+		conclusion string
+		want       bool
+	}{
+		{
+			name:       "failing lint check matches (happy path)",
+			checkName:  "lint",
+			conclusion: "failure",
+			want:       true,
+		},
+		{
+			name:       "failing lint check with glob suffix matches",
+			checkName:  "lint-go",
+			conclusion: "failure",
+			want:       true,
+		},
+		{
+			name:       "successful lint check rejected by conclusion",
+			checkName:  "lint",
+			conclusion: "success",
+			want:       false,
+		},
+		{
+			name:       "failing check with non-matching name rejected",
+			checkName:  "unit-tests",
+			conclusion: "failure",
+			want:       false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			payload := []byte(checkRunPayload(tt.checkName, tt.conclusion))
+			got, err := parseAndMatch(t, spawner, "check_run", payload)
+			if err != nil {
+				t.Fatalf("MatchesGitHubEvent() error = %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("MatchesGitHubEvent() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestMatchesGitHubEvent_CheckRunEventTypeNotAllowed verifies that a check_run
+// event is rejected when the spawner does not list "check_run" in its events.
+func TestMatchesGitHubEvent_CheckRunEventTypeNotAllowed(t *testing.T) {
+	spawner := &kelos.GitHubWebhook{
+		Events: []string{"pull_request"},
+	}
+
+	got, err := parseAndMatch(t, spawner, "check_run", []byte(checkRunPayload("lint", "failure")))
+	if err != nil {
+		t.Fatalf("MatchesGitHubEvent() error = %v", err)
+	}
+	if got {
+		t.Errorf("MatchesGitHubEvent() = true, want false for unlisted event type")
+	}
+}
+
+func TestParseGitHubWebhook_CheckRunEvent(t *testing.T) {
+	eventData, err := ParseGitHubWebhook("check_run", []byte(checkRunPayload("lint", "failure")))
+	if err != nil {
+		t.Fatalf("ParseGitHubWebhook() error = %v", err)
+	}
+
+	if eventData.Repository != "org/repo" {
+		t.Errorf("Repository = %q, want org/repo", eventData.Repository)
+	}
+	if eventData.Sender != "github-actions[bot]" {
+		t.Errorf("Sender = %q, want github-actions[bot]", eventData.Sender)
+	}
+	if eventData.Title != "lint" {
+		t.Errorf("Title = %q, want lint", eventData.Title)
+	}
+	if eventData.HeadSHA != "abc123def456" {
+		t.Errorf("HeadSHA = %q, want abc123def456", eventData.HeadSHA)
+	}
+	if eventData.Branch != "feature-branch" {
+		t.Errorf("Branch = %q, want feature-branch", eventData.Branch)
+	}
+	if eventData.Number != 7 {
+		t.Errorf("Number = %d, want 7", eventData.Number)
+	}
+	if eventData.URL != "https://github.com/org/repo/runs/9876" {
+		t.Errorf("URL = %q, want run URL", eventData.URL)
+	}
+}
+
+func TestExtractGitHubWorkItem_CheckRunEvent(t *testing.T) {
+	eventData, err := ParseGitHubWebhook("check_run", []byte(checkRunPayload("unit-tests", "failure")))
+	if err != nil {
+		t.Fatalf("ParseGitHubWebhook() error = %v", err)
+	}
+
+	vars := ExtractGitHubWorkItem(eventData, nil)
+
+	cases := map[string]interface{}{
+		"CheckName":   "unit-tests",
+		"Conclusion":  "failure",
+		"CheckRunURL": "https://github.com/org/repo/runs/9876",
+		"HeadSHA":     "abc123def456",
+		"CheckApp":    "GitHub Actions",
+		"Branch":      "feature-branch",
+		"Number":      7,
+	}
+	for key, want := range cases {
+		if vars[key] != want {
+			t.Errorf("vars[%q] = %v, want %v", key, vars[key], want)
+		}
+	}
+}
+
+// TestExtractGitHubWorkItem_CheckRunEventWithoutPR verifies that a check_run
+// event not associated with a pull request (e.g. a check on a push to a branch)
+// omits the Branch and Number template variables. Templates that must handle
+// these events therefore have to reference those keys defensively (via `index`
+// / `if index`) rather than with `{{.Branch}}`, which would fail under
+// missingkey=error.
+func TestExtractGitHubWorkItem_CheckRunEventWithoutPR(t *testing.T) {
+	payload := `{
+		"action":"completed",
+		"sender":{"login":"github-actions[bot]"},
+		"repository":{"full_name":"org/repo","name":"repo","owner":{"login":"org"}},
+		"check_run":{
+			"id":9876,
+			"name":"lint",
+			"head_sha":"abc123def456",
+			"html_url":"https://github.com/org/repo/runs/9876",
+			"status":"completed",
+			"conclusion":"failure",
+			"app":{"name":"GitHub Actions"},
+			"pull_requests":[]
+		}
+	}`
+	eventData, err := ParseGitHubWebhook("check_run", []byte(payload))
+	if err != nil {
+		t.Fatalf("ParseGitHubWebhook() error = %v", err)
+	}
+
+	vars := ExtractGitHubWorkItem(eventData, nil)
+
+	if _, ok := vars["Branch"]; ok {
+		t.Errorf("Branch should be omitted for a check_run without a linked PR, got %v", vars["Branch"])
+	}
+	if _, ok := vars["Number"]; ok {
+		t.Errorf("Number should be omitted for a check_run without a linked PR, got %v", vars["Number"])
+	}
+	// CI-specific fields that do not depend on a PR must still be present.
+	if vars["CheckName"] != "lint" || vars["HeadSHA"] != "abc123def456" {
+		t.Errorf("expected CheckName/HeadSHA to be populated, got CheckName=%v HeadSHA=%v", vars["CheckName"], vars["HeadSHA"])
+	}
+}
