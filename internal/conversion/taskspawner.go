@@ -2,6 +2,7 @@ package conversion
 
 import (
 	"context"
+	"encoding/json"
 
 	v1alpha1 "github.com/kelos-dev/kelos/api/v1alpha1"
 	v1alpha2 "github.com/kelos-dev/kelos/api/v1alpha2"
@@ -12,6 +13,13 @@ import (
 // writes the object through v1alpha1 does not silently drop it. v1alpha1 does
 // not gain the capability — the value only survives in this annotation.
 const preservedNameTemplateAnnotation = "kelos.dev/v1alpha2-name-template"
+
+// preservedContextGitHubAppAuthAnnotation carries the githubAppAuth blocks of
+// taskTemplate.contextSources (a v1alpha2-only field) across a v1alpha1
+// round-trip, keyed by context source name. Without it a client that reads and
+// writes the object through v1alpha1 would silently drop GitHub App
+// authentication from a stored v1alpha2 TaskSpawner.
+const preservedContextGitHubAppAuthAnnotation = "kelos.dev/v1alpha2-context-github-app-auth"
 
 func taskSpawnerToHub(_ context.Context, src *v1alpha1.TaskSpawner, dst *v1alpha2.TaskSpawner) error {
 	src.ObjectMeta.DeepCopyInto(&dst.ObjectMeta)
@@ -24,6 +32,10 @@ func taskSpawnerToHub(_ context.Context, src *v1alpha1.TaskSpawner, dst *v1alpha
 	foldTaskSpawnerForward(&src.Spec, &dst.Spec)
 	restorePreservedNameTemplate(src.Annotations, &dst.Spec.TaskTemplate)
 	deleteAnnotation(dst.Annotations, preservedNameTemplateAnnotation)
+	if err := restorePreservedContextGitHubAppAuth(src.Annotations, &dst.Spec.TaskTemplate); err != nil {
+		return err
+	}
+	deleteAnnotation(dst.Annotations, preservedContextGitHubAppAuthAnnotation)
 	return nil
 }
 
@@ -37,6 +49,9 @@ func taskSpawnerFromHub(_ context.Context, src *v1alpha2.TaskSpawner, dst *v1alp
 	}
 	backfillTaskSpawnerLegacy(&dst.Spec)
 	setPreservedNameTemplateAnnotation(dst, src.Spec.TaskTemplate.NameTemplate)
+	if err := setPreservedContextGitHubAppAuth(dst, src.Spec.TaskTemplate); err != nil {
+		return err
+	}
 	return convertViaJSON(&src.Status, &dst.Status)
 }
 
@@ -58,6 +73,59 @@ func restorePreservedNameTemplate(annotations map[string]string, dst *v1alpha2.T
 	if v, ok := annotations[preservedNameTemplateAnnotation]; ok {
 		dst.NameTemplate = v
 	}
+}
+
+// setPreservedContextGitHubAppAuth records the githubAppAuth block of each
+// context source (keyed by source name) into an annotation on the v1alpha1
+// object so it survives a v1alpha1 round-trip. The annotation is cleared when
+// no context source uses GitHub App auth.
+func setPreservedContextGitHubAppAuth(dst *v1alpha1.TaskSpawner, template v1alpha2.TaskTemplate) error {
+	preserved := map[string]v1alpha2.GitHubAppContextAuth{}
+	for _, cs := range template.ContextSources {
+		if cs.HTTP != nil && cs.HTTP.GitHubAppAuth != nil {
+			preserved[cs.Name] = *cs.HTTP.GitHubAppAuth
+		}
+	}
+	if len(preserved) == 0 {
+		deleteAnnotation(dst.Annotations, preservedContextGitHubAppAuthAnnotation)
+		return nil
+	}
+	data, err := json.Marshal(preserved)
+	if err != nil {
+		return err
+	}
+	if dst.Annotations == nil {
+		dst.Annotations = map[string]string{}
+	}
+	dst.Annotations[preservedContextGitHubAppAuthAnnotation] = string(data)
+	return nil
+}
+
+// restorePreservedContextGitHubAppAuth restores githubAppAuth blocks dropped by
+// a v1alpha1 round-trip onto the matching context sources (by name), unless the
+// source already carries the field.
+func restorePreservedContextGitHubAppAuth(annotations map[string]string, dst *v1alpha2.TaskTemplate) error {
+	raw, ok := annotations[preservedContextGitHubAppAuthAnnotation]
+	if !ok || raw == "" {
+		return nil
+	}
+	preserved := map[string]v1alpha2.GitHubAppContextAuth{}
+	if err := json.Unmarshal([]byte(raw), &preserved); err != nil {
+		// The annotation is best-effort preservation data and can be set by
+		// users; malformed data must not block API version conversion.
+		return nil
+	}
+	for i := range dst.ContextSources {
+		cs := &dst.ContextSources[i]
+		if cs.HTTP == nil || cs.HTTP.GitHubAppAuth != nil {
+			continue
+		}
+		if auth, ok := preserved[cs.Name]; ok {
+			restored := auth
+			cs.HTTP.GitHubAppAuth = &restored
+		}
+	}
+	return nil
 }
 
 func foldTaskSpawnerForward(src *v1alpha1.TaskSpawnerSpec, dst *v1alpha2.TaskSpawnerSpec) {
