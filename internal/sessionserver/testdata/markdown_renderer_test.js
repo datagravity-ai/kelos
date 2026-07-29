@@ -9,6 +9,9 @@ class TestNode {
     this.value = value;
     this.children = [];
     this.dataset = {};
+    this.attributes = new Map();
+    this.listeners = new Map();
+    this.style = {};
     this.classes = new Set();
     this.classList = {add: (...names) => names.forEach((name) => this.classes.add(name))};
   }
@@ -16,7 +19,10 @@ class TestNode {
   append(...nodes) {
     for (const node of nodes) {
       if (node.tag === '#fragment') this.children.push(...node.children);
-      else this.children.push(node);
+      else {
+        node.parent = this;
+        this.children.push(node);
+      }
     }
   }
 
@@ -41,13 +47,45 @@ class TestNode {
   get className() {
     return [...this.classes].join(' ');
   }
+
+  setAttribute(name, value) {
+    this.attributes.set(name, String(value));
+  }
+
+  addEventListener(name, listener) {
+    this.listeners.set(name, listener);
+  }
+
+  click() {
+    return this.listeners.get('click')?.();
+  }
+
+  select() {
+    this.selected = true;
+  }
+
+  remove() {
+    if (!this.parent) return;
+    this.parent.children = this.parent.children.filter((child) => child !== this);
+    this.parent = null;
+  }
 }
 
 global.document = {
   createElement: (tag) => new TestNode(tag),
   createTextNode: (value) => new TestNode('#text', value),
   createDocumentFragment: () => new TestNode('#fragment'),
+  body: new TestNode('body'),
+  execCommand: () => false,
 };
+global.window = {
+  clearTimeout: () => {},
+  setTimeout: () => 1,
+};
+Object.defineProperty(global, 'navigator', {
+  configurable: true,
+  value: {clipboard: {writeText: async () => {}}},
+});
 global.state = {
   assistantSegmentByTurn: new Map(),
   assistantTextByTurn: new Map(),
@@ -76,6 +114,7 @@ function serialize(node) {
   if (node.type) attributes.push(`type="${escapeHTML(node.type)}"`);
   if (node.checked) attributes.push('checked');
   if (node.disabled) attributes.push('disabled');
+  for (const [name, value] of node.attributes) attributes.push(`${name}="${escapeHTML(value)}"`);
   const suffix = attributes.length ? ` ${attributes.join(' ')}` : '';
   if (node.tag === 'input') return `<input${suffix}>`;
   return `<${node.tag}${suffix}>${node.children.map(serialize).join('')}</${node.tag}>`;
@@ -197,7 +236,7 @@ const untrusted = render([
 ].join('\n'));
 assert.match(untrusted, /&lt;img src=x onerror=alert\(1\)&gt;/);
 assert.match(untrusted, /\[unsafe\]\(javascript:alert\(1\)\)/);
-assert.match(untrusted, /<pre data-language="html"><code class="language-html">&lt;script&gt;alert\(1\)&lt;\/script&gt;<\/code><\/pre>/);
+assert.match(untrusted, /<div class="code-block">.*<pre data-language="html"><code class="language-html">&lt;script&gt;alert\(1\)&lt;\/script&gt;<\/code><\/pre><\/div>/);
 assert.doesNotMatch(untrusted, /<script|<img|href="javascript:/);
 
 assert.equal(completedAssistantText('complete response', 'retained suffix'), 'complete response');
@@ -217,4 +256,43 @@ assert.equal(elements.messages.children[0].textContent, 'Ccomplete response');
 assert.equal(state.assistantSegmentByTurn.size, 0);
 assert.equal(state.assistantTextByTurn.size, 0);
 
-process.stdout.write('Markdown renderer tests passed\n');
+async function testCodeBlockCopy() {
+  const copied = [];
+  global.navigator.clipboard.writeText = async (value) => copied.push(value);
+  const root = new TestNode('div');
+  renderMessageMarkdown(root, '```js\nconst value = \"<safe>\";\n```');
+  const block = root.children[0];
+  assert.equal(block.className, 'code-block');
+  assert.equal(block.children[0].className, 'code-block-toolbar');
+  assert.equal(block.children[0].children[0].textContent, 'js');
+  const button = block.children[0].children[1];
+  assert.equal(button.textContent, 'Copy');
+  assert.equal(button.attributes.get('aria-label'), 'Copy code block');
+
+  await button.click();
+  assert.deepEqual(copied, ['const value = "<safe>";']);
+  assert.equal(button.textContent, 'Copied');
+  assert.equal(button.attributes.get('aria-label'), 'Code copied');
+  assert.equal(button.disabled, false);
+
+  global.navigator.clipboard.writeText = async () => {
+    throw new Error('denied');
+  };
+  let fallbackValue = '';
+  document.execCommand = (command) => {
+    assert.equal(command, 'copy');
+    fallbackValue = document.body.children[0].value;
+    return true;
+  };
+  await writeClipboardText('fallback content');
+  assert.equal(fallbackValue, 'fallback content');
+  assert.equal(document.body.children.length, 0);
+}
+
+testCodeBlockCopy().then(
+  () => process.stdout.write('Markdown renderer tests passed\n'),
+  (error) => {
+    process.stderr.write(`${error.stack}\n`);
+    process.exitCode = 1;
+  },
+);

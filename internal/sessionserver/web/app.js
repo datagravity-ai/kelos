@@ -1320,7 +1320,67 @@ function appendLink(parent, href, label, depth, scanBudget) {
   return true;
 }
 
+async function writeClipboardText(text) {
+  if (globalThis.navigator?.clipboard?.writeText) {
+    try {
+      await globalThis.navigator.clipboard.writeText(text);
+      return;
+    } catch {
+      // Fall through for browsers that expose the Clipboard API but deny access.
+    }
+  }
+
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.setAttribute('readonly', '');
+  textarea.style.position = 'fixed';
+  textarea.style.opacity = '0';
+  textarea.style.pointerEvents = 'none';
+  document.body.append(textarea);
+  textarea.select();
+  let copied = false;
+  try {
+    copied = document.execCommand('copy');
+  } finally {
+    textarea.remove();
+  }
+  if (!copied) throw new Error('Clipboard access is unavailable');
+}
+
+async function copyCodeBlock(button, content) {
+  button.disabled = true;
+  try {
+    await writeClipboardText(content);
+    button.textContent = 'Copied';
+    button.setAttribute('aria-label', 'Code copied');
+  } catch {
+    button.textContent = 'Copy failed';
+    button.setAttribute('aria-label', 'Copy code failed');
+  } finally {
+    button.disabled = false;
+    window.clearTimeout(button.copyResetTimer);
+    button.copyResetTimer = window.setTimeout(() => {
+      button.textContent = 'Copy';
+      button.setAttribute('aria-label', 'Copy code block');
+    }, 1600);
+  }
+}
+
 function appendCodeBlock(parent, content, info) {
+  const block = document.createElement('div');
+  block.className = 'code-block';
+  const toolbar = document.createElement('div');
+  toolbar.className = 'code-block-toolbar';
+  const languageLabel = document.createElement('span');
+  languageLabel.className = 'code-block-language';
+  const copyButton = document.createElement('button');
+  copyButton.className = 'code-copy-button';
+  copyButton.type = 'button';
+  copyButton.textContent = 'Copy';
+  copyButton.setAttribute('aria-label', 'Copy code block');
+  copyButton.setAttribute('aria-live', 'polite');
+  copyButton.addEventListener('click', () => copyCodeBlock(copyButton, content));
+
   const pre = document.createElement('pre');
   const code = document.createElement('code');
   const language = info.trim().split(/\s+/, 1)[0];
@@ -1328,9 +1388,12 @@ function appendCodeBlock(parent, content, info) {
     pre.dataset.language = language;
     code.className = `language-${language.toLowerCase()}`;
   }
+  languageLabel.textContent = language || 'Code';
   code.textContent = content;
   pre.append(code);
-  parent.append(pre);
+  toolbar.append(languageLabel, copyButton);
+  block.append(toolbar, pre);
+  parent.append(block);
 }
 
 function createInlineScanBudget(value) {

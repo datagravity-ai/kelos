@@ -235,8 +235,13 @@ func TestApplicationRendersMarkdownSafely(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, expected := range []string{
+		`const block = document.createElement('div')`,
+		`block.className = 'code-block'`,
 		`const pre = document.createElement('pre')`,
 		`const code = document.createElement('code')`,
+		`copyButton.addEventListener('click', () => copyCodeBlock(copyButton, content))`,
+		`await globalThis.navigator.clipboard.writeText(text)`,
+		`document.execCommand('copy')`,
 		`if (/^[a-z0-9_+-]+$/i.test(language))`,
 		`code.textContent = content`,
 		"code.className = `language-${language.toLowerCase()}`",
@@ -278,9 +283,11 @@ func TestApplicationRendersMarkdownSafely(t *testing.T) {
 		`.message-bubble .inline-code {`,
 		`.message-bubble .task-list-item { list-style: none;`,
 		`display: grid; grid-template-columns: auto minmax(0, 1fr)`,
+		`.message-bubble .code-block {`,
+		`.message-bubble .code-block-toolbar {`,
+		`.message-bubble .code-copy-button {`,
 		`.message-bubble pre {`,
 		`overflow-x: auto`,
-		`content: attr(data-language)`,
 		`--code-bg:#0d1410`,
 		`--code-ink:#e3ebe5`,
 	} {
