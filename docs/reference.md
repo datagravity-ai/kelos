@@ -291,12 +291,22 @@ interrupted and is not submitted again automatically. The terminal client also
 does not retry a request whose delivery cannot be confirmed; it reports that
 uncertainty so the user can decide whether to submit it again.
 
-Session Pods that use the default runtime image are replaced when a Kelos
-upgrade changes that image. Before replacement, Kelos stops accepting new turns
-and waits for accepted work to finish. Pending user input delays the update
-until it is answered or interrupted. Rejected turns are not retried
-automatically; submit them again after the Session reconnects. An explicitly
-tagged or digested runtime image remains pinned.
+Existing Session StatefulSets reconcile their controller-managed fields when
+controller defaults or referenced `Workspace` and `AgentConfig` resources
+change. This includes plugin content. Fields that cannot be updated across all
+supported Kubernetes versions—the governing Service name, selector, Pod
+management policy, volume claim templates, and revision history limit—remain as
+originally created.
+
+When reconciliation changes the Pod template of an active Session, Kelos stops
+accepting new turns and waits for accepted work to finish before replacing the
+Pod. Pending user input delays the update until it is answered or interrupted.
+Rejected turns are not retried automatically; submit them again after the
+Session reconnects. Suspended Sessions remain at zero replicas while their
+StatefulSet is updated and use the updated template when resumed. Session Pods
+that use the default runtime image follow this process when a Kelos upgrade
+changes that image; an explicitly tagged or digested runtime image remains
+pinned.
 
 `Active=True` means the runtime has an unfinished turn, including a turn waiting
 for user input; `Active=False` means it is idle. Activity becomes `Unknown` when

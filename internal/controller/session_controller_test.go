@@ -17,6 +17,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apiMeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -28,6 +29,8 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	kelos "github.com/kelos-dev/kelos/api/v1alpha2"
 	"github.com/kelos-dev/kelos/internal/githubapp"
@@ -35,14 +38,14 @@ import (
 	"github.com/kelos-dev/kelos/internal/sessionupdate"
 )
 
-func TestSessionReconcilerUpdatesStatefulSetRuntime(t *testing.T) {
+func TestSessionReconcilerReconcilesStatefulSetRuntimeConfiguration(t *testing.T) {
 	tests := []struct {
 		name           string
 		configuredPull corev1.PullPolicy
 		wantPull       corev1.PullPolicy
 	}{
 		{name: "configured pull policy", configuredPull: corev1.PullIfNotPresent, wantPull: corev1.PullIfNotPresent},
-		{name: "default pull policy", wantPull: corev1.PullAlways},
+		{name: "default pull policy"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -63,7 +66,7 @@ func TestSessionReconcilerUpdatesStatefulSetRuntime(t *testing.T) {
 
 			session := testSession("chat", "claude-code")
 			statefulSet := testSessionStatefulSet(session)
-			statefulSet.Spec.Template.Spec.InitContainers[0].Image = "runtime:old"
+			statefulSet.Spec.Template.Spec.InitContainers[0].Image = "runtime:stale"
 			statefulSet.Spec.Template.Spec.InitContainers[0].ImagePullPolicy = corev1.PullAlways
 			statefulSet.Spec.UpdateStrategy = appsv1.StatefulSetUpdateStrategy{
 				Type:          appsv1.RollingUpdateStatefulSetStrategyType,
@@ -122,6 +125,117 @@ func TestSessionReconcilerUpdatesStatefulSetRuntime(t *testing.T) {
 	}
 }
 
+func TestSessionReconcilerReconcilesSuspendedStatefulSetSpec(t *testing.T) {
+	tests := []struct {
+		name          string
+		image         string
+		imageOverride string
+		useTini       bool
+	}{
+		{
+			name:    "bundled image",
+			image:   CodexImage,
+			useTini: true,
+		},
+		{
+			name:          "explicit image override",
+			image:         CodexImage,
+			imageOverride: CodexImage,
+			useTini:       false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			scheme := runtime.NewScheme()
+			for _, add := range []func(*runtime.Scheme) error{appsv1.AddToScheme, corev1.AddToScheme, rbacv1.AddToScheme, kelos.AddToScheme} {
+				if err := add(scheme); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			session := testSession("suspended-runtime-command", "codex")
+			session.Spec.Suspend = ptr.To(true)
+			session.Spec.Worker.Image = tt.imageOverride
+			statefulSet := testSessionStatefulSet(session)
+			statefulSet.Spec.Replicas = ptr.To(int32(0))
+			statefulSet.Spec.ServiceName = sessionWorkloadName(session)
+			statefulSet.Spec.PodManagementPolicy = appsv1.ParallelPodManagement
+			statefulSet.Spec.Selector = &metav1.LabelSelector{MatchLabels: sessionSelectorLabels(session)}
+			statefulSet.Spec.VolumeClaimTemplates = []corev1.PersistentVolumeClaim{{
+				ObjectMeta: metav1.ObjectMeta{Name: WorkspaceVolumeName},
+				Spec:       *session.Spec.VolumeClaimTemplate.DeepCopy(),
+			}}
+			statefulSet.Labels = map[string]string{"stale": "label"}
+			statefulSet.Spec.UpdateStrategy = appsv1.StatefulSetUpdateStrategy{
+				Type:          appsv1.RollingUpdateStatefulSetStrategyType,
+				RollingUpdate: &appsv1.RollingUpdateStatefulSetStrategy{},
+			}
+			statefulSet.Spec.RevisionHistoryLimit = ptr.To(int32(1))
+			statefulSet.Spec.MinReadySeconds = 10
+			statefulSet.Spec.PersistentVolumeClaimRetentionPolicy = &appsv1.StatefulSetPersistentVolumeClaimRetentionPolicy{
+				WhenDeleted: appsv1.DeletePersistentVolumeClaimRetentionPolicyType,
+				WhenScaled:  appsv1.DeletePersistentVolumeClaimRetentionPolicyType,
+			}
+			statefulSet.Spec.Ordinals = &appsv1.StatefulSetOrdinals{Start: 3}
+			mainContainer := &statefulSet.Spec.Template.Spec.Containers[0]
+			mainContainer.Image = tt.image
+			mainContainer.Command = []string{sessionRuntimeBinary}
+			mainContainer.Args = []string{"serve"}
+			liveSpec := statefulSet.Spec.DeepCopy()
+
+			reconciler := testSessionReconciler(nil, scheme)
+			if tt.imageOverride == "" {
+				reconciler.JobBuilder.CodexImage = CodexImage
+			}
+			desired, _, err := reconciler.buildSessionStatefulSet(session, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithStatusSubresource(&kelos.Session{}, &corev1.Pod{}, &appsv1.StatefulSet{}).
+				WithObjects(session, statefulSet).
+				Build()
+			reconciler.Client = cl
+			request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(session)}
+			if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+				t.Fatalf("Reconcile() error = %v", err)
+			}
+
+			var updated appsv1.StatefulSet
+			if err := cl.Get(context.Background(), client.ObjectKeyFromObject(statefulSet), &updated); err != nil {
+				t.Fatalf("getting updated Session StatefulSet: %v", err)
+			}
+			if updated.Spec.Replicas == nil || *updated.Spec.Replicas != 0 {
+				t.Fatalf("StatefulSet replicas = %v, want 0", updated.Spec.Replicas)
+			}
+			desired.Spec.Replicas = ptr.To(int32(0))
+			desired.Spec.ServiceName = liveSpec.ServiceName
+			desired.Spec.PodManagementPolicy = liveSpec.PodManagementPolicy
+			desired.Spec.Selector = liveSpec.Selector
+			desired.Spec.VolumeClaimTemplates = liveSpec.VolumeClaimTemplates
+			desired.Spec.RevisionHistoryLimit = liveSpec.RevisionHistoryLimit
+			if !apiequality.Semantic.DeepEqual(updated.Labels, desired.Labels) {
+				t.Fatalf("StatefulSet labels = %#v, want %#v", updated.Labels, desired.Labels)
+			}
+			if !apiequality.Semantic.DeepEqual(updated.Spec, desired.Spec) {
+				t.Fatal("StatefulSet controller-managed spec fields were not fully reconciled")
+			}
+			if updated.Spec.PodManagementPolicy != appsv1.ParallelPodManagement {
+				t.Fatalf("StatefulSet podManagementPolicy = %q, want preserved %q", updated.Spec.PodManagementPolicy, appsv1.ParallelPodManagement)
+			}
+			if len(updated.Spec.VolumeClaimTemplates) != 1 || len(updated.Spec.VolumeClaimTemplates[0].OwnerReferences) != 0 {
+				t.Fatalf("StatefulSet volumeClaimTemplates = %#v, want preserved existing template", updated.Spec.VolumeClaimTemplates)
+			}
+			assertAgentProcessCommand(t, updated.Spec.Template.Spec.Containers[0].Command, sessionRuntimeBinary, tt.useTini)
+			if got := updated.Spec.Template.Spec.Containers[0].Args; !reflect.DeepEqual(got, []string{"serve"}) {
+				t.Fatalf("Session runtime args = %v, want [serve]", got)
+			}
+		})
+	}
+}
+
 func TestSessionReconcilerKeepsRuntimeStoppedWhenCredentialRefreshFails(t *testing.T) {
 	t.Parallel()
 	scheme := runtime.NewScheme()
@@ -139,10 +253,17 @@ func TestSessionReconcilerKeepsRuntimeStoppedWhenCredentialRefreshFails(t *testi
 	}
 
 	session := testSession("resume", "codex")
+	tokenSecretName := sessionGitHubTokenSecretName(session.Name)
+	session.Spec.Worker.WorkspaceRef = &kelos.WorkspaceReference{Name: "workspace"}
+	workspace := &kelos.Workspace{
+		ObjectMeta: metav1.ObjectMeta{Name: "workspace", Namespace: session.Namespace},
+		Spec: kelos.WorkspaceSpec{
+			SecretRef: &kelos.SecretReference{Name: tokenSecretName},
+		},
+	}
 	statefulSet := testSessionStatefulSet(session)
 	statefulSet.Spec.Replicas = ptr.To(int32(0))
 	statefulSet.Spec.Template.Spec.InitContainers[0].Image = "runtime:old"
-	tokenSecretName := sessionGitHubTokenSecretName(session.Name)
 	statefulSet.Spec.Template.Spec.Volumes = append(statefulSet.Spec.Template.Spec.Volumes, corev1.Volume{
 		Name: GitHubTokenVolumeName,
 		VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
@@ -163,7 +284,7 @@ func TestSessionReconcilerKeepsRuntimeStoppedWhenCredentialRefreshFails(t *testi
 	cl := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithStatusSubresource(&kelos.Session{}, &corev1.Pod{}, &appsv1.StatefulSet{}).
-		WithObjects(session, statefulSet, tokenSecret).
+		WithObjects(session, workspace, statefulSet, tokenSecret).
 		Build()
 	reconciler := testSessionReconciler(cl, scheme)
 	result, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(session)})
@@ -183,6 +304,329 @@ func TestSessionReconcilerKeepsRuntimeStoppedWhenCredentialRefreshFails(t *testi
 	}
 	if got := updated.Spec.Template.Spec.InitContainers[0].Image; got != "runtime:test" {
 		t.Fatalf("runtime init container image = %q, want %q", got, "runtime:test")
+	}
+}
+
+func TestSessionGitHubTokenMinimumValidity(t *testing.T) {
+	tests := []struct {
+		name               string
+		currentStatefulSet bool
+		replicas           *int32
+		phase              kelos.SessionPhase
+		podName            string
+		usesToken          bool
+		want               time.Duration
+	}{
+		{
+			name:  "runtime creation",
+			phase: kelos.SessionPhaseReady,
+			want:  tokenRefreshMargin,
+		},
+		{
+			name:               "stopped runtime",
+			currentStatefulSet: true,
+			replicas:           ptr.To(int32(0)),
+			phase:              kelos.SessionPhaseReady,
+			podName:            "session-token-policy-0",
+			usesToken:          true,
+			want:               tokenRefreshMargin,
+		},
+		{
+			name:               "runtime not ready",
+			currentStatefulSet: true,
+			replicas:           ptr.To(int32(1)),
+			phase:              kelos.SessionPhasePending,
+			podName:            "session-token-policy-0",
+			usesToken:          true,
+			want:               tokenRefreshMargin,
+		},
+		{
+			name:               "missing Pod identity",
+			currentStatefulSet: true,
+			replicas:           ptr.To(int32(1)),
+			phase:              kelos.SessionPhaseReady,
+			usesToken:          true,
+			want:               tokenRefreshMargin,
+		},
+		{
+			name:               "token not deployed",
+			currentStatefulSet: true,
+			replicas:           ptr.To(int32(1)),
+			phase:              kelos.SessionPhaseReady,
+			podName:            "session-token-policy-0",
+			want:               tokenRefreshMargin,
+		},
+		{
+			name:               "ready runtime using token",
+			currentStatefulSet: true,
+			phase:              kelos.SessionPhaseReady,
+			podName:            "session-token-policy-0",
+			usesToken:          true,
+			want:               0,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			session := testSession("token-policy", "codex")
+			session.Status.Phase = tt.phase
+			session.Status.PodName = tt.podName
+			var statefulSet *appsv1.StatefulSet
+			if tt.currentStatefulSet {
+				statefulSet = testSessionStatefulSet(session)
+				statefulSet.Spec.Replicas = tt.replicas
+				if tt.usesToken {
+					statefulSet.Spec.Template.Spec.Volumes = append(statefulSet.Spec.Template.Spec.Volumes, corev1.Volume{
+						Name: GitHubTokenVolumeName,
+						VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
+							SecretName: sessionGitHubTokenSecretName(session.Name),
+						}},
+					})
+				}
+			}
+			if got := sessionGitHubTokenMinimumValidity(session, statefulSet); got != tt.want {
+				t.Fatalf("minimum token validity = %s, want %s", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSessionReconcilerPreservesReadyStatusWhenInputReadFails(t *testing.T) {
+	t.Parallel()
+	scheme := runtime.NewScheme()
+	for _, add := range []func(*runtime.Scheme) error{appsv1.AddToScheme, corev1.AddToScheme, kelos.AddToScheme} {
+		if err := add(scheme); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	session := testSession("ready-input-retry", "codex")
+	session.Spec.Worker.WorkspaceRef = &kelos.WorkspaceReference{Name: "workspace"}
+	session.Status.Phase = kelos.SessionPhaseReady
+	session.Status.PodName = "session-ready-input-retry-0"
+	session.Status.PodUID = types.UID("ready-pod-uid")
+	session.Status.Conditions = []metav1.Condition{{
+		Type:               kelos.SessionConditionReady,
+		Status:             metav1.ConditionTrue,
+		ObservedGeneration: session.Generation,
+		Reason:             "RuntimeReady",
+		Message:            "Session runtime is ready",
+	}}
+	originalStatus := session.Status.DeepCopy()
+	statefulSet := testSessionStatefulSet(session)
+	workspace := &kelos.Workspace{
+		ObjectMeta: metav1.ObjectMeta{Name: "workspace", Namespace: session.Namespace},
+		Spec:       kelos.WorkspaceSpec{Repo: "https://github.com/kelos-dev/kelos.git"},
+	}
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&kelos.Session{}, &appsv1.StatefulSet{}).
+		WithObjects(session, statefulSet, workspace).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if _, ok := obj.(*kelos.Workspace); ok {
+					return apierrors.NewServiceUnavailable("temporary Workspace read failure")
+				}
+				return cl.Get(ctx, key, obj, opts...)
+			},
+		}).
+		Build()
+	reconciler := testSessionReconciler(cl, scheme)
+
+	_, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(session)})
+	if !apierrors.IsServiceUnavailable(err) {
+		t.Fatalf("Reconcile() error = %v, want ServiceUnavailable", err)
+	}
+
+	var updated kelos.Session
+	if err := cl.Get(context.Background(), client.ObjectKeyFromObject(session), &updated); err != nil {
+		t.Fatal(err)
+	}
+	if !apiequality.Semantic.DeepEqual(&updated.Status, originalStatus) {
+		t.Fatalf("Session status = %#v, want preserved %#v", updated.Status, *originalStatus)
+	}
+}
+
+func TestSessionReconcilerKeepsReadyRuntimeAvailableWhenTokenRefreshFails(t *testing.T) {
+	t.Parallel()
+	tokenRequests := 0
+	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		tokenRequests++
+		http.Error(writer, "temporary failure", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	scheme := runtime.NewScheme()
+	for _, add := range []func(*runtime.Scheme) error{appsv1.AddToScheme, corev1.AddToScheme, rbacv1.AddToScheme, kelos.AddToScheme} {
+		if err := add(scheme); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	session := testSession("active-token-refresh", "codex")
+	session.Spec.Worker.WorkspaceRef = &kelos.WorkspaceReference{Name: "workspace"}
+	workspace := &kelos.Workspace{
+		ObjectMeta: metav1.ObjectMeta{Name: "workspace", Namespace: session.Namespace},
+		Spec: kelos.WorkspaceSpec{
+			SecretRef: &kelos.SecretReference{Name: "github-app"},
+		},
+	}
+	source := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "github-app",
+			Namespace:       session.Namespace,
+			UID:             types.UID("github-app-uid"),
+			ResourceVersion: "source-version",
+		},
+		Data: testGitHubAppSecretData(t),
+	}
+	tokenSecretName := sessionGitHubTokenSecretName(session.Name)
+	tokenSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            tokenSecretName,
+			Namespace:       session.Namespace,
+			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(session, kelos.GroupVersion.WithKind("Session"))},
+			Annotations: map[string]string{
+				githubAppSecretAnnotation:         source.Name,
+				sessionTokenFingerprintAnnotation: sessionGitHubTokenMintFingerprint(source, server.URL),
+				tokenExpiresAtAnnotation:          time.Now().Add(tokenRefreshMargin / 2).UTC().Format(time.RFC3339),
+			},
+		},
+		Data: map[string][]byte{GitHubTokenSecretKey: []byte("still-valid")},
+	}
+
+	reconciler := testSessionReconciler(nil, scheme)
+	reconciler.TokenClient = &githubapp.TokenClient{BaseURL: server.URL, Client: server.Client()}
+	resolvedWorkspace := workspace.Spec.DeepCopy()
+	resolvedWorkspace.SecretRef = &kelos.SecretReference{Name: tokenSecretName}
+	statefulSet, _, err := reconciler.buildSessionStatefulSet(session, resolvedWorkspace, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statefulSet.UID = types.UID("active-token-refresh-statefulset-uid")
+	statefulSet.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(session, kelos.GroupVersion.WithKind("Session"))}
+	const revision = "current-revision"
+	statefulSet.Status.CurrentRevision = revision
+	statefulSet.Status.UpdateRevision = revision
+	statefulSet.Status.ObservedGeneration = statefulSet.Generation
+
+	podLabels := make(map[string]string, len(statefulSet.Spec.Template.Labels)+1)
+	for key, value := range statefulSet.Spec.Template.Labels {
+		podLabels[key] = value
+	}
+	podLabels[appsv1.StatefulSetRevisionLabel] = revision
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            statefulSet.Name + "-0",
+			Namespace:       session.Namespace,
+			UID:             types.UID("active-token-refresh-pod-uid"),
+			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(statefulSet, appsv1.SchemeGroupVersion.WithKind("StatefulSet"))},
+			Labels:          podLabels,
+		},
+		Spec: *statefulSet.Spec.Template.Spec.DeepCopy(),
+		Status: corev1.PodStatus{
+			Phase:      corev1.PodRunning,
+			Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}},
+		},
+	}
+	session.Status.Phase = kelos.SessionPhaseReady
+	session.Status.PodName = pod.Name
+	session.Status.PodUID = pod.UID
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&kelos.Session{}, &corev1.Pod{}, &appsv1.StatefulSet{}).
+		WithObjects(session, workspace, source, tokenSecret, statefulSet, pod).
+		Build()
+	reconciler.Client = cl
+
+	result, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(session)})
+	if err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if result.RequeueAfter != tokenRefreshRetryInterval {
+		t.Fatalf("Reconcile() requeueAfter = %s, want %s", result.RequeueAfter, tokenRefreshRetryInterval)
+	}
+	if tokenRequests != 1 {
+		t.Fatalf("GitHub App token requests = %d, want 1 proactive refresh attempt", tokenRequests)
+	}
+
+	var updatedSession kelos.Session
+	if err := cl.Get(context.Background(), client.ObjectKeyFromObject(session), &updatedSession); err != nil {
+		t.Fatal(err)
+	}
+	if updatedSession.Status.Phase != kelos.SessionPhaseReady {
+		t.Fatalf("Session phase = %q, want %q", updatedSession.Status.Phase, kelos.SessionPhaseReady)
+	}
+	if updatedSession.Status.PodName != pod.Name || updatedSession.Status.PodUID != pod.UID {
+		t.Fatalf("Session Pod identity = %q/%q, want %q/%q", updatedSession.Status.PodName, updatedSession.Status.PodUID, pod.Name, pod.UID)
+	}
+}
+
+func TestSessionReconcilerUsesCurrentWorkspaceCredentialsWhenResuming(t *testing.T) {
+	t.Parallel()
+	scheme := runtime.NewScheme()
+	for _, add := range []func(*runtime.Scheme) error{appsv1.AddToScheme, corev1.AddToScheme, rbacv1.AddToScheme, kelos.AddToScheme} {
+		if err := add(scheme); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	session := testSession("resume-with-pat", "codex")
+	session.Spec.Worker.WorkspaceRef = &kelos.WorkspaceReference{Name: "workspace"}
+	workspace := &kelos.Workspace{
+		ObjectMeta: metav1.ObjectMeta{Name: "workspace", Namespace: session.Namespace},
+		Spec: kelos.WorkspaceSpec{
+			Repo:      "https://github.com/kelos-dev/kelos.git",
+			SecretRef: &kelos.SecretReference{Name: "pat"},
+		},
+	}
+	pat := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "pat", Namespace: session.Namespace},
+		Data:       map[string][]byte{GitHubTokenSecretKey: []byte("github_pat_current")},
+	}
+	tokenSecretName := sessionGitHubTokenSecretName(session.Name)
+	statefulSet := testSessionStatefulSet(session)
+	statefulSet.Spec.Replicas = ptr.To(int32(0))
+	statefulSet.Spec.Template.Spec.Volumes = append(statefulSet.Spec.Template.Spec.Volumes, corev1.Volume{
+		Name: GitHubTokenVolumeName,
+		VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
+			SecretName: tokenSecretName,
+		}},
+	})
+	staleToken := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            tokenSecretName,
+			Namespace:       session.Namespace,
+			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(session, kelos.GroupVersion.WithKind("Session"))},
+			Annotations: map[string]string{
+				githubAppSecretAnnotation: "removed-github-app",
+				tokenExpiresAtAnnotation:  time.Now().Add(-time.Hour).UTC().Format(time.RFC3339),
+			},
+		},
+		Data: map[string][]byte{GitHubTokenSecretKey: []byte("ghs_stale")},
+	}
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&kelos.Session{}, &corev1.Pod{}, &appsv1.StatefulSet{}).
+		WithObjects(session, workspace, pat, statefulSet, staleToken).
+		Build()
+	reconciler := testSessionReconciler(cl, scheme)
+	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(session)}); err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+
+	var updated appsv1.StatefulSet
+	if err := cl.Get(context.Background(), client.ObjectKeyFromObject(statefulSet), &updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.Spec.Replicas == nil || *updated.Spec.Replicas != 1 {
+		t.Fatalf("StatefulSet replicas = %v, want 1", updated.Spec.Replicas)
+	}
+	if sessionPodSpecUsesSecret(&updated.Spec.Template.Spec, tokenSecretName) {
+		t.Fatalf("StatefulSet still uses stale derived token Secret %q", tokenSecretName)
+	}
+	if !sessionPodSpecUsesSecret(&updated.Spec.Template.Spec, pat.Name) {
+		t.Fatalf("StatefulSet does not use PAT Secret %q", pat.Name)
 	}
 }
 
@@ -1260,6 +1704,17 @@ func TestSessionPluginConfigMapUsesSessionIdentity(t *testing.T) {
 	if configMap.Name == PluginConfigMapName(session.Name) {
 		t.Fatalf("Session plugin ConfigMap reused Task name %q", configMap.Name)
 	}
+	checksum := statefulSet.Spec.Template.Annotations[sessionPluginChecksumAnnotation]
+	if checksum == "" {
+		t.Fatal("Session Pod template has no plugin content checksum")
+	}
+	wantChecksum, err := sessionPluginConfigMapChecksum(configMap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if checksum != wantChecksum {
+		t.Fatalf("plugin content checksum = %q, want %q", checksum, wantChecksum)
+	}
 	for _, volume := range statefulSet.Spec.Template.Spec.Volumes {
 		if volume.Name == PluginStagingVolumeName && volume.ConfigMap != nil {
 			if volume.ConfigMap.Name != configMap.Name {
@@ -1269,6 +1724,90 @@ func TestSessionPluginConfigMapUsesSessionIdentity(t *testing.T) {
 		}
 	}
 	t.Fatal("Session Pod has no plugin ConfigMap volume")
+}
+
+func TestSessionPluginContentChangesPodTemplateChecksum(t *testing.T) {
+	t.Parallel()
+	session := testSession("plugin-update", "claude-code")
+	reconciler := testSessionReconciler(nil, nil)
+	build := func(content string) (*appsv1.StatefulSet, *corev1.ConfigMap) {
+		t.Helper()
+		agentConfig := &kelos.AgentConfigSpec{Plugins: []kelos.PluginSpec{{
+			Name:   "tools",
+			Skills: []kelos.SkillDefinition{{Name: "review", Content: content}},
+		}}}
+		statefulSet, configMap, err := reconciler.buildSessionStatefulSet(session, nil, agentConfig)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return statefulSet, configMap
+	}
+
+	before, beforeConfigMap := build("Review changes")
+	after, afterConfigMap := build("Review changes carefully")
+	if beforeConfigMap.Name != afterConfigMap.Name {
+		t.Fatalf("plugin ConfigMap name changed from %q to %q", beforeConfigMap.Name, afterConfigMap.Name)
+	}
+	beforeChecksum := before.Spec.Template.Annotations[sessionPluginChecksumAnnotation]
+	afterChecksum := after.Spec.Template.Annotations[sessionPluginChecksumAnnotation]
+	if beforeChecksum == "" || afterChecksum == "" || beforeChecksum == afterChecksum {
+		t.Fatalf("plugin content checksums = %q and %q, want different non-empty values", beforeChecksum, afterChecksum)
+	}
+
+	beforeTemplate := before.Spec.Template.DeepCopy()
+	afterTemplate := after.Spec.Template.DeepCopy()
+	delete(beforeTemplate.Annotations, sessionPluginChecksumAnnotation)
+	delete(afterTemplate.Annotations, sessionPluginChecksumAnnotation)
+	if !apiequality.Semantic.DeepEqual(beforeTemplate, afterTemplate) {
+		t.Fatal("plugin content changed Pod template fields other than its checksum")
+	}
+}
+
+func TestSessionPluginConfigMapPreservesUnownedMetadata(t *testing.T) {
+	t.Parallel()
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := kelos.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	session := testSession("plugin-metadata", "codex")
+	existing := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            sessionPluginConfigMapName(session),
+			Namespace:       session.Namespace,
+			Labels:          map[string]string{"backup.example/enabled": "true"},
+			Annotations:     map[string]string{"policy.example/owner": "platform"},
+			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(session, kelos.GroupVersion.WithKind("Session"))},
+		},
+		Data:       map[string]string{"p0-s0": "current content"},
+		BinaryData: map[string][]byte{"current": []byte("current binary content")},
+	}
+	desired := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: existing.Name, Namespace: existing.Namespace},
+		Data:       map[string]string{"p0-s0": "desired content"},
+		BinaryData: map[string][]byte{"desired": []byte("desired binary content")},
+	}
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(session, existing).Build()
+	reconciler := testSessionReconciler(cl, scheme)
+	if err := reconciler.ensureSessionPluginConfigMap(context.Background(), session, desired); err != nil {
+		t.Fatal(err)
+	}
+
+	var updated corev1.ConfigMap
+	if err := cl.Get(context.Background(), client.ObjectKeyFromObject(existing), &updated); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(updated.Labels, existing.Labels) {
+		t.Fatalf("ConfigMap labels = %#v, want preserved %#v", updated.Labels, existing.Labels)
+	}
+	if !reflect.DeepEqual(updated.Annotations, existing.Annotations) {
+		t.Fatalf("ConfigMap annotations = %#v, want preserved %#v", updated.Annotations, existing.Annotations)
+	}
+	if !reflect.DeepEqual(updated.Data, desired.Data) || !reflect.DeepEqual(updated.BinaryData, desired.BinaryData) {
+		t.Fatalf("ConfigMap content = (%#v, %#v), want (%#v, %#v)", updated.Data, updated.BinaryData, desired.Data, desired.BinaryData)
+	}
 }
 
 func TestSessionLabelValueBoundsLongNames(t *testing.T) {
@@ -1328,14 +1867,209 @@ func TestSessionReconcilerMapsStatefulSetPod(t *testing.T) {
 	}
 }
 
-func TestSessionReconcilerRecreatesMissingGitHubTokenSecret(t *testing.T) {
-	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
+func TestSessionReconcilerMapsReferencedConfiguration(t *testing.T) {
+	t.Parallel()
+	scheme := runtime.NewScheme()
+	if err := kelos.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
-	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(privateKey)})
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	session := testSession("matching", "codex")
+	session.Spec.Worker.WorkspaceRef = &kelos.WorkspaceReference{Name: "workspace"}
+	session.Spec.Worker.AgentConfigRefs = []kelos.AgentConfigReference{{Name: "agent-config"}}
+	other := testSession("other", "codex")
+	other.Spec.Worker.WorkspaceRef = &kelos.WorkspaceReference{Name: "other-workspace"}
+	other.Spec.Worker.AgentConfigRefs = []kelos.AgentConfigReference{{Name: "other-agent-config"}}
+	workspace := &kelos.Workspace{
+		ObjectMeta: metav1.ObjectMeta{Name: "workspace", Namespace: session.Namespace},
+		Spec: kelos.WorkspaceSpec{
+			Repo:      "https://github.com/kelos-dev/kelos.git",
+			SecretRef: &kelos.SecretReference{Name: "workspace-secret"},
+		},
+	}
+	otherWorkspace := &kelos.Workspace{
+		ObjectMeta: metav1.ObjectMeta{Name: "other-workspace", Namespace: session.Namespace},
+		Spec: kelos.WorkspaceSpec{
+			Repo:      "https://github.com/kelos-dev/kelos.git",
+			SecretRef: &kelos.SecretReference{Name: "other-secret"},
+		},
+	}
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(session, other, workspace, otherWorkspace).Build()
+	reconciler := &SessionReconciler{Client: cl}
+
+	tests := []struct {
+		name string
+		obj  client.Object
+		mapf func(context.Context, client.Object) []reconcile.Request
+	}{
+		{
+			name: "workspace",
+			obj:  &kelos.Workspace{ObjectMeta: metav1.ObjectMeta{Name: "workspace", Namespace: session.Namespace}},
+			mapf: reconciler.findSessionsForWorkspace,
+		},
+		{
+			name: "agent config",
+			obj:  &kelos.AgentConfig{ObjectMeta: metav1.ObjectMeta{Name: "agent-config", Namespace: session.Namespace}},
+			mapf: reconciler.findSessionsForAgentConfig,
+		},
+		{
+			name: "workspace secret",
+			obj:  &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "workspace-secret", Namespace: session.Namespace}},
+			mapf: reconciler.findSessionsForSecret,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			requests := tt.mapf(context.Background(), tt.obj)
+			if len(requests) != 1 || requests[0].NamespacedName != client.ObjectKeyFromObject(session) {
+				t.Fatalf("mapped requests = %#v, want Session %s", requests, session.Name)
+			}
+		})
+	}
+}
+
+func TestSessionGitHubTokenReuseTracksMintInputs(t *testing.T) {
 	expiresAt := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
+	tokenServer := func(token string, requests *int) *httptest.Server {
+		t.Helper()
+		return httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			*requests++
+			writer.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(writer).Encode(map[string]string{
+				"token":      token,
+				"expires_at": expiresAt.Format(time.RFC3339),
+			})
+		}))
+	}
+	firstRequests := 0
+	firstServer := tokenServer("ghs_first", &firstRequests)
+	defer firstServer.Close()
+	secondRequests := 0
+	secondServer := tokenServer("ghs_second", &secondRequests)
+	defer secondServer.Close()
+
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := kelos.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	session := testSession("token-inputs", "codex")
+	source := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "github-app",
+			Namespace: session.Namespace,
+			UID:       types.UID("github-app-uid"),
+		},
+		Data: testGitHubAppSecretData(t),
+	}
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(source).Build()
+	reconciler := testSessionReconciler(cl, scheme)
+	reconciler.TokenClient = &githubapp.TokenClient{BaseURL: firstServer.URL, Client: firstServer.Client()}
+	workspace := &kelos.WorkspaceSpec{SecretRef: &kelos.SecretReference{Name: source.Name}}
+
+	if _, err := reconciler.resolveSessionGitHubAppToken(context.Background(), session, workspace, tokenRefreshMargin); err != nil {
+		t.Fatal(err)
+	}
+	var tokenSecret corev1.Secret
+	tokenKey := client.ObjectKey{Namespace: session.Namespace, Name: sessionGitHubTokenSecretName(session.Name)}
+	if err := cl.Get(context.Background(), tokenKey, &tokenSecret); err != nil {
+		t.Fatal(err)
+	}
+	firstFingerprint := tokenSecret.Annotations[sessionTokenFingerprintAnnotation]
+	if firstFingerprint == "" || string(tokenSecret.Data[GitHubTokenSecretKey]) != "ghs_first" {
+		t.Fatalf("first token Secret = %#v", tokenSecret)
+	}
+	if _, err := reconciler.resolveSessionGitHubAppToken(context.Background(), session, workspace, tokenRefreshMargin); err != nil {
+		t.Fatal(err)
+	}
+	if firstRequests != 1 {
+		t.Fatalf("first token endpoint requests = %d, want 1 after reuse", firstRequests)
+	}
+
+	reconciler.TokenClient = &githubapp.TokenClient{BaseURL: secondServer.URL, Client: secondServer.Client()}
+	if _, err := reconciler.resolveSessionGitHubAppToken(context.Background(), session, workspace, tokenRefreshMargin); err != nil {
+		t.Fatal(err)
+	}
+	if err := cl.Get(context.Background(), tokenKey, &tokenSecret); err != nil {
+		t.Fatal(err)
+	}
+	secondFingerprint := tokenSecret.Annotations[sessionTokenFingerprintAnnotation]
+	if secondFingerprint == "" || secondFingerprint == firstFingerprint {
+		t.Fatalf("token fingerprint = %q, want different from %q after API endpoint change", secondFingerprint, firstFingerprint)
+	}
+	if string(tokenSecret.Data[GitHubTokenSecretKey]) != "ghs_second" || secondRequests != 1 {
+		t.Fatalf("second token = %q, endpoint requests = %d", tokenSecret.Data[GitHubTokenSecretKey], secondRequests)
+	}
+
+	var updatedSource corev1.Secret
+	if err := cl.Get(context.Background(), client.ObjectKeyFromObject(source), &updatedSource); err != nil {
+		t.Fatal(err)
+	}
+	updatedSource.Data["installationID"] = []byte("67891")
+	if err := cl.Update(context.Background(), &updatedSource); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reconciler.resolveSessionGitHubAppToken(context.Background(), session, workspace, tokenRefreshMargin); err != nil {
+		t.Fatal(err)
+	}
+	if err := cl.Get(context.Background(), tokenKey, &tokenSecret); err != nil {
+		t.Fatal(err)
+	}
+	if tokenSecret.Annotations[sessionTokenFingerprintAnnotation] == secondFingerprint {
+		t.Fatal("token fingerprint did not change after source Secret update")
+	}
+	if secondRequests != 2 {
+		t.Fatalf("second token endpoint requests = %d, want 2 after source Secret update", secondRequests)
+	}
+
+	expirationCases := []struct {
+		name  string
+		value string
+	}{
+		{name: "malformed", value: "not-a-timestamp"},
+		{name: "expired", value: time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)},
+		{name: "near expiry", value: time.Now().Add(tokenRefreshMargin / 2).UTC().Format(time.RFC3339)},
+	}
+	for _, tt := range expirationCases {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := cl.Get(context.Background(), tokenKey, &tokenSecret); err != nil {
+				t.Fatal(err)
+			}
+			tokenSecret.Annotations[tokenExpiresAtAnnotation] = tt.value
+			tokenSecret.Data[GitHubTokenSecretKey] = []byte("ghs_cached")
+			if err := cl.Update(context.Background(), &tokenSecret); err != nil {
+				t.Fatal(err)
+			}
+			requestsBefore := secondRequests
+			if _, err := reconciler.resolveSessionGitHubAppToken(context.Background(), session, workspace, tokenRefreshMargin); err != nil {
+				t.Fatal(err)
+			}
+			if secondRequests != requestsBefore+1 {
+				t.Fatalf("token endpoint requests = %d, want %d", secondRequests, requestsBefore+1)
+			}
+			if err := cl.Get(context.Background(), tokenKey, &tokenSecret); err != nil {
+				t.Fatal(err)
+			}
+			if got := string(tokenSecret.Data[GitHubTokenSecretKey]); got != "ghs_second" {
+				t.Fatalf("token = %q, want re-minted token", got)
+			}
+			remintedExpiry, err := time.Parse(time.RFC3339, tokenSecret.Annotations[tokenExpiresAtAnnotation])
+			if err != nil || !time.Now().Before(remintedExpiry.Add(-tokenRefreshMargin)) {
+				t.Fatalf("re-minted token expiration = %q, err = %v", tokenSecret.Annotations[tokenExpiresAtAnnotation], err)
+			}
+		})
+	}
+}
+
+func TestSessionReconcilerRecreatesMissingGitHubTokenSecret(t *testing.T) {
+	expiresAt := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
+	tokenRequests := 0
 	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		tokenRequests++
 		writer.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(writer).Encode(map[string]string{
 			"token":      "ghs_recreated",
@@ -1360,11 +2094,7 @@ func TestSessionReconcilerRecreatesMissingGitHubTokenSecret(t *testing.T) {
 	}
 	source := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: "github-app", Namespace: session.Namespace},
-		Data: map[string][]byte{
-			"appID":          []byte("12345"),
-			"installationID": []byte("67890"),
-			"privateKey":     keyPEM,
-		},
+		Data:       testGitHubAppSecretData(t),
 	}
 	statefulSet := testSessionStatefulSet(session)
 	statefulSet.Status.UpdateRevision = "desired-revision"
@@ -1417,6 +2147,12 @@ func TestSessionReconcilerRecreatesMissingGitHubTokenSecret(t *testing.T) {
 	}
 	if !metav1.IsControlledBy(&recreated, session) {
 		t.Fatal("recreated token Secret is not controlled by the Session")
+	}
+	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(session)}); err != nil {
+		t.Fatalf("Reconcile() with current token error = %v", err)
+	}
+	if tokenRequests != 1 {
+		t.Fatalf("GitHub App token requests = %d, want 1", tokenRequests)
 	}
 
 	if err := cl.Delete(context.Background(), &recreated); err != nil {
@@ -1567,6 +2303,61 @@ func TestSessionReconcilerWaitsForWorkspace(t *testing.T) {
 	}
 }
 
+func TestSessionReconcilerSuspendsBeforeResolvingWorkspace(t *testing.T) {
+	t.Parallel()
+	scheme := runtime.NewScheme()
+	if err := appsv1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := kelos.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	session := testSession("suspend-with-missing-workspace", "codex")
+	session.Spec.Suspend = ptr.To(true)
+	session.Spec.Worker.WorkspaceRef = &kelos.WorkspaceReference{Name: "missing"}
+	session.Status.Phase = kelos.SessionPhaseReady
+	session.Status.PodName = "session-suspend-with-missing-workspace-0"
+	session.Status.PodUID = types.UID("stale-pod-uid")
+	statefulSet := testSessionStatefulSet(session)
+	statefulSet.Spec.Replicas = ptr.To(int32(1))
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&kelos.Session{}, &appsv1.StatefulSet{}).
+		WithObjects(session, statefulSet).
+		Build()
+	reconciler := testSessionReconciler(cl, scheme)
+	result, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(session)})
+	if err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if result.RequeueAfter == 0 {
+		t.Fatal("Reconcile() did not requeue for missing Workspace")
+	}
+	var updated appsv1.StatefulSet
+	if err := cl.Get(context.Background(), client.ObjectKeyFromObject(statefulSet), &updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.Spec.Replicas == nil || *updated.Spec.Replicas != 0 {
+		t.Fatalf("StatefulSet replicas = %v, want 0", updated.Spec.Replicas)
+	}
+	var updatedSession kelos.Session
+	if err := cl.Get(context.Background(), client.ObjectKeyFromObject(session), &updatedSession); err != nil {
+		t.Fatal(err)
+	}
+	if updatedSession.Status.Phase != kelos.SessionPhaseSuspended {
+		t.Fatalf("Session phase = %q, want %q", updatedSession.Status.Phase, kelos.SessionPhaseSuspended)
+	}
+	if !strings.Contains(updatedSession.Status.Message, `Waiting for Workspace "missing"`) {
+		t.Fatalf("Session message = %q, want missing Workspace detail", updatedSession.Status.Message)
+	}
+	if updatedSession.Status.PodName != "" || updatedSession.Status.PodUID != "" {
+		t.Fatalf("Session retained stale Pod identity: name=%q uid=%q", updatedSession.Status.PodName, updatedSession.Status.PodUID)
+	}
+}
+
 func testSession(name, provider string) *kelos.Session {
 	return &kelos.Session{
 		TypeMeta: metav1.TypeMeta{APIVersion: kelos.GroupVersion.String(), Kind: "Session"},
@@ -1625,6 +2416,19 @@ func testSessionReconciler(cl client.Client, scheme *runtime.Scheme) *SessionRec
 		JobBuilder:          builder,
 		SessionRuntimeImage: "runtime:test",
 		Recorder:            record.NewFakeRecorder(10),
+	}
+}
+
+func testGitHubAppSecretData(t *testing.T) map[string][]byte {
+	t.Helper()
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return map[string][]byte{
+		"appID":          []byte("12345"),
+		"installationID": []byte("67890"),
+		"privateKey":     pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(privateKey)}),
 	}
 }
 
