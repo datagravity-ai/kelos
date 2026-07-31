@@ -153,6 +153,85 @@ spec:
 		}, 10*time.Second, 100*time.Millisecond).Should(Succeed())
 	})
 
+	It("reconciles controller-managed fields on an existing persistent StatefulSet", func() {
+		session := validSession(namespace, "existing-statefulset", "codex")
+		session.Spec.Suspend = ptr.To(true)
+		session.Spec.Worker.AgentConfigRefs = []kelos.AgentConfigReference{{Name: "late-config"}}
+		Expect(k8sClient.Create(ctx, session)).To(Succeed())
+
+		Eventually(func(g Gomega) {
+			var current kelos.Session
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(session), &current)).To(Succeed())
+			g.Expect(current.Status.Message).To(Equal(`Waiting for AgentConfig "late-config"`))
+		}, 10*time.Second, 100*time.Millisecond).Should(Succeed())
+
+		workloadName := "session-" + session.Name
+		selector := map[string]string{
+			"kelos.dev/component": "session",
+			"kelos.dev/session":   session.Name,
+		}
+		statefulSet := &appsv1.StatefulSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:            workloadName,
+				Namespace:       namespace,
+				OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(session, kelos.GroupVersion.WithKind("Session"))},
+			},
+			Spec: appsv1.StatefulSetSpec{
+				Replicas:            ptr.To(int32(0)),
+				ServiceName:         workloadName,
+				PodManagementPolicy: appsv1.ParallelPodManagement,
+				Selector:            &metav1.LabelSelector{MatchLabels: selector},
+				UpdateStrategy:      appsv1.StatefulSetUpdateStrategy{Type: appsv1.RollingUpdateStatefulSetStrategyType},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{Labels: selector},
+					Spec: corev1.PodSpec{Containers: []corev1.Container{{
+						Name:  kelos.AgentContainerName,
+						Image: "agent:stale",
+					}}},
+				},
+				VolumeClaimTemplates: []corev1.PersistentVolumeClaim{{
+					ObjectMeta: metav1.ObjectMeta{Name: "workspace"},
+					Spec:       *session.Spec.VolumeClaimTemplate.DeepCopy(),
+				}},
+			},
+		}
+		Expect(k8sClient.Create(ctx, statefulSet)).To(Succeed())
+
+		claim := &corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:            "workspace-" + workloadName + "-0",
+				Namespace:       namespace,
+				OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(statefulSet, appsv1.SchemeGroupVersion.WithKind("StatefulSet"))},
+			},
+			Spec: *session.Spec.VolumeClaimTemplate.DeepCopy(),
+		}
+		Expect(k8sClient.Create(ctx, claim)).To(Succeed())
+		Expect(k8sClient.Create(ctx, &kelos.AgentConfig{
+			ObjectMeta: metav1.ObjectMeta{Name: "late-config", Namespace: namespace},
+		})).To(Succeed())
+
+		Eventually(func(g Gomega) {
+			var updated appsv1.StatefulSet
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(statefulSet), &updated)).To(Succeed())
+			g.Expect(updated.Spec.Replicas).NotTo(BeNil())
+			g.Expect(*updated.Spec.Replicas).To(BeZero())
+			g.Expect(updated.Spec.PodManagementPolicy).To(Equal(appsv1.ParallelPodManagement))
+			g.Expect(updated.Spec.VolumeClaimTemplates).To(HaveLen(1))
+			g.Expect(updated.Spec.VolumeClaimTemplates[0].OwnerReferences).To(BeEmpty())
+			g.Expect(updated.Spec.UpdateStrategy.Type).To(Equal(appsv1.OnDeleteStatefulSetStrategyType))
+			g.Expect(updated.Spec.Template.Spec.Containers).NotTo(BeEmpty())
+			g.Expect(updated.Spec.Template.Spec.Containers[0].Image).To(Equal(controller.CodexImage))
+			g.Expect(updated.Spec.Template.Spec.Containers[0].Command).To(Equal(expectedAgentProcessCommand("/kelos/bin/kelos-session-runtime", true)))
+			g.Expect(updated.Spec.PersistentVolumeClaimRetentionPolicy).NotTo(BeNil())
+			g.Expect(updated.Spec.PersistentVolumeClaimRetentionPolicy.WhenDeleted).To(Equal(appsv1.RetainPersistentVolumeClaimRetentionPolicyType))
+			g.Expect(updated.Spec.PersistentVolumeClaimRetentionPolicy.WhenScaled).To(Equal(appsv1.RetainPersistentVolumeClaimRetentionPolicyType))
+
+			var updatedClaim corev1.PersistentVolumeClaim
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(claim), &updatedClaim)).To(Succeed())
+			g.Expect(metav1.IsControlledBy(&updatedClaim, session)).To(BeTrue())
+		}, 10*time.Second, 100*time.Millisecond).Should(Succeed())
+	})
+
 	It("suspends and resumes a Session while retaining its workspace claim", func() {
 		session := validSession(namespace, "suspend", "codex")
 		Expect(k8sClient.Create(ctx, session)).To(Succeed())
@@ -218,7 +297,7 @@ spec:
 		}, 10*time.Second, 100*time.Millisecond).Should(Succeed())
 	})
 
-	It("updates the runtime image of an existing StatefulSet", func() {
+	It("reconciles controller-managed fields of an existing StatefulSet", func() {
 		session := validSession(namespace, "runtime-update", "codex")
 		Expect(k8sClient.Create(ctx, session)).To(Succeed())
 
@@ -230,16 +309,154 @@ spec:
 			g.Expect(statefulSet.Spec.UpdateStrategy.Type).To(Equal(appsv1.OnDeleteStatefulSetStrategyType))
 		}, 10*time.Second, 100*time.Millisecond).Should(Succeed())
 
-		statefulSet.Spec.Template.Spec.InitContainers[0].Image = "runtime:old"
+		statefulSet.Labels = map[string]string{"stale": "label"}
+		statefulSet.Spec.Template.Labels["stale"] = "label"
+		statefulSet.Spec.Template.Spec.Containers[0].Command = []string{"/kelos/bin/kelos-session-runtime"}
+		statefulSet.Spec.Template.Spec.Containers[0].Image = "agent:stale"
+		statefulSet.Spec.Template.Spec.InitContainers[0].Image = "runtime:stale"
 		statefulSet.Spec.Template.Spec.InitContainers[0].ImagePullPolicy = corev1.PullAlways
+		statefulSet.Spec.UpdateStrategy = appsv1.StatefulSetUpdateStrategy{Type: appsv1.RollingUpdateStatefulSetStrategyType}
+		statefulSet.Spec.MinReadySeconds = 10
+		statefulSet.Spec.PersistentVolumeClaimRetentionPolicy = &appsv1.StatefulSetPersistentVolumeClaimRetentionPolicy{
+			WhenDeleted: appsv1.DeletePersistentVolumeClaimRetentionPolicyType,
+			WhenScaled:  appsv1.DeletePersistentVolumeClaimRetentionPolicyType,
+		}
 		Expect(k8sClient.Update(ctx, &statefulSet)).To(Succeed())
 
 		Eventually(func(g Gomega) {
 			var updated appsv1.StatefulSet
 			g.Expect(k8sClient.Get(ctx, key, &updated)).To(Succeed())
+			g.Expect(updated.Labels).NotTo(HaveKey("stale"))
+			g.Expect(updated.Spec.Template.Labels).NotTo(HaveKey("stale"))
+			g.Expect(updated.Spec.Template.Spec.Containers[0].Command).To(Equal(expectedAgentProcessCommand("/kelos/bin/kelos-session-runtime", true)))
+			g.Expect(updated.Spec.Template.Spec.Containers[0].Image).To(Equal(controller.CodexImage))
 			g.Expect(updated.Spec.Template.Spec.InitContainers).NotTo(BeEmpty())
 			g.Expect(updated.Spec.Template.Spec.InitContainers[0].Image).To(Equal(controller.DefaultSessionRuntimeImage))
 			g.Expect(updated.Spec.Template.Spec.InitContainers[0].ImagePullPolicy).To(Equal(corev1.PullIfNotPresent))
+			g.Expect(updated.Spec.UpdateStrategy.Type).To(Equal(appsv1.OnDeleteStatefulSetStrategyType))
+			g.Expect(updated.Spec.RevisionHistoryLimit).NotTo(BeNil())
+			g.Expect(*updated.Spec.RevisionHistoryLimit).To(Equal(int32(10)))
+			g.Expect(updated.Spec.MinReadySeconds).To(BeZero())
+			g.Expect(updated.Spec.PersistentVolumeClaimRetentionPolicy).NotTo(BeNil())
+			g.Expect(updated.Spec.PersistentVolumeClaimRetentionPolicy.WhenDeleted).To(Equal(appsv1.RetainPersistentVolumeClaimRetentionPolicyType))
+			g.Expect(updated.Spec.PersistentVolumeClaimRetentionPolicy.WhenScaled).To(Equal(appsv1.RetainPersistentVolumeClaimRetentionPolicyType))
+		}, 10*time.Second, 100*time.Millisecond).Should(Succeed())
+	})
+
+	It("preserves revisionHistoryLimit on Kubernetes versions where it is immutable", func() {
+		session := validSession(namespace, "preserved-revision-history", "codex")
+		session.Spec.Worker.WorkspaceRef = &kelos.WorkspaceReference{Name: "workspace"}
+		Expect(k8sClient.Create(ctx, session)).To(Succeed())
+
+		Consistently(func() error {
+			return k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: "session-" + session.Name}, &appsv1.StatefulSet{})
+		}, time.Second, 100*time.Millisecond).ShouldNot(Succeed())
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(session), session)).To(Succeed())
+
+		selector := map[string]string{
+			"kelos.dev/component": "session",
+			"kelos.dev/session":   session.Name,
+		}
+		statefulSet := &appsv1.StatefulSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:            "session-" + session.Name,
+				Namespace:       namespace,
+				OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(session, kelos.GroupVersion.WithKind("Session"))},
+			},
+			Spec: appsv1.StatefulSetSpec{
+				Replicas:             ptr.To(int32(0)),
+				ServiceName:          "session-" + session.Name,
+				RevisionHistoryLimit: ptr.To(int32(1)),
+				Selector:             &metav1.LabelSelector{MatchLabels: selector},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{Labels: selector},
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{{Name: kelos.AgentContainerName, Image: "agent:stale"}},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, statefulSet)).To(Succeed())
+		Expect(k8sClient.Create(ctx, &kelos.Workspace{
+			ObjectMeta: metav1.ObjectMeta{Name: "workspace", Namespace: namespace},
+			Spec:       kelos.WorkspaceSpec{Repo: "https://github.com/kelos-dev/kelos.git"},
+		})).To(Succeed())
+
+		Eventually(func(g Gomega) {
+			var updated appsv1.StatefulSet
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(statefulSet), &updated)).To(Succeed())
+			g.Expect(updated.Spec.RevisionHistoryLimit).NotTo(BeNil())
+			g.Expect(*updated.Spec.RevisionHistoryLimit).To(Equal(int32(1)))
+			g.Expect(updated.Spec.Template.Spec.Containers[0].Image).To(Equal(controller.CodexImage))
+			g.Expect(updated.Spec.UpdateStrategy.Type).To(Equal(appsv1.OnDeleteStatefulSetStrategyType))
+		}, 10*time.Second, 100*time.Millisecond).Should(Succeed())
+	})
+
+	It("changes the Pod template when plugin content changes", func() {
+		agentConfig := &kelos.AgentConfig{
+			ObjectMeta: metav1.ObjectMeta{Name: "session-plugins", Namespace: namespace},
+			Spec: kelos.AgentConfigSpec{Plugins: []kelos.PluginSpec{{
+				Name:   "tools",
+				Skills: []kelos.SkillDefinition{{Name: "review", Content: "Review changes"}},
+			}}},
+		}
+		Expect(k8sClient.Create(ctx, agentConfig)).To(Succeed())
+
+		session := validSession(namespace, "plugin-update", "codex")
+		session.Spec.Suspend = ptr.To(true)
+		session.Spec.Worker.AgentConfigRefs = []kelos.AgentConfigReference{{Name: agentConfig.Name}}
+		Expect(k8sClient.Create(ctx, session)).To(Succeed())
+
+		key := client.ObjectKey{Namespace: namespace, Name: "session-" + session.Name}
+		var originalChecksum string
+		var pluginConfigMapName string
+		Eventually(func(g Gomega) {
+			var statefulSet appsv1.StatefulSet
+			g.Expect(k8sClient.Get(ctx, key, &statefulSet)).To(Succeed())
+			originalChecksum = statefulSet.Spec.Template.Annotations["kelos.dev/plugin-content-checksum"]
+			g.Expect(originalChecksum).NotTo(BeEmpty())
+			for i := range statefulSet.Spec.Template.Spec.Volumes {
+				volume := &statefulSet.Spec.Template.Spec.Volumes[i]
+				if volume.Name == controller.PluginStagingVolumeName && volume.ConfigMap != nil {
+					pluginConfigMapName = volume.ConfigMap.Name
+					break
+				}
+			}
+			g.Expect(pluginConfigMapName).NotTo(BeEmpty())
+			var configMap corev1.ConfigMap
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: pluginConfigMapName}, &configMap)).To(Succeed())
+			g.Expect(configMap.Data).To(HaveKeyWithValue("p0-s0", "Review changes"))
+		}, 10*time.Second, 100*time.Millisecond).Should(Succeed())
+
+		Eventually(func() error {
+			var current kelos.AgentConfig
+			if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(agentConfig), &current); err != nil {
+				return err
+			}
+			current.Spec.Plugins[0].Skills[0].Content = "Review changes carefully"
+			return k8sClient.Update(ctx, &current)
+		}, 10*time.Second, 100*time.Millisecond).Should(Succeed())
+
+		Eventually(func(g Gomega) {
+			var statefulSet appsv1.StatefulSet
+			g.Expect(k8sClient.Get(ctx, key, &statefulSet)).To(Succeed())
+			g.Expect(statefulSet.Spec.Template.Annotations["kelos.dev/plugin-content-checksum"]).NotTo(BeEmpty())
+			g.Expect(statefulSet.Spec.Template.Annotations["kelos.dev/plugin-content-checksum"]).NotTo(Equal(originalChecksum))
+			g.Expect(statefulSet.Spec.Replicas).NotTo(BeNil())
+			g.Expect(*statefulSet.Spec.Replicas).To(BeZero())
+			var configMap corev1.ConfigMap
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: pluginConfigMapName}, &configMap)).To(Succeed())
+			g.Expect(configMap.Data).To(HaveKeyWithValue("p0-s0", "Review changes carefully"))
+		}, 10*time.Second, 100*time.Millisecond).Should(Succeed())
+
+		var drifted corev1.ConfigMap
+		Expect(k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: pluginConfigMapName}, &drifted)).To(Succeed())
+		drifted.Data["p0-s0"] = "drifted content"
+		Expect(k8sClient.Update(ctx, &drifted)).To(Succeed())
+		Eventually(func(g Gomega) {
+			var repaired corev1.ConfigMap
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(&drifted), &repaired)).To(Succeed())
+			g.Expect(repaired.Data).To(HaveKeyWithValue("p0-s0", "Review changes carefully"))
 		}, 10*time.Second, 100*time.Millisecond).Should(Succeed())
 	})
 
