@@ -2432,6 +2432,706 @@ func testGitHubAppSecretData(t *testing.T) map[string][]byte {
 	}
 }
 
+func TestSessionIdleExpired(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+	activeCondition := func(status metav1.ConditionStatus, transition time.Time) metav1.Condition {
+		return metav1.Condition{
+			Type:               kelos.SessionConditionActive,
+			Status:             status,
+			Reason:             "Test",
+			LastTransitionTime: metav1.NewTime(transition),
+		}
+	}
+	newSession := func(ttl *int32, mutate func(*kelos.Session)) *kelos.Session {
+		s := testSession("idle", "codex")
+		s.CreationTimestamp = metav1.NewTime(now.Add(-time.Hour))
+		if ttl != nil {
+			s.Spec.IdlePolicy = &kelos.SessionIdlePolicy{DeleteAfterSeconds: ttl}
+		}
+		if mutate != nil {
+			mutate(s)
+		}
+		return s
+	}
+	idleFor := func(d time.Duration) func(*kelos.Session) {
+		return func(s *kelos.Session) {
+			at := metav1.NewTime(now.Add(-d))
+			s.Status.LastActivityTime = &at
+			s.Status.Conditions = []metav1.Condition{activeCondition(metav1.ConditionFalse, now.Add(-d))}
+		}
+	}
+
+	tests := []struct {
+		name        string
+		session     *kelos.Session
+		wantExpired bool
+		wantRequeue bool
+	}{
+		{
+			name:    "no TTL is never reaped",
+			session: newSession(nil, idleFor(time.Hour)),
+		},
+		{
+			name: "active turn is not idle",
+			session: newSession(ptr.To(int32(60)), func(s *kelos.Session) {
+				s.Status.Conditions = []metav1.Condition{activeCondition(metav1.ConditionTrue, now.Add(-time.Hour))}
+			}),
+		},
+		{
+			name: "unknown activity is not idle",
+			session: newSession(ptr.To(int32(60)), func(s *kelos.Session) {
+				s.Status.Conditions = []metav1.Condition{activeCondition(metav1.ConditionUnknown, now.Add(-time.Hour))}
+			}),
+		},
+		{
+			name:    "missing active condition is not idle",
+			session: newSession(ptr.To(int32(60)), nil),
+		},
+		{
+			name:        "idle beyond TTL is reaped",
+			session:     newSession(ptr.To(int32(60)), idleFor(2*time.Minute)),
+			wantExpired: true,
+		},
+		{
+			// A replacement Pod re-reporting Active=False stamps a fresh Active
+			// transition, but idleness is measured from lastActivityTime (which
+			// Pod replacement preserves), so the idle clock is not reset.
+			name: "recent active transition does not reset idle clock",
+			session: newSession(ptr.To(int32(60)), func(s *kelos.Session) {
+				old := metav1.NewTime(now.Add(-10 * time.Minute))
+				s.Status.LastActivityTime = &old
+				s.Status.Conditions = []metav1.Condition{activeCondition(metav1.ConditionFalse, now)}
+			}),
+			wantExpired: true,
+		},
+		{
+			name:        "idle within TTL requeues",
+			session:     newSession(ptr.To(int32(600)), idleFor(time.Minute)),
+			wantRequeue: true,
+		},
+		{
+			name:        "zero TTL reaps as soon as idle",
+			session:     newSession(ptr.To(int32(0)), idleFor(time.Second)),
+			wantExpired: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			expired, remaining := sessionIdleExpired(tt.session)
+			if expired != tt.wantExpired {
+				t.Fatalf("expired = %t, want %t", expired, tt.wantExpired)
+			}
+			if tt.wantRequeue && remaining <= 0 {
+				t.Fatalf("remaining = %s, want > 0", remaining)
+			}
+			if !tt.wantRequeue && !tt.wantExpired && remaining != 0 {
+				t.Fatalf("remaining = %s, want 0", remaining)
+			}
+		})
+	}
+}
+
+// newReadyIdleSessionFixture builds a Ready Session whose runtime has reported
+// Active=False since idleSince, backed by a matching StatefulSet and ready Pod,
+// so that Reconcile validates the idle condition against the current Pod before
+// evaluating the idle delete policy.
+func newReadyIdleSessionFixture(t *testing.T, policy *kelos.SessionIdlePolicy, idleSince time.Time) (client.Client, *SessionReconciler, ctrl.Request) {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	for _, add := range []func(*runtime.Scheme) error{appsv1.AddToScheme, corev1.AddToScheme, rbacv1.AddToScheme, kelos.AddToScheme} {
+		if err := add(scheme); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	session := testSession("idle-chat", "codex")
+	session.CreationTimestamp = metav1.NewTime(idleSince.Add(-time.Hour))
+	session.Spec.IdlePolicy = policy
+	activity := metav1.NewTime(idleSince)
+	session.Status.PodUID = types.UID("pod-uid")
+	session.Status.LastActivityTime = &activity
+	session.Status.Conditions = []metav1.Condition{{
+		Type:               kelos.SessionConditionActive,
+		Status:             metav1.ConditionFalse,
+		Reason:             "Idle",
+		LastTransitionTime: activity,
+	}}
+
+	statefulSet, _, err := testSessionReconciler(nil, nil).buildSessionStatefulSet(session, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statefulSet.UID = types.UID(statefulSet.Name + "-uid")
+	statefulSet.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(session, kelos.GroupVersion.WithKind("Session"))}
+	statefulSet.Status.UpdateRevision = "desired-revision"
+	statefulSet.Status.ObservedGeneration = statefulSet.Generation
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            statefulSet.Name + "-0",
+			Namespace:       session.Namespace,
+			UID:             types.UID("pod-uid"),
+			Labels:          map[string]string{appsv1.StatefulSetRevisionLabel: statefulSet.Status.UpdateRevision},
+			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(statefulSet, appsv1.SchemeGroupVersion.WithKind("StatefulSet"))},
+		},
+		Spec: *statefulSet.Spec.Template.Spec.DeepCopy(),
+		Status: corev1.PodStatus{
+			Phase:      corev1.PodRunning,
+			Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}},
+		},
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&kelos.Session{}, &corev1.Pod{}, &appsv1.StatefulSet{}).
+		WithObjects(session, statefulSet, pod).
+		Build()
+	reconciler := testSessionReconciler(cl, scheme)
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(session)}
+	return cl, reconciler, request
+}
+
+func TestSessionReconcileDrainsThenReapsIdleSession(t *testing.T) {
+	cl, reconciler, request := newReadyIdleSessionFixture(t,
+		&kelos.SessionIdlePolicy{DeleteAfterSeconds: ptr.To(int32(60))},
+		time.Now().Add(-10*time.Minute))
+	recorder := record.NewFakeRecorder(10)
+	reconciler.Recorder = recorder
+
+	// The first reconcile requests a drain and waits; it must not delete the
+	// Session before the runtime confirms no turn is in flight.
+	result, err := reconciler.Reconcile(context.Background(), request)
+	if err != nil {
+		t.Fatalf("Reconcile() drain-request error = %v", err)
+	}
+	if result.RequeueAfter <= 0 {
+		t.Fatalf("Reconcile() requeueAfter = %s, want a positive drain requeue", result.RequeueAfter)
+	}
+	var draining kelos.Session
+	if err := cl.Get(context.Background(), request.NamespacedName, &draining); err != nil {
+		t.Fatalf("Session was deleted before the runtime drained: %v", err)
+	}
+	encodedRequest := draining.Annotations[sessionupdate.IdleDrainRequestAnnotation]
+	if encodedRequest == "" {
+		t.Fatal("expected an idle drain request annotation")
+	}
+	drainRequest, err := sessionupdate.Decode(encodedRequest)
+	if err != nil {
+		t.Fatalf("decoding installed idle drain request: %v", err)
+	}
+	if drainRequest.PodUID != types.UID("pod-uid") {
+		t.Fatalf("idle drain request pod UID = %q, want %q", drainRequest.PodUID, "pod-uid")
+	}
+
+	// The runtime acknowledges it has drained and stopped accepting turns.
+	report, err := sessionupdate.EncodeReport(sessionupdate.Report{
+		RequestID: drainRequest.ID,
+		PodUID:    types.UID("pod-uid"),
+		Phase:     sessionupdate.PhaseDrained,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	patched := draining.DeepCopy()
+	patched.Annotations[sessionupdate.IdleDrainReportAnnotation] = report
+	if err := cl.Patch(context.Background(), patched, client.MergeFrom(&draining)); err != nil {
+		t.Fatalf("patching idle drain report: %v", err)
+	}
+
+	// The second reconcile deletes now that the runtime is confirmed idle.
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("Reconcile() reap error = %v", err)
+	}
+	if err := cl.Get(context.Background(), request.NamespacedName, &kelos.Session{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("Session get after reap = %v, want NotFound", err)
+	}
+
+	reaped := false
+	for {
+		select {
+		case event := <-recorder.Events:
+			if strings.Contains(event, "SessionIdleReaped") {
+				reaped = true
+			}
+			continue
+		default:
+		}
+		break
+	}
+	if !reaped {
+		t.Fatal("expected a SessionIdleReaped event to be recorded")
+	}
+}
+
+func TestSessionReconcileDoesNotReapIdleSessionUntilDrained(t *testing.T) {
+	cl, reconciler, request := newReadyIdleSessionFixture(t,
+		&kelos.SessionIdlePolicy{DeleteAfterSeconds: ptr.To(int32(60))},
+		time.Now().Add(-10*time.Minute))
+
+	// Runtime reports it is still draining (a turn is in flight).
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("Reconcile() drain-request error = %v", err)
+	}
+	var draining kelos.Session
+	if err := cl.Get(context.Background(), request.NamespacedName, &draining); err != nil {
+		t.Fatal(err)
+	}
+	drainRequest, err := sessionupdate.Decode(draining.Annotations[sessionupdate.IdleDrainRequestAnnotation])
+	if err != nil {
+		t.Fatalf("decoding installed idle drain request: %v", err)
+	}
+	report, err := sessionupdate.EncodeReport(sessionupdate.Report{
+		RequestID: drainRequest.ID,
+		PodUID:    types.UID("pod-uid"),
+		Phase:     sessionupdate.PhaseDraining,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	patched := draining.DeepCopy()
+	patched.Annotations[sessionupdate.IdleDrainReportAnnotation] = report
+	if err := cl.Patch(context.Background(), patched, client.MergeFrom(&draining)); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := reconciler.Reconcile(context.Background(), request)
+	if err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if result.RequeueAfter <= 0 {
+		t.Fatalf("Reconcile() requeueAfter = %s, want a positive requeue while draining", result.RequeueAfter)
+	}
+	if err := cl.Get(context.Background(), request.NamespacedName, &kelos.Session{}); err != nil {
+		t.Fatalf("Session was deleted while a turn was still in flight: %v", err)
+	}
+}
+
+func TestSessionReconcileClearsIdleDrainWhenActivityResumes(t *testing.T) {
+	cl, reconciler, request := newReadyIdleSessionFixture(t,
+		&kelos.SessionIdlePolicy{DeleteAfterSeconds: ptr.To(int32(60))},
+		time.Now().Add(-10*time.Minute))
+
+	// The first reconcile requests a drain for the expired idle Session.
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("Reconcile() drain-request error = %v", err)
+	}
+	var draining kelos.Session
+	if err := cl.Get(context.Background(), request.NamespacedName, &draining); err != nil {
+		t.Fatal(err)
+	}
+	if draining.Annotations[sessionupdate.IdleDrainRequestAnnotation] == "" {
+		t.Fatal("expected an idle drain request after the first reconcile")
+	}
+
+	// A turn is accepted before the runtime drains, so the Session is no longer
+	// idle: the runtime reports an active turn.
+	active := draining.DeepCopy()
+	apiMeta.SetStatusCondition(&active.Status.Conditions, metav1.Condition{
+		Type:   kelos.SessionConditionActive,
+		Status: metav1.ConditionTrue,
+		Reason: "TurnActive",
+	})
+	if err := cl.Status().Update(context.Background(), active); err != nil {
+		t.Fatalf("updating Session status: %v", err)
+	}
+
+	// The next reconcile must cancel the drain and keep the Session so the user
+	// is not locked out.
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("Reconcile() clear error = %v", err)
+	}
+	var got kelos.Session
+	if err := cl.Get(context.Background(), request.NamespacedName, &got); err != nil {
+		t.Fatalf("Session was deleted after activity resumed: %v", err)
+	}
+	if got.Annotations[sessionupdate.IdleDrainRequestAnnotation] != "" {
+		t.Fatalf("idle drain request annotation = %q, want cleared", got.Annotations[sessionupdate.IdleDrainRequestAnnotation])
+	}
+}
+
+func TestSessionReconcileRequeuesIdleSessionBeforeDeadline(t *testing.T) {
+	const deadline = 3600
+	cl, reconciler, request := newReadyIdleSessionFixture(t,
+		&kelos.SessionIdlePolicy{DeleteAfterSeconds: ptr.To(int32(deadline))},
+		time.Now().Add(-time.Minute))
+
+	result, err := reconciler.Reconcile(context.Background(), request)
+	if err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if result.RequeueAfter <= 0 || result.RequeueAfter > deadline*time.Second {
+		t.Fatalf("Reconcile() requeueAfter = %s, want within (0, %ds]", result.RequeueAfter, deadline)
+	}
+	if err := cl.Get(context.Background(), request.NamespacedName, &kelos.Session{}); err != nil {
+		t.Fatalf("Session was deleted or unreadable before its idle deadline: %v", err)
+	}
+}
+
+func TestSessionReconcileReapsIdleSessionWithMissingWorkload(t *testing.T) {
+	scheme := runtime.NewScheme()
+	for _, add := range []func(*runtime.Scheme) error{appsv1.AddToScheme, corev1.AddToScheme, rbacv1.AddToScheme, kelos.AddToScheme} {
+		if err := add(scheme); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	session := testSession("idle-orphan", "codex")
+	// Without a persistent workspace there is no journal to recover, so a missing
+	// workload is reaped directly.
+	session.Spec.VolumeClaimTemplate = nil
+	session.CreationTimestamp = metav1.NewTime(time.Now().Add(-time.Hour))
+	session.Spec.IdlePolicy = &kelos.SessionIdlePolicy{DeleteAfterSeconds: ptr.To(int32(60))}
+	idleSince := metav1.NewTime(time.Now().Add(-10 * time.Minute))
+	session.Status.PodUID = types.UID("pod-uid")
+	session.Status.LastActivityTime = &idleSince
+	session.Status.Conditions = []metav1.Condition{{
+		Type:               kelos.SessionConditionActive,
+		Status:             metav1.ConditionFalse,
+		Reason:             "Idle",
+		LastTransitionTime: idleSince,
+	}}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&kelos.Session{}, &corev1.Pod{}, &appsv1.StatefulSet{}).
+		WithObjects(session).
+		Build()
+	reconciler := testSessionReconciler(cl, scheme)
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(session)}
+
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+
+	if err := cl.Get(context.Background(), request.NamespacedName, &kelos.Session{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("Session get after reap = %v, want NotFound", err)
+	}
+	var statefulSet appsv1.StatefulSet
+	key := client.ObjectKey{Namespace: session.Namespace, Name: sessionWorkloadName(session)}
+	if err := cl.Get(context.Background(), key, &statefulSet); !apierrors.IsNotFound(err) {
+		t.Fatalf("StatefulSet was recreated instead of reaping the idle Session: %v", err)
+	}
+}
+
+// TestSessionReconcileRecoversPersistentWorkspaceWithMissingWorkload verifies
+// that an idle-expired Session with a persistent workspace whose StatefulSet and
+// Pod are both gone is not deleted from its possibly stale Active=False status.
+// Its journal may hold unpublished activity, so the runtime is recreated to
+// recover it rather than reaping the Session and its workspace.
+func TestSessionReconcileRecoversPersistentWorkspaceWithMissingWorkload(t *testing.T) {
+	scheme := runtime.NewScheme()
+	for _, add := range []func(*runtime.Scheme) error{appsv1.AddToScheme, corev1.AddToScheme, rbacv1.AddToScheme, kelos.AddToScheme} {
+		if err := add(scheme); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	session := testSession("idle-persistent", "codex")
+	session.CreationTimestamp = metav1.NewTime(time.Now().Add(-time.Hour))
+	session.Spec.IdlePolicy = &kelos.SessionIdlePolicy{DeleteAfterSeconds: ptr.To(int32(60))}
+	idleSince := metav1.NewTime(time.Now().Add(-10 * time.Minute))
+	session.Status.PodUID = types.UID("pod-uid")
+	session.Status.LastActivityTime = &idleSince
+	session.Status.Conditions = []metav1.Condition{{
+		Type:               kelos.SessionConditionActive,
+		Status:             metav1.ConditionFalse,
+		Reason:             "Idle",
+		LastTransitionTime: idleSince,
+	}}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&kelos.Session{}, &corev1.Pod{}, &appsv1.StatefulSet{}).
+		WithObjects(session).
+		Build()
+	reconciler := testSessionReconciler(cl, scheme)
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(session)}
+
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+
+	if err := cl.Get(context.Background(), request.NamespacedName, &kelos.Session{}); err != nil {
+		t.Fatalf("Session with a persistent workspace was reaped without recovering its journal: %v", err)
+	}
+	var statefulSet appsv1.StatefulSet
+	key := client.ObjectKey{Namespace: session.Namespace, Name: sessionWorkloadName(session)}
+	if err := cl.Get(context.Background(), key, &statefulSet); err != nil {
+		t.Fatalf("StatefulSet was not recreated to recover the Session runtime: %v", err)
+	}
+}
+
+// TestSessionReconcileDrainsSurvivingPodWhenWorkloadMissing verifies that a
+// missing StatefulSet does not short-circuit the drain handshake when its
+// ordinal Pod is still running (for example, orphaned by garbage collection):
+// the controller must request a drain rather than delete the Session outright.
+func TestSessionReconcileDrainsSurvivingPodWhenWorkloadMissing(t *testing.T) {
+	scheme := runtime.NewScheme()
+	for _, add := range []func(*runtime.Scheme) error{appsv1.AddToScheme, corev1.AddToScheme, rbacv1.AddToScheme, kelos.AddToScheme} {
+		if err := add(scheme); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	session := testSession("idle-orphan-pod", "codex")
+	session.CreationTimestamp = metav1.NewTime(time.Now().Add(-time.Hour))
+	session.Spec.IdlePolicy = &kelos.SessionIdlePolicy{DeleteAfterSeconds: ptr.To(int32(60))}
+	idleSince := metav1.NewTime(time.Now().Add(-10 * time.Minute))
+	session.Status.PodUID = types.UID("pod-uid")
+	session.Status.LastActivityTime = &idleSince
+	session.Status.Conditions = []metav1.Condition{{
+		Type:               kelos.SessionConditionActive,
+		Status:             metav1.ConditionFalse,
+		Reason:             "Idle",
+		LastTransitionTime: idleSince,
+	}}
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        sessionWorkloadName(session) + "-0",
+			Namespace:   session.Namespace,
+			UID:         types.UID("pod-uid"),
+			Annotations: map[string]string{sessionNameAnnotation: session.Name},
+		},
+		Status: corev1.PodStatus{Phase: corev1.PodRunning},
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&kelos.Session{}, &corev1.Pod{}, &appsv1.StatefulSet{}).
+		WithObjects(session, pod).
+		Build()
+	reconciler := testSessionReconciler(cl, scheme)
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(session)}
+
+	result, err := reconciler.Reconcile(context.Background(), request)
+	if err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if result.RequeueAfter <= 0 {
+		t.Fatalf("Reconcile() requeueAfter = %s, want a positive drain requeue", result.RequeueAfter)
+	}
+
+	var got kelos.Session
+	if err := cl.Get(context.Background(), request.NamespacedName, &got); err != nil {
+		t.Fatalf("Session was deleted before draining a surviving Pod: %v", err)
+	}
+	if got.Annotations[sessionupdate.IdleDrainRequestAnnotation] == "" {
+		t.Fatal("expected an idle drain request for the surviving Pod")
+	}
+
+	var statefulSet appsv1.StatefulSet
+	key := client.ObjectKey{Namespace: session.Namespace, Name: sessionWorkloadName(session)}
+	if err := cl.Get(context.Background(), key, &statefulSet); !apierrors.IsNotFound(err) {
+		t.Fatalf("StatefulSet was recreated instead of draining the surviving Pod: %v", err)
+	}
+}
+
+// TestSessionReconcileReapsIdleSessionWithTerminalPodWhenWorkloadMissing
+// verifies that when the StatefulSet is missing and its ordinal Pod is terminal
+// (Succeeded or Failed), a Session without a persistent workspace is reaped
+// directly instead of starting a drain handshake that no live runtime could ever
+// acknowledge.
+func TestSessionReconcileReapsIdleSessionWithTerminalPodWhenWorkloadMissing(t *testing.T) {
+	scheme := runtime.NewScheme()
+	for _, add := range []func(*runtime.Scheme) error{appsv1.AddToScheme, corev1.AddToScheme, rbacv1.AddToScheme, kelos.AddToScheme} {
+		if err := add(scheme); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	session := testSession("idle-terminal-pod", "codex")
+	// Without a persistent workspace there is no journal to recover.
+	session.Spec.VolumeClaimTemplate = nil
+	session.CreationTimestamp = metav1.NewTime(time.Now().Add(-time.Hour))
+	session.Spec.IdlePolicy = &kelos.SessionIdlePolicy{DeleteAfterSeconds: ptr.To(int32(60))}
+	idleSince := metav1.NewTime(time.Now().Add(-10 * time.Minute))
+	session.Status.PodUID = types.UID("pod-uid")
+	session.Status.LastActivityTime = &idleSince
+	session.Status.Conditions = []metav1.Condition{{
+		Type:               kelos.SessionConditionActive,
+		Status:             metav1.ConditionFalse,
+		Reason:             "Idle",
+		LastTransitionTime: idleSince,
+	}}
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        sessionWorkloadName(session) + "-0",
+			Namespace:   session.Namespace,
+			UID:         types.UID("pod-uid"),
+			Annotations: map[string]string{sessionNameAnnotation: session.Name},
+		},
+		Status: corev1.PodStatus{Phase: corev1.PodSucceeded},
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&kelos.Session{}, &corev1.Pod{}, &appsv1.StatefulSet{}).
+		WithObjects(session, pod).
+		Build()
+	reconciler := testSessionReconciler(cl, scheme)
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(session)}
+
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+
+	if err := cl.Get(context.Background(), request.NamespacedName, &kelos.Session{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("Session was not reaped despite a terminal Pod (get = %v, want NotFound)", err)
+	}
+}
+
+// TestSessionReconcileRecoversPersistentWorkspaceWithTerminalPod verifies that
+// when the StatefulSet is missing and the ordinal Pod is terminal, a Session with
+// a persistent workspace deletes the leftover terminal Pod and recovers its
+// runtime rather than deleting the Session and its workspace from a possibly
+// stale Active=False status.
+func TestSessionReconcileRecoversPersistentWorkspaceWithTerminalPod(t *testing.T) {
+	scheme := runtime.NewScheme()
+	for _, add := range []func(*runtime.Scheme) error{appsv1.AddToScheme, corev1.AddToScheme, rbacv1.AddToScheme, kelos.AddToScheme} {
+		if err := add(scheme); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	session := testSession("idle-persistent-terminal", "codex")
+	session.CreationTimestamp = metav1.NewTime(time.Now().Add(-time.Hour))
+	session.Spec.IdlePolicy = &kelos.SessionIdlePolicy{DeleteAfterSeconds: ptr.To(int32(60))}
+	idleSince := metav1.NewTime(time.Now().Add(-10 * time.Minute))
+	session.Status.PodUID = types.UID("pod-uid")
+	session.Status.LastActivityTime = &idleSince
+	session.Status.Conditions = []metav1.Condition{{
+		Type:               kelos.SessionConditionActive,
+		Status:             metav1.ConditionFalse,
+		Reason:             "Idle",
+		LastTransitionTime: idleSince,
+	}}
+
+	podName := sessionWorkloadName(session) + "-0"
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        podName,
+			Namespace:   session.Namespace,
+			UID:         types.UID("pod-uid"),
+			Annotations: map[string]string{sessionNameAnnotation: session.Name},
+		},
+		Status: corev1.PodStatus{Phase: corev1.PodFailed},
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&kelos.Session{}, &corev1.Pod{}, &appsv1.StatefulSet{}).
+		WithObjects(session, pod).
+		Build()
+	reconciler := testSessionReconciler(cl, scheme)
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(session)}
+
+	result, err := reconciler.Reconcile(context.Background(), request)
+	if err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if result.RequeueAfter <= 0 {
+		t.Fatalf("Reconcile() requeueAfter = %s, want a positive requeue after clearing the terminal Pod", result.RequeueAfter)
+	}
+
+	if err := cl.Get(context.Background(), request.NamespacedName, &kelos.Session{}); err != nil {
+		t.Fatalf("Session with a persistent workspace was reaped despite a terminal Pod: %v", err)
+	}
+	if err := cl.Get(context.Background(), client.ObjectKey{Namespace: session.Namespace, Name: podName}, &corev1.Pod{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("terminal Pod was not cleared before recovery (get = %v, want NotFound)", err)
+	}
+}
+
+// TestSessionIdleDrainRequestIsUniquePerEpisode verifies that each installed
+// drain episode yields a distinct request ID while the ID stays stable across
+// reconciles of the same episode, so a Drained report left over from a previous
+// idle period cannot be mistaken for an acknowledgement of the current request.
+func TestSessionIdleDrainRequestIsUniquePerEpisode(t *testing.T) {
+	t.Parallel()
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{UID: types.UID("pod-uid")}}
+
+	// Distinct episodes (for example, a drain re-requested within the same second
+	// after a cancelled one) get distinct IDs, even for the same Pod.
+	requestOne := newSessionIdleDrainRequest(pod)
+	requestTwo := newSessionIdleDrainRequest(pod)
+	if requestOne.ID == requestTwo.ID {
+		t.Fatal("expected a distinct idle-drain request ID for each drain episode")
+	}
+	if requestOne.PodUID != pod.UID || requestTwo.PodUID != pod.UID {
+		t.Fatalf("idle-drain request pod UID = %q/%q, want %q", requestOne.PodUID, requestTwo.PodUID, pod.UID)
+	}
+
+	// An already-installed request is reused across reconciles so its ID is stable.
+	encoded, err := sessionupdate.Encode(requestOne)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := testSession("idle", "codex")
+	session.Annotations = map[string]string{sessionupdate.IdleDrainRequestAnnotation: encoded}
+	reused, ok := installedSessionIdleDrainRequest(session, pod)
+	if !ok || reused.ID != requestOne.ID {
+		t.Fatalf("installedSessionIdleDrainRequest() = %#v, %v, want %#v reused", reused, ok, requestOne)
+	}
+
+	// A request installed for a different Pod is not reused.
+	otherPod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{UID: types.UID("other-pod")}}
+	if _, ok := installedSessionIdleDrainRequest(session, otherPod); ok {
+		t.Fatal("installedSessionIdleDrainRequest() reused a request installed for a different Pod")
+	}
+
+	// A stale Drained report from a previous episode does not complete a fresh one.
+	report, err := sessionupdate.EncodeReport(sessionupdate.Report{
+		RequestID: requestOne.ID,
+		PodUID:    pod.UID,
+		Phase:     sessionupdate.PhaseDrained,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.Annotations[sessionupdate.IdleDrainReportAnnotation] = report
+	done, err := sessionIdleDrainComplete(session, requestTwo, pod)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done {
+		t.Fatal("a stale Drained report from a previous episode must not complete the current drain")
+	}
+}
+
+// TestSetSessionIdleDrainRequestClearsStaleReport verifies that installing a
+// drain request drops any report from a previous idle period so a stale Drained
+// acknowledgement cannot satisfy the new request before the runtime observes it.
+func TestSetSessionIdleDrainRequestClearsStaleReport(t *testing.T) {
+	scheme := runtime.NewScheme()
+	for _, add := range []func(*runtime.Scheme) error{appsv1.AddToScheme, corev1.AddToScheme, rbacv1.AddToScheme, kelos.AddToScheme} {
+		if err := add(scheme); err != nil {
+			t.Fatal(err)
+		}
+	}
+	session := testSession("idle-clear-report", "codex")
+	session.Annotations = map[string]string{sessionupdate.IdleDrainReportAnnotation: "stale-report"}
+
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(session).Build()
+	reconciler := testSessionReconciler(cl, scheme)
+
+	if err := reconciler.setSessionIdleDrainRequest(context.Background(), session, "encoded-request"); err != nil {
+		t.Fatalf("setSessionIdleDrainRequest() error = %v", err)
+	}
+
+	var got kelos.Session
+	if err := cl.Get(context.Background(), client.ObjectKeyFromObject(session), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Annotations[sessionupdate.IdleDrainRequestAnnotation] != "encoded-request" {
+		t.Fatalf("idle drain request annotation = %q, want %q", got.Annotations[sessionupdate.IdleDrainRequestAnnotation], "encoded-request")
+	}
+	if got.Annotations[sessionupdate.IdleDrainReportAnnotation] != "" {
+		t.Fatalf("idle drain report annotation = %q, want cleared", got.Annotations[sessionupdate.IdleDrainReportAnnotation])
+	}
+}
+
 func findVolume(volumes []corev1.Volume, name string) *corev1.Volume {
 	for i := range volumes {
 		if volumes[i].Name == name {

@@ -222,6 +222,10 @@ func TestServerQueuesStatusPublicationAfterWorkspaceRefresh(t *testing.T) {
 func TestPublishObservedSessionStatusPublishesActivityWhenWorkspaceReadFails(t *testing.T) {
 	readErr := errors.New("workspace unavailable")
 	var got ObservedSessionStatus
+	// A failing workspace inspection must not surface as an error: doing so would
+	// retain the status-publish queue entry and wedge the idle-drain handshake even
+	// though the Active condition was durably published. Only the publisher's own
+	// error should gate retries.
 	err := publishObservedSessionStatus(
 		context.Background(),
 		func(_ context.Context, status ObservedSessionStatus) error {
@@ -233,11 +237,24 @@ func TestPublishObservedSessionStatusPublishesActivityWhenWorkspaceReadFails(t *
 			return WorkspaceStatus{}, readErr
 		},
 	)
-	if !errors.Is(err, readErr) {
-		t.Fatalf("publishObservedSessionStatus() error = %v, want %v", err, readErr)
+	if err != nil {
+		t.Fatalf("publishObservedSessionStatus() error = %v, want nil so the drain can advance", err)
 	}
 	if !got.Active || got.WorkspaceStatus != nil {
 		t.Fatalf("published Session status = %#v, want active with unobserved workspace", got)
+	}
+}
+
+func TestPublishObservedSessionStatusReturnsPublisherError(t *testing.T) {
+	publishErr := errors.New("api unavailable")
+	err := publishObservedSessionStatus(
+		context.Background(),
+		func(context.Context, ObservedSessionStatus) error { return publishErr },
+		true,
+		func(context.Context) (WorkspaceStatus, error) { return WorkspaceStatus{}, nil },
+	)
+	if !errors.Is(err, publishErr) {
+		t.Fatalf("publishObservedSessionStatus() error = %v, want %v", err, publishErr)
 	}
 }
 
@@ -948,13 +965,13 @@ func TestServerDrainsAcceptedTurnsBeforeRuntimeUpdate(t *testing.T) {
 	if err := server.submitMessage("second", "request-second"); err == nil || !strings.Contains(err.Error(), "draining") {
 		t.Fatalf("submitMessage() error = %v, want draining rejection", err)
 	}
-	report := server.sessionRuntimeUpdateReport()
+	report, _ := server.sessionDrainReports()
 	if report == nil || report.RequestID != request.ID || report.PodUID != podUID || report.Phase != sessionupdate.PhaseDraining {
 		t.Fatalf("runtime update report = %#v", report)
 	}
 
 	server.finishTurn()
-	report = server.sessionRuntimeUpdateReport()
+	report, _ = server.sessionDrainReports()
 	if report == nil || report.Phase != sessionupdate.PhaseDrained {
 		t.Fatalf("runtime update report after finishing turn = %#v", report)
 	}
@@ -963,6 +980,311 @@ func TestServerDrainsAcceptedTurnsBeforeRuntimeUpdate(t *testing.T) {
 	}
 	if err := server.submitMessage("after update cancelled", "request-after"); err != nil {
 		t.Fatalf("submitMessage() after cancelling drain error = %v", err)
+	}
+}
+
+func TestServerDrainsAcceptedTurnsBeforeIdleReap(t *testing.T) {
+	journal := NewJournal()
+	defer journal.Close()
+	podUID := types.UID("pod-uid")
+	server := NewServer(Config{PodUID: podUID}, journal, &fakeProvider{})
+	if err := server.submitMessage("first", "request-first"); err != nil {
+		t.Fatal(err)
+	}
+	request := sessionupdate.NewRequest(podUID, "idle")
+	encoded, err := sessionupdate.Encode(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.observeSessionUpdate(&kelos.Session{ObjectMeta: metav1.ObjectMeta{
+		Annotations: map[string]string{sessionupdate.IdleDrainRequestAnnotation: encoded},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.submitMessage("second", "request-second"); err == nil || !strings.Contains(err.Error(), "reclaimed") {
+		t.Fatalf("submitMessage() error = %v, want idle reclamation rejection", err)
+	}
+	_, report := server.sessionDrainReports()
+	if report == nil || report.RequestID != request.ID || report.PodUID != podUID || report.Phase != sessionupdate.PhaseDraining {
+		t.Fatalf("idle drain report = %#v", report)
+	}
+
+	server.finishTurn()
+	if _, report = server.sessionDrainReports(); report == nil || report.Phase != sessionupdate.PhaseDrained {
+		t.Fatalf("idle drain report after finishing turn = %#v", report)
+	}
+}
+
+// TestServerWithholdsIdleDrainUntilActivityPublished verifies that the runtime
+// does not report Drained while a turn's activity status update is still queued
+// for publication, so the controller cannot delete the Session against a stale
+// Active=False state.
+func TestServerWithholdsIdleDrainUntilActivityPublished(t *testing.T) {
+	journal := NewJournal()
+	defer journal.Close()
+	podUID := types.UID("pod-uid")
+	server := NewServer(Config{PodUID: podUID}, journal, &fakeProvider{})
+	// A configured status publisher means activity transitions must be durably
+	// published before the runtime reports Drained.
+	server.publishSessionStatus = func(context.Context, bool) error { return nil }
+
+	if err := server.submitMessage("first", "request-first"); err != nil {
+		t.Fatal(err)
+	}
+	request := sessionupdate.NewRequest(podUID, "idle-period")
+	encoded, err := sessionupdate.Encode(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.observeSessionUpdate(&kelos.Session{ObjectMeta: metav1.ObjectMeta{
+		Annotations: map[string]string{sessionupdate.IdleDrainRequestAnnotation: encoded},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The turn finished, but its Active=False status update is still queued, so
+	// the runtime must report Draining rather than Drained.
+	server.finishTurn()
+	server.sessionStatusPublishQueue = []sessionStatusPublishRequest{{active: false}}
+	if _, report := server.sessionDrainReports(); report == nil || report.Phase != sessionupdate.PhaseDraining {
+		t.Fatalf("idle drain report with a pending status publish = %#v, want Draining", report)
+	}
+
+	// Once the queued activity has been durably published, the runtime reports Drained.
+	server.sessionStatusPublishQueue = nil
+	if _, report := server.sessionDrainReports(); report == nil || report.Phase != sessionupdate.PhaseDrained {
+		t.Fatalf("idle drain report after publish = %#v, want Drained", report)
+	}
+}
+
+// TestServerWithholdsIdleDrainAfterRecoveringInterruptedWork verifies that a
+// runtime which recovered interrupted in-flight work from its journal seeds an
+// activity publish and withholds an idle-drain Drained report until that
+// recovered activity is durably published. A container restart preserves the Pod
+// UID and any pending idle-drain request while resetting the in-memory
+// outstanding-turn count and publish queue, so without this seed the restarted
+// runtime could report Drained against a stale Active=False status and let the
+// controller delete the Session despite the recovered activity.
+func TestServerWithholdsIdleDrainAfterRecoveringInterruptedWork(t *testing.T) {
+	journal := NewJournal()
+	defer journal.Close()
+	// An in-flight turn that never completed represents work interrupted by a restart.
+	if err := journal.Append(Event{Type: EventUserMessage, RequestID: "request-first", TurnID: "turn-1", Text: "work"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Append(Event{Type: EventTurnStarted, TurnID: "turn-1", Status: "running"}); err != nil {
+		t.Fatal(err)
+	}
+	recovery, err := recoverJournal(journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The interrupted turn is unsettled activity relative to a zero high-water mark.
+	if !recovery.hasUnsettledActivity(0) {
+		t.Fatal("recoverJournal() did not report unsettled activity for an in-flight turn")
+	}
+
+	podUID := types.UID("pod-uid")
+	server := NewServer(Config{PodUID: podUID}, journal, &fakeProvider{})
+	// A configured status publisher means recovered activity must be durably
+	// published before the runtime reports Drained.
+	server.publishSessionStatus = func(context.Context, bool) error { return nil }
+	server.seedRecoveredActivityPublish()
+
+	request := sessionupdate.NewRequest(podUID, "idle-period")
+	encoded, err := sessionupdate.Encode(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.observeSessionUpdate(&kelos.Session{ObjectMeta: metav1.ObjectMeta{
+		Annotations: map[string]string{sessionupdate.IdleDrainRequestAnnotation: encoded},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The recovered activity publish is still queued, so the runtime reports Draining
+	// even though no turn is in flight (outstanding is zero after the restart).
+	if _, report := server.sessionDrainReports(); report == nil || report.Phase != sessionupdate.PhaseDraining {
+		t.Fatalf("idle drain report before publishing recovered activity = %#v, want Draining", report)
+	}
+
+	// Once the recovered activity has been durably published, the runtime reports Drained.
+	server.completeSessionStatusPublish()
+	if _, report := server.sessionDrainReports(); report == nil || report.Phase != sessionupdate.PhaseDrained {
+		t.Fatalf("idle drain report after publishing recovered activity = %#v, want Drained", report)
+	}
+}
+
+// TestServerWithholdsIdleDrainForUnpublishedCompletedTurn verifies the
+// completed-turn restart case: a turn can finish and be recorded in the journal
+// while its ordered Active status publications are still retrying. If the
+// container restarts then, recovery finds no interrupted work, but the completed
+// turn's ID still exceeds the durably-settled high-water mark, so the runtime must
+// republish activity and withhold Drained until it is published rather than
+// acknowledging a drain against the stale Active=False status.
+func TestServerWithholdsIdleDrainForUnpublishedCompletedTurn(t *testing.T) {
+	journal := NewJournal()
+	defer journal.Close()
+	for _, event := range []Event{
+		{Type: EventUserMessage, RequestID: "request-first", TurnID: "turn-1", Text: "work"},
+		{Type: EventTurnStarted, TurnID: "turn-1", Status: "running"},
+		{Type: EventTurnCompleted, TurnID: "turn-1", Status: "completed"},
+	} {
+		if err := journal.Append(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	recovery, err := recoverJournal(journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovery.nextTurnID != 1 {
+		t.Fatalf("recovery.nextTurnID = %d, want 1", recovery.nextTurnID)
+	}
+	// The completed turn was never durably settled (marker is zero), so it counts
+	// as unsettled activity even though no work was interrupted.
+	if !recovery.hasUnsettledActivity(0) {
+		t.Fatal("expected unsettled activity for an unpublished completed turn")
+	}
+	// Had its idle status been durably published (marker advanced to the turn ID),
+	// a restart would not re-seed and reset the idle clock.
+	if recovery.hasUnsettledActivity(1) {
+		t.Fatal("a settled completed turn must not count as unsettled activity")
+	}
+
+	podUID := types.UID("pod-uid")
+	server := NewServer(Config{PodUID: podUID}, journal, &fakeProvider{})
+	server.publishSessionStatus = func(context.Context, bool) error { return nil }
+	server.nextTurnID.Store(recovery.nextTurnID)
+	server.seedRecoveredActivityPublish()
+
+	request := sessionupdate.NewRequest(podUID, "idle-period")
+	encoded, err := sessionupdate.Encode(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.observeSessionUpdate(&kelos.Session{ObjectMeta: metav1.ObjectMeta{
+		Annotations: map[string]string{sessionupdate.IdleDrainRequestAnnotation: encoded},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, report := server.sessionDrainReports(); report == nil || report.Phase != sessionupdate.PhaseDraining {
+		t.Fatalf("idle drain report before publishing recovered activity = %#v, want Draining", report)
+	}
+	server.completeSessionStatusPublish()
+	if _, report := server.sessionDrainReports(); report == nil || report.Phase != sessionupdate.PhaseDrained {
+		t.Fatalf("idle drain report after publishing recovered activity = %#v, want Drained", report)
+	}
+}
+
+// TestServerRecordsSettledActivityFromRequestSnapshot verifies that the activity
+// publication high-water mark advances (and is persisted) only from an idle
+// (Active=False) request's own captured snapshot, never from an active request.
+func TestServerRecordsSettledActivityFromRequestSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	journal := NewJournal()
+	defer journal.Close()
+	server := NewServer(Config{StateDir: dir}, journal, &fakeProvider{})
+
+	// An Active=True publication never settles activity, whatever its snapshot.
+	server.recordSettledActivity(sessionStatusPublishRequest{active: true, settledTurnID: 3})
+	if got := server.settledTurnID.Load(); got != 0 {
+		t.Fatalf("settledTurnID after active publish = %d, want 0", got)
+	}
+
+	// An idle publication records the high-water mark carried by that request.
+	server.recordSettledActivity(sessionStatusPublishRequest{active: false, settledTurnID: 3})
+	if got := server.settledTurnID.Load(); got != 3 {
+		t.Fatalf("settledTurnID after idle publish = %d, want 3", got)
+	}
+	persisted, err := loadSettledTurnID(server.activityMarkerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted != 3 {
+		t.Fatalf("persisted settledTurnID = %d, want 3", persisted)
+	}
+
+	// A later idle publication carrying a lower snapshot never regresses the mark.
+	server.recordSettledActivity(sessionStatusPublishRequest{active: false, settledTurnID: 2})
+	if got := server.settledTurnID.Load(); got != 3 {
+		t.Fatalf("settledTurnID after stale idle publish = %d, want 3", got)
+	}
+}
+
+// TestServerDoesNotSettleLaterTurnFromStaleIdlePublication reproduces the race
+// where a stale idle or periodic publication succeeds only after a later turn has
+// started and finished. Because each request carries the completed-turn snapshot
+// from when it was enqueued, completing the stale publication must not settle the
+// later turn whose own Active publications are still queued.
+func TestServerDoesNotSettleLaterTurnFromStaleIdlePublication(t *testing.T) {
+	dir := t.TempDir()
+	journal := NewJournal()
+	defer journal.Close()
+	server := NewServer(Config{StateDir: dir}, journal, &fakeProvider{})
+
+	// Turns 1-5 are complete and a periodic idle publication was enqueued then.
+	server.completedTurnID.Store(5)
+	server.publishSessionStatus = func(context.Context, bool) error { return nil }
+	server.requestPeriodicSessionStatusPublish()
+	stale, ok := server.nextSessionStatusPublish()
+	if !ok || stale.active || stale.settledTurnID != 5 {
+		t.Fatalf("stale idle request = %#v, ok=%v, want idle snapshot 5", stale, ok)
+	}
+
+	// While that publication is in flight, a later turn starts and finishes.
+	server.markTurnCompleted("turn-6")
+
+	// Completing the in-flight stale publication settles only turn 5, not turn 6:
+	// turn 6's own Active publications have not been published yet.
+	server.recordSettledActivity(stale)
+	if got := server.settledTurnID.Load(); got != 5 {
+		t.Fatalf("settledTurnID after stale idle publish = %d, want 5", got)
+	}
+}
+
+func TestSettledTurnIDPersistenceRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), activityPublishedFile)
+	if got, err := loadSettledTurnID(path); err != nil || got != 0 {
+		t.Fatalf("loadSettledTurnID() on a missing marker = %d, %v, want 0, nil", got, err)
+	}
+	if err := writeSettledTurnID(path, 7); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := loadSettledTurnID(path); err != nil || got != 7 {
+		t.Fatalf("loadSettledTurnID() = %d, %v, want 7, nil", got, err)
+	}
+}
+
+// TestServerRuntimeUpdateDrainIgnoresPendingPublishes verifies that a
+// runtime-update drain reports Drained as soon as no turn is in flight, without
+// waiting for queued activity publications: the Pod is replaced and recovers
+// from the journal, so an unpublished transition is not lost, and gating the
+// replacement on a wedged status publisher would needlessly stall the update.
+func TestServerRuntimeUpdateDrainIgnoresPendingPublishes(t *testing.T) {
+	journal := NewJournal()
+	defer journal.Close()
+	podUID := types.UID("pod-uid")
+	server := NewServer(Config{PodUID: podUID}, journal, &fakeProvider{})
+	server.publishSessionStatus = func(context.Context, bool) error { return nil }
+
+	request := sessionupdate.NewRequest(podUID, "desired-revision")
+	encoded, err := sessionupdate.Encode(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.observeSessionUpdate(&kelos.Session{ObjectMeta: metav1.ObjectMeta{
+		Annotations: map[string]string{sessionupdate.RequestAnnotation: encoded},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A status update is still queued, but with no turn in flight the runtime
+	// must report Drained so the update can proceed.
+	server.sessionStatusPublishQueue = []sessionStatusPublishRequest{{active: false}}
+	if report, _ := server.sessionDrainReports(); report == nil || report.Phase != sessionupdate.PhaseDrained {
+		t.Fatalf("runtime update report with a pending status publish = %#v, want Drained", report)
 	}
 }
 

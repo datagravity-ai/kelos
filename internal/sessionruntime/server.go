@@ -29,6 +29,7 @@ const (
 	DefaultStateDir                     = "/workspace/.kelos/session"
 	DefaultWorkingDir                   = "/workspace/repo"
 	journalFileName                     = "events.jsonl"
+	activityPublishedFile               = "activity-published"
 	initializedFile                     = "initialized"
 	defaultSessionStatusPublishInterval = 30 * time.Second
 	defaultSessionStatusRetryInterval   = 2 * time.Second
@@ -60,6 +61,11 @@ type turnRequest struct {
 type sessionStatusPublishRequest struct {
 	active                       bool
 	refreshWorkspaceAfterPublish bool
+	// settledTurnID is the completed-turn high-water mark captured when this
+	// request was enqueued. It becomes the persisted activity mark only after an
+	// idle (active == false) publication of this request succeeds, so a stale
+	// idle publication in flight cannot record a turn that started after it.
+	settledTurnID int64
 }
 
 type pendingInput struct {
@@ -85,10 +91,22 @@ type Server struct {
 	turns         chan turnRequest
 	nextTurnID    atomic.Int64
 	outstanding   int
-	updateRequest *sessionupdate.Request
-	updateReport  chan struct{}
-	activeMu      sync.Mutex
-	activeTurn    string
+	// completedTurnID is the highest turn ID that has finished running (completed,
+	// failed, or interrupted). A status publication snapshots it at enqueue time so
+	// that only turns already complete when the publication was created can be
+	// marked settled once it succeeds.
+	completedTurnID atomic.Int64
+	// settledTurnID is the highest turn ID whose Active=False (idle) status has been
+	// durably published, persisted to activityMarkerPath so it survives a container
+	// restart. activityMarkerPath is empty when no StateDir is configured (for
+	// example, in tests), which disables persistence.
+	settledTurnID      atomic.Int64
+	activityMarkerPath string
+	updateRequest      *sessionupdate.Request
+	idleDrainRequest   *sessionupdate.Request
+	updateReport       chan struct{}
+	activeMu           sync.Mutex
+	activeTurn         string
 
 	runtimeStatusMu             sync.RWMutex
 	runtimeStatus               RuntimeStatus
@@ -124,6 +142,9 @@ func NewServer(config Config, journal *Journal, provider Provider) *Server {
 		sessionStatusPublishWakeups:  make(chan struct{}, 1),
 		sessionStatusPublishInterval: defaultSessionStatusPublishInterval,
 		sessionStatusRetryInterval:   defaultSessionStatusRetryInterval,
+	}
+	if config.StateDir != "" {
+		server.activityMarkerPath = filepath.Join(config.StateDir, activityPublishedFile)
 	}
 	if provider, ok := provider.(runtimeStatusProvider); ok {
 		server.updateProviderRuntimeStatus(provider.runtimeStatusSnapshot())
@@ -192,6 +213,27 @@ func Run(ctx context.Context, config Config) error {
 	}
 	server.nextTurnID.Store(recovery.nextTurnID)
 	server.nextInputID.Store(recovery.nextInputID)
+	// Journal recovery marks any interrupted turn complete, so every recovered turn
+	// is finished; a republished idle status may settle up to the highest of them.
+	server.completedTurnID.Store(recovery.nextTurnID)
+	if server.activityMarkerPath != "" {
+		settledTurnID, err := loadSettledTurnID(server.activityMarkerPath)
+		if err != nil {
+			_ = provider.Close()
+			journal.Close()
+			return err
+		}
+		server.settledTurnID.Store(settledTurnID)
+	}
+	// Republish activity when the journal holds locally accepted turns that were
+	// never durably settled to a published idle status. This covers both
+	// interrupted turns and turns that completed while their ordered Active status
+	// publications were still retrying: a container restart drops the in-memory
+	// publish queue, so without this a surviving idle-drain request could be
+	// acknowledged Drained against a stale Active=False status.
+	if server.publishSessionStatus != nil && recovery.hasUnsettledActivity(server.settledTurnID.Load()) {
+		server.seedRecoveredActivityPublish()
+	}
 	return server.Serve(ctx)
 }
 
@@ -200,8 +242,16 @@ func publishObservedSessionStatus(ctx context.Context, publisher SessionStatusPu
 	status := ObservedSessionStatus{Active: active}
 	if readErr == nil {
 		status.WorkspaceStatus = &workspaceStatus
+	} else {
+		// Workspace inspection is best-effort. The returned error gates retries and
+		// keeps the status-publish queue entry pending, which in turn withholds the
+		// idle-drain Drained report; a persistently unreadable workspace-status file
+		// or failing git inspection must not wedge the drain once the Active
+		// condition itself is durably published. Publish activity without the
+		// workspace status and leave the workspace fields to a later publication.
+		log.Printf("Unable to inspect Session workspace status; publishing activity without it error=%v", readErr)
 	}
-	return errors.Join(readErr, publisher(ctx, status))
+	return publisher(ctx, status)
 }
 
 func sessionInitialized(stateDir string) (bool, error) {
@@ -384,12 +434,14 @@ func (s *Server) queueSessionStatusPublish(force, refreshWorkspaceAfterPublish b
 	}
 	s.activeMu.Lock()
 	active := s.activeTurn != ""
+	settledTurnID := s.completedTurnID.Load()
 	s.sessionStatusMu.Lock()
 	queued := force || len(s.sessionStatusPublishQueue) == 0 || s.sessionStatusPublishQueue[len(s.sessionStatusPublishQueue)-1].active != active
 	if queued {
 		s.sessionStatusPublishQueue = append(s.sessionStatusPublishQueue, sessionStatusPublishRequest{
 			active:                       active,
 			refreshWorkspaceAfterPublish: refreshWorkspaceAfterPublish,
+			settledTurnID:                settledTurnID,
 		})
 	}
 	s.sessionStatusMu.Unlock()
@@ -416,6 +468,119 @@ func (s *Server) completeSessionStatusPublish() {
 	s.sessionStatusMu.Lock()
 	defer s.sessionStatusMu.Unlock()
 	s.sessionStatusPublishQueue = s.sessionStatusPublishQueue[1:]
+}
+
+// seedRecoveredActivityPublish queues an initial Active=True status publish for a
+// runtime that recovered locally accepted activity not yet durably settled to the
+// Session status. Publishing recovered activity advances the Session's
+// lastActivityTime, and because the queued publish keeps hasPendingStatusPublishes
+// true until it is durably sent, an idle-drain request cannot be acknowledged
+// Drained before that activity reaches the Session status. Without it, a container
+// restart that preserves the Pod UID and a pending idle-drain request could report
+// Drained against a stale Active=False status and let the controller delete the
+// Session and its workspace despite the recovered activity.
+func (s *Server) seedRecoveredActivityPublish() {
+	s.sessionStatusMu.Lock()
+	defer s.sessionStatusMu.Unlock()
+	s.sessionStatusPublishQueue = append(s.sessionStatusPublishQueue, sessionStatusPublishRequest{active: true})
+}
+
+// recordSettledActivity persists how far locally accepted activity has been
+// durably reflected in the Session status. When an Active=False (idle) status is
+// published with no turn in flight, every turn submitted so far is complete and
+// durably settled, so the completed-turn high-water mark that the request carried
+// at enqueue time becomes the activity publication high-water mark. Using the
+// request's snapshot rather than the live counter is essential: a stale idle or
+// periodic publication may only succeed after a later turn has started and
+// finished, and recording the live counter would mark that later turn settled
+// even though its own Active publications are still queued. On a container
+// restart, a journal whose activity extends beyond this mark (an interrupted or
+// completed-but-unpublished turn) triggers a conservative republish before an
+// idle drain may report Drained. The mark is only advanced after the write
+// succeeds, so a failed persist leaves the runtime to re-publish rather than lose
+// progress.
+// markTurnCompleted advances the completed-turn high-water mark to the given
+// turn, which a subsequent idle status publication snapshots as the point up to
+// which activity is durably settled once it succeeds.
+func (s *Server) markTurnCompleted(turnID string) {
+	id := numericEventID(turnID, "turn-")
+	for {
+		current := s.completedTurnID.Load()
+		if id <= current {
+			return
+		}
+		if s.completedTurnID.CompareAndSwap(current, id) {
+			return
+		}
+	}
+}
+
+func (s *Server) recordSettledActivity(request sessionStatusPublishRequest) {
+	if request.active || s.activityMarkerPath == "" {
+		return
+	}
+	if request.settledTurnID <= s.settledTurnID.Load() {
+		return
+	}
+	if err := writeSettledTurnID(s.activityMarkerPath, request.settledTurnID); err != nil {
+		log.Printf("Unable to persist Session activity publication progress error=%v", err)
+		return
+	}
+	s.settledTurnID.Store(request.settledTurnID)
+}
+
+// loadSettledTurnID reads the persisted activity publication high-water mark,
+// returning 0 when the marker file does not yet exist.
+func loadSettledTurnID(path string) (int64, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("reading Session activity publication progress: %w", err)
+	}
+	text := strings.TrimSpace(string(data))
+	if text == "" {
+		return 0, nil
+	}
+	id, err := strconv.ParseInt(text, 10, 64)
+	if err != nil || id < 0 {
+		return 0, fmt.Errorf("parsing Session activity publication progress %q: %w", text, err)
+	}
+	return id, nil
+}
+
+// writeSettledTurnID atomically persists the activity publication high-water mark.
+func writeSettledTurnID(path string, id int64) error {
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".session-activity-*")
+	if err != nil {
+		return fmt.Errorf("creating Session activity publication progress: %w", err)
+	}
+	temporaryName := temporary.Name()
+	removeTemporary := true
+	defer func() {
+		_ = temporary.Close()
+		if removeTemporary {
+			_ = os.Remove(temporaryName)
+		}
+	}()
+	if err := temporary.Chmod(0600); err != nil {
+		return fmt.Errorf("securing Session activity publication progress: %w", err)
+	}
+	if _, err := fmt.Fprintf(temporary, "%d\n", id); err != nil {
+		return fmt.Errorf("writing Session activity publication progress: %w", err)
+	}
+	if err := temporary.Sync(); err != nil {
+		return fmt.Errorf("syncing Session activity publication progress: %w", err)
+	}
+	if err := temporary.Close(); err != nil {
+		return fmt.Errorf("closing Session activity publication progress: %w", err)
+	}
+	if err := os.Rename(temporaryName, path); err != nil {
+		return fmt.Errorf("replacing Session activity publication progress: %w", err)
+	}
+	removeTemporary = false
+	return nil
 }
 
 func (s *Server) runSessionStatusPublishes(ctx context.Context) {
@@ -449,8 +614,14 @@ func (s *Server) runSessionStatusPublishes(ctx context.Context) {
 			next = s.sessionStatusRetryInterval
 		} else {
 			s.completeSessionStatusPublish()
+			s.recordSettledActivity(request)
 			if request.refreshWorkspaceAfterPublish {
 				s.requestWorkspaceStatusRefresh()
+			}
+			// A drain report may have been withheld until in-flight activity was
+			// durably published; re-evaluate now that the queue has advanced.
+			if s.drainReportPending() {
+				s.signalSessionUpdateReport()
 			}
 			pending = false
 		}
@@ -484,6 +655,9 @@ func (s *Server) runTurn(ctx context.Context, turn turnRequest) {
 			s.activeTurn = ""
 		}
 		s.activeMu.Unlock()
+		// Advance the completed-turn high-water mark before requesting the idle
+		// publication so that publication carries a snapshot reflecting this turn.
+		s.markTurnCompleted(turn.id)
 		s.requestSessionStatusPublish()
 	}()
 
@@ -532,6 +706,9 @@ func (s *Server) submitMessage(text, requestID string) error {
 	}
 	s.submitMu.Lock()
 	defer s.submitMu.Unlock()
+	if s.idleDrainRequest != nil {
+		return errors.New("Session is idle and is being reclaimed")
+	}
 	if s.updateRequest != nil {
 		return errors.New("Session runtime is draining for an update; retry after it reconnects")
 	}
@@ -560,6 +737,14 @@ func (s *Server) submitMessage(text, requestID string) error {
 type journalRecovery struct {
 	nextTurnID  int64
 	nextInputID int64
+}
+
+// hasUnsettledActivity reports whether the journal holds locally accepted turns
+// beyond the given durably-settled high-water mark. nextTurnID is the highest
+// turn ID observed in the journal, so any turn — interrupted or completed — whose
+// idle status was never durably published leaves nextTurnID above settledTurnID.
+func (r journalRecovery) hasUnsettledActivity(settledTurnID int64) bool {
+	return r.nextTurnID > settledTurnID
 }
 
 func recoverJournal(journal *Journal) (journalRecovery, error) {
