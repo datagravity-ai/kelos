@@ -28,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 
 	kelos "github.com/kelos-dev/kelos/api/v1alpha2"
 	"github.com/kelos-dev/kelos/internal/sessionreset"
@@ -672,6 +673,126 @@ var _ = Describe("Session remote control", func() {
 		runTerminalTurn(f.Namespace, sessionName, "remove-git-workspace", ContainSubstring("agent › turn 2: git workspace removed"))
 		waitForSessionWorkspaceStatus(f, f.Namespace, sessionName, "", nil)
 	})
+
+	It("reaps an idle Session and its workspace after the idle delete policy elapses", func() {
+		const sessionName = "idle-reap"
+		const idleTTL = 30 * time.Second
+		configMapName := sessionName + "-provider"
+		mode := int32(0555)
+		_, err := f.Clientset.CoreV1().ConfigMaps(f.Namespace).Create(context.TODO(), &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: configMapName, Namespace: f.Namespace},
+			Data:       map[string]string{"claude": fakeClaude},
+		}, metav1.CreateOptions{})
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() {
+			_ = f.Clientset.CoreV1().ConfigMaps(f.Namespace).Delete(context.TODO(), configMapName, metav1.DeleteOptions{})
+		})
+
+		createSession(f, &kelos.Session{
+			ObjectMeta: metav1.ObjectMeta{Name: sessionName},
+			Spec: kelos.SessionSpec{
+				Worker:              fakeProviderWorker(configMapName, mode),
+				IdlePolicy:          &kelos.SessionIdlePolicy{DeleteAfterSeconds: ptr.To(int32(idleTTL / time.Second))},
+				VolumeClaimTemplate: sessionTestVolumeClaimTemplate(),
+			},
+		})
+		DeferCleanup(func() {
+			_ = f.KelosClientset.ApiV1alpha2().Sessions(f.Namespace).Delete(context.TODO(), sessionName, metav1.DeleteOptions{})
+		})
+		DeferCleanup(func() {
+			if CurrentSpecReport().Failed() {
+				collectSessionDebugInfo(f, f.Namespace, sessionName)
+			}
+		})
+
+		current := waitForSessionPhase(f, f.Namespace, sessionName, kelos.SessionPhaseReady)
+		Expect(current.Status.PodUID).NotTo(BeEmpty())
+		pod, err := f.Clientset.CoreV1().Pods(f.Namespace).Get(context.TODO(), current.Status.PodName, metav1.GetOptions{})
+		Expect(err).NotTo(HaveOccurred())
+		claimName := sessionWorkspaceClaimName(pod)
+		Expect(claimName).NotTo(BeEmpty())
+
+		By("waiting for the runtime to report the Session idle")
+		waitForSessionActivity(f, f.Namespace, sessionName, metav1.ConditionFalse)
+
+		By("reaping the Session once it has been idle for the policy duration")
+		waitForSessionDeletion(f, f.Namespace, sessionName)
+		waitForPodDeletion(f, f.Namespace, current.Status.PodName)
+		waitForPVCDeletion(f, f.Namespace, claimName)
+	})
+
+	It("does not reap an idle-policy Session while a turn is active", func() {
+		token := os.Getenv(sessionWebTokenEnv)
+		if token == "" {
+			Skip(sessionWebTokenEnv + " not set")
+		}
+
+		const sessionName = "idle-active"
+		// A generous idle TTL relative to the time it takes to open a connection and
+		// start a turn, so the Session only becomes eligible for reaping once it is
+		// idle again — not during connection setup.
+		const idleTTL = 30 * time.Second
+		configMapName := sessionName + "-provider"
+		mode := int32(0555)
+		_, err := f.Clientset.CoreV1().ConfigMaps(f.Namespace).Create(context.TODO(), &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: configMapName, Namespace: f.Namespace},
+			Data:       map[string]string{"claude": fakeClaude},
+		}, metav1.CreateOptions{})
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() {
+			_ = f.Clientset.CoreV1().ConfigMaps(f.Namespace).Delete(context.TODO(), configMapName, metav1.DeleteOptions{})
+		})
+
+		createSession(f, &kelos.Session{
+			ObjectMeta: metav1.ObjectMeta{Name: sessionName},
+			Spec: kelos.SessionSpec{
+				Worker:     fakeProviderWorker(configMapName, mode),
+				IdlePolicy: &kelos.SessionIdlePolicy{DeleteAfterSeconds: ptr.To(int32(idleTTL / time.Second))},
+			},
+		})
+		DeferCleanup(func() {
+			_ = f.KelosClientset.ApiV1alpha2().Sessions(f.Namespace).Delete(context.TODO(), sessionName, metav1.DeleteOptions{})
+		})
+		DeferCleanup(func() {
+			if CurrentSpecReport().Failed() {
+				collectSessionDebugInfo(f, f.Namespace, sessionName)
+			}
+		})
+
+		waitForSessionPhase(f, f.Namespace, sessionName, kelos.SessionPhaseReady)
+
+		By("holding a turn open at a user-input request")
+		baseURL := startSessionServerPortForward()
+		connection := connectSessionWebSocket(loginSessionWeb(baseURL, token), baseURL, f.Namespace, sessionName)
+		DeferCleanup(func() { _ = connection.Close() })
+		sendSessionRequest(connection, sessionruntime.ClientRequest{Type: "subscribe"})
+		waitForSessionEvent(connection, func(event sessionruntime.Event) bool {
+			return event.Type == sessionruntime.EventHistoryEnd
+		})
+		sendSessionRequest(connection, sessionruntime.ClientRequest{Type: "message", Text: "question"})
+		input := waitForSessionEvent(connection, func(event sessionruntime.Event) bool {
+			return event.Type == sessionruntime.EventInputRequested
+		})
+		Expect(input.Questions).To(HaveLen(1))
+		waitForSessionActivity(f, f.Namespace, sessionName, metav1.ConditionTrue)
+
+		By("keeping the active Session alive well past its idle delete policy")
+		Consistently(func() error {
+			_, err := f.KelosClientset.ApiV1alpha2().Sessions(f.Namespace).Get(context.TODO(), sessionName, metav1.GetOptions{})
+			return err
+		}, idleTTL+15*time.Second, time.Second).Should(Succeed(), "active Session %s/%s was reaped despite an in-flight turn", f.Namespace, sessionName)
+
+		By("reaping the Session after the held turn completes and it goes idle")
+		sendSessionRequest(connection, sessionruntime.ClientRequest{
+			Type:    "input",
+			InputID: input.InputID,
+			Answers: map[string][]string{input.Questions[0].ID: {"PostgreSQL"}},
+		})
+		waitForTurnCompletion(connection, "completed")
+		_ = connection.Close()
+		waitForSessionActivity(f, f.Namespace, sessionName, metav1.ConditionFalse)
+		waitForSessionDeletion(f, f.Namespace, sessionName)
+	})
 })
 
 func describeSessionProviderTests(cfg agentTestConfig) {
@@ -773,6 +894,34 @@ func updateSessionSuspend(f *framework.Framework, namespace, name string, suspen
 	}, time.Minute, time.Second).Should(Succeed(), "Session %s/%s suspended state did not update to %t", namespace, name, suspend)
 }
 
+// fakeProviderWorker builds a WorkerSpec that runs the embedded fake provider
+// mounted from the given ConfigMap, matching the credentials-free setup the other
+// Session specs use.
+func fakeProviderWorker(configMapName string, mode int32) kelos.WorkerSpec {
+	return kelos.WorkerSpec{
+		Type:        "claude-code",
+		Credentials: &kelos.Credentials{Type: kelos.CredentialTypeNone},
+		PodOverrides: &kelos.PodOverrides{
+			Env: []corev1.EnvVar{{
+				Name:  "PATH",
+				Value: "/workspace/fake-bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+			}},
+			Volumes: []corev1.Volume{{
+				Name: "fake-provider",
+				VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{Name: configMapName},
+					DefaultMode:          &mode,
+				}},
+			}},
+			VolumeMounts: []corev1.VolumeMount{{
+				Name:      "fake-provider",
+				MountPath: "/workspace/fake-bin",
+				ReadOnly:  true,
+			}},
+		},
+	}
+}
+
 func sessionTestVolumeClaimTemplate() *corev1.PersistentVolumeClaimSpec {
 	return &corev1.PersistentVolumeClaimSpec{
 		AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
@@ -793,6 +942,13 @@ func waitForSessionPhase(f *framework.Framework, namespace, name string, phase k
 	session, err := f.KelosClientset.ApiV1alpha2().Sessions(namespace).Get(context.TODO(), name, metav1.GetOptions{})
 	Expect(err).NotTo(HaveOccurred())
 	return session
+}
+
+func waitForSessionDeletion(f *framework.Framework, namespace, name string) {
+	Eventually(func() bool {
+		_, err := f.KelosClientset.ApiV1alpha2().Sessions(namespace).Get(context.TODO(), name, metav1.GetOptions{})
+		return apierrors.IsNotFound(err)
+	}, 3*time.Minute, time.Second).Should(BeTrue(), "Session %s/%s was not reaped for idleness", namespace, name)
 }
 
 func waitForSessionWorkspaceStatus(f *framework.Framework, namespace, name, branch string, pullRequest *kelos.SessionPullRequest) {

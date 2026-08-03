@@ -86,6 +86,26 @@ type SessionSpec struct {
 	// this field to use an ephemeral emptyDir workspace, primarily for development.
 	// +optional
 	VolumeClaimTemplate *corev1.PersistentVolumeClaimSpec `json:"volumeClaimTemplate,omitempty"`
+
+	// IdlePolicy configures automatic lifecycle actions taken after a Session has
+	// been continuously idle. A Session is idle when it has no active turn and
+	// reports no activity; idleness is measured from the later of the last
+	// reported activity time and the Session creation time, and renewed activity
+	// resets the idle period.
+	// +optional
+	IdlePolicy *SessionIdlePolicy `json:"idlePolicy,omitempty"`
+}
+
+// SessionIdlePolicy configures automatic lifecycle actions for an idle Session.
+type SessionIdlePolicy struct {
+	// DeleteAfterSeconds deletes the Session once it has been continuously idle
+	// for the given number of seconds. Deleting the Session removes its workspace
+	// storage, so any uncommitted workspace changes are lost. If this field is
+	// unset, the Session is never deleted for idleness. If it is set to zero, the
+	// Session is eligible for deletion as soon as it goes idle.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	DeleteAfterSeconds *int32 `json:"deleteAfterSeconds,omitempty"`
 }
 
 // SessionStatus defines the observed state of a Session.
@@ -152,6 +172,7 @@ type Session struct {
 	// +kubebuilder:validation:XValidation:rule="has(self.initialBranch) == has(oldSelf.initialBranch) && (!has(self.initialBranch) || self.initialBranch == oldSelf.initialBranch)",message="initialBranch is immutable"
 	// +kubebuilder:validation:XValidation:rule="has(self.initialPrompt) == has(oldSelf.initialPrompt) && (!has(self.initialPrompt) || self.initialPrompt == oldSelf.initialPrompt)",message="initialPrompt is immutable"
 	// +kubebuilder:validation:XValidation:rule="has(self.volumeClaimTemplate) == has(oldSelf.volumeClaimTemplate) && (!has(self.volumeClaimTemplate) || self.volumeClaimTemplate == oldSelf.volumeClaimTemplate)",message="volumeClaimTemplate is immutable"
+	// +kubebuilder:validation:XValidation:rule="has(self.idlePolicy) == has(oldSelf.idlePolicy) && (!has(self.idlePolicy) || self.idlePolicy == oldSelf.idlePolicy)",message="idlePolicy is immutable"
 	Spec   SessionSpec   `json:"spec"`
 	Status SessionStatus `json:"status,omitempty"`
 }

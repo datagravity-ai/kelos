@@ -61,6 +61,25 @@ spec:
                   The initialPrompt and initialBranch fields are Go text/templates rendered
                   with the matching GitHub webhook context.
                 properties:
+                  idlePolicy:
+                    description: |-
+                      IdlePolicy configures automatic lifecycle actions taken after a Session has
+                      been continuously idle. A Session is idle when it has no active turn and
+                      reports no activity; idleness is measured from the later of the last
+                      reported activity time and the Session creation time, and renewed activity
+                      resets the idle period.
+                    properties:
+                      deleteAfterSeconds:
+                        description: |-
+                          DeleteAfterSeconds deletes the Session once it has been continuously idle
+                          for the given number of seconds. Deleting the Session removes its workspace
+                          storage, so any uncommitted workspace changes are lost. If this field is
+                          unset, the Session is never deleted for idleness. If it is set to zero, the
+                          Session is eligible for deletion as soon as it goes idle.
+                        format: int32
+                        minimum: 0
+                        type: integer
+                    type: object
                   initialBranch:
                     description: |-
                       InitialBranch is the git branch to check out when initializing the Session

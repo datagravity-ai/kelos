@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"time"
 
+	"github.com/google/uuid"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -111,7 +112,7 @@ func isSessionInputUnavailable(err error) bool {
 	return errors.As(err, &unavailableError)
 }
 
-// +kubebuilder:rbac:groups=kelos.dev,resources=sessions,verbs=get;list;watch;patch
+// +kubebuilder:rbac:groups=kelos.dev,resources=sessions,verbs=get;list;watch;patch;delete
 // +kubebuilder:rbac:groups=kelos.dev,resources=sessions/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=kelos.dev,resources=workspaces;agentconfigs,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;delete
@@ -155,7 +156,23 @@ func (r *SessionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		}
 		return r.reconcileSessionReset(ctx, &session, &statefulSet)
 	}
-	if apierrors.IsNotFound(err) {
+	if statefulSetMissing {
+		// Reap an already-idle Session whose workload is gone rather than
+		// recreating it just to delete it later. A missing StatefulSet does not
+		// prove its ordinal Pod is gone, so reapMissingWorkloadIdleSession drains a
+		// surviving Pod before deleting; the unknown-activity guard lives in
+		// sessionIdleExpired and the resource-version precondition in
+		// reapIdleSession handles any status change since the fetch above.
+		if session.DeletionTimestamp == nil {
+			if expired, _ := sessionIdleExpired(&session); expired {
+				return r.reapMissingWorkloadIdleSession(ctx, &session, workloadName)
+			}
+		}
+		// The Session is no longer idle-expired; drop any idle-drain request left
+		// over from a prior expiry so a re-created runtime resumes accepting turns.
+		if err := r.clearSessionIdleDrainRequest(ctx, &session); err != nil {
+			return ctrl.Result{}, err
+		}
 		return r.createSessionStatefulSet(ctx, &session)
 	}
 	if statefulSet.DeletionTimestamp != nil {
@@ -275,7 +292,183 @@ func (r *SessionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if waitingForUpdate && (result.RequeueAfter == 0 || updateResult.RequeueAfter < result.RequeueAfter) {
 		result = updateResult
 	}
+	// Evaluate idle expiry only after the Active condition has been validated
+	// against the current Pod above, so a stale condition from a previous Pod
+	// cannot trigger deletion.
+	if session.DeletionTimestamp == nil {
+		expired, remaining := sessionIdleExpired(&session)
+		if expired {
+			return r.reconcileIdleReap(ctx, &session, &pod)
+		}
+		// The Session is no longer idle-expired (for example, activity resumed
+		// after a drain was requested). Cancel any pending idle-drain so the
+		// runtime resumes accepting turns.
+		if err := r.clearSessionIdleDrainRequest(ctx, &session); err != nil {
+			return ctrl.Result{}, err
+		}
+		if remaining > 0 && (result.RequeueAfter == 0 || remaining < result.RequeueAfter) {
+			result.RequeueAfter = remaining
+		}
+	}
 	return result, nil
+}
+
+// reapMissingWorkloadIdleSession reaps an idle Session whose StatefulSet has
+// been deleted. A missing StatefulSet does not prove its ordinal Pod is gone:
+// background garbage collection can leave the Pod running temporarily, and
+// orphan propagation leaves it running indefinitely. If the Pod still exists and
+// is running it is drained through the normal handshake before deletion so a turn
+// it has accepted but not yet published to status is not lost.
+//
+// When no live runtime remains (the Pod is absent, terminal, or belongs to a
+// different Session), a Session with a persistent workspace is not deleted from
+// its possibly stale Active=False status: its journal may hold activity that a
+// Pod accepted or completed while its ordered status patches were still retrying,
+// which the resource-version precondition cannot detect. Such a Session has its
+// runtime recreated so it recovers the journal and republishes activity — leaving
+// the idle-period reset intact — before the normal reconcile decides whether it
+// is still idle. Only a Session without persistent workspace state, which has no
+// journal to recover, is reaped directly.
+func (r *SessionReconciler) reapMissingWorkloadIdleSession(ctx context.Context, session *kelos.Session, workloadName string) (ctrl.Result, error) {
+	podName := workloadName + "-0"
+	var pod corev1.Pod
+	err := r.Get(ctx, client.ObjectKey{Namespace: session.Namespace, Name: podName}, &pod)
+	if err != nil && !apierrors.IsNotFound(err) {
+		return ctrl.Result{}, fmt.Errorf("getting Session Pod %q before idle reap: %w", podName, err)
+	}
+	podIsOurs := err == nil && pod.Annotations[sessionNameAnnotation] == session.Name
+	if podIsOurs {
+		if pod.DeletionTimestamp != nil {
+			// The Pod is terminating; wait for its absence to be confirmed rather than
+			// reaping while it may still be finishing an accepted turn.
+			return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+		}
+		if pod.Status.Phase != corev1.PodSucceeded && pod.Status.Phase != corev1.PodFailed {
+			// A running Pod can still acknowledge the drain handshake.
+			return r.reconcileIdleReap(ctx, session, &pod)
+		}
+	}
+	// No live runtime remains. Preserve any unpublished activity in a persistent
+	// workspace journal by recovering the runtime rather than deleting the Session
+	// and its workspace against a possibly stale Active=False status.
+	if session.Spec.VolumeClaimTemplate != nil {
+		if podIsOurs {
+			// Clear the leftover terminal Pod so the recreated StatefulSet can start a
+			// fresh ordinal Pod that mounts the retained workspace and recovers.
+			if err := r.Delete(ctx, &pod, client.Preconditions{UID: &pod.UID}); err != nil && !apierrors.IsNotFound(err) {
+				return ctrl.Result{}, fmt.Errorf("deleting terminal Session Pod %q before recovery: %w", pod.Name, err)
+			}
+			return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+		}
+		return r.createSessionStatefulSet(ctx, session)
+	}
+	return r.reapIdleSession(ctx, session)
+}
+
+// reconcileIdleReap drains the Session Pod before deleting an idle Session, so a
+// turn the runtime has locally accepted but not yet published to status is not
+// lost. It sets an idle-drain request and waits for the runtime to acknowledge
+// that no turn is in flight and it is no longer accepting turns, then deletes.
+func (r *SessionReconciler) reconcileIdleReap(ctx context.Context, session *kelos.Session, pod *corev1.Pod) (ctrl.Result, error) {
+	if pod.UID == "" {
+		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+	}
+	request, installed := installedSessionIdleDrainRequest(session, pod)
+	if !installed {
+		request = newSessionIdleDrainRequest(pod)
+		encoded, err := sessionupdate.Encode(request)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if err := r.setSessionIdleDrainRequest(ctx, session, encoded); err != nil {
+			return ctrl.Result{}, err
+		}
+		if r.Recorder != nil {
+			r.Recorder.Eventf(session, corev1.EventTypeNormal, "SessionIdleDraining", "Waiting for Session Pod %s to drain before reclaiming the idle Session", pod.Name)
+		}
+		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+	}
+	drained, err := sessionIdleDrainComplete(session, request, pod)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if !drained {
+		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+	}
+	return r.reapIdleSession(ctx, session)
+}
+
+func (r *SessionReconciler) setSessionIdleDrainRequest(ctx context.Context, session *kelos.Session, value string) error {
+	original := session.DeepCopy()
+	if session.Annotations == nil {
+		session.Annotations = map[string]string{}
+	}
+	session.Annotations[sessionupdate.IdleDrainRequestAnnotation] = value
+	// Drop any report from a previous idle period so a stale Drained
+	// acknowledgement cannot satisfy this newly installed request before the
+	// runtime has observed it and stopped accepting turns.
+	delete(session.Annotations, sessionupdate.IdleDrainReportAnnotation)
+	if err := r.Patch(ctx, session, client.MergeFrom(original)); err != nil {
+		return fmt.Errorf("requesting idle drain for Session %q: %w", session.Name, err)
+	}
+	return nil
+}
+
+// clearSessionIdleDrainRequest removes a pending idle-drain request so the
+// runtime stops rejecting new turns. It is a no-op when no request is present.
+// The runtime clears its own report once it observes the request is gone.
+func (r *SessionReconciler) clearSessionIdleDrainRequest(ctx context.Context, session *kelos.Session) error {
+	if session.Annotations[sessionupdate.IdleDrainRequestAnnotation] == "" &&
+		session.Annotations[sessionupdate.IdleDrainReportAnnotation] == "" {
+		return nil
+	}
+	original := session.DeepCopy()
+	delete(session.Annotations, sessionupdate.IdleDrainRequestAnnotation)
+	delete(session.Annotations, sessionupdate.IdleDrainReportAnnotation)
+	if err := r.Patch(ctx, session, client.MergeFrom(original)); err != nil {
+		return fmt.Errorf("clearing idle drain request for Session %q: %w", session.Name, err)
+	}
+	return nil
+}
+
+// sessionIdleDrainComplete reports whether the runtime has acknowledged the
+// idle-drain request for the current Pod with a Drained phase.
+func sessionIdleDrainComplete(session *kelos.Session, request sessionupdate.Request, pod *corev1.Pod) (bool, error) {
+	value := session.Annotations[sessionupdate.IdleDrainReportAnnotation]
+	if value == "" {
+		return false, nil
+	}
+	report, err := sessionupdate.DecodeReport(value)
+	if err != nil {
+		return false, fmt.Errorf("reading idle drain report for Session %q: %w", session.Name, err)
+	}
+	return report.RequestID == request.ID && report.PodUID == pod.UID && report.Phase == sessionupdate.PhaseDrained, nil
+}
+
+// reapIdleSession deletes a Session that has exceeded its idle delete policy.
+// The delete is guarded by a UID and resource-version precondition so that a
+// turn starting between the status read and the delete (for example, the
+// runtime publishing Active=True) fails the precondition and forces a requeue
+// rather than deleting a Session whose activity is in flight.
+func (r *SessionReconciler) reapIdleSession(ctx context.Context, session *kelos.Session) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+	preconditions := client.Preconditions{UID: &session.UID, ResourceVersion: &session.ResourceVersion}
+	if err := r.Delete(ctx, session, preconditions); err != nil {
+		if apierrors.IsNotFound(err) {
+			return ctrl.Result{}, nil
+		}
+		if apierrors.IsConflict(err) {
+			logger.Info("Session changed before idle deletion; requeuing to re-evaluate", "session", session.Name)
+			return ctrl.Result{Requeue: true}, nil
+		}
+		logger.Error(err, "Unable to delete idle Session", "session", session.Name)
+		return ctrl.Result{}, err
+	}
+	logger.Info("Deleted Session due to idle delete policy", "session", session.Name)
+	if r.Recorder != nil {
+		r.Recorder.Event(session, corev1.EventTypeNormal, "SessionIdleReaped", "Deleted Session after exceeding its idle delete policy")
+	}
+	return ctrl.Result{}, nil
 }
 
 func (r *SessionReconciler) createSessionStatefulSet(ctx context.Context, session *kelos.Session) (ctrl.Result, error) {
@@ -1460,6 +1653,70 @@ func sessionLabelValue(session *kelos.Session) string {
 	}
 	sum := sha256.Sum256([]byte(session.Name))
 	return hex.EncodeToString(sum[:16])
+}
+
+// sessionIdleExpired reports whether an idle Session has exceeded its idle
+// delete policy. It returns (true, 0) if the Session should be deleted now, or
+// (false, duration) if it should be requeued after the given duration. A Session
+// is only considered idle when its Active condition is explicitly False; an
+// active or unknown turn never counts as idle.
+func sessionIdleExpired(session *kelos.Session) (bool, time.Duration) {
+	if session.Spec.IdlePolicy == nil || session.Spec.IdlePolicy.DeleteAfterSeconds == nil {
+		return false, 0
+	}
+	active := apiMeta.FindStatusCondition(session.Status.Conditions, kelos.SessionConditionActive)
+	if active == nil || active.Status != metav1.ConditionFalse {
+		return false, 0
+	}
+	ttl := time.Duration(*session.Spec.IdlePolicy.DeleteAfterSeconds) * time.Second
+	expireAt := sessionIdleSince(session).Add(ttl)
+	remaining := time.Until(expireAt)
+	if remaining <= 0 {
+		return true, 0
+	}
+	return false, remaining
+}
+
+// sessionIdleSince returns the time from which Session idleness is measured: the
+// later of the Session creation time and the last reported activity time. The
+// Active condition transition is deliberately not consulted: status.lastActivityTime
+// is preserved across Pod replacement, so measuring from it keeps the idle clock
+// running when a replacement Pod re-reports Active=False without any user activity.
+func sessionIdleSince(session *kelos.Session) time.Time {
+	since := session.CreationTimestamp.Time
+	if last := session.Status.LastActivityTime; last != nil && last.After(since) {
+		since = last.Time
+	}
+	return since
+}
+
+// installedSessionIdleDrainRequest returns the idle-drain request already
+// installed on the Session for the given Pod, if any. The request is reused
+// across reconciles so its ID stays stable while the drain is in progress; it is
+// only treated as installed when it decodes and targets the current Pod.
+func installedSessionIdleDrainRequest(session *kelos.Session, pod *corev1.Pod) (sessionupdate.Request, bool) {
+	value := session.Annotations[sessionupdate.IdleDrainRequestAnnotation]
+	if value == "" {
+		return sessionupdate.Request{}, false
+	}
+	request, err := sessionupdate.Decode(value)
+	if err != nil || request.PodUID != pod.UID {
+		return sessionupdate.Request{}, false
+	}
+	return request, true
+}
+
+// newSessionIdleDrainRequest mints a drain request whose ID is unique to this
+// drain episode. A random ID (rather than one derived from the idle-start time)
+// guarantees that a Drained report left over from a previous idle period cannot
+// be mistaken for an acknowledgement of the current request: metav1.Time is
+// persisted with whole-second precision, so an ID salted with the idle-start
+// time collides for distinct idle periods that begin within the same second
+// (most acutely with deleteAfterSeconds: 0). The ID is persisted on the Session
+// and reused via installedSessionIdleDrainRequest, so it remains stable across
+// reconciles of the same episode.
+func newSessionIdleDrainRequest(pod *corev1.Pod) sessionupdate.Request {
+	return sessionupdate.Request{ID: uuid.NewString(), PodUID: pod.UID}
 }
 
 func sessionPhaseForPod(pod *corev1.Pod) (kelos.SessionPhase, string, string) {

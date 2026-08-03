@@ -215,6 +215,7 @@ the Session resource and is visible through the Kubernetes API.
 | `spec.initialBranch` | Git branch used to initialize the Session workspace. Checks out the branch from `origin` when it exists, or creates it from the Workspace ref. Requires `spec.worker.workspaceRef` | No |
 | `spec.initialPrompt` | Prompt submitted when the Session starts without retained conversation history. An `emptyDir` workspace may submit it again after Pod replacement | No |
 | `spec.volumeClaimTemplate` | PersistentVolumeClaimSpec for the Session workspace. Recommended for durable Sessions; omit to use an ephemeral `emptyDir` workspace | No |
+| `spec.idlePolicy.deleteAfterSeconds` | Automatically delete the Session once it has been continuously idle (no active turn, no reported activity) for this many seconds, measured from the later of `status.lastActivityTime` and the creation time. Renewed activity resets the idle period. Before deletion the runtime stops accepting new turns and any in-flight turn completes. Deleting the Session removes its workspace storage. Omit to never delete; zero deletes as soon as it goes idle | No |
 | `status.phase` | Infrastructure phase: `Pending`, `Ready`, `Suspended`, or `Failed` | Output |
 | `status.podName` | Session Pod name | Output |
 | `status.podUID` | Identity of the Pod running the live conversation | Output |
@@ -391,6 +392,7 @@ webhook-driven TaskSpawner.
 | `spec.sessionTemplate.initialPrompt` | Go text/template submitted when the created Session starts | Yes |
 | `spec.sessionTemplate.suspend` | Whether each created Session starts suspended (defaults to `false`) | No |
 | `spec.sessionTemplate.volumeClaimTemplate` | Persistent workspace for each Session; recommended so conversation history survives Pod replacement | No |
+| `spec.sessionTemplate.idlePolicy.deleteAfterSeconds` | Applied to each created Session as `Session.spec.idlePolicy.deleteAfterSeconds`: automatically delete the Session once it has been continuously idle for this many seconds, which removes its workspace storage. Omit to never delete; zero deletes as soon as it goes idle | No |
 | `status.observedGeneration` | Most recent generation observed by the controller | Output |
 | `status.totalSessions` | Current number of Sessions associated with this spawner | Output |
 | `status.lastSessionName` | Session most recently created or confirmed to exist | Output |
