@@ -21,6 +21,11 @@ const preservedNameTemplateAnnotation = "kelos.dev/v1alpha2-name-template"
 // authentication from a stored v1alpha2 TaskSpawner.
 const preservedContextGitHubAppAuthAnnotation = "kelos.dev/v1alpha2-context-github-app-auth"
 
+// preservedTaskSpawnerCredentialsAnnotation carries spec.credentials across a
+// v1alpha1 round-trip. v1alpha1 receives one credential as a valid fallback,
+// while the complete set remains in this annotation for restoration.
+const preservedTaskSpawnerCredentialsAnnotation = "kelos.dev/v1alpha2-taskspawner-credentials"
+
 func taskSpawnerToHub(_ context.Context, src *v1alpha1.TaskSpawner, dst *v1alpha2.TaskSpawner) error {
 	src.ObjectMeta.DeepCopyInto(&dst.ObjectMeta)
 	if err := convertViaJSON(&src.Spec, &dst.Spec); err != nil {
@@ -36,6 +41,10 @@ func taskSpawnerToHub(_ context.Context, src *v1alpha1.TaskSpawner, dst *v1alpha
 		return err
 	}
 	deleteAnnotation(dst.Annotations, preservedContextGitHubAppAuthAnnotation)
+	if err := restorePreservedTaskSpawnerCredentials(src.Annotations, &dst.Spec); err != nil {
+		return err
+	}
+	deleteAnnotation(dst.Annotations, preservedTaskSpawnerCredentialsAnnotation)
 	return nil
 }
 
@@ -50,6 +59,9 @@ func taskSpawnerFromHub(_ context.Context, src *v1alpha2.TaskSpawner, dst *v1alp
 	backfillTaskSpawnerLegacy(&dst.Spec)
 	setPreservedNameTemplateAnnotation(dst, src.Spec.TaskTemplate.NameTemplate)
 	if err := setPreservedContextGitHubAppAuth(dst, src.Spec.TaskTemplate); err != nil {
+		return err
+	}
+	if err := setPreservedTaskSpawnerCredentials(dst, src.Spec.Credentials); err != nil {
 		return err
 	}
 	return convertViaJSON(&src.Status, &dst.Status)
@@ -126,6 +138,67 @@ func restorePreservedContextGitHubAppAuth(annotations map[string]string, dst *v1
 		}
 	}
 	return nil
+}
+
+func setPreservedTaskSpawnerCredentials(dst *v1alpha1.TaskSpawner, credentials []v1alpha2.SpawnerCredential) error {
+	if len(credentials) == 0 {
+		deleteAnnotation(dst.Annotations, preservedTaskSpawnerCredentialsAnnotation)
+		return nil
+	}
+	data, err := json.Marshal(credentials)
+	if err != nil {
+		return err
+	}
+	if dst.Annotations == nil {
+		dst.Annotations = map[string]string{}
+	}
+	dst.Annotations[preservedTaskSpawnerCredentialsAnnotation] = string(data)
+
+	fallback := taskSpawnerCredentialFallback(credentials)
+	dst.Spec.TaskTemplate.Credentials = v1alpha1.Credentials{
+		Type: v1alpha1.CredentialType(fallback.Type),
+		SecretRef: &v1alpha1.SecretReference{
+			Name: fallback.SecretRef.Name,
+		},
+	}
+	return nil
+}
+
+func restorePreservedTaskSpawnerCredentials(annotations map[string]string, dst *v1alpha2.TaskSpawnerSpec) error {
+	raw, ok := annotations[preservedTaskSpawnerCredentialsAnnotation]
+	if !ok || raw == "" {
+		return nil
+	}
+	var credentials []v1alpha2.SpawnerCredential
+	if err := json.Unmarshal([]byte(raw), &credentials); err != nil || len(credentials) == 0 {
+		return nil
+	}
+	if !matchesProjectedSpawnerCredential(dst.TaskTemplate.Credentials, taskSpawnerCredentialFallback(credentials)) {
+		return nil
+	}
+	dst.Credentials = credentials
+	dst.TaskTemplate.Credentials = nil
+	if dst.TaskTemplate.Worker != nil {
+		dst.TaskTemplate.Worker.Credentials = nil
+	}
+	return nil
+}
+
+func taskSpawnerCredentialFallback(credentials []v1alpha2.SpawnerCredential) v1alpha2.SpawnerCredential {
+	fallback := credentials[0]
+	for _, credential := range credentials[1:] {
+		if credential.Name < fallback.Name {
+			fallback = credential
+		}
+	}
+	return fallback
+}
+
+func matchesProjectedSpawnerCredential(credentials *v1alpha2.Credentials, projected v1alpha2.SpawnerCredential) bool {
+	return credentials != nil &&
+		credentials.Type == projected.Type &&
+		credentials.SecretRef != nil &&
+		credentials.SecretRef.Name == projected.SecretRef.Name
 }
 
 func foldTaskSpawnerForward(src *v1alpha1.TaskSpawnerSpec, dst *v1alpha2.TaskSpawnerSpec) {

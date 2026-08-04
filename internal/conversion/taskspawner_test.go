@@ -401,6 +401,96 @@ func TestTaskSpawnerConvert_NameTemplateRoundTrips(t *testing.T) {
 	}
 }
 
+func TestTaskSpawnerConvert_CredentialsRoundTrip(t *testing.T) {
+	hub := &v1alpha2.TaskSpawner{
+		ObjectMeta: metav1.ObjectMeta{Name: "multi-account", Namespace: "default"},
+		Spec: v1alpha2.TaskSpawnerSpec{
+			When: v1alpha2.When{Cron: &v1alpha2.Cron{Schedule: "0 9 * * 1"}},
+			TaskTemplate: v1alpha2.TaskTemplate{
+				Worker: &v1alpha2.WorkerSpec{Type: "claude-code"},
+			},
+			Credentials: []v1alpha2.SpawnerCredential{
+				{Name: "account-b", Type: v1alpha2.CredentialTypeOAuth, SecretRef: v1alpha2.SecretReference{Name: "secret-b"}},
+				{Name: "account-a", Type: v1alpha2.CredentialTypeAPIKey, SecretRef: v1alpha2.SecretReference{Name: "secret-a"}},
+			},
+		},
+	}
+
+	spoke := &v1alpha1.TaskSpawner{}
+	if err := taskSpawnerFromHub(context.Background(), hub, spoke); err != nil {
+		t.Fatalf("taskSpawnerFromHub() error = %v", err)
+	}
+	if _, ok := spoke.Annotations[preservedTaskSpawnerCredentialsAnnotation]; !ok {
+		t.Fatal("expected preserved TaskSpawner credentials annotation on spoke")
+	}
+	if got := spoke.Spec.TaskTemplate.Credentials.SecretRef; got == nil || got.Name != "secret-a" {
+		t.Fatalf("v1alpha1 fallback SecretRef = %#v, want secret-a", got)
+	}
+
+	back := &v1alpha2.TaskSpawner{}
+	if err := taskSpawnerToHub(context.Background(), spoke, back); err != nil {
+		t.Fatalf("taskSpawnerToHub() error = %v", err)
+	}
+	if _, ok := back.Annotations[preservedTaskSpawnerCredentialsAnnotation]; ok {
+		t.Error("internal preservation annotation leaked onto hub object")
+	}
+	if back.Spec.TaskTemplate.Credentials != nil {
+		t.Errorf("fallback taskTemplate.credentials was not cleared: %#v", back.Spec.TaskTemplate.Credentials)
+	}
+	if len(back.Spec.Credentials) != 2 {
+		t.Fatalf("round-tripped credentials len = %d, want 2", len(back.Spec.Credentials))
+	}
+	byName := map[string]v1alpha2.SpawnerCredential{}
+	for _, credential := range back.Spec.Credentials {
+		byName[credential.Name] = credential
+	}
+	if got := byName["account-a"].SecretRef.Name; got != "secret-a" {
+		t.Errorf("account-a SecretRef.Name = %q, want secret-a", got)
+	}
+	if got := byName["account-b"].SecretRef.Name; got != "secret-b" {
+		t.Errorf("account-b SecretRef.Name = %q, want secret-b", got)
+	}
+}
+
+func TestTaskSpawnerConvert_EditedV1Alpha1CredentialsReplacePool(t *testing.T) {
+	hub := &v1alpha2.TaskSpawner{
+		ObjectMeta: metav1.ObjectMeta{Name: "multi-account", Namespace: "default"},
+		Spec: v1alpha2.TaskSpawnerSpec{
+			When: v1alpha2.When{Cron: &v1alpha2.Cron{Schedule: "0 9 * * 1"}},
+			TaskTemplate: v1alpha2.TaskTemplate{
+				Worker: &v1alpha2.WorkerSpec{Type: "claude-code"},
+			},
+			Credentials: []v1alpha2.SpawnerCredential{
+				{Name: "account-b", Type: v1alpha2.CredentialTypeOAuth, SecretRef: v1alpha2.SecretReference{Name: "secret-b"}},
+				{Name: "account-a", Type: v1alpha2.CredentialTypeAPIKey, SecretRef: v1alpha2.SecretReference{Name: "secret-a"}},
+			},
+		},
+	}
+
+	spoke := &v1alpha1.TaskSpawner{}
+	if err := taskSpawnerFromHub(context.Background(), hub, spoke); err != nil {
+		t.Fatalf("taskSpawnerFromHub() error = %v", err)
+	}
+	spoke.Spec.TaskTemplate.Credentials = v1alpha1.Credentials{
+		Type:      v1alpha1.CredentialTypeOAuth,
+		SecretRef: &v1alpha1.SecretReference{Name: "edited-secret"},
+	}
+
+	back := &v1alpha2.TaskSpawner{}
+	if err := taskSpawnerToHub(context.Background(), spoke, back); err != nil {
+		t.Fatalf("taskSpawnerToHub() error = %v", err)
+	}
+	if len(back.Spec.Credentials) != 0 {
+		t.Fatalf("round-tripped credentials = %#v, want no credential pool", back.Spec.Credentials)
+	}
+	if got := back.Spec.TaskTemplate.Credentials; got == nil || got.Type != v1alpha2.CredentialTypeOAuth || got.SecretRef == nil || got.SecretRef.Name != "edited-secret" {
+		t.Errorf("round-tripped taskTemplate.credentials = %#v, want edited OAuth credential", got)
+	}
+	if _, ok := back.Annotations[preservedTaskSpawnerCredentialsAnnotation]; ok {
+		t.Error("internal preservation annotation leaked onto hub object")
+	}
+}
+
 func TestTaskSpawnerConvert_ContextGitHubAppAuthRoundTrips(t *testing.T) {
 	hub := &v1alpha2.TaskSpawner{
 		ObjectMeta: metav1.ObjectMeta{Name: "enrich", Namespace: "default"},

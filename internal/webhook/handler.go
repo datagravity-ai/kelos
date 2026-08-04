@@ -647,6 +647,9 @@ func (h *WebhookHandler) createTask(ctx context.Context, spawner *kelos.TaskSpaw
 	if err != nil {
 		return false, fmt.Errorf("failed to build task: %w", err)
 	}
+	if err := h.taskBuilder.AssignSpawnerCredential(spawner, task); err != nil {
+		return false, fmt.Errorf("assigning TaskSpawner credential: %w", err)
+	}
 
 	// Stamp reporting annotations for GitHub webhook sources when reporting is configured.
 	if h.source == GitHubSource && parsed.GitHub != nil && parsed.GitHub.Number > 0 &&
@@ -754,6 +757,9 @@ func (h *WebhookHandler) processSessionSpawner(ctx context.Context, spawner *kel
 	)
 	if buildErr != nil {
 		return false, h.recordSessionSpawnerFailure(ctx, spawner, "SessionBuildFailed", buildErr)
+	}
+	if credentialErr := sessionbuilder.AssignSpawnerCredential(spawner, session); credentialErr != nil {
+		return false, h.recordSessionSpawnerFailure(ctx, spawner, "SessionBuildFailed", credentialErr)
 	}
 	if createErr := h.client.Create(ctx, session); createErr != nil {
 		if apierrors.IsAlreadyExists(createErr) {

@@ -386,6 +386,9 @@ webhook-driven TaskSpawner.
 | `spec.when.githubWebhook.repository` | Repository filter in `owner/repo` format; omit to accept any repository | No |
 | `spec.when.githubWebhook.excludeAuthors` | GitHub senders ignored before filter evaluation | No |
 | `spec.when.githubWebhook.filters` | GitHub webhook filters using the same fields and OR semantics as TaskSpawner | No |
+| `spec.credentials[].name` | Unique name for a credential distributed by this SessionSpawner. The name is recorded in the `kelos.dev/spawner-credential` label on generated Sessions | Yes when `spec.credentials` is set |
+| `spec.credentials[].type` | Credential type (`api-key` or `oauth`) | Yes when `spec.credentials` is set |
+| `spec.credentials[].secretRef.name` | Secret containing the agent credential | Yes when `spec.credentials` is set |
 | `spec.sessionTemplate.worker` | Worker configuration copied to each Session | Yes |
 | `spec.sessionTemplate.worker.workspaceRef.name` | Workspace cloned into each Session | Yes |
 | `spec.sessionTemplate.initialBranch` | Go text/template rendered for the Session's initial branch | No |
@@ -416,6 +419,36 @@ is implemented.
 Created Sessions have a `kelos.dev/sessionspawner` label whose value is the
 SessionSpawner UID, a `kelos.dev/sessionspawner-name` annotation for the
 human-readable name, and a controller owner reference to the SessionSpawner.
+
+When `spec.credentials` is configured, omit
+`spec.sessionTemplate.worker.credentials`. Before creating each Session, the
+SessionSpawner selects a credential uniformly at random. It copies the selected
+credential into the generated Session and records the selection in the
+`kelos.dev/spawner-credential` label. The Session keeps that credential for its
+lifetime, including after suspension and resume. Assignments are independent,
+so a small number of Sessions may not be distributed evenly.
+
+```yaml
+spec:
+  credentials:
+    - name: account-a
+      type: oauth
+      secretRef:
+        name: claude-account-a
+    - name: account-b
+      type: oauth
+      secretRef:
+        name: claude-account-b
+  sessionTemplate:
+    worker:
+      type: claude-code
+      workspaceRef:
+        name: my-workspace
+    initialPrompt: "Handle issue #{{.Number}}: {{.Title}}"
+```
+
+`spec.credentials` is mutually exclusive with
+`spec.sessionTemplate.worker.credentials`.
 
 Before the first matching delivery, the SessionSpawner
 `LastDeliverySucceeded` condition is absent. A creation failure returns an
@@ -636,10 +669,13 @@ to receive refreshed credentials during long-running work.
 | `spec.when.webhook.filters[].pattern` | Require a regex match against the extracted field value (mutually exclusive with `value`) | Conditional |
 | `spec.when.jira.pollInterval` | Per-source poll interval (e.g., `"30s"`, `"5m"`). Defaults to `5m` when omitted | No |
 | `spec.when.cron.schedule` | Cron schedule expression (e.g., `"0 * * * *"`) | Yes (when using cron) |
-| `spec.taskTemplate.worker` | Execution environment for spawned Tasks (see [WorkerSpec](#workerspec)). When used alone, spawned Tasks create Jobs. Mutually exclusive with `workerPoolRef` | One of worker, workerPoolRef, or type+credentials |
-| `spec.taskTemplate.workerPoolRef.name` | WorkerPool for persistent execution | One of worker, workerPoolRef, or type+credentials |
-| `spec.taskTemplate.type` | **(Deprecated)** Agent type — use `taskTemplate.worker.type` instead | Legacy |
-| `spec.taskTemplate.credentials` | **(Deprecated)** Credentials — use `taskTemplate.worker.credentials` instead | Legacy |
+| `spec.credentials[].name` | Unique name for a credential distributed by this TaskSpawner. The name is recorded in the `kelos.dev/spawner-credential` label on generated Tasks | Yes when `spec.credentials` is set |
+| `spec.credentials[].type` | Credential type (`api-key` or `oauth`) | Yes when `spec.credentials` is set |
+| `spec.credentials[].secretRef.name` | Secret containing the agent credential. The required Secret key depends on the agent and credential type (see [Task Credential Secret Format](#task-credential-secret-format)) | Yes when `spec.credentials` is set |
+| `spec.taskTemplate.worker` | Execution environment for spawned Tasks (see [WorkerSpec](#workerspec)). When used alone, spawned Tasks create Jobs. Mutually exclusive with `workerPoolRef` | One of worker, workerPoolRef, or type |
+| `spec.taskTemplate.workerPoolRef.name` | WorkerPool for persistent execution | One of worker, workerPoolRef, or type |
+| `spec.taskTemplate.type` | **(Deprecated)** Agent type — use `taskTemplate.worker.type` instead | One of worker, workerPoolRef, or type |
+| `spec.taskTemplate.credentials` | **(Deprecated)** Credentials — use `taskTemplate.worker.credentials` instead | Required with type unless `spec.credentials` is set |
 | `spec.taskTemplate.model` | **(Deprecated)** Model override — use `taskTemplate.worker.model` instead | Legacy |
 | `spec.taskTemplate.effort` | **(Deprecated)** Reasoning effort — use `taskTemplate.worker.effort` instead | Legacy |
 | `spec.taskTemplate.image` | **(Deprecated)** Custom agent image — use `taskTemplate.worker.image` instead | Legacy |
@@ -652,13 +688,49 @@ to receive refreshed credentials during long-running work.
 | `spec.taskTemplate.ttlSecondsAfterFinished` | Auto-delete spawned tasks after N seconds | No |
 | `spec.taskTemplate.podFailurePolicy` | Kubernetes Job pod failure policy copied to spawned Tasks as `Task.spec.podFailurePolicy` | No |
 | `spec.taskTemplate.podOverrides` | **(Deprecated)** Pod customization — use `taskTemplate.worker.podOverrides` instead | Legacy |
-| `spec.taskTemplate.metadata.labels` | Labels merged into spawned Tasks; values support the same Go template variables as `branch`/`promptTemplate`; the `kelos.dev/taskspawner` label is always set to the TaskSpawner name and overrides any user value for that key | No |
+| `spec.taskTemplate.metadata.labels` | Labels merged into spawned Tasks; values support the same Go template variables as `branch`/`promptTemplate`; `kelos.dev/taskspawner` and, when `spec.credentials` is configured, `kelos.dev/spawner-credential` are reserved and override conflicting user values | No |
 | `spec.taskTemplate.metadata.annotations` | Annotations merged into spawned Tasks; values support the same Go template variables as `branch`/`promptTemplate`; source annotations (e.g. `kelos.dev/source-kind`) are applied after rendering and override conflicting user values | No |
 | `spec.taskTemplate.contextSources` | External data sources fetched in parallel before task creation; each source's value is exposed as `{{.Context.NAME}}` in `branch`, `promptTemplate`, and `metadata` templates — but not in `nameTemplate` (see [Context Sources](#context-sources) below). Maximum 8 entries; names must be unique | No |
 | `spec.taskTemplate.upstreamRepo` | Upstream repository in `owner/repo` format; injected as `KELOS_UPSTREAM_REPO` into the agent container. Typically auto-derived from `githubIssues.repo`/`githubPullRequests.repo`, but can be set explicitly for fork workflows | No |
 | `spec.maxConcurrency` | Limit max concurrent running tasks (important for cost control) | No |
 | `spec.maxTotalTasks` | Lifetime limit on total tasks created by this spawner | No |
 | `spec.suspend` | Pause the spawner without deleting it; resume with `spec.suspend: false` (default: `false`) | No |
+
+When `spec.credentials` is configured, omit credentials from
+`spec.taskTemplate`. Before creating each Task, the TaskSpawner selects the
+credential uniformly at random. It copies the selected credential into the
+generated Task and records the selection in the
+`kelos.dev/spawner-credential` label. The Task keeps that credential for its
+lifetime, including Job retries. Assignments are independent, so a small number
+of Tasks may not be distributed evenly.
+
+Choose exactly one execution source: `spec.taskTemplate.worker`,
+`spec.taskTemplate.workerPoolRef`, or the legacy `spec.taskTemplate.type`.
+Inline `worker` and legacy `type` sources require credentials from their
+corresponding template field or from `spec.credentials`.
+
+```yaml
+spec:
+  credentials:
+    - name: account-a
+      type: oauth
+      secretRef:
+        name: claude-account-a
+    - name: account-b
+      type: oauth
+      secretRef:
+        name: claude-account-b
+  taskTemplate:
+    worker:
+      type: claude-code
+      workspaceRef:
+        name: my-workspace
+    promptTemplate: "Fix issue #{{.Number}}: {{.Title}}"
+```
+
+`spec.credentials` is mutually exclusive with
+`spec.taskTemplate.worker.credentials`, deprecated
+`spec.taskTemplate.credentials`, and `spec.taskTemplate.workerPoolRef`.
 
 ### Generated Task Names
 

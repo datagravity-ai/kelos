@@ -54,7 +54,6 @@ type SessionPullRequest struct {
 // SessionSpec defines the desired state of a Session.
 //
 // +kubebuilder:validation:XValidation:rule="has(self.worker.type) && self.worker.type in ['claude-code', 'codex', 'opencode']",message="worker.type must be claude-code, codex, or opencode"
-// +kubebuilder:validation:XValidation:rule="has(self.worker.credentials)",message="worker.credentials is required"
 // +kubebuilder:validation:XValidation:rule="!has(self.initialBranch) || size(self.initialBranch) == 0 || has(self.worker.workspaceRef)",message="worker.workspaceRef is required when initialBranch is set"
 type SessionSpec struct {
 	// Worker defines the agent and execution environment for this Session.
@@ -168,6 +167,7 @@ type Session struct {
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
 	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:XValidation:rule="has(self.worker.credentials)",message="worker.credentials is required"
 	// +kubebuilder:validation:XValidation:rule="self.worker == oldSelf.worker",message="worker is immutable"
 	// +kubebuilder:validation:XValidation:rule="has(self.initialBranch) == has(oldSelf.initialBranch) && (!has(self.initialBranch) || self.initialBranch == oldSelf.initialBranch)",message="initialBranch is immutable"
 	// +kubebuilder:validation:XValidation:rule="has(self.initialPrompt) == has(oldSelf.initialPrompt) && (!has(self.initialPrompt) || self.initialPrompt == oldSelf.initialPrompt)",message="initialPrompt is immutable"

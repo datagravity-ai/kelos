@@ -832,7 +832,9 @@ type TaskTemplateMetadata struct {
 	// Labels are merged into the spawned Task's labels. Values support Go
 	// text/template with the same variables as branch and promptTemplate.
 	// The kelos.dev/taskspawner label is always set to the TaskSpawner name
-	// and overrides any user value for that key.
+	// and overrides any user value for that key. When TaskSpawner.spec.credentials
+	// is configured, kelos.dev/spawner-credential is also reserved and overrides
+	// any user value with the selected credential name.
 	// +optional
 	Labels map[string]string `json:"labels,omitempty"`
 
@@ -847,12 +849,13 @@ type TaskTemplateMetadata struct {
 // TaskTemplate defines the template for spawned Tasks.
 //
 // Execution source (exactly one required):
-//   - worker (inline): creates a Job using worker.type and worker.credentials.
+//   - worker (inline): creates a Job using worker.type and credentials from
+//     worker.credentials or TaskSpawner.spec.credentials.
 //   - workerPoolRef: dispatches to a pre-warmed pool.
-//   - type + credentials (legacy): equivalent to inline worker, kept for backward compatibility.
+//   - type (legacy): equivalent to inline worker, with credentials from
+//     credentials or TaskSpawner.spec.credentials; kept for backward compatibility.
 //
-// +kubebuilder:validation:XValidation:rule="has(self.workerPoolRef) || (has(self.worker) && has(self.worker.type) && size(self.worker.type) > 0) || (has(self.type) && size(self.type) > 0 && has(self.credentials) && size(self.credentials.type) > 0)",message="either workerPoolRef, worker with type, or type with credentials is required"
-// +kubebuilder:validation:XValidation:rule="has(self.workerPoolRef) || !has(self.worker) || has(self.worker.credentials)",message="worker.credentials is required for inline execution"
+// +kubebuilder:validation:XValidation:rule="has(self.workerPoolRef) || (has(self.worker) && has(self.worker.type) && size(self.worker.type) > 0) || (has(self.type) && size(self.type) > 0)",message="either workerPoolRef, worker with type, or type is required"
 // +kubebuilder:validation:XValidation:rule="!has(self.workerPoolRef) || (!has(self.type) && !has(self.credentials))",message="workerPoolRef is mutually exclusive with inline type/credentials"
 // +kubebuilder:validation:XValidation:rule="!has(self.workerPoolRef) || !has(self.worker)",message="workerPoolRef is mutually exclusive with inline worker (per-task overrides not yet supported)"
 // +kubebuilder:validation:XValidation:rule="!has(self.worker) || (!has(self.type) && !has(self.credentials))",message="worker is mutually exclusive with legacy type/credentials fields"
@@ -1042,14 +1045,28 @@ type TaskTemplate struct {
 
 // TaskSpawnerSpec defines the desired state of TaskSpawner.
 // +kubebuilder:validation:XValidation:rule="!(has(self.when.githubIssues) || has(self.when.githubPullRequests) || has(self.when.githubWebhook) || has(self.when.linearWebhook)) || has(self.taskTemplate.workspaceRef) || (has(self.taskTemplate.worker) && has(self.taskTemplate.worker.workspaceRef)) || has(self.taskTemplate.workerPoolRef)",message="a workspace source is required when using githubIssues, githubPullRequests, githubWebhook, or linearWebhook source (set taskTemplate.workspaceRef, taskTemplate.worker.workspaceRef, or taskTemplate.workerPoolRef — a pool satisfies this because it carries its own workspace)"
+// +kubebuilder:validation:XValidation:rule="has(self.taskTemplate.workerPoolRef) || (has(self.taskTemplate.worker) && (has(self.taskTemplate.worker.credentials) || has(self.credentials))) || (has(self.taskTemplate.type) && (has(self.taskTemplate.credentials) || has(self.credentials)))",message="inline task templates require taskTemplate credentials or spec.credentials"
+// +kubebuilder:validation:XValidation:rule="!has(self.credentials) || (!has(self.taskTemplate.workerPoolRef) && !has(self.taskTemplate.credentials) && (!has(self.taskTemplate.worker) || !has(self.taskTemplate.worker.credentials)))",message="spec.credentials is mutually exclusive with taskTemplate credentials and workerPoolRef"
 type TaskSpawnerSpec struct {
 	// When defines the conditions that trigger task spawning.
 	// +kubebuilder:validation:Required
 	When When `json:"when"`
 
-	// TaskTemplate defines the template for spawned Tasks.
+	// TaskTemplate defines the template for spawned Tasks. Inline worker and
+	// legacy type templates may use TaskSpawner.spec.credentials instead of
+	// credentials nested in the template.
 	// +kubebuilder:validation:Required
 	TaskTemplate TaskTemplate `json:"taskTemplate"`
+
+	// Credentials lists named credentials available to generated Tasks. The
+	// spawner selects one credential at random and copies it to the generated
+	// Task. Mutually exclusive with credentials configured in taskTemplate and
+	// with taskTemplate.workerPoolRef.
+	// +optional
+	// +kubebuilder:validation:MinItems=1
+	// +listType=map
+	// +listMapKey=name
+	Credentials []SpawnerCredential `json:"credentials,omitempty"`
 
 	// MaxConcurrency limits the number of concurrently running (non-terminal) Tasks.
 	// When the limit is reached, the spawner skips creating new Tasks until
