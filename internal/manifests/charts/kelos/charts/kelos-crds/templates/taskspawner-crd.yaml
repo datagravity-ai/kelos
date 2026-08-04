@@ -8192,6 +8192,51 @@ spec:
           spec:
             description: TaskSpawnerSpec defines the desired state of TaskSpawner.
             properties:
+              credentials:
+                description: |-
+                  Credentials lists named credentials available to generated Tasks. The
+                  spawner selects one credential at random and copies it to the generated
+                  Task. Mutually exclusive with credentials configured in taskTemplate and
+                  with taskTemplate.workerPoolRef.
+                items:
+                  description: |-
+                    SpawnerCredential identifies one credential in a spawner's credential pool.
+                    A TaskSpawner or SessionSpawner assigns one credential to each generated resource.
+                  properties:
+                    name:
+                      description: Name identifies this credential in generated resource
+                        labels.
+                      maxLength: 63
+                      minLength: 1
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      type: string
+                    secretRef:
+                      description: SecretRef references the Secret containing this
+                        credential.
+                      properties:
+                        name:
+                          description: Name is the name of the secret.
+                          minLength: 1
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    type:
+                      description: Type specifies the credential type.
+                      enum:
+                      - api-key
+                      - oauth
+                      type: string
+                  required:
+                  - name
+                  - secretRef
+                  - type
+                  type: object
+                minItems: 1
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               maxConcurrency:
                 description: |-
                   MaxConcurrency limits the number of concurrently running (non-terminal) Tasks.
@@ -8219,7 +8264,10 @@ spec:
                   Defaults to false.
                 type: boolean
               taskTemplate:
-                description: TaskTemplate defines the template for spawned Tasks.
+                description: |-
+                  TaskTemplate defines the template for spawned Tasks. Inline worker and
+                  legacy type templates may use TaskSpawner.spec.credentials instead of
+                  credentials nested in the template.
                 properties:
                   agentConfigRefs:
                     description: |-
@@ -8514,7 +8562,9 @@ spec:
                           Labels are merged into the spawned Task's labels. Values support Go
                           text/template with the same variables as branch and promptTemplate.
                           The kelos.dev/taskspawner label is always set to the TaskSpawner name
-                          and overrides any user value for that key.
+                          and overrides any user value for that key. When TaskSpawner.spec.credentials
+                          is configured, kelos.dev/spawner-credential is also reserved and overrides
+                          any user value with the selected credential name.
                         type: object
                     type: object
                   model:
@@ -22482,14 +22532,10 @@ spec:
                     type: object
                 type: object
                 x-kubernetes-validations:
-                - message: either workerPoolRef, worker with type, or type with credentials
-                    is required
+                - message: either workerPoolRef, worker with type, or type is required
                   rule: has(self.workerPoolRef) || (has(self.worker) && has(self.worker.type)
                     && size(self.worker.type) > 0) || (has(self.type) && size(self.type)
-                    > 0 && has(self.credentials) && size(self.credentials.type) >
-                    0)
-                - message: worker.credentials is required for inline execution
-                  rule: has(self.workerPoolRef) || !has(self.worker) || has(self.worker.credentials)
+                    > 0)
                 - message: workerPoolRef is mutually exclusive with inline type/credentials
                   rule: '!has(self.workerPoolRef) || (!has(self.type) && !has(self.credentials))'
                 - message: workerPoolRef is mutually exclusive with inline worker
@@ -23302,6 +23348,16 @@ spec:
                 || has(self.when.githubWebhook) || has(self.when.linearWebhook)) ||
                 has(self.taskTemplate.workspaceRef) || (has(self.taskTemplate.worker)
                 && has(self.taskTemplate.worker.workspaceRef)) || has(self.taskTemplate.workerPoolRef)'
+            - message: inline task templates require taskTemplate credentials or spec.credentials
+              rule: has(self.taskTemplate.workerPoolRef) || (has(self.taskTemplate.worker)
+                && (has(self.taskTemplate.worker.credentials) || has(self.credentials)))
+                || (has(self.taskTemplate.type) && (has(self.taskTemplate.credentials)
+                || has(self.credentials)))
+            - message: spec.credentials is mutually exclusive with taskTemplate credentials
+                and workerPoolRef
+              rule: '!has(self.credentials) || (!has(self.taskTemplate.workerPoolRef)
+                && !has(self.taskTemplate.credentials) && (!has(self.taskTemplate.worker)
+                || !has(self.taskTemplate.worker.credentials)))'
           status:
             description: TaskSpawnerStatus defines the observed state of TaskSpawner.
             properties:

@@ -25,6 +25,7 @@ import (
 	kelos "github.com/kelos-dev/kelos/api/v1alpha2"
 	"github.com/kelos-dev/kelos/internal/reporting"
 	"github.com/kelos-dev/kelos/internal/sessionbuilder"
+	"github.com/kelos-dev/kelos/internal/spawnercredentials"
 	"github.com/kelos-dev/kelos/internal/taskbuilder"
 )
 
@@ -359,6 +360,42 @@ func TestServeHTTP_SessionSpawnerCreatesSessionPerDistinctDelivery(t *testing.T)
 	}
 	if updatedSpawner.Status.LastSessionName != webhookSpawnName("workers", "issue_comment", "session-delivery-2") {
 		t.Fatalf("lastSessionName = %q", updatedSpawner.Status.LastSessionName)
+	}
+}
+
+func TestServeHTTP_AssignsSessionSpawnerCredentials(t *testing.T) {
+	spawner := newSessionSpawner("workers")
+	spawner.Spec.SessionTemplate.Worker.Credentials = nil
+	spawner.Spec.Credentials = []kelos.SpawnerCredential{
+		{Name: "account-b", Type: kelos.CredentialTypeOAuth, SecretRef: kelos.SecretReference{Name: "secret-b"}},
+		{Name: "account-a", Type: kelos.CredentialTypeOAuth, SecretRef: kelos.SecretReference{Name: "secret-a"}},
+	}
+	handler := newTestHandler(t, spawner)
+
+	serveGitHubWebhook(t, handler, "issue_comment", "session-account-1", issueCommentPayload, http.StatusOK)
+	serveGitHubWebhook(t, handler, "issue_comment", "session-account-2", issueCommentPayload, http.StatusOK)
+
+	var sessions kelos.SessionList
+	if err := handler.client.List(context.Background(), &sessions); err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions.Items) != 2 {
+		t.Fatalf("Sessions = %d, want 2", len(sessions.Items))
+	}
+	wantSecrets := map[string]string{"account-a": "secret-a", "account-b": "secret-b"}
+	for i := range sessions.Items {
+		session := &sessions.Items[i]
+		if session.Spec.Worker.Credentials == nil || session.Spec.Worker.Credentials.SecretRef == nil {
+			t.Fatalf("Session %s has no assigned credentials", session.Name)
+		}
+		credentialName := session.Labels[spawnercredentials.AssignmentLabel]
+		wantSecret, ok := wantSecrets[credentialName]
+		if !ok {
+			t.Fatalf("Session %s credential label = %q, want a configured credential", session.Name, credentialName)
+		}
+		if got := session.Spec.Worker.Credentials.SecretRef.Name; got != wantSecret {
+			t.Errorf("Session %s Secret = %q, want %q for %s", session.Name, got, wantSecret, credentialName)
+		}
 	}
 }
 
@@ -2285,6 +2322,42 @@ func TestServeHTTP_DuplicateTasksDedupedByNameTemplate(t *testing.T) {
 	}
 	if got := taskList.Items[0].Name; got != "responder-pr-123" {
 		t.Errorf("task name = %q, want %q", got, "responder-pr-123")
+	}
+}
+
+func TestServeHTTP_AssignsTaskSpawnerCredentials(t *testing.T) {
+	spawner := nameTemplateSpawner()
+	spawner.Spec.TaskTemplate.Credentials = nil
+	spawner.Spec.Credentials = []kelos.SpawnerCredential{
+		{Name: "account-b", Type: kelos.CredentialTypeOAuth, SecretRef: kelos.SecretReference{Name: "secret-b"}},
+		{Name: "account-a", Type: kelos.CredentialTypeOAuth, SecretRef: kelos.SecretReference{Name: "secret-a"}},
+	}
+	handler := newTestHandler(t, spawner)
+
+	sendPRWebhook(t, handler, prWebhookPayload(123), "d-account-1")
+	sendPRWebhook(t, handler, prWebhookPayload(124), "d-account-2")
+
+	var taskList kelos.TaskList
+	if err := handler.client.List(context.Background(), &taskList); err != nil {
+		t.Fatal(err)
+	}
+	if len(taskList.Items) != 2 {
+		t.Fatalf("Task count = %d, want 2", len(taskList.Items))
+	}
+	wantSecrets := map[string]string{"account-a": "secret-a", "account-b": "secret-b"}
+	for i := range taskList.Items {
+		task := &taskList.Items[i]
+		if task.Spec.Credentials == nil || task.Spec.Credentials.SecretRef == nil {
+			t.Fatalf("Task %s has no assigned credentials", task.Name)
+		}
+		credentialName := task.Labels[spawnercredentials.AssignmentLabel]
+		wantSecret, ok := wantSecrets[credentialName]
+		if !ok {
+			t.Fatalf("Task %s credential label = %q, want a configured credential", task.Name, credentialName)
+		}
+		if got := task.Spec.Credentials.SecretRef.Name; got != wantSecret {
+			t.Errorf("Task %s Secret = %q, want %q for %s", task.Name, got, wantSecret, credentialName)
+		}
 	}
 }
 

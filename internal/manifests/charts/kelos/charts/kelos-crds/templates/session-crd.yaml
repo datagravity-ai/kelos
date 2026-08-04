@@ -7181,6 +7181,8 @@ spec:
             - worker
             type: object
             x-kubernetes-validations:
+            - message: worker.credentials is required
+              rule: has(self.worker.credentials)
             - message: worker is immutable
               rule: self.worker == oldSelf.worker
             - message: initialBranch is immutable
@@ -7199,8 +7201,6 @@ spec:
             - message: worker.type must be claude-code, codex, or opencode
               rule: has(self.worker.type) && self.worker.type in ['claude-code', 'codex',
                 'opencode']
-            - message: worker.credentials is required
-              rule: has(self.worker.credentials)
             - message: worker.workspaceRef is required when initialBranch is set
               rule: '!has(self.initialBranch) || size(self.initialBranch) == 0 ||
                 has(self.worker.workspaceRef)'

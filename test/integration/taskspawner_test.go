@@ -2420,4 +2420,52 @@ var _ = Describe("TaskSpawner Controller", func() {
 			Expect(apierrors.IsInvalid(err)).To(BeTrue())
 		})
 	})
+
+	Context("When configuring multiple TaskSpawner credentials", func() {
+		It("Should accept credentials without template credentials", func() {
+			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "test-taskspawner-credentials"}}
+			Expect(k8sClient.Create(ctx, ns)).Should(Succeed())
+
+			ts := &kelos.TaskSpawner{
+				ObjectMeta: metav1.ObjectMeta{Name: "multi-account", Namespace: ns.Name},
+				Spec: kelos.TaskSpawnerSpec{
+					When: kelos.When{Cron: &kelos.Cron{Schedule: "0 * * * *"}},
+					TaskTemplate: kelos.TaskTemplate{
+						Worker: &kelos.WorkerSpec{Type: "claude-code"},
+					},
+					Credentials: []kelos.SpawnerCredential{
+						{Name: "account-a", Type: kelos.CredentialTypeOAuth, SecretRef: kelos.SecretReference{Name: "secret-a"}},
+						{Name: "account-b", Type: kelos.CredentialTypeOAuth, SecretRef: kelos.SecretReference{Name: "secret-b"}},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, ts)).Should(Succeed())
+		})
+
+		It("Should reject credentials combined with template credentials", func() {
+			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "test-taskspawner-credential-conflict"}}
+			Expect(k8sClient.Create(ctx, ns)).Should(Succeed())
+
+			ts := &kelos.TaskSpawner{
+				ObjectMeta: metav1.ObjectMeta{Name: "multi-account", Namespace: ns.Name},
+				Spec: kelos.TaskSpawnerSpec{
+					When: kelos.When{Cron: &kelos.Cron{Schedule: "0 * * * *"}},
+					TaskTemplate: kelos.TaskTemplate{
+						Worker: &kelos.WorkerSpec{
+							Type: "claude-code",
+							Credentials: &kelos.Credentials{
+								Type:      kelos.CredentialTypeOAuth,
+								SecretRef: &kelos.SecretReference{Name: "template-secret"},
+							},
+						},
+					},
+					Credentials: []kelos.SpawnerCredential{
+						{Name: "account-a", Type: kelos.CredentialTypeOAuth, SecretRef: kelos.SecretReference{Name: "secret-a"}},
+					},
+				},
+			}
+			err := k8sClient.Create(ctx, ts)
+			Expect(apierrors.IsInvalid(err)).To(BeTrue(), "error: %v", err)
+		})
+	})
 })

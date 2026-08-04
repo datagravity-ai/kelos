@@ -55,6 +55,50 @@ spec:
           spec:
             description: SessionSpawnerSpec defines the desired state of a SessionSpawner.
             properties:
+              credentials:
+                description: |-
+                  Credentials lists named credentials available to generated Sessions. The
+                  spawner selects one credential at random and copies it to the generated
+                  Session. Mutually exclusive with credentials configured in sessionTemplate.
+                items:
+                  description: |-
+                    SpawnerCredential identifies one credential in a spawner's credential pool.
+                    A TaskSpawner or SessionSpawner assigns one credential to each generated resource.
+                  properties:
+                    name:
+                      description: Name identifies this credential in generated resource
+                        labels.
+                      maxLength: 63
+                      minLength: 1
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      type: string
+                    secretRef:
+                      description: SecretRef references the Secret containing this
+                        credential.
+                      properties:
+                        name:
+                          description: Name is the name of the secret.
+                          minLength: 1
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    type:
+                      description: Type specifies the credential type.
+                      enum:
+                      - api-key
+                      - oauth
+                      type: string
+                  required:
+                  - name
+                  - secretRef
+                  - type
+                  type: object
+                minItems: 1
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               sessionTemplate:
                 description: |-
                   SessionTemplate defines Sessions created for matching webhook deliveries.
@@ -7237,8 +7281,6 @@ spec:
                 - message: worker.type must be claude-code, codex, or opencode
                   rule: has(self.worker.type) && self.worker.type in ['claude-code',
                     'codex', 'opencode']
-                - message: worker.credentials is required
-                  rule: has(self.worker.credentials)
                 - message: worker.workspaceRef is required when initialBranch is set
                   rule: '!has(self.initialBranch) || size(self.initialBranch) == 0
                     || has(self.worker.workspaceRef)'
@@ -7468,6 +7510,10 @@ spec:
             - message: sessionTemplate.initialPrompt is required
               rule: has(self.sessionTemplate.initialPrompt) && size(self.sessionTemplate.initialPrompt)
                 > 0
+            - message: sessionTemplate.worker.credentials or spec.credentials is required
+              rule: has(self.sessionTemplate.worker.credentials) || has(self.credentials)
+            - message: spec.credentials is mutually exclusive with sessionTemplate.worker.credentials
+              rule: '!has(self.credentials) || !has(self.sessionTemplate.worker.credentials)'
           status:
             description: SessionSpawnerStatus defines the observed state of a SessionSpawner.
             properties:

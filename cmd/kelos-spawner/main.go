@@ -433,6 +433,11 @@ func runCycleWithSourceCore(ctx context.Context, cl client.Client, key types.Nam
 			createErrs = append(createErrs, fmt.Errorf("item %s: building task: %w", item.ID, err))
 			continue
 		}
+		if err := tb.AssignSpawnerCredential(&ts, task); err != nil {
+			log.Error(err, "Assigning TaskSpawner credential", "item", item.ID)
+			createErrs = append(createErrs, fmt.Errorf("item %s: assigning TaskSpawner credential: %w", item.ID, err))
+			continue
+		}
 
 		// Apply source-specific annotations (GitHub reporting metadata)
 		srcAnnotations := sourceAnnotations(&ts, item)
