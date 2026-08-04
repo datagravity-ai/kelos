@@ -612,7 +612,7 @@ func waitForReadySession(
 	for {
 		session, err := getSession(ctx, namespace, name)
 		if apierrors.IsNotFound(err) {
-			return nil, fmt.Errorf("Session %q was deleted", name)
+			return nil, err
 		}
 		if err != nil {
 			status := sessionTerminalStatusConnecting

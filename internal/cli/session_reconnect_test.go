@@ -12,6 +12,9 @@ import (
 	"testing"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+
 	kelos "github.com/kelos-dev/kelos/api/v1alpha2"
 	"github.com/kelos-dev/kelos/internal/sessionruntime"
 )
@@ -203,6 +206,23 @@ func TestSessionConnectionWaitsForTerminalCleanup(t *testing.T) {
 	case <-terminalExited:
 	default:
 		t.Fatal("connectSessionWithDependencies() returned before terminal cleanup")
+	}
+}
+
+func TestWaitForReadySessionPreservesNotFoundError(t *testing.T) {
+	_, err := waitForReadySession(
+		t.Context(),
+		"default",
+		"chat",
+		io.Discard,
+		func(context.Context, string, string) (*kelos.Session, error) {
+			return nil, apierrors.NewNotFound(schema.GroupResource{Group: kelos.GroupVersion.Group, Resource: "sessions"}, "chat")
+		},
+		make(chan error),
+		false,
+	)
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("waitForReadySession() error = %v, want Kubernetes NotFound error", err)
 	}
 }
 
