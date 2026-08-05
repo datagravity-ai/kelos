@@ -233,6 +233,7 @@ func TestPublishObservedSessionStatusPublishesActivityWhenWorkspaceReadFails(t *
 			return nil
 		},
 		true,
+		"gpt-5.6-sol",
 		func(context.Context) (WorkspaceStatus, error) {
 			return WorkspaceStatus{}, readErr
 		},
@@ -240,8 +241,8 @@ func TestPublishObservedSessionStatusPublishesActivityWhenWorkspaceReadFails(t *
 	if err != nil {
 		t.Fatalf("publishObservedSessionStatus() error = %v, want nil so the drain can advance", err)
 	}
-	if !got.Active || got.WorkspaceStatus != nil {
-		t.Fatalf("published Session status = %#v, want active with unobserved workspace", got)
+	if !got.Active || got.Model != "gpt-5.6-sol" || got.WorkspaceStatus != nil {
+		t.Fatalf("published Session status = %#v, want active model with unobserved workspace", got)
 	}
 }
 
@@ -251,6 +252,7 @@ func TestPublishObservedSessionStatusReturnsPublisherError(t *testing.T) {
 		context.Background(),
 		func(context.Context, ObservedSessionStatus) error { return publishErr },
 		true,
+		"gpt-5.6-sol",
 		func(context.Context) (WorkspaceStatus, error) { return WorkspaceStatus{}, nil },
 	)
 	if !errors.Is(err, publishErr) {

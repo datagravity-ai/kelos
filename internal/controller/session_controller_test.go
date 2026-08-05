@@ -1456,6 +1456,7 @@ func TestUpdateSessionStatusInvalidatesStaleRuntimeStatus(t *testing.T) {
 			}
 			session := testSession("status-test", "codex")
 			session.Status.PodUID = types.UID("pod-uid")
+			session.Status.Model = "gpt-5.6-sol"
 			session.Status.Branch = "feature/status"
 			session.Status.PullRequest = &kelos.SessionPullRequest{
 				URL:   "https://github.com/kelos-dev/kelos/pull/42",
@@ -1487,12 +1488,15 @@ func TestUpdateSessionStatusInvalidatesStaleRuntimeStatus(t *testing.T) {
 				t.Fatal(err)
 			}
 			activity := apiMeta.FindStatusCondition(updated.Status.Conditions, kelos.SessionConditionActive)
-			cleared := activity != nil && activity.Status == metav1.ConditionUnknown && updated.Status.Branch == "" && updated.Status.PullRequest == nil
+			cleared := activity != nil && activity.Status == metav1.ConditionUnknown && updated.Status.Model == "" && updated.Status.Branch == "" && updated.Status.PullRequest == nil
 			if cleared != tt.wantClear {
 				t.Fatalf("runtime-owned status invalidated = %t, want %t: %#v", cleared, tt.wantClear, updated.Status)
 			}
 			if !tt.wantClear && (activity == nil || activity.Status != metav1.ConditionTrue) {
 				t.Fatalf("Active condition = %#v, want True", activity)
+			}
+			if !tt.wantClear && updated.Status.Model != "gpt-5.6-sol" {
+				t.Fatalf("model = %q, want gpt-5.6-sol", updated.Status.Model)
 			}
 			if tt.wantClear && (updated.Status.LastActivityTime == nil || !updated.Status.LastActivityTime.Time.Equal(lastActivityTime.Time)) {
 				t.Fatalf("lastActivityTime = %v, want preserved %v", updated.Status.LastActivityTime, lastActivityTime)

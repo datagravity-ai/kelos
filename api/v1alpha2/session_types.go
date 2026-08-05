@@ -134,6 +134,10 @@ type SessionStatus struct {
 	// +optional
 	LastActivityTime *metav1.Time `json:"lastActivityTime,omitempty"`
 
+	// Model is the model reported by the Session runtime.
+	// +optional
+	Model string `json:"model,omitempty"`
+
 	// Branch is the currently checked-out git branch in the Session workspace.
 	// +optional
 	Branch string `json:"branch,omitempty"`

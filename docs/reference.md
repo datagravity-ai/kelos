@@ -220,6 +220,7 @@ the Session resource and is visible through the Kubernetes API.
 | `status.podName` | Session Pod name | Output |
 | `status.podUID` | Identity of the Pod running the live conversation | Output |
 | `status.lastActivityTime` | When runtime activity was first reported or last changed; Pod replacement does not change it | Output |
+| `status.model` | Model reported by the live Session runtime; empty when the runtime does not report a model | Output |
 | `status.conditions[type=Ready]` | Whether the Session infrastructure is ready for clients | Output |
 | `status.conditions[type=Active]` | Whether the runtime has an unfinished turn; `Unknown` means activity has not been reported | Output |
 | `status.branch` | Currently checked-out git branch in the Session workspace | Output |
@@ -240,10 +241,11 @@ status bar beneath the composer shows the Session name, agent type, model and
 effort when available, working directory, git branch, and associated pull
 request number. Codex Sessions also show reported context use, weekly limit
 remaining, and cumulative input and output tokens. Less important status-bar
-items are omitted as the terminal narrows. Web chat is served by the optional
-shared `kelos-session-server`; it shows connection status separately from
-working, waiting-for-input, and interrupting progress, including elapsed time
-for active work. Both clients use the same event stream and provider
+items are omitted as the terminal narrows. The model is the same
+runtime-reported value persisted in `status.model`. Web chat is served by the
+optional shared `kelos-session-server`; it shows connection status separately
+from working, waiting-for-input, and interrupting progress, including elapsed
+time for active work. Both clients use the same event stream and provider
 conversation. Both clients can stream agent and tool activity, answer
 user-input requests, and interrupt active work without ending the provider
 conversation.
@@ -317,8 +319,8 @@ messages are informational. The shared web client orders Sessions by recent
 activity, newest first, using `status.lastActivityTime`. Creation counts as the
 initial activity until the runtime first reports its activity state. Replacing a
 Session Pod does not change the order. The web client shows activity,
-`status.branch`, and the pull request with a colored, text-labeled state in both
-the Session sidebar and conversation header.
+`status.model`, `status.branch`, and the pull request with a colored,
+text-labeled state in both the Session sidebar and conversation header.
 
 When `spec.initialBranch` is set, workspace initialization fetches and checks
 out that branch from `origin`, or creates it from `Workspace.spec.ref` when the

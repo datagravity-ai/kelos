@@ -199,7 +199,8 @@ func Run(ctx context.Context, config Config) error {
 	}
 	server := NewServer(config, journal, provider)
 	publishSessionStatus := func(ctx context.Context, active bool) error {
-		return publishObservedSessionStatus(ctx, config.PublishSessionStatus, active, func(ctx context.Context) (WorkspaceStatus, error) {
+		model := server.runtimeStatusSnapshot().Model
+		return publishObservedSessionStatus(ctx, config.PublishSessionStatus, active, model, func(ctx context.Context) (WorkspaceStatus, error) {
 			return readWorkspaceStatus(ctx, realWorkspaceStatusRunner{}, config.StateDir, config.WorkingDir)
 		})
 	}
@@ -237,9 +238,9 @@ func Run(ctx context.Context, config Config) error {
 	return server.Serve(ctx)
 }
 
-func publishObservedSessionStatus(ctx context.Context, publisher SessionStatusPublisher, active bool, readStatus func(context.Context) (WorkspaceStatus, error)) error {
+func publishObservedSessionStatus(ctx context.Context, publisher SessionStatusPublisher, active bool, model string, readStatus func(context.Context) (WorkspaceStatus, error)) error {
 	workspaceStatus, readErr := readStatus(ctx)
-	status := ObservedSessionStatus{Active: active}
+	status := ObservedSessionStatus{Active: active, Model: model}
 	if readErr == nil {
 		status.WorkspaceStatus = &workspaceStatus
 	} else {

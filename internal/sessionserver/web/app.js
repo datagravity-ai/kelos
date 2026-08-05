@@ -546,7 +546,15 @@ function createSessionListItem(session) {
   namespace.textContent = `· ${session.namespace}`;
   const activity = document.createElement('span');
   activity.textContent = `· ${displayStatus}`;
-  meta.append(provider, namespace, activity);
+  meta.append(provider);
+  if (session.model) {
+    const model = document.createElement('span');
+    model.className = 'session-model';
+    model.textContent = `· ${session.model}`;
+    model.title = session.model;
+    meta.append(model);
+  }
+  meta.append(namespace, activity);
   text.append(titleRow, meta);
   if (session.branch) {
     const branch = document.createElement('div');
@@ -1148,7 +1156,9 @@ function renderHeader() {
   elements.title.textContent = session.name;
   elements.sectionButton.textContent = session.section ? `Section: ${session.section}` : '＋ Choose section';
   elements.sectionButton.title = session.section ? 'Move Session to another section' : 'Move Session to a section';
-  const details = [session.namespace, providerLabel(session.provider), sessionDisplayStatus(session)];
+  const details = [session.namespace, providerLabel(session.provider)];
+  if (session.model) details.push(session.model);
+  details.push(sessionDisplayStatus(session));
   if (session.branch) details.push(session.branch);
   const detailText = document.createElement('span');
   detailText.className = 'session-meta-details';

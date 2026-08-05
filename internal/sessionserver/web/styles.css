@@ -75,6 +75,7 @@ button { color: inherit; }
 .session-item-pull-request { width: fit-content; max-width: calc(100% - 38px); margin: 0 10px 9px 28px; overflow: hidden; font-size: 10.5px; font-weight: 700; text-decoration: none; text-overflow: ellipsis; white-space: nowrap; }
 .session-item-pull-request:hover { text-decoration: underline; }
 .provider-badge { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-model { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sidebar-empty { padding: 14px 10px; color: var(--faint); font-size: 12px; line-height: 1.5; }
 .sidebar-footer { display: flex; justify-content: space-between; gap: 8px; padding: 13px 5px 0; border-top: 1px solid var(--line); }
 .sidebar-scrim { display: none; }

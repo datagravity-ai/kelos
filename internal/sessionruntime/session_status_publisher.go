@@ -16,6 +16,7 @@ import (
 // ObservedSessionStatus contains the status fields owned by one Session runtime.
 type ObservedSessionStatus struct {
 	Active bool
+	Model  string
 	// WorkspaceStatus is omitted when the runtime cannot inspect the workspace.
 	WorkspaceStatus *WorkspaceStatus
 }
@@ -64,7 +65,7 @@ func NewSessionStatusPublisher(client clientv1alpha2.SessionInterface, sessionNa
 				activityTime = &active.LastTransitionTime
 			}
 		}
-		operations := make([]sessionStatusPatchOperation, 0, 7)
+		operations := make([]sessionStatusPatchOperation, 0, 8)
 		if session.ResourceVersion != "" {
 			operations = append(operations, sessionStatusPatchOperation{Op: "test", Path: "/metadata/resourceVersion", Value: session.ResourceVersion})
 		}
@@ -73,6 +74,7 @@ func NewSessionStatusPublisher(client clientv1alpha2.SessionInterface, sessionNa
 			sessionStatusPatchOperation{Op: "test", Path: "/status/phase", Value: kelos.SessionPhaseReady},
 			sessionStatusPatchOperation{Op: "add", Path: "/status/conditions", Value: conditions},
 			sessionStatusPatchOperation{Op: "add", Path: "/status/lastActivityTime", Value: activityTime},
+			sessionStatusPatchOperation{Op: "add", Path: "/status/model", Value: status.Model},
 		)
 		if status.WorkspaceStatus != nil {
 			operations = append(operations,

@@ -1785,6 +1785,7 @@ func (r *SessionReconciler) updateSessionStatus(ctx context.Context, session *ke
 		session.Status.PodUID = ""
 	}
 	if pod == nil || phase != kelos.SessionPhaseReady || session.Status.PodUID != pod.UID {
+		session.Status.Model = ""
 		session.Status.Branch = ""
 		session.Status.PullRequest = nil
 		if session.Status.LastActivityTime == nil {

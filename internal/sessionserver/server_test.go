@@ -801,6 +801,7 @@ func TestSummarizeIncludesRuntimeStatus(t *testing.T) {
 		Status: kelos.SessionStatus{
 			Phase:            kelos.SessionPhaseReady,
 			LastActivityTime: &lastActivityAt,
+			Model:            "gpt-5.6-sol",
 			Branch:           "feature/session-status",
 			Conditions: []metav1.Condition{{
 				Type:   kelos.SessionConditionActive,
@@ -815,7 +816,7 @@ func TestSummarizeIncludesRuntimeStatus(t *testing.T) {
 	}
 
 	summary := summarize(session)
-	if summary.Active == nil || !*summary.Active || summary.Branch != session.Status.Branch || summary.PullRequest == nil || *summary.PullRequest != *session.Status.PullRequest || summary.Section != "Reviews" {
+	if summary.Active == nil || !*summary.Active || summary.Model != session.Status.Model || summary.Branch != session.Status.Branch || summary.PullRequest == nil || *summary.PullRequest != *session.Status.PullRequest || summary.Section != "Reviews" {
 		t.Fatalf("summarize() = %#v", summary)
 	}
 	if summary.CreatedAt == nil || !summary.CreatedAt.Equal(&createdAt) {
@@ -823,6 +824,13 @@ func TestSummarizeIncludesRuntimeStatus(t *testing.T) {
 	}
 	if summary.LastActivityAt == nil || !summary.LastActivityAt.Equal(&lastActivityAt) {
 		t.Fatalf("summarize() LastActivityAt = %v, want %v", summary.LastActivityAt, lastActivityAt)
+	}
+	data, err := json.Marshal(summary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"model":"gpt-5.6-sol"`) {
+		t.Fatalf("Session summary JSON = %s, want runtime model", data)
 	}
 }
 
@@ -910,6 +918,8 @@ func TestSessionViewsIncludeRuntimeStatus(t *testing.T) {
 		"idle display status":        `if (session.active === false) return 'Idle';`,
 		"activity status in sidebar": "activity.textContent = `· ${displayStatus}`;",
 		"activity status in header":  `sessionDisplayStatus(session)`,
+		"model in sidebar":           "model.textContent = `· ${session.model}`;",
+		"model in header":            `if (session.model) details.push(session.model);`,
 		"branch text":                `branch.textContent = session.branch;`,
 		"validated pull request URL": `const url = safeHTTPURL(pullRequest?.url);`,
 		"pull request state label":   "link.textContent = state ? `${pullRequestLabel(url)} · ${state}` : pullRequestLabel(url);",

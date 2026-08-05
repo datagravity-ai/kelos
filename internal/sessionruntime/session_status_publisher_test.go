@@ -35,6 +35,7 @@ func TestSessionStatusPublisherPatchesLiveSession(t *testing.T) {
 	}
 	want := ObservedSessionStatus{
 		Active: true,
+		Model:  "gpt-5.6-sol",
 		WorkspaceStatus: &WorkspaceStatus{
 			Branch: "feature/session-status",
 			PullRequest: &kelos.SessionPullRequest{
@@ -52,7 +53,7 @@ func TestSessionStatusPublisherPatchesLiveSession(t *testing.T) {
 	}
 	active := apiMeta.FindStatusCondition(got.Status.Conditions, kelos.SessionConditionActive)
 	ready := apiMeta.FindStatusCondition(got.Status.Conditions, kelos.SessionConditionReady)
-	if active == nil || active.Status != metav1.ConditionTrue || active.Reason != "TurnActive" || ready == nil || ready.Status != metav1.ConditionTrue || got.Status.Branch != want.WorkspaceStatus.Branch || !reflect.DeepEqual(got.Status.PullRequest, want.WorkspaceStatus.PullRequest) {
+	if active == nil || active.Status != metav1.ConditionTrue || active.Reason != "TurnActive" || ready == nil || ready.Status != metav1.ConditionTrue || got.Status.Model != want.Model || got.Status.Branch != want.WorkspaceStatus.Branch || !reflect.DeepEqual(got.Status.PullRequest, want.WorkspaceStatus.PullRequest) {
 		t.Fatalf("Session runtime status = %#v, want %#v", got.Status, want)
 	}
 	if got.Status.Phase != kelos.SessionPhaseReady || got.Status.PodUID != podUID {
