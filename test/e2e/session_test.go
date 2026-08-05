@@ -815,6 +815,7 @@ func describeSessionProviderTests(cfg agentTestConfig) {
 				}},
 			})
 			current := waitForSessionPhase(f, f.Namespace, "provider-session", kelos.SessionPhaseReady)
+			waitForSessionModel(f, f.Namespace, "provider-session", cfg.Model)
 			runTerminalTurn(
 				f.Namespace,
 				"provider-session",
@@ -972,6 +973,16 @@ func waitForSessionActivity(f *framework.Framework, namespace, name string, stat
 		}
 		return condition.Status
 	}, time.Minute, time.Second).Should(Equal(status), "Session %s/%s runtime did not report Active=%s", namespace, name, status)
+}
+
+func waitForSessionModel(f *framework.Framework, namespace, name, model string) {
+	Eventually(func() string {
+		session, err := f.KelosClientset.ApiV1alpha2().Sessions(namespace).Get(context.TODO(), name, metav1.GetOptions{})
+		if err != nil {
+			return ""
+		}
+		return session.Status.Model
+	}, time.Minute, time.Second).Should(Equal(model), "Session %s/%s runtime did not report model %s", namespace, name, model)
 }
 
 func waitForSessionPodReplacement(f *framework.Framework, namespace, name string, oldUID types.UID) *kelos.Session {

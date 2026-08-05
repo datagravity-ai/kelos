@@ -7281,6 +7281,9 @@ spec:
                 description: Message provides additional information about the current
                   phase.
                 type: string
+              model:
+                description: Model is the model reported by the Session runtime.
+                type: string
               observedGeneration:
                 description: ObservedGeneration is the most recent generation observed
                   by the controller.

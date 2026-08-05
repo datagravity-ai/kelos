@@ -100,6 +100,7 @@ type sessionSummary struct {
 	Namespace      string                    `json:"namespace"`
 	UID            string                    `json:"uid,omitempty"`
 	Provider       string                    `json:"provider"`
+	Model          string                    `json:"model,omitempty"`
 	Phase          kelos.SessionPhase        `json:"phase,omitempty"`
 	Active         *bool                     `json:"active,omitempty"`
 	CreatedAt      *metav1.Time              `json:"createdAt,omitempty"`
@@ -672,6 +673,7 @@ func summarize(session *kelos.Session) sessionSummary {
 		Namespace:      session.Namespace,
 		UID:            string(session.UID),
 		Provider:       session.Spec.Worker.Type,
+		Model:          session.Status.Model,
 		Phase:          session.Status.Phase,
 		LastActivityAt: session.Status.LastActivityTime,
 		Message:        session.Status.Message,
