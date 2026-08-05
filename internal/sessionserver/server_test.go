@@ -984,8 +984,13 @@ func TestSessionUISections(t *testing.T) {
 		t.Fatal(err)
 	}
 	for description, expected := range map[string]string{
-		"section grouping":  `const sessionsBySection = new Map();`,
-		"unsectioned group": `name.textContent = section || 'Unsectioned';`,
+		"section grouping":      `const sessionsBySection = new Map();`,
+		"unsectioned group":     `name.textContent = section || 'Unsectioned';`,
+		"Session drag handling": `configureSessionDrag(item, session);`,
+		"section drag handling": `configureSectionDrag(group, heading, title, section);`,
+		"unsectioned ordering":  `if (!available.includes('')) available.push('');`,
+		"browser order storage": `window.localStorage.setItem(sectionOrderStorageKey(namespace), JSON.stringify(normalized));`,
+		"order focus restore":   `if (focusDirection) focusSectionOrderControl(section, focusDirection);`,
 	} {
 		if !strings.Contains(string(javascript), expected) {
 			t.Errorf("Session behavior is missing %s: %s", description, expected)
@@ -997,10 +1002,12 @@ func TestSessionUISections(t *testing.T) {
 		t.Fatal(err)
 	}
 	for description, expected := range map[string]string{
-		"section headings": `.session-section-heading {`,
-		"section control":  `.session-section-button {`,
-		"section dialog":   `.section-dialog {`,
-		"section field":    `.section-field {`,
+		"section headings":       `.session-section-heading {`,
+		"section control":        `.session-section-button {`,
+		"section dialog":         `.section-dialog {`,
+		"section field":          `.section-field {`,
+		"Session drop target":    `.session-section-group.session-drop-target {`,
+		"section order controls": `.session-section-order-button { width: 28px; height: 28px;`,
 	} {
 		if !strings.Contains(string(styles), expected) {
 			t.Errorf("Session styles are missing %s: %s", description, expected)

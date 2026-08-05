@@ -273,11 +273,14 @@ existing sections in the active namespace and include a **Create new section**
 choice, so a section name is entered only when the section is first created.
 Choosing **Unsectioned (remove assignment)** from the selected Session's control
 removes its section assignment. Named sections are sorted alphabetically in the
-sidebar, Sessions retain their activity order within a section, and Sessions
-without a section appear under **Unsectioned** once at least one section exists.
-Assignments are stored in the `kelos.dev/session-section` annotation, so Session
-manifests can set the same annotation directly. New section names are trimmed
-and limited to 64 characters.
+sidebar until they are reordered. Drag a Session onto a section heading to move
+it, or drag a heading to reorder sections. The arrow controls beside a heading
+provide the same ordering action without drag and drop. **Unsectioned** can be
+reordered like any named section and accepts dropped Sessions. Section order is
+stored in the browser separately for each namespace, while Sessions retain their
+activity order within a section. Assignments are stored in the
+`kelos.dev/session-section` annotation, so Session manifests can set the same
+annotation directly. New section names are trimmed and limited to 64 characters.
 
 Web messages render safe Markdown: paragraphs and headings; emphasis,
 strong text, strikethrough, and inline code; ordered, unordered, and task lists;

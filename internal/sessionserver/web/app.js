@@ -106,10 +106,14 @@ const state = {
   sourceStorageClassNamePresent: false,
   loadedSource: null,
   sectionSaving: false,
+  sectionAssignments: new Set(),
+  sectionOrders: new Map(),
+  sidebarDrag: null,
 };
 
 const customOption = '__custom__';
 const maxCachedSessionViews = 5;
+const sectionOrderStoragePrefix = 'kelos-session-section-order:';
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -483,8 +487,8 @@ function renderSessions() {
     return;
   }
 
-  const grouped = state.sessions.some(session => session.section);
-  if (!grouped) {
+  const sections = orderedSessionSections();
+  if (!sections.length) {
     for (const session of state.sessions) elements.list.append(createSessionListItem(session));
     return;
   }
@@ -495,33 +499,58 @@ function renderSessions() {
     if (!sessionsBySection.has(section)) sessionsBySection.set(section, []);
     sessionsBySection.get(section).push(session);
   }
-  const sections = Array.from(sessionsBySection.keys())
-    .filter(Boolean)
-    .sort((left, right) => left.localeCompare(right, undefined, {sensitivity: 'base'}));
-  if (sessionsBySection.has('')) sections.push('');
-
-  for (const section of sections) {
+  for (const [sectionIndex, section] of sections.entries()) {
+    const sectionSessions = sessionsBySection.get(section) || [];
     const group = document.createElement('section');
     group.className = 'session-section-group';
     const heading = document.createElement('h2');
     heading.className = 'session-section-heading';
+    const title = document.createElement('span');
+    title.className = 'session-section-title';
+    title.draggable = true;
+    title.title = 'Drag to reorder section';
+    const dragHandle = document.createElement('span');
+    dragHandle.className = 'session-section-drag-handle';
+    dragHandle.setAttribute('aria-hidden', 'true');
+    dragHandle.textContent = '⠿';
     const name = document.createElement('span');
     name.textContent = section || 'Unsectioned';
+    title.append(dragHandle, name);
+    const tools = document.createElement('span');
+    tools.className = 'session-section-tools';
     const count = document.createElement('span');
     count.className = 'session-section-count';
-    count.textContent = String(sessionsBySection.get(section).length);
-    heading.append(name, count);
-    group.append(heading);
-    for (const session of sessionsBySection.get(section)) {
-      group.append(createSessionListItem(session));
+    count.textContent = String(sectionSessions.length);
+    tools.append(count);
+    for (const [direction, symbol, action] of [[-1, '↑', 'up'], [1, '↓', 'down']]) {
+      const button = document.createElement('button');
+      button.className = 'session-section-order-button';
+      button.type = 'button';
+      button.textContent = symbol;
+      button.title = `Move ${name.textContent} section ${action}`;
+      button.setAttribute('aria-label', button.title);
+      button.dataset.section = section;
+      button.dataset.direction = String(direction);
+      button.disabled = direction < 0 ? sectionIndex === 0 : sectionIndex === sections.length - 1;
+      button.addEventListener('click', () => moveSectionByOffset(section, direction));
+      tools.append(button);
     }
+    heading.append(title, tools);
+    group.append(heading);
+    for (const session of sectionSessions) {
+      group.append(createSessionListItem(session, true));
+    }
+    configureSectionDrag(group, heading, title, section);
     elements.list.append(group);
   }
 }
 
-function createSessionListItem(session) {
+function createSessionListItem(session, draggable = false) {
   const item = document.createElement('div');
-  item.className = `session-item${state.selected && sessionKey(state.selected) === sessionKey(session) ? ' active' : ''}`;
+  const key = sessionKey(session);
+  const assigningSection = state.sectionAssignments.has(key);
+  item.className = `session-item${state.selected && sessionKey(state.selected) === key ? ' active' : ''}${assigningSection ? ' section-saving' : ''}`;
+  item.draggable = draggable && !assigningSection;
   const button = document.createElement('button');
   button.className = 'session-item-select';
   button.type = 'button';
@@ -569,9 +598,178 @@ function createSessionListItem(session) {
   const link = createPullRequestLink(session.pullRequest, 'session-item-pull-request');
   if (link) {
     item.classList.add('has-pull-request');
+    link.draggable = false;
     item.append(link);
   }
+  if (item.draggable) configureSessionDrag(item, session);
   return item;
+}
+
+function sectionLabel(section) {
+  return section || 'Unsectioned';
+}
+
+function sectionOrderStorageKey(namespace) {
+  return `${sectionOrderStoragePrefix}${namespace}`;
+}
+
+function uniqueSectionOrder(value) {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set();
+  return value.filter(section => {
+    if (typeof section !== 'string' || seen.has(section)) return false;
+    seen.add(section);
+    return true;
+  });
+}
+
+function savedSectionOrder(namespace = state.namespace) {
+  if (state.sectionOrders.has(namespace)) return state.sectionOrders.get(namespace);
+  let order = [];
+  try {
+    order = uniqueSectionOrder(JSON.parse(window.localStorage.getItem(sectionOrderStorageKey(namespace)) || '[]'));
+  } catch (_) {
+    order = [];
+  }
+  state.sectionOrders.set(namespace, order);
+  return order;
+}
+
+function storeSectionOrder(order, namespace = state.namespace) {
+  const normalized = uniqueSectionOrder(order);
+  state.sectionOrders.set(namespace, normalized);
+  try {
+    window.localStorage.setItem(sectionOrderStorageKey(namespace), JSON.stringify(normalized));
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function orderedSessionSections() {
+  const available = Array.from(new Set(state.sessions.map(session => session.section || '')));
+  if (!available.some(Boolean)) return [];
+  if (!available.includes('')) available.push('');
+  const availableSet = new Set(available);
+  const ordered = savedSectionOrder().filter(section => availableSet.delete(section));
+  const remaining = Array.from(availableSet).sort((left, right) => {
+    if (!left) return 1;
+    if (!right) return -1;
+    return left.localeCompare(right, undefined, {sensitivity: 'base'});
+  });
+  return ordered.concat(remaining);
+}
+
+function reorderSections(sections, section, target, after) {
+  if (section === target || !sections.includes(section) || !sections.includes(target)) return sections;
+  const reordered = sections.filter(item => item !== section);
+  let targetIndex = reordered.indexOf(target);
+  if (after) targetIndex += 1;
+  reordered.splice(targetIndex, 0, section);
+  return reordered;
+}
+
+function focusSectionOrderControl(section, direction) {
+  const controls = Array.from(elements.list.querySelectorAll('.session-section-order-button'))
+    .filter(button => button.dataset.section === section);
+  const preferred = controls.find(button => Number(button.dataset.direction) === direction);
+  const target = preferred && !preferred.disabled ? preferred : controls.find(button => !button.disabled);
+  if (target) target.focus();
+}
+
+function applySectionOrder(order, section, focusDirection = 0) {
+  const persisted = storeSectionOrder(order);
+  renderSessions();
+  if (focusDirection) focusSectionOrderControl(section, focusDirection);
+  showToast(persisted
+    ? `Moved ${sectionLabel(section)} section`
+    : `Moved ${sectionLabel(section)} section, but browser storage is unavailable`);
+}
+
+function moveSectionByOffset(section, offset) {
+  const sections = orderedSessionSections();
+  const index = sections.indexOf(section);
+  const targetIndex = index + offset;
+  if (index < 0 || targetIndex < 0 || targetIndex >= sections.length) return;
+  const reordered = [...sections];
+  [reordered[index], reordered[targetIndex]] = [reordered[targetIndex], reordered[index]];
+  applySectionOrder(reordered, section, offset);
+}
+
+function clearSidebarDropIndicators() {
+  for (const group of elements.list.querySelectorAll('.session-section-group')) {
+    group.classList.remove('session-drop-target', 'section-drop-before', 'section-drop-after');
+  }
+}
+
+function finishSidebarDrag() {
+  state.sidebarDrag = null;
+  clearSidebarDropIndicators();
+}
+
+function configureSessionDrag(item, session) {
+  item.addEventListener('dragstart', event => {
+    state.sidebarDrag = {kind: 'session', session};
+    item.classList.add('dragging');
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', sessionKey(session));
+  });
+  item.addEventListener('dragend', () => {
+    item.classList.remove('dragging');
+    finishSidebarDrag();
+  });
+}
+
+function configureSectionDrag(group, heading, title, section) {
+  title.addEventListener('dragstart', event => {
+    state.sidebarDrag = {kind: 'section', section};
+    group.classList.add('dragging');
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', sectionLabel(section));
+  });
+  title.addEventListener('dragend', () => {
+    group.classList.remove('dragging');
+    finishSidebarDrag();
+  });
+  group.addEventListener('dragover', event => {
+    const drag = state.sidebarDrag;
+    if (!drag) return;
+    if (drag.kind === 'session') {
+      if ((drag.session.section || '') === section) return;
+      event.preventDefault();
+      clearSidebarDropIndicators();
+      group.classList.add('session-drop-target');
+    } else {
+      if (drag.section === section) return;
+      event.preventDefault();
+      clearSidebarDropIndicators();
+      const bounds = heading.getBoundingClientRect();
+      group.classList.add(event.clientY >= bounds.top + bounds.height / 2 ? 'section-drop-after' : 'section-drop-before');
+    }
+    event.dataTransfer.dropEffect = 'move';
+  });
+  group.addEventListener('drop', event => {
+    const drag = state.sidebarDrag;
+    if (!drag) return;
+    if (drag.kind === 'session') {
+      if ((drag.session.section || '') === section) return;
+      event.preventDefault();
+      finishSidebarDrag();
+      void moveSessionToSection(drag.session, section);
+      return;
+    }
+    if (drag.section === section) return;
+    event.preventDefault();
+    const bounds = heading.getBoundingClientRect();
+    const reordered = reorderSections(
+      orderedSessionSections(),
+      drag.section,
+      section,
+      event.clientY >= bounds.top + bounds.height / 2,
+    );
+    finishSidebarDrag();
+    applySectionOrder(reordered, drag.section);
+  });
 }
 
 function sessionSectionNames() {
@@ -623,6 +821,40 @@ function selectedSection(select, input) {
 function selectedSectionPayload(select, input, includeEmpty = false) {
   const section = selectedSection(select, input);
   return section || includeEmpty ? {section} : {};
+}
+
+async function saveSessionSectionAssignment(session, section) {
+  const generation = state.namespaceGeneration;
+  const updated = await api(
+    `/api/sessions/${encodeURIComponent(session.namespace)}/${encodeURIComponent(session.name)}/section`,
+    {method: 'PATCH', body: JSON.stringify({section})},
+  );
+  if (generation !== state.namespaceGeneration) return updated;
+  state.sessions = state.sessions.map(item => sessionKey(item) === sessionKey(updated) ? updated : item);
+  if (state.selected && sessionKey(state.selected) === sessionKey(updated)) state.selected = updated;
+  renderSectionOptions();
+  renderSessions();
+  renderHeader();
+  return updated;
+}
+
+async function moveSessionToSection(session, section) {
+  const key = sessionKey(session);
+  if ((session.section || '') === section || state.sectionAssignments.has(key)) return;
+  const generation = state.namespaceGeneration;
+  state.sectionAssignments.add(key);
+  renderSessions();
+  try {
+    await saveSessionSectionAssignment(session, section);
+    if (generation === state.namespaceGeneration) {
+      showToast(section ? `Moved Session to ${section}` : 'Moved Session to Unsectioned');
+    }
+  } catch (error) {
+    if (generation === state.namespaceGeneration) showToast(error.message);
+  } finally {
+    state.sectionAssignments.delete(key);
+    if (generation === state.namespaceGeneration) renderSessions();
+  }
 }
 
 function renderSectionOptions() {
@@ -2847,15 +3079,7 @@ elements.sectionForm.addEventListener('submit', async event => {
   elements.sectionDialogError.textContent = '';
   setSectionSaving(true);
   try {
-    const updated = await api(
-      `/api/sessions/${encodeURIComponent(session.namespace)}/${encodeURIComponent(session.name)}/section`,
-      {method: 'PATCH', body: JSON.stringify(sectionPayload)},
-    );
-    state.sessions = state.sessions.map(item => sessionKey(item) === sessionKey(updated) ? updated : item);
-    if (state.selected && sessionKey(state.selected) === sessionKey(updated)) state.selected = updated;
-    renderSectionOptions();
-    renderSessions();
-    renderHeader();
+    await saveSessionSectionAssignment(session, section);
     elements.sectionDialog.close();
     showToast(section ? `Moved Session to ${section}` : 'Moved Session to Unsectioned');
   } catch (error) {

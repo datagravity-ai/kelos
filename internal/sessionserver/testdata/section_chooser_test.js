@@ -3,6 +3,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
+let focusedNode;
+
 class TestNode {
   constructor(tag) {
     this.tag = tag;
@@ -51,7 +53,9 @@ class TestNode {
     this.validationMessage = message;
   }
 
-  focus() {}
+  focus() {
+    focusedNode = this;
+  }
 
   set textContent(value) {
     this._text = String(value);
@@ -125,6 +129,14 @@ global.document = {
   createElement: tag => new TestNode(tag),
   querySelectorAll: selector => selector === '.close-section-dialog' ? closeButtons : [],
 };
+const storage = new Map();
+global.window = {
+  localStorage: {
+    getItem: key => storage.has(key) ? storage.get(key) : null,
+    setItem: (key, value) => storage.set(key, String(value)),
+  },
+  setTimeout: callback => callback(),
+};
 
 const application = fs.readFileSync(path.join(__dirname, '..', 'web', 'app.js'), 'utf8');
 
@@ -137,11 +149,15 @@ function applicationSlice(start, end) {
 }
 
 vm.runInThisContext(applicationSlice('function addOption', 'function credentialTypeLabel'), {filename: 'app.js'});
+vm.runInThisContext(applicationSlice('function renderSessions', 'function sectionLabel'), {filename: 'app.js'});
+global.sectionOrderStoragePrefix = 'kelos-session-section-order:';
+vm.runInThisContext(applicationSlice('function sectionLabel', 'function sessionSectionNames'), {filename: 'app.js'});
 vm.runInThisContext(applicationSlice('function sessionSectionNames', 'async function loadSessions'), {filename: 'app.js'});
 vm.runInThisContext(applicationSlice('function openSectionDialog', 'function setSectionSaving'), {filename: 'app.js'});
 vm.runInThisContext(applicationSlice('function setSectionSaving', "elements.sectionButton.addEventListener"), {filename: 'app.js'});
 
 function resetHarness() {
+  focusedNode = null;
   closeButtons = [new TestNode('button'), new TestNode('button')];
   const sectionDialog = new TestNode('dialog');
   sectionDialog.closeCount = 0;
@@ -164,7 +180,13 @@ function resetHarness() {
     sessions: [],
     selected: null,
     sectionSaving: false,
+    sectionAssignments: new Set(),
+    sectionOrders: new Map(),
+    sidebarDrag: null,
+    namespace: 'default',
+    namespaceGeneration: 0,
   };
+  storage.clear();
 }
 
 function group(select, label) {
@@ -261,6 +283,89 @@ function testNamespaceResetClearsSectionInput() {
   assert.equal(elements.sectionCustom.value, '');
 }
 
+function testSectionOrderingIncludesUnsectioned() {
+  resetHarness();
+  state.sessions = [
+    {section: 'Reviews'},
+    {section: 'Planning'},
+  ];
+
+  assert.deepEqual(orderedSessionSections(), ['Planning', 'Reviews', '']);
+  assert.equal(storeSectionOrder(['', 'Reviews', 'Planning']), true);
+  assert.deepEqual(orderedSessionSections(), ['', 'Reviews', 'Planning']);
+  assert.deepEqual(
+    JSON.parse(storage.get('kelos-session-section-order:default')),
+    ['', 'Reviews', 'Planning'],
+  );
+
+  state.sectionOrders.clear();
+  assert.deepEqual(orderedSessionSections(), ['', 'Reviews', 'Planning']);
+}
+
+function testUnsectionedCanMoveLikeNamedSections() {
+  assert.deepEqual(
+    reorderSections(['Planning', '', 'Reviews'], '', 'Planning', false),
+    ['', 'Planning', 'Reviews'],
+  );
+  assert.deepEqual(
+    reorderSections(['Planning', '', 'Reviews'], '', 'Reviews', true),
+    ['Planning', 'Reviews', ''],
+  );
+}
+
+function testSectionOrderFocusFollowsMovedSection() {
+  resetHarness();
+  const up = new TestNode('button');
+  up.dataset.section = 'Planning';
+  up.dataset.direction = '-1';
+  const down = new TestNode('button');
+  down.dataset.section = 'Planning';
+  down.dataset.direction = '1';
+  const other = new TestNode('button');
+  other.dataset.section = 'Reviews';
+  other.dataset.direction = '-1';
+  elements.list = {querySelectorAll: () => [up, down, other]};
+  let renderCount = 0;
+  global.renderSessions = () => { renderCount++; };
+  global.showToast = () => {};
+
+  applySectionOrder(['Planning', 'Reviews', ''], 'Planning', -1);
+  assert.equal(renderCount, 1);
+  assert.equal(focusedNode, up);
+
+  up.disabled = true;
+  focusSectionOrderControl('Planning', -1);
+  assert.equal(focusedNode, down);
+}
+
+async function testDragAssignmentMovesSession() {
+  resetHarness();
+  const session = {namespace: 'default', name: 'demo', section: 'Planning'};
+  state.sessions = [session, {namespace: 'default', name: 'other', section: 'Reviews'}];
+  state.selected = session;
+  let request;
+  let renderCount = 0;
+  const toasts = [];
+  global.api = async (path, options) => {
+    request = {path, options};
+    return {...session, section: 'Reviews'};
+  };
+  global.sessionKey = value => `${value.namespace}/${value.name}`;
+  global.renderSessions = () => { renderCount++; };
+  global.renderHeader = () => {};
+  global.showToast = message => { toasts.push(message); };
+
+  await moveSessionToSection(session, 'Reviews');
+
+  assert.equal(request.path, '/api/sessions/default/demo/section');
+  assert.deepEqual(JSON.parse(request.options.body), {section: 'Reviews'});
+  assert.equal(state.sessions[0].section, 'Reviews');
+  assert.equal(state.selected.section, 'Reviews');
+  assert.equal(state.sectionAssignments.size, 0);
+  assert.ok(renderCount >= 2);
+  assert.deepEqual(toasts, ['Moved Session to Reviews']);
+}
+
 async function testPendingSaveCannotDismissOrReopenChooser() {
   resetHarness();
   state.sessions = [
@@ -316,6 +421,9 @@ testSectionOptionsDistinguishActionsFromValidNames();
 testSectionPayloadsAndValidation();
 testRefreshPreservesCustomInput();
 testNamespaceResetClearsSectionInput();
-testPendingSaveCannotDismissOrReopenChooser().then(() => {
+testSectionOrderingIncludesUnsectioned();
+testUnsectionedCanMoveLikeNamedSections();
+testSectionOrderFocusFollowsMovedSection();
+testDragAssignmentMovesSession().then(testPendingSaveCannotDismissOrReopenChooser).then(() => {
   process.stdout.write('Section chooser tests passed\n');
 });
