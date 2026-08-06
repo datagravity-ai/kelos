@@ -46,6 +46,7 @@ help: ## Display this help.
 
 .PHONY: test
 test: ## Run unit tests.
+	hack/retry-ghcr_test.sh
 	go test $(TEST_FLAGS) $$(go list ./... | grep -v /test/) --skip=E2E
 
 .PHONY: test-integration
@@ -106,7 +107,7 @@ image: ## Build docker images (use WHAT, IMAGE_PLATFORMS, PUSH=true to customize
 		mv bin/kelos-codex-auth-refresh bin/kelos-codex-auth-refresh-linux-$$arch; \
 	done
 	@for dir in $(or $(WHAT),$(IMAGE_DIRS)); do \
-		docker buildx build --platform $(IMAGE_PLATFORMS) \
+		$(if $(filter true,$(PUSH)),hack/retry-ghcr.sh) docker buildx build --platform $(IMAGE_PLATFORMS) \
 			$(if $(filter true,$(PUSH)),--push,--load) \
 			-t $(REGISTRY)/$$(basename $$dir):$(VERSION) \
 			-f $$dir/Dockerfile .; \
@@ -118,7 +119,7 @@ SOURCE_VERSION ?= $(VERSION)
 manifest: ## Create and push multi-arch manifest from per-arch images (use WHAT, IMAGE_PLATFORMS, SOURCE_VERSION).
 	@for dir in $(or $(WHAT),$(IMAGE_DIRS)); do \
 		name=$$(basename $$dir); \
-		docker buildx imagetools create \
+		hack/retry-ghcr.sh docker buildx imagetools create \
 			-t $(REGISTRY)/$$name:$(VERSION) \
 			$(foreach arch,$(IMAGE_ARCHES),$(REGISTRY)/$$name:$(SOURCE_VERSION)-$(arch) ); \
 	done
