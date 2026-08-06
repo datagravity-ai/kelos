@@ -28,7 +28,7 @@ Claude Code, OpenAI Codex, Google Gemini, OpenCode, Cursor, and
 [custom agent images](docs/agent-image-interface.md).
 
 <p align="center">
-  <img alt="Kelos Sessions web interface showing multiple agent conversations" src="docs/images/kelos-session-server.png" />
+  <img alt="Kelos Sessions web interface showing multiple agent conversations" src="docs/images/kelos-session-web-chat.png" />
   <br>
   <a href="#use-the-session-web-chat">Set up the Session web chat</a>
 </p>
