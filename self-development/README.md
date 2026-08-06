@@ -429,9 +429,10 @@ credentials, model, effort, Git identity, and `base-agent` AgentConfig as
 `kelos-workers`. It does not use the worker's resource requests and limits,
 allowing namespace resource defaults to apply.
 
-The Session requires the `base-agent` AgentConfig, `kelos-agent` Workspace, and
-`kelos-credentials` Secret described below. Its `10Gi` workspace persists
-across Pod replacement and is deleted with the Session.
+The Session requires the `base-agent` AgentConfig, `kelos-session-agent`
+Workspace, `personal-github-token` Secret, and `kelos-credentials` Secret
+described below. Its `10Gi` workspace persists across Pod replacement and is
+deleted with the Session.
 
 Add this directory to your `PATH` and run the script from any directory:
 
@@ -448,37 +449,42 @@ connect` command after creation.
 
 Before deploying these examples, you need to create the following resources:
 
-### 1. Workspace Resource
+### 1. Workspace Resources
 
-Create a Workspace that points to your repository:
+Tasks and TaskSpawners use the existing `kelos-agent`, `agora-agent`, and
+`kanon-agent` Workspaces. Configure those Workspaces with the GitHub App or
+other credentials intended for non-Session workloads.
+
+Sessions use dedicated Workspaces so they can authenticate with a personal
+token without changing Task credentials. Apply the checked-in Session
+Workspaces after creating the token Secret below:
+
+```bash
+kubectl apply -f self-development/session-workspaces.yaml
+```
+
+The Kelos Session Workspace is equivalent to:
 
 ```yaml
 apiVersion: kelos.dev/v1alpha2
 kind: Workspace
 metadata:
-  name: kelos-agent
+  name: kelos-session-agent
 spec:
-  repo: https://github.com/your-org/your-repo.git
+  repo: https://github.com/kelos-dev/kelos.git
   ref: main
   secretRef:
-    name: github-token  # For pushing branches and creating PRs
-  # Or use GitHub App authentication (recommended for production/org use):
-  # secretRef:
-  #   name: github-app-creds
-  # Create the GitHub App secret with:
-  #   kubectl create secret generic github-app-creds \
-  #     --from-literal=appID=12345 \
-  #     --from-literal=installationID=67890 \
-  #     --from-file=privateKey=my-app.private-key.pem
+    name: personal-github-token
 ```
 
-### 2. GitHub Token Secret
+### 2. Session GitHub Token Secret
 
-Create a secret with your GitHub token (needed for `gh` CLI and git authentication):
+Create the personal token Secret referenced only by the Session Workspaces:
 
 ```bash
-kubectl create secret generic github-token \
-  --from-literal=GITHUB_TOKEN=<your-github-token>
+kubectl create secret generic personal-github-token \
+  --from-literal=GITHUB_TOKEN="$(gh auth token)" \
+  --dry-run=client -o yaml | kubectl apply -f -
 ```
 
 The token needs these permissions:
@@ -659,7 +665,9 @@ spawners when those spawners include a matching bot-author filter.
 - Review task logs: `kubectl logs -l job-name=<job-name>`
 
 **Agent not creating PRs:**
-- Ensure the `github-token` secret exists and is referenced in the Workspace
+- For Sessions, ensure `personal-github-token` exists and the corresponding
+  `*-session-agent` Workspace references it
+- For Tasks, check the credentials referenced by the regular project Workspace
 - Verify the token has `repo` permissions
 - Check if git user is configured in the agent prompt (see `kelos-workers.yaml` for example)
 

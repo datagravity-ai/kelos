@@ -27,8 +27,9 @@ issues and PRs are treated as ongoing human or agent work and are not updated by
 autonomous discovery jobs. This cap does not apply to follow-up issues created
 while a worker or PR responder is handling an explicitly requested issue or PR.
 
-Eight spawners operate directly on the Agora repository through the
-`agora-agent` Workspace. The two meta-maintenance spawners
+The two SessionSpawners operate on the Agora repository through the
+`agora-session-agent` Workspace, which uses the personal Session token. Six
+TaskSpawners use the `agora-agent` Workspace. The two meta-maintenance spawners
 (`agora-config-update`, `agora-self-update`) are different: the files they
 maintain (`self-development/agora/*`) live in *this* repository, so they use the
 `kelos-agent` Workspace and the `kelos-dev-agent` role AgentConfig from
@@ -309,9 +310,15 @@ Before deploying them, set up the following.
 
 ### 1. Workspaces
 
-Two Workspaces are referenced:
+Three Workspaces are referenced:
 
-- **`agora-agent`** — points at the Agora repository (used by all spawners except the two meta-maintenance ones):
+- **`agora-session-agent`** — points at the Agora repository and is used only
+  by `agora-workers` and `agora-pr-responder`. It is defined in
+  [`session-workspaces.yaml`](../session-workspaces.yaml) and references the
+  `personal-github-token` Secret.
+
+- **`agora-agent`** — points at the Agora repository and is used by the six
+  TaskSpawners that operate directly on Agora:
 
   ```yaml
   apiVersion: kelos.dev/v1alpha2
@@ -360,18 +367,19 @@ done
 Unlike this repository, Agora's CI runs on every PR, so there is **no
 `ok-to-test` gate** and the spawners do not apply that label.
 
-### 3. GitHub Token Secret
+### 3. Session GitHub Token Secret
 
-Create a secret with a GitHub token that has write access to both
-`kelos-dev/agora` and `kelos-dev/kelos` (needed for the `gh` CLI and git
-authentication):
+Create the personal token Secret used by the Session-only Workspace. Task
+credentials remain configured through `agora-agent` and `kelos-agent`:
 
 ```bash
-kubectl create secret generic github-token \
-  --from-literal=GITHUB_TOKEN=<your-github-token>
+kubectl create secret generic personal-github-token \
+  --from-literal=GITHUB_TOKEN="$(gh auth token)" \
+  --dry-run=client -o yaml | kubectl apply -f -
 ```
 
-The token needs `repo` (full control) and `workflow` (if your repo uses GitHub Actions).
+The token needs write access to `kelos-dev/agora` and `repo` plus `workflow`
+when using a classic personal access token.
 
 ### 4. GitHub Webhook Secret and Delivery
 
@@ -414,7 +422,7 @@ references.
 **Webhook spawner not creating work:**
 - For pick-up, check the SessionSpawner status: `kubectl get sessionspawner <name> -o yaml`
 - For other automation, check the TaskSpawner status: `kubectl get taskspawner <name> -o yaml`
-- Verify the Workspaces exist: `kubectl get workspace agora-agent kelos-agent`
+- Verify the Workspaces exist: `kubectl get workspace agora-session-agent agora-agent kelos-agent`
 - Ensure credentials are configured: `kubectl get secret kelos-credentials`
 - Ensure the GitHub webhook server is enabled and the `github-webhook-secret` exists
 - Review the `kelos-dev/agora` repository webhook's recent deliveries in GitHub
