@@ -27,6 +27,8 @@ automation, pipelines, and parallel work across many repositories. It supports
 Claude Code, OpenAI Codex, Google Gemini, OpenCode, Cursor, and
 [custom agent images](docs/agent-image-interface.md).
 
+<img alt="Kelos Sessions web interface showing multiple agent conversations" src="docs/images/kelos-session-server.png" />
+
 ## Why Kelos?
 
 - Run agents in isolated Kubernetes workloads instead of on developer laptops.
