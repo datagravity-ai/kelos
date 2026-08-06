@@ -172,7 +172,12 @@ type Session struct {
 
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:XValidation:rule="has(self.worker.credentials)",message="worker.credentials is required"
-	// +kubebuilder:validation:XValidation:rule="self.worker == oldSelf.worker",message="worker is immutable"
+	// +kubebuilder:validation:XValidation:rule="has(self.worker.type) == has(oldSelf.worker.type) && (!has(self.worker.type) || self.worker.type == oldSelf.worker.type)",message="worker.type is immutable"
+	// +kubebuilder:validation:XValidation:rule="has(self.worker.effort) == has(oldSelf.worker.effort) && (!has(self.worker.effort) || self.worker.effort == oldSelf.worker.effort)",message="worker.effort is immutable"
+	// +kubebuilder:validation:XValidation:rule="has(self.worker.image) == has(oldSelf.worker.image) && (!has(self.worker.image) || self.worker.image == oldSelf.worker.image)",message="worker.image is immutable"
+	// +kubebuilder:validation:XValidation:rule="has(self.worker.workspaceRef) == has(oldSelf.worker.workspaceRef) && (!has(self.worker.workspaceRef) || self.worker.workspaceRef == oldSelf.worker.workspaceRef)",message="worker.workspaceRef is immutable"
+	// +kubebuilder:validation:XValidation:rule="has(self.worker.agentConfigRefs) == has(oldSelf.worker.agentConfigRefs) && (!has(self.worker.agentConfigRefs) || self.worker.agentConfigRefs == oldSelf.worker.agentConfigRefs)",message="worker.agentConfigRefs is immutable"
+	// +kubebuilder:validation:XValidation:rule="(has(self.worker.podOverrides) && has(self.worker.podOverrides.serviceAccountName) ? self.worker.podOverrides.serviceAccountName : '') == (has(oldSelf.worker.podOverrides) && has(oldSelf.worker.podOverrides.serviceAccountName) ? oldSelf.worker.podOverrides.serviceAccountName : '')",message="worker.podOverrides.serviceAccountName is immutable"
 	// +kubebuilder:validation:XValidation:rule="has(self.initialBranch) == has(oldSelf.initialBranch) && (!has(self.initialBranch) || self.initialBranch == oldSelf.initialBranch)",message="initialBranch is immutable"
 	// +kubebuilder:validation:XValidation:rule="has(self.initialPrompt) == has(oldSelf.initialPrompt) && (!has(self.initialPrompt) || self.initialPrompt == oldSelf.initialPrompt)",message="initialPrompt is immutable"
 	// +kubebuilder:validation:XValidation:rule="has(self.volumeClaimTemplate) == has(oldSelf.volumeClaimTemplate) && (!has(self.volumeClaimTemplate) || self.volumeClaimTemplate == oldSelf.volumeClaimTemplate)",message="volumeClaimTemplate is immutable"

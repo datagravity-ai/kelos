@@ -21,6 +21,7 @@ jobs:
     env:
       KELOS_NAMESPACE: ${{ vars.KELOS_NAMESPACE || 'default' }}
       KELOS_API_HOSTNAME: dev-cluster.kelos.dev
+      KELOS_SESSION_VERSION: ${{ github.event.workflow_run.head_sha || github.sha }}
       CLOUDFLARED_VERSION: 2026.7.1
       CLOUDFLARED_DEB_SHA256: 79f790b45e6a9152c6cf63f60f4901e3d8a029f7f4be1345a24cd2373aba8e7d
     steps:
@@ -196,10 +197,11 @@ jobs:
             --patch '{"spec":{"ports":[{"name":"webhook","nodePort":30081,"port":8443,"protocol":"TCP","targetPort":"webhook"}]}}'
           kubectl rollout restart deployment/kelos-controller-manager -n kelos-system
           kubectl rollout status deployment/kelos-controller-manager -n kelos-system --timeout=300s
-          kubectl get statefulset --all-namespaces -l kelos.dev/component=session \
+          kubectl get session --all-namespaces \
             -o jsonpath='{range .items[*]}{.metadata.namespace}{" "}{.metadata.name}{"\n"}{end}' | \
             while read -r namespace name; do
-              kubectl rollout restart "statefulset/${name}" -n "${namespace}"
+              kubectl patch "session/${name}" -n "${namespace}" --type=merge \
+                --patch "{\"spec\":{\"worker\":{\"podOverrides\":{\"labels\":{\"app.kubernetes.io/version\":\"${KELOS_SESSION_VERSION}\"}}}}}"
             done
           kubectl rollout restart deployment/kelos-session-server -n kelos-system
           kubectl rollout restart deployment -l kelos.dev/component=spawner -n "${KELOS_NAMESPACE}"
