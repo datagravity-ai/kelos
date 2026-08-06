@@ -33,7 +33,7 @@ spec:
           storage: 10Gi
     worker:
       workspaceRef:
-        name: kelos-agent
+        name: kelos-session-agent
       model: gpt-5.6-sol
       effort: xhigh
       type: codex
