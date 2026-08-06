@@ -27,7 +27,11 @@ automation, pipelines, and parallel work across many repositories. It supports
 Claude Code, OpenAI Codex, Google Gemini, OpenCode, Cursor, and
 [custom agent images](docs/agent-image-interface.md).
 
-<img alt="Kelos Sessions web interface showing multiple agent conversations" src="docs/images/kelos-session-server.png" />
+<p align="center">
+  <img alt="Kelos Sessions web interface showing multiple agent conversations" src="docs/images/kelos-session-server.png" />
+  <br>
+  <a href="#use-the-session-web-chat">Set up the Session web chat</a>
+</p>
 
 ## Why Kelos?
 
@@ -218,6 +222,12 @@ kubectl apply -f examples/16-session/
 kelos session connect interactive-review
 ```
 
+##### Use the Session web chat
+
+To create, organize, and chat with Sessions in a browser, enable the optional
+Session server. Follow the [Session web chat guide](internal/manifests/charts/kelos/README.md#session-web-chat)
+to configure its shared token and access the cluster-internal web application.
+
 See the [configuration reference](docs/reference.md#configuration) for other
 agents and authentication options.
 
@@ -243,7 +253,7 @@ workflows running the project.
 | Resource fields and CLI commands | [Reference](docs/reference.md) |
 | Ready-to-apply patterns | [Examples](examples/) |
 | GitHub, Jira, CI, and webhook connections | [Integration guide](docs/integration.md) |
-| Interactive Sessions | [Session example](examples/16-session/) |
+| Interactive Sessions | [Session example](examples/16-session/) and [web chat guide](internal/manifests/charts/kelos/README.md#session-web-chat) |
 | Custom agent containers | [Agent image interface](docs/agent-image-interface.md) |
 | Helm installation and upgrades | [Chart documentation](internal/manifests/charts/kelos/README.md) |
 | Contributing | [Contributing guide](CONTRIBUTING.md) |

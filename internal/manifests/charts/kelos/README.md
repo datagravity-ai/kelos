@@ -228,13 +228,18 @@ kubectl port-forward -n kelos-system service/kelos-session-server 8080:80
 ```
 
 Then open `http://localhost:8080` and enter the token. The token represents one
-shared user that can create, list, delete, and connect to Sessions in any
-namespace. The web application operates on one active namespace at a time and
-can switch it live from the sidebar. `sessionServer.defaultNamespace` (`default`
-unless overridden) sets the initial active namespace. The selected namespace
-must already exist. Session, Workspace, AgentConfig, and previously used
-credential options are loaded only from the active namespace. The creation
-form and selected Session header can assign Sessions to sidebar sections.
+shared user that can create, list, reset, delete, and connect to Sessions in any
+namespace. Treat it as a credential. For access beyond a local port-forward,
+terminate TLS at a trusted proxy, set `sessionServer.secureCookie=true`, and
+restrict access to the endpoint at the network or proxy layer. The Session
+server does not provide separate user identities or per-user authorization.
+
+The web application operates on one active namespace at a time and can switch
+it live from the sidebar. `sessionServer.defaultNamespace` (`default` unless
+overridden) sets the initial active namespace. The selected namespace must
+already exist. Session, Workspace, AgentConfig, and previously used credential
+options are loaded only from the active namespace. The creation form and
+selected Session header can assign Sessions to sidebar sections.
 Assignments are stored in the `kelos.dev/session-section` annotation, and
 the controls list existing section names in the active namespace or create a
 section once for later reuse. In the sidebar, Sessions can be dragged between
