@@ -317,13 +317,19 @@ var _ = Describe("Session remote control", func() {
 		waitForPVCDeletion(f, f.Namespace, oldClaimName)
 	})
 
-	It("waits for active work before updating the Session runtime", func() {
+	It("waits for active work before applying mutable Session runtime configuration", func() {
 		token := os.Getenv(sessionWebTokenEnv)
 		if token == "" {
 			Skip(sessionWebTokenEnv + " not set")
 		}
 
-		const sessionName = "runtime-drain"
+		const (
+			sessionName          = "runtime-drain"
+			credentialSecretName = sessionName + "-credentials"
+			runtimeVersionLabel  = "app.kubernetes.io/version"
+			updatedModel         = "e2e-updated-model"
+			updatedVersion       = "e2e-updated-version"
+		)
 		configMapName := sessionName + "-provider"
 		mode := int32(0555)
 		_, err := f.Clientset.CoreV1().ConfigMaps(f.Namespace).Create(context.TODO(), &corev1.ConfigMap{
@@ -333,6 +339,14 @@ var _ = Describe("Session remote control", func() {
 		Expect(err).NotTo(HaveOccurred())
 		DeferCleanup(func() {
 			_ = f.Clientset.CoreV1().ConfigMaps(f.Namespace).Delete(context.TODO(), configMapName, metav1.DeleteOptions{})
+		})
+		_, err = f.Clientset.CoreV1().Secrets(f.Namespace).Create(context.TODO(), &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: credentialSecretName, Namespace: f.Namespace},
+			StringData: map[string]string{"ANTHROPIC_API_KEY": "e2e-api-key"},
+		}, metav1.CreateOptions{})
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() {
+			_ = f.Clientset.CoreV1().Secrets(f.Namespace).Delete(context.TODO(), credentialSecretName, metav1.DeleteOptions{})
 		})
 
 		createSession(f, &kelos.Session{
@@ -380,6 +394,8 @@ var _ = Describe("Session remote control", func() {
 		originalRuntimeImage := sessionRuntimeImage(statefulSet)
 		Expect(originalRuntimeImage).NotTo(BeEmpty())
 		Expect(statefulSet.Status.UpdateRevision).NotTo(BeEmpty())
+		originalRevision := statefulSet.Status.UpdateRevision
+		Expect(pod.Labels).To(HaveKeyWithValue(appsv1.StatefulSetRevisionLabel, originalRevision))
 		Expect(statefulSet.Spec.UpdateStrategy.Type).To(Equal(appsv1.OnDeleteStatefulSetStrategyType))
 		Expect(statefulSet.Spec.UpdateStrategy.RollingUpdate).To(BeNil())
 
@@ -398,30 +414,33 @@ var _ = Describe("Session remote control", func() {
 		})
 		Expect(input.Questions).To(HaveLen(1))
 
-		By("making the current Pod runtime stale")
-		const staleRuntimeImage = "example.invalid/kelos-session-runtime:stale"
-		const staleRuntimeRevision = "stale-runtime-revision"
+		By("updating the Session credentials, model, and Pod overrides")
 		Eventually(func() error {
-			currentPod, getErr := f.Clientset.CoreV1().Pods(f.Namespace).Get(context.TODO(), pod.Name, metav1.GetOptions{})
+			currentSession, getErr := f.KelosClientset.ApiV1alpha2().Sessions(f.Namespace).Get(context.TODO(), sessionName, metav1.GetOptions{})
 			if getErr != nil {
 				return getErr
 			}
-			if currentPod.UID != podUID {
-				return fmt.Errorf("Session Pod was replaced before runtime drift: got UID %s, want %s", currentPod.UID, podUID)
+			currentSession.Spec.Worker.Credentials = &kelos.Credentials{
+				Type:      kelos.CredentialTypeAPIKey,
+				SecretRef: &kelos.SecretReference{Name: credentialSecretName},
 			}
-			if !setPodSessionRuntimeImage(currentPod, staleRuntimeImage) {
-				return fmt.Errorf("Pod %s has no Session runtime init container", currentPod.Name)
+			currentSession.Spec.Worker.Model = updatedModel
+			if currentSession.Spec.Worker.PodOverrides.Labels == nil {
+				currentSession.Spec.Worker.PodOverrides.Labels = map[string]string{}
 			}
-			if currentPod.Labels == nil {
-				currentPod.Labels = map[string]string{}
-			}
-			currentPod.Labels[appsv1.StatefulSetRevisionLabel] = staleRuntimeRevision
-			_, updateErr := f.Clientset.CoreV1().Pods(f.Namespace).Update(context.TODO(), currentPod, metav1.UpdateOptions{})
+			currentSession.Spec.Worker.PodOverrides.Labels[runtimeVersionLabel] = updatedVersion
+			_, updateErr := f.KelosClientset.ApiV1alpha2().Sessions(f.Namespace).Update(context.TODO(), currentSession, metav1.UpdateOptions{})
 			return updateErr
 		}, time.Minute, time.Second).Should(Succeed())
 
-		By("observing the runtime drain while the desired StatefulSet and current Pod stay in place")
+		By("observing the runtime drain while the current Pod stays in place")
 		Eventually(func(g Gomega) {
+			currentStatefulSet, getErr := f.Clientset.AppsV1().StatefulSets(f.Namespace).Get(context.TODO(), statefulSet.Name, metav1.GetOptions{})
+			g.Expect(getErr).NotTo(HaveOccurred())
+			g.Expect(currentStatefulSet.Status.ObservedGeneration).To(Equal(currentStatefulSet.Generation))
+			g.Expect(currentStatefulSet.Status.UpdateRevision).NotTo(Equal(originalRevision))
+			g.Expect(currentStatefulSet.Labels).To(HaveKeyWithValue(runtimeVersionLabel, updatedVersion))
+			g.Expect(currentStatefulSet.Spec.Template.Labels).To(HaveKeyWithValue(runtimeVersionLabel, updatedVersion))
 			session, getErr := f.KelosClientset.ApiV1alpha2().Sessions(f.Namespace).Get(context.TODO(), sessionName, metav1.GetOptions{})
 			g.Expect(getErr).NotTo(HaveOccurred())
 			report, decodeErr := sessionupdate.DecodeReport(session.Annotations[sessionupdate.ReportAnnotation])
@@ -441,9 +460,12 @@ var _ = Describe("Session remote control", func() {
 			session, getErr := f.KelosClientset.ApiV1alpha2().Sessions(f.Namespace).Get(context.TODO(), sessionName, metav1.GetOptions{})
 			return getErr == nil &&
 				sessionRuntimeImage(currentStatefulSet) == originalRuntimeImage &&
+				currentStatefulSet.Labels[runtimeVersionLabel] == updatedVersion &&
+				currentStatefulSet.Spec.Template.Labels[runtimeVersionLabel] == updatedVersion &&
 				currentStatefulSet.Spec.UpdateStrategy.Type == appsv1.OnDeleteStatefulSetStrategyType &&
-				currentPod.UID == podUID && podSessionRuntimeImage(currentPod) == staleRuntimeImage &&
-				currentPod.Labels[appsv1.StatefulSetRevisionLabel] == staleRuntimeRevision &&
+				currentPod.UID == podUID && podSessionRuntimeImage(currentPod) == originalRuntimeImage &&
+				currentPod.Labels[appsv1.StatefulSetRevisionLabel] == originalRevision &&
+				currentPod.Labels[runtimeVersionLabel] == "" &&
 				session.Status.PodUID == podUID
 		}, 5*time.Second, 200*time.Millisecond).Should(BeTrue())
 
@@ -466,7 +488,19 @@ var _ = Describe("Session remote control", func() {
 			g.Expect(getErr).NotTo(HaveOccurred())
 			g.Expect(currentPod.UID).To(Equal(session.Status.PodUID))
 			g.Expect(podSessionRuntimeImage(currentPod)).To(Equal(originalRuntimeImage))
+			g.Expect(currentPod.Labels).To(HaveKeyWithValue(runtimeVersionLabel, updatedVersion))
 			g.Expect(currentPod.Labels).To(HaveKeyWithValue(appsv1.StatefulSetRevisionLabel, currentStatefulSet.Status.UpdateRevision))
+			agentContainer := containerByName(currentPod.Spec.Containers, kelos.AgentContainerName)
+			g.Expect(agentContainer).NotTo(BeNil())
+			modelEnv, found := envVarByName(agentContainer.Env, "KELOS_MODEL")
+			g.Expect(found).To(BeTrue())
+			g.Expect(modelEnv.Value).To(Equal(updatedModel))
+			credentialEnv, found := envVarByName(agentContainer.Env, "ANTHROPIC_API_KEY")
+			g.Expect(found).To(BeTrue())
+			g.Expect(credentialEnv.ValueFrom).NotTo(BeNil())
+			g.Expect(credentialEnv.ValueFrom.SecretKeyRef).NotTo(BeNil())
+			g.Expect(credentialEnv.ValueFrom.SecretKeyRef.Name).To(Equal(credentialSecretName))
+			g.Expect(credentialEnv.ValueFrom.SecretKeyRef.Key).To(Equal("ANTHROPIC_API_KEY"))
 			g.Expect(session.Annotations).NotTo(HaveKey(sessionupdate.RequestAnnotation))
 			g.Expect(session.Annotations).NotTo(HaveKey(sessionupdate.ReportAnnotation))
 			g.Expect(session.Annotations).NotTo(HaveKey(sessionupdate.ForceUpdateAnnotation))
@@ -1027,15 +1061,13 @@ func podSessionRuntimeImage(pod *corev1.Pod) string {
 	return ""
 }
 
-func setPodSessionRuntimeImage(pod *corev1.Pod, image string) bool {
-	for i := range pod.Spec.InitContainers {
-		container := &pod.Spec.InitContainers[i]
-		if container.Name == "kelos-session-runtime" {
-			container.Image = image
-			return true
+func containerByName(containers []corev1.Container, name string) *corev1.Container {
+	for i := range containers {
+		if containers[i].Name == name {
+			return &containers[i]
 		}
 	}
-	return false
+	return nil
 }
 
 func waitForPodDeletion(f *framework.Framework, namespace, name string) {

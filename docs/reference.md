@@ -196,7 +196,9 @@ the refreshed value on their next sync and are not supported.
 
 A Session is one interactive Claude Code, Codex, or OpenCode conversation that
 web and terminal clients can share and reconnect to. The spec is immutable
-except for `spec.suspend`.
+except for `spec.worker.credentials`, `spec.worker.model`,
+fields under `spec.worker.podOverrides` other than `serviceAccountName`, and
+`spec.suspend`.
 Conversation events and history are retained on the Session workspace rather
 than in the Kubernetes API. If configured, `spec.initialPrompt` also remains in
 the Session resource and is visible through the Kubernetes API.
@@ -211,6 +213,7 @@ the Session resource and is visible through the Kubernetes API.
 | `spec.worker.workspaceRef.name` | Workspace cloned into the Session Pod | No |
 | `spec.worker.agentConfigRefs[].name` | Ordered AgentConfig resources | No |
 | `spec.worker.podOverrides` | Pod resources, scheduling, environment, volumes, and sidecars | No |
+| `spec.worker.podOverrides.serviceAccountName` | Service account for the Session Pod; immutable after creation | No |
 | `spec.suspend` | Stop the Session runtime without deleting the Session or its persistent workspace (defaults to `false`) | No |
 | `spec.initialBranch` | Git branch used to initialize the Session workspace. Checks out the branch from `origin` when it exists, or creates it from the Workspace ref. Requires `spec.worker.workspaceRef` | No |
 | `spec.initialPrompt` | Prompt submitted when the Session starts without retained conversation history. An `emptyDir` workspace may submit it again after Pod replacement | No |
@@ -309,10 +312,11 @@ accepting new turns and waits for accepted work to finish before replacing the
 Pod. Pending user input delays the update until it is answered or interrupted.
 Rejected turns are not retried automatically; submit them again after the
 Session reconnects. Suspended Sessions remain at zero replicas while their
-StatefulSet is updated and use the updated template when resumed. Session Pods
-that use the default runtime image follow this process when a Kelos upgrade
-changes that image; an explicitly tagged or digested runtime image remains
-pinned.
+StatefulSet is updated and use the updated template when resumed. Changes to
+`spec.worker.credentials`, `spec.worker.model`, and mutable fields under
+`spec.worker.podOverrides` follow this process. Session Pods that use the default
+runtime image also follow it when a Kelos upgrade changes that image; an
+explicitly tagged or digested runtime image remains pinned.
 
 `Active=True` means the runtime has an unfinished turn, including a turn waiting
 for user input; `Active=False` means it is idle. Activity becomes `Unknown` when

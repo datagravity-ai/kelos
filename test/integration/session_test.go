@@ -513,13 +513,91 @@ spec:
 		Expect(k8sClient.Update(ctx, session)).To(Succeed())
 	})
 
+	It("reconciles credential, model, and Pod override changes", func() {
+		session := validSession(namespace, "mutable-worker-fields", "codex")
+		session.Spec.Suspend = ptr.To(true)
+		session.Spec.Worker.Model = "initial-model"
+		Expect(k8sClient.Create(ctx, session)).To(Succeed())
+
+		statefulSetKey := client.ObjectKey{Namespace: namespace, Name: "session-" + session.Name}
+		Eventually(func(g Gomega) {
+			var statefulSet appsv1.StatefulSet
+			g.Expect(k8sClient.Get(ctx, statefulSetKey, &statefulSet)).To(Succeed())
+			g.Expect(statefulSet.Spec.Template.Spec.Containers).NotTo(BeEmpty())
+			model := ""
+			for _, env := range statefulSet.Spec.Template.Spec.Containers[0].Env {
+				if env.Name == "KELOS_MODEL" {
+					model = env.Value
+					break
+				}
+			}
+			g.Expect(model).To(Equal("initial-model"))
+		}, 10*time.Second, 100*time.Millisecond).Should(Succeed())
+
+		Eventually(func() error {
+			var current kelos.Session
+			if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(session), &current); err != nil {
+				return err
+			}
+			current.Spec.Worker.Credentials = &kelos.Credentials{
+				Type:      kelos.CredentialTypeAPIKey,
+				SecretRef: &kelos.SecretReference{Name: "updated-credentials"},
+			}
+			current.Spec.Worker.Model = "updated-model"
+			current.Spec.Worker.PodOverrides = &kelos.PodOverrides{Labels: map[string]string{
+				"app.kubernetes.io/version": "updated-version",
+			}}
+			return k8sClient.Update(ctx, &current)
+		}, 10*time.Second, 100*time.Millisecond).Should(Succeed())
+
+		Eventually(func(g Gomega) {
+			var statefulSet appsv1.StatefulSet
+			g.Expect(k8sClient.Get(ctx, statefulSetKey, &statefulSet)).To(Succeed())
+			g.Expect(statefulSet.Labels).To(HaveKeyWithValue("app.kubernetes.io/version", "updated-version"))
+			g.Expect(statefulSet.Spec.Template.Labels).To(HaveKeyWithValue("app.kubernetes.io/version", "updated-version"))
+			g.Expect(statefulSet.Spec.Template.Spec.Containers).NotTo(BeEmpty())
+			model := ""
+			var credentialEnv *corev1.EnvVar
+			for i := range statefulSet.Spec.Template.Spec.Containers[0].Env {
+				env := &statefulSet.Spec.Template.Spec.Containers[0].Env[i]
+				switch env.Name {
+				case "KELOS_MODEL":
+					model = env.Value
+				case "CODEX_API_KEY":
+					credentialEnv = env
+				}
+			}
+			g.Expect(model).To(Equal("updated-model"))
+			g.Expect(credentialEnv).NotTo(BeNil())
+			g.Expect(credentialEnv.ValueFrom).NotTo(BeNil())
+			g.Expect(credentialEnv.ValueFrom.SecretKeyRef).NotTo(BeNil())
+			g.Expect(credentialEnv.ValueFrom.SecretKeyRef.Name).To(Equal("updated-credentials"))
+			g.Expect(credentialEnv.ValueFrom.SecretKeyRef.Key).To(Equal("CODEX_API_KEY"))
+		}, 10*time.Second, 100*time.Millisecond).Should(Succeed())
+	})
+
 	It("keeps Session configuration immutable", func() {
 		mutations := []struct {
 			name   string
 			mutate func(*kelos.Session)
 		}{
-			{name: "worker", mutate: func(session *kelos.Session) {
-				session.Spec.Worker.Model = "another-model"
+			{name: "worker-type", mutate: func(session *kelos.Session) {
+				session.Spec.Worker.Type = "opencode"
+			}},
+			{name: "worker-effort", mutate: func(session *kelos.Session) {
+				session.Spec.Worker.Effort = "high"
+			}},
+			{name: "worker-image", mutate: func(session *kelos.Session) {
+				session.Spec.Worker.Image = "example.com/agent:latest"
+			}},
+			{name: "worker-workspace-ref", mutate: func(session *kelos.Session) {
+				session.Spec.Worker.WorkspaceRef = &kelos.WorkspaceReference{Name: "workspace"}
+			}},
+			{name: "worker-agent-config-refs", mutate: func(session *kelos.Session) {
+				session.Spec.Worker.AgentConfigRefs = []kelos.AgentConfigReference{{Name: "agent-config"}}
+			}},
+			{name: "worker-pod-overrides-service-account-name", mutate: func(session *kelos.Session) {
+				session.Spec.Worker.PodOverrides = &kelos.PodOverrides{ServiceAccountName: "workload-identity"}
 			}},
 			{name: "initial-branch", mutate: func(session *kelos.Session) {
 				session.Spec.InitialBranch = "another-branch"
