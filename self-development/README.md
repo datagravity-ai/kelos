@@ -456,8 +456,9 @@ Tasks and TaskSpawners use the existing `kelos-agent`, `agora-agent`, and
 other credentials intended for non-Session workloads.
 
 Sessions use dedicated Workspaces so they can authenticate with a personal
-token without changing Task credentials. Apply the checked-in Session
-Workspaces after creating the token Secret below:
+token without changing Task credentials. The checked-in manifest includes
+Session Workspaces for Kelos, Agora, Kanon, and `gjkim42/actions-gateway`.
+Apply them after creating the token Secret below:
 
 ```bash
 kubectl apply -f self-development/session-workspaces.yaml

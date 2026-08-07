@@ -27,3 +27,13 @@ spec:
   ref: main
   secretRef:
     name: personal-github-token
+---
+apiVersion: kelos.dev/v1alpha2
+kind: Workspace
+metadata:
+  name: actions-gateway-session-agent
+spec:
+  repo: https://github.com/gjkim42/actions-gateway.git
+  ref: main
+  secretRef:
+    name: personal-github-token
