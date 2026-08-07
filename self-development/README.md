@@ -11,7 +11,7 @@ The nested [`kanon/`](kanon/README.md) directory does the same for the sibling
 
 The nested [`actions-gateway/`](actions-gateway/README.md) directory provides
 general and Kubernetes API reviewers for
-[`gjkim42/actions-gateway`](https://github.com/gjkim42/actions-gateway).
+[`kelos-dev/actions-gateway`](https://github.com/kelos-dev/actions-gateway).
 
 [`cs`](cs) creates persistent interactive Codex environments for developing
 Kelos with the same Workspace, credentials, model, effort, and Git identity as
@@ -455,16 +455,18 @@ Before deploying these examples, you need to create the following resources:
 
 ### 1. Workspace Resources
 
-Tasks and TaskSpawners use the existing `kelos-agent`, `agora-agent`, and
-`kanon-agent` Workspaces. Configure those Workspaces with the GitHub App or
-other credentials intended for non-Session workloads.
+[`workspaces.yaml`](workspaces.yaml) defines the `kelos-agent`, `agora-agent`,
+`kanon-agent`, and `actions-gateway-agent` Workspaces used by Tasks and
+TaskSpawners. They reference the `kelos-agent-credentials` Secret described
+below so GitHub operations use the Kelos bot identity.
 
 Sessions use dedicated Workspaces so they can authenticate with a personal
 token without changing Task credentials. The checked-in manifest includes
-Session Workspaces for Kelos, Agora, Kanon, and `gjkim42/actions-gateway`.
-Apply them after creating the token Secret below:
+Session Workspaces for Kelos, Agora, Kanon, and `kelos-dev/actions-gateway`.
+Apply both manifests after creating their Secrets below:
 
 ```bash
+kubectl apply -f self-development/workspaces.yaml
 kubectl apply -f self-development/session-workspaces.yaml
 ```
 
@@ -482,7 +484,21 @@ spec:
     name: personal-github-token
 ```
 
-### 2. Session GitHub Token Secret
+### 2. Project GitHub App Secret
+
+Create the GitHub App Secret referenced by `workspaces.yaml`:
+
+```bash
+kubectl create secret generic kelos-agent-credentials \
+  --from-literal=appID=<your-github-app-id> \
+  --from-literal=installationID=<your-github-app-installation-id> \
+  --from-file=privateKey=<path-to-private-key.pem>
+```
+
+The GitHub App installation must have access to the repositories used by the
+project Workspaces.
+
+### 3. Session GitHub Token Secret
 
 Create the personal token Secret referenced only by the Session Workspaces:
 
@@ -496,7 +512,7 @@ The token needs these permissions:
 - `repo` (full control of private repositories)
 - `workflow` (if your repo uses GitHub Actions)
 
-### 3. GitHub Webhook Secret and Delivery
+### 4. GitHub Webhook Secret and Delivery
 
 The issue and pull request spawners in this directory are webhook-driven.
 Create a secret with the shared webhook secret GitHub will use:
@@ -516,7 +532,7 @@ Webhook spawners only react to **new** events after deployment. If an issue
 or PR was already in a matching state before the webhook server went live,
 retrigger it with a fresh comment or relabel after deployment.
 
-### 4. Agent Credentials Secret
+### 5. Agent Credentials Secret
 
 Create a secret with your agent credentials. Most checked-in spawners use
 Codex OAuth. The GLM reviewer spawners use OpenCode with Z.AI GLM-5.2 and read

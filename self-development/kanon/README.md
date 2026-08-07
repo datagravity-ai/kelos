@@ -56,11 +56,14 @@ maintain (`self-development/kanon/*`) live in *this* repository, so they use the
 > Kubernetes CRDs/API surface to review) and `kelos-image-update` (Kanon has no
 > coding-agent Dockerfiles to bump).
 
-Apply the root `base-agent` first, then the whole directory. The directory
-includes `agentconfig.yaml`, which defines the `kanon-dev-agent` role
-instructions referenced by the triage and squash-commits spawners:
+Apply the shared Workspaces and root `base-agent` first, then the whole
+directory. The directory includes `agentconfig.yaml`, which defines the
+`kanon-dev-agent` role instructions referenced by the triage and
+squash-commits spawners:
 
 ```bash
+kubectl apply -f self-development/workspaces.yaml
+kubectl apply -f self-development/session-workspaces.yaml
 kubectl apply -f self-development/base-agent.yaml
 kubectl apply -f self-development/kanon/
 ```
@@ -319,25 +322,15 @@ Three Workspaces are referenced:
   `personal-github-token` Secret.
 
 - **`kanon-agent`** — points at the Kanon repository and is used by the six
-  TaskSpawners that operate directly on Kanon:
-
-  ```yaml
-  apiVersion: kelos.dev/v1alpha2
-  kind: Workspace
-  metadata:
-    name: kanon-agent
-  spec:
-    repo: https://github.com/kelos-dev/kanon.git
-    ref: main
-    secretRef:
-      name: github-token  # For pushing branches and creating PRs
-  ```
+  TaskSpawners that operate directly on Kanon. It is defined in
+  [`workspaces.yaml`](../workspaces.yaml) and references the
+  `kelos-agent-credentials` Secret.
 
 - **`kelos-agent`** — points at this repository (`kelos-dev/kelos`). Used by
   `kanon-config-update` and `kanon-self-update`, which edit the
-  `self-development/kanon/` files that live here. This is the same Workspace
-  `self-development/` already uses, so if you deployed those examples it
-  already exists.
+  `self-development/kanon/` files that live here. It is also defined in
+  [`workspaces.yaml`](../workspaces.yaml) and references the
+  `kelos-agent-credentials` Secret.
 
 ### 2. Repository labels
 

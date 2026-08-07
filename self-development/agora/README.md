@@ -55,11 +55,14 @@ maintain (`self-development/agora/*`) live in *this* repository, so they use the
 > Kubernetes CRDs to review) and `kelos-image-update` (it updates
 > coding-agent image versions, not service base images).
 
-Apply the root `base-agent` first, then the whole directory. The directory
-includes `agentconfig.yaml`, which defines the `agora-dev-agent` role
-instructions referenced by the triage and squash-commits spawners:
+Apply the shared Workspaces and root `base-agent` first, then the whole
+directory. The directory includes `agentconfig.yaml`, which defines the
+`agora-dev-agent` role instructions referenced by the triage and
+squash-commits spawners:
 
 ```bash
+kubectl apply -f self-development/workspaces.yaml
+kubectl apply -f self-development/session-workspaces.yaml
 kubectl apply -f self-development/base-agent.yaml
 kubectl apply -f self-development/agora/
 ```
@@ -318,25 +321,15 @@ Three Workspaces are referenced:
   `personal-github-token` Secret.
 
 - **`agora-agent`** — points at the Agora repository and is used by the six
-  TaskSpawners that operate directly on Agora:
-
-  ```yaml
-  apiVersion: kelos.dev/v1alpha2
-  kind: Workspace
-  metadata:
-    name: agora-agent
-  spec:
-    repo: https://github.com/kelos-dev/agora.git
-    ref: main
-    secretRef:
-      name: github-token  # For pushing branches and creating PRs
-  ```
+  TaskSpawners that operate directly on Agora. It is defined in
+  [`workspaces.yaml`](../workspaces.yaml) and references the
+  `kelos-agent-credentials` Secret.
 
 - **`kelos-agent`** — points at this repository (`kelos-dev/kelos`). Used by
   `agora-config-update` and `agora-self-update`, which edit the
-  `self-development/agora/` files that live here. This is the same Workspace
-  `self-development/` already uses, so if you deployed those examples it
-  already exists.
+  `self-development/agora/` files that live here. It is also defined in
+  [`workspaces.yaml`](../workspaces.yaml) and references the
+  `kelos-agent-credentials` Secret.
 
 ### 2. Repository labels
 

@@ -37,7 +37,7 @@ metadata:
 spec:
   when:
     githubWebhook:
-      repository: gjkim42/actions-gateway
+      repository: kelos-dev/actions-gateway
       events:
         - issue_comment
         - pull_request_review
@@ -67,7 +67,7 @@ spec:
   taskTemplate:
     worker:
       workspaceRef:
-        name: actions-gateway-session-agent
+        name: actions-gateway-agent
       model: gpt-5.6-sol
       effort: xhigh
       type: codex
@@ -99,7 +99,7 @@ spec:
             values: [0]
     branch: '{{with index . "Branch"}}{{.}}{{else}}main{{end}}'
     promptTemplate: |
-      You are a code review agent for the Actions Gateway project (github.com/gjkim42/actions-gateway).
+      You are a code review agent for the Actions Gateway project (github.com/kelos-dev/actions-gateway).
       Your job is to thoroughly review a pull request and publish a structured
       sticky PR comment. You do NOT write code, push changes, or modify any files.
 
@@ -346,16 +346,16 @@ spec:
 
       ```
       comment_author=$(gh api user --jq .login)
-      comment_id=$(STICKY_COMMENT_AUTHOR="$comment_author" gh api "repos/gjkim42/actions-gateway/issues/{{.Number}}/comments?per_page=100" \
+      comment_id=$(STICKY_COMMENT_AUTHOR="$comment_author" gh api "repos/kelos-dev/actions-gateway/issues/{{.Number}}/comments?per_page=100" \
         --paginate \
         --slurp \
         --jq 'flatten | map(select(.user.login == env.STICKY_COMMENT_AUTHOR and (.body | contains("<!-- actions-gateway-reviewer:sticky-review -->")))) | last | .id // empty')
 
       if [ -n "$comment_id" ]; then
-        gh api --method PATCH "repos/gjkim42/actions-gateway/issues/comments/$comment_id" \
+        gh api --method PATCH "repos/kelos-dev/actions-gateway/issues/comments/$comment_id" \
           -F body=@/tmp/actions-gateway-reviewer-comment.md
       else
-        gh api "repos/gjkim42/actions-gateway/issues/{{.Number}}/comments" \
+        gh api "repos/kelos-dev/actions-gateway/issues/{{.Number}}/comments" \
           -F body=@/tmp/actions-gateway-reviewer-comment.md
       fi
       ```

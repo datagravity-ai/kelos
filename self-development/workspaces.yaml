@@ -1,39 +1,39 @@
 apiVersion: kelos.dev/v1alpha2
 kind: Workspace
 metadata:
-  name: kelos-session-agent
+  name: kelos-agent
 spec:
   repo: https://github.com/kelos-dev/kelos.git
   ref: main
   secretRef:
-    name: personal-github-token
+    name: kelos-agent-credentials
 ---
 apiVersion: kelos.dev/v1alpha2
 kind: Workspace
 metadata:
-  name: agora-session-agent
+  name: agora-agent
 spec:
   repo: https://github.com/kelos-dev/agora.git
   ref: main
   secretRef:
-    name: personal-github-token
+    name: kelos-agent-credentials
 ---
 apiVersion: kelos.dev/v1alpha2
 kind: Workspace
 metadata:
-  name: kanon-session-agent
+  name: kanon-agent
 spec:
   repo: https://github.com/kelos-dev/kanon.git
   ref: main
   secretRef:
-    name: personal-github-token
+    name: kelos-agent-credentials
 ---
 apiVersion: kelos.dev/v1alpha2
 kind: Workspace
 metadata:
-  name: actions-gateway-session-agent
+  name: actions-gateway-agent
 spec:
   repo: https://github.com/kelos-dev/actions-gateway.git
   ref: main
   secretRef:
-    name: personal-github-token
+    name: kelos-agent-credentials
