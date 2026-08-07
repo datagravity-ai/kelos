@@ -9,6 +9,10 @@ repository while keeping the configuration in this repo.
 The nested [`kanon/`](kanon/README.md) directory does the same for the sibling
 [`kelos-dev/kanon`](https://github.com/kelos-dev/kanon) repository.
 
+The nested [`actions-gateway/`](actions-gateway/README.md) directory provides
+general and Kubernetes API reviewers for
+[`gjkim42/actions-gateway`](https://github.com/gjkim42/actions-gateway).
+
 [`cs`](cs) creates persistent interactive Codex environments for developing
 Kelos with the same Workspace, credentials, model, effort, and Git identity as
 the `kelos-workers` SessionSpawner.
@@ -18,7 +22,7 @@ the `kelos-workers` SessionSpawner.
 <img width="2694" height="1966" alt="kelos-self-development" src="https://github.com/user-attachments/assets/10719599-426e-4c3d-87a0-cde43e1b3113" />
 
 Every self-development Task, TaskSpawner, Session, and SessionSpawner in this
-directory and its nested Agora and Kanon directories references
+directory and its nested Agora, Kanon, and Actions Gateway directories references
 [`base-agent.yaml`](base-agent.yaml), which copies
 [`gjkim42/kanon-repo`'s `instructions/AGENTS.md`](https://github.com/gjkim42/kanon-repo/blob/main/instructions/AGENTS.md)
 and installs all skills from that repository through `spec.skills`.
