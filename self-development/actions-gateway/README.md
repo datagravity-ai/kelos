@@ -1,13 +1,15 @@
 # Actions Gateway Reviewers
 
 This directory configures on-demand code and Kubernetes API reviewers for
-[`gjkim42/actions-gateway`](https://github.com/gjkim42/actions-gateway). The
+[`kelos-dev/actions-gateway`](https://github.com/kelos-dev/actions-gateway). The
 reviewers are read-only: they inspect pull requests or issues and publish
 feedback without modifying repository files or branches.
 
-Both TaskSpawners use the `actions-gateway-session-agent` Workspace from
-[`../session-workspaces.yaml`](../session-workspaces.yaml) and the shared
-`base-agent` AgentConfig from [`../base-agent.yaml`](../base-agent.yaml).
+Both TaskSpawners use the `actions-gateway-agent` Workspace from
+[`../workspaces.yaml`](../workspaces.yaml) and the shared `base-agent`
+AgentConfig from [`../base-agent.yaml`](../base-agent.yaml). The Workspace
+references the `kelos-agent-credentials` Secret, which must contain the Kelos
+GitHub App credentials so reviews are published by `kelos-bot[bot]`.
 
 ## Spawners
 
@@ -32,7 +34,7 @@ Apply the shared prerequisites once:
 
 ```bash
 kubectl apply -f self-development/base-agent.yaml
-kubectl apply -f self-development/session-workspaces.yaml
+kubectl apply -f self-development/workspaces.yaml
 ```
 
 Apply the reviewers:

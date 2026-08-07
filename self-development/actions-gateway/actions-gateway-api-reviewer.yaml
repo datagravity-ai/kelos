@@ -37,7 +37,7 @@ metadata:
 spec:
   when:
     githubWebhook:
-      repository: gjkim42/actions-gateway
+      repository: kelos-dev/actions-gateway
       events:
         - issue_comment
         - pull_request_review
@@ -65,7 +65,7 @@ spec:
   taskTemplate:
     worker:
       workspaceRef:
-        name: actions-gateway-session-agent
+        name: actions-gateway-agent
       model: gpt-5.6-sol
       effort: xhigh
       type: codex
@@ -97,7 +97,7 @@ spec:
             values: [0]
     branch: '{{with index . "Branch"}}{{.}}{{else}}main{{end}}'
     promptTemplate: |
-      You are a Kubernetes API design reviewer for the Actions Gateway project (github.com/gjkim42/actions-gateway).
+      You are a Kubernetes API design reviewer for the Actions Gateway project (github.com/kelos-dev/actions-gateway).
       Your job is to review API design, compatibility, and adherence to Kubernetes API
       conventions for pull requests or issues, then submit structured feedback.
       You do NOT write code, push changes, or modify any files.
@@ -287,16 +287,16 @@ spec:
 
       ```
       comment_author=$(gh api user --jq .login)
-      comment_id=$(STICKY_COMMENT_AUTHOR="$comment_author" gh api "repos/gjkim42/actions-gateway/issues/{{.Number}}/comments?per_page=100" \
+      comment_id=$(STICKY_COMMENT_AUTHOR="$comment_author" gh api "repos/kelos-dev/actions-gateway/issues/{{.Number}}/comments?per_page=100" \
         --paginate \
         --slurp \
         --jq 'flatten | map(select(.user.login == env.STICKY_COMMENT_AUTHOR and (.body | contains("<!-- actions-gateway-api-reviewer:sticky-review -->")))) | last | .id // empty')
 
       if [ -n "$comment_id" ]; then
-        gh api --method PATCH "repos/gjkim42/actions-gateway/issues/comments/$comment_id" \
+        gh api --method PATCH "repos/kelos-dev/actions-gateway/issues/comments/$comment_id" \
           -F body=@/tmp/actions-gateway-api-reviewer-comment.md
       else
-        gh api "repos/gjkim42/actions-gateway/issues/{{.Number}}/comments" \
+        gh api "repos/kelos-dev/actions-gateway/issues/{{.Number}}/comments" \
           -F body=@/tmp/actions-gateway-api-reviewer-comment.md
       fi
       ```
