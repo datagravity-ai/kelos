@@ -378,6 +378,7 @@ function providerInitials(provider) {
 function sessionDisplayStatus(session) {
   if (session.resetting) return 'Resetting';
   if (session.phase !== 'Ready') return session.phase || 'Pending';
+  if (session.waitingForInput) return 'Waiting for input';
   if (session.active === true) return 'Active';
   if (session.active === false) return 'Idle';
   return session.phase;
@@ -556,7 +557,7 @@ function createSessionListItem(session, draggable = false) {
   button.type = 'button';
   const dot = document.createElement('span');
   const displayStatus = sessionDisplayStatus(session);
-  dot.className = `phase-dot ${String(displayStatus).toLowerCase()}`;
+  dot.className = `phase-dot ${String(displayStatus).toLowerCase().replaceAll(' ', '-')}`;
   const text = document.createElement('span');
   const titleRow = document.createElement('div');
   titleRow.className = 'session-item-title-row';

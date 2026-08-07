@@ -225,7 +225,7 @@ the Session resource and is visible through the Kubernetes API.
 | `status.lastActivityTime` | When runtime activity was first reported or last changed; Pod replacement does not change it | Output |
 | `status.model` | Model reported by the live Session runtime; empty when the runtime does not report a model | Output |
 | `status.conditions[type=Ready]` | Whether the Session infrastructure is ready for clients | Output |
-| `status.conditions[type=Active]` | Whether the runtime has an unfinished turn; `Unknown` means activity has not been reported | Output |
+| `status.conditions[type=Active]` | Whether the runtime has an unfinished turn; `reason: WaitingForInput` means the turn is waiting for a user response, and `Unknown` means activity has not been reported | Output |
 | `status.branch` | Currently checked-out git branch in the Session workspace | Output |
 | `status.pullRequest.url` | Web URL of the pull request associated with the current branch | Output |
 | `status.pullRequest.state` | Pull request lifecycle state: `Draft`, `Open`, `Merged`, or `Closed` | Output |
@@ -268,7 +268,9 @@ The Session sidebar shows compact relative activity times, and the selected
 Session header shows whether it is active now, when it was last active, or when
 it was created if runtime activity has not been reported. Hover over the
 timestamp to see the exact time in the browser's locale and time zone; the
-exact value is also available to assistive technology.
+exact value is also available to assistive technology. A Session waiting for a
+user response is labeled **Waiting for input** in the sidebar and header, with a
+distinct red indicator in the sidebar.
 
 Sessions can be categorized into sections from the creation form or from the
 section control beneath the selected Session's name. Both controls list the
@@ -318,14 +320,16 @@ StatefulSet is updated and use the updated template when resumed. Changes to
 runtime image also follow it when a Kelos upgrade changes that image; an
 explicitly tagged or digested runtime image remains pinned.
 
-`Active=True` means the runtime has an unfinished turn, including a turn waiting
-for user input; `Active=False` means it is idle. Activity becomes `Unknown` when
+`Active=True` means the runtime has an unfinished turn. Its reason is
+`WaitingForInput` when the turn needs a user response and `TurnActive` while the
+agent is working. `Active=False` means it is idle. Activity becomes `Unknown` when
 it cannot be reported, such as while the Session Pod is being replaced. Clients
-should use condition type and status as the contract; condition reasons and
-messages are informational. The shared web client orders Sessions by recent
-activity, newest first, using `status.lastActivityTime`. Creation counts as the
-initial activity until the runtime first reports its activity state. Replacing a
-Session Pod does not change the order. The web client shows activity,
+can use the `WaitingForInput` reason to highlight turns that need a response;
+other condition reasons and messages are informational. The shared web client
+orders Sessions by recent activity, newest first, using
+`status.lastActivityTime`. Creation counts as the initial activity until the
+runtime first reports its activity state. Replacing a Session Pod does not
+change the order. The web client shows activity,
 `status.model`, `status.branch`, and the pull request with a colored,
 text-labeled state in both the Session sidebar and conversation header.
 

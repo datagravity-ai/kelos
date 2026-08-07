@@ -77,6 +77,7 @@ button { color: inherit; }
 .phase-dot { width: 7px; height: 7px; margin-top: 5px; border-radius: 50%; background: #9ca69f; }
 .phase-dot.ready, .phase-dot.idle { background: #4b9a6f; box-shadow: 0 0 0 3px rgba(75,154,111,.12); }
 .phase-dot.active { background: #c68a3d; box-shadow: 0 0 0 3px rgba(198,138,61,.14); }
+.phase-dot.waiting-for-input { background: var(--danger); box-shadow: 0 0 0 3px rgba(167,63,63,.14); }
 .phase-dot.failed { background: #c55b5b; }
 .session-item-title-row { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: baseline; gap: 8px; }
 .session-item-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 680; }

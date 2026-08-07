@@ -189,7 +189,7 @@ func TestServerQueuesStatusPublicationAfterWorkspaceRefresh(t *testing.T) {
 		close(refreshed)
 		return nil
 	}
-	server.publishSessionStatus = func(context.Context, bool) error { return nil }
+	server.publishSessionStatus = func(context.Context, bool, bool) error { return nil }
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go server.runWorkspaceStatusRefreshes(ctx)
@@ -233,6 +233,7 @@ func TestPublishObservedSessionStatusPublishesActivityWhenWorkspaceReadFails(t *
 			return nil
 		},
 		true,
+		true,
 		"gpt-5.6-sol",
 		func(context.Context) (WorkspaceStatus, error) {
 			return WorkspaceStatus{}, readErr
@@ -241,7 +242,7 @@ func TestPublishObservedSessionStatusPublishesActivityWhenWorkspaceReadFails(t *
 	if err != nil {
 		t.Fatalf("publishObservedSessionStatus() error = %v, want nil so the drain can advance", err)
 	}
-	if !got.Active || got.Model != "gpt-5.6-sol" || got.WorkspaceStatus != nil {
+	if !got.Active || !got.WaitingForInput || got.Model != "gpt-5.6-sol" || got.WorkspaceStatus != nil {
 		t.Fatalf("published Session status = %#v, want active model with unobserved workspace", got)
 	}
 }
@@ -252,6 +253,7 @@ func TestPublishObservedSessionStatusReturnsPublisherError(t *testing.T) {
 		context.Background(),
 		func(context.Context, ObservedSessionStatus) error { return publishErr },
 		true,
+		false,
 		"gpt-5.6-sol",
 		func(context.Context) (WorkspaceStatus, error) { return WorkspaceStatus{}, nil },
 	)
@@ -268,7 +270,7 @@ func TestServerRetriesSessionStatusPublicationInOrder(t *testing.T) {
 	server.sessionStatusPublishInterval = time.Hour
 	attempts := 0
 	activity := make(chan bool, 3)
-	server.publishSessionStatus = func(_ context.Context, active bool) error {
+	server.publishSessionStatus = func(_ context.Context, active, _ bool) error {
 		attempts++
 		activity <- active
 		if attempts == 1 {
@@ -292,7 +294,7 @@ func TestServerRefreshesWorkspaceStatusAfterPeriodicPublication(t *testing.T) {
 	server := NewServer(Config{}, journal, &fakeProvider{})
 	server.sessionStatusRetryInterval = time.Hour
 	server.sessionStatusPublishInterval = 10 * time.Millisecond
-	server.publishSessionStatus = func(context.Context, bool) error { return nil }
+	server.publishSessionStatus = func(context.Context, bool, bool) error { return nil }
 	server.refreshWorkspaceStatus = func(context.Context) error { return nil }
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -312,7 +314,7 @@ func TestRunTurnPublishesActivityTransitions(t *testing.T) {
 	server := NewServer(Config{}, journal, provider)
 	server.sessionStatusPublishInterval = time.Hour
 	activity := make(chan bool, 2)
-	server.publishSessionStatus = func(_ context.Context, active bool) error {
+	server.publishSessionStatus = func(_ context.Context, active, _ bool) error {
 		activity <- active
 		return nil
 	}
@@ -341,7 +343,7 @@ func TestRunTurnPreservesShortActivityTransitions(t *testing.T) {
 	server := NewServer(Config{}, journal, &fakeProvider{})
 	server.sessionStatusPublishInterval = time.Hour
 	activity := make(chan bool, 2)
-	server.publishSessionStatus = func(_ context.Context, active bool) error {
+	server.publishSessionStatus = func(_ context.Context, active, _ bool) error {
 		activity <- active
 		return nil
 	}
@@ -353,6 +355,71 @@ func TestRunTurnPreservesShortActivityTransitions(t *testing.T) {
 
 	assertActivity(t, activity, true)
 	assertActivity(t, activity, false)
+}
+
+func TestRequestInputPublishesWaitingForInputTransitions(t *testing.T) {
+	journal := NewJournal()
+	defer journal.Close()
+	server := NewServer(Config{}, journal, &fakeProvider{})
+	server.sessionStatusPublishInterval = time.Hour
+	type publishedStatus struct {
+		active          bool
+		waitingForInput bool
+	}
+	statuses := make(chan publishedStatus, 2)
+	server.publishSessionStatus = func(_ context.Context, active, waitingForInput bool) error {
+		statuses <- publishedStatus{active: active, waitingForInput: waitingForInput}
+		return nil
+	}
+	server.activeMu.Lock()
+	server.activeTurn = "turn-1"
+	server.activeMu.Unlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go server.runSessionStatusPublishes(ctx)
+
+	type inputResult struct {
+		answers map[string][]string
+		err     error
+	}
+	result := make(chan inputResult, 1)
+	go func() {
+		answers, err := (&turnSink{server: server, turnID: "turn-1"}).RequestInput(ctx, InputRequest{
+			ID: "claude-request-1",
+			Questions: []InputQuestion{{
+				ID:       "question-1",
+				Question: "Which database?",
+			}},
+		})
+		result <- inputResult{answers: answers, err: err}
+	}()
+
+	assertStatus := func(want publishedStatus) {
+		t.Helper()
+		select {
+		case got := <-statuses:
+			if got != want {
+				t.Fatalf("published Session status = %#v, want %#v", got, want)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("Session status %#v was not published", want)
+		}
+	}
+	assertStatus(publishedStatus{active: true, waitingForInput: true})
+
+	if err := server.resolveInput("claude-request-1", map[string][]string{"question-1": {"PostgreSQL"}}, false, "response-1"); err != nil {
+		t.Fatal(err)
+	}
+	assertStatus(publishedStatus{active: true, waitingForInput: false})
+	select {
+	case got := <-result:
+		if got.err != nil || !reflect.DeepEqual(got.answers, map[string][]string{"question-1": {"PostgreSQL"}}) {
+			t.Fatalf("input result = %#v, want PostgreSQL answer", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("input request did not finish")
+	}
 }
 
 func assertActivity(t *testing.T, activity <-chan bool, want bool) {
@@ -1028,7 +1095,7 @@ func TestServerWithholdsIdleDrainUntilActivityPublished(t *testing.T) {
 	server := NewServer(Config{PodUID: podUID}, journal, &fakeProvider{})
 	// A configured status publisher means activity transitions must be durably
 	// published before the runtime reports Drained.
-	server.publishSessionStatus = func(context.Context, bool) error { return nil }
+	server.publishSessionStatus = func(context.Context, bool, bool) error { return nil }
 
 	if err := server.submitMessage("first", "request-first"); err != nil {
 		t.Fatal(err)
@@ -1090,7 +1157,7 @@ func TestServerWithholdsIdleDrainAfterRecoveringInterruptedWork(t *testing.T) {
 	server := NewServer(Config{PodUID: podUID}, journal, &fakeProvider{})
 	// A configured status publisher means recovered activity must be durably
 	// published before the runtime reports Drained.
-	server.publishSessionStatus = func(context.Context, bool) error { return nil }
+	server.publishSessionStatus = func(context.Context, bool, bool) error { return nil }
 	server.seedRecoveredActivityPublish()
 
 	request := sessionupdate.NewRequest(podUID, "idle-period")
@@ -1156,7 +1223,7 @@ func TestServerWithholdsIdleDrainForUnpublishedCompletedTurn(t *testing.T) {
 
 	podUID := types.UID("pod-uid")
 	server := NewServer(Config{PodUID: podUID}, journal, &fakeProvider{})
-	server.publishSessionStatus = func(context.Context, bool) error { return nil }
+	server.publishSessionStatus = func(context.Context, bool, bool) error { return nil }
 	server.nextTurnID.Store(recovery.nextTurnID)
 	server.seedRecoveredActivityPublish()
 
@@ -1228,7 +1295,7 @@ func TestServerDoesNotSettleLaterTurnFromStaleIdlePublication(t *testing.T) {
 
 	// Turns 1-5 are complete and a periodic idle publication was enqueued then.
 	server.completedTurnID.Store(5)
-	server.publishSessionStatus = func(context.Context, bool) error { return nil }
+	server.publishSessionStatus = func(context.Context, bool, bool) error { return nil }
 	server.requestPeriodicSessionStatusPublish()
 	stale, ok := server.nextSessionStatusPublish()
 	if !ok || stale.active || stale.settledTurnID != 5 {
@@ -1269,7 +1336,7 @@ func TestServerRuntimeUpdateDrainIgnoresPendingPublishes(t *testing.T) {
 	defer journal.Close()
 	podUID := types.UID("pod-uid")
 	server := NewServer(Config{PodUID: podUID}, journal, &fakeProvider{})
-	server.publishSessionStatus = func(context.Context, bool) error { return nil }
+	server.publishSessionStatus = func(context.Context, bool, bool) error { return nil }
 
 	request := sessionupdate.NewRequest(podUID, "desired-revision")
 	encoded, err := sessionupdate.Encode(request)

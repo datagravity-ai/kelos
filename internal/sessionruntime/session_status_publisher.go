@@ -15,8 +15,9 @@ import (
 
 // ObservedSessionStatus contains the status fields owned by one Session runtime.
 type ObservedSessionStatus struct {
-	Active bool
-	Model  string
+	Active          bool
+	WaitingForInput bool
+	Model           string
 	// WorkspaceStatus is omitted when the runtime cannot inspect the workspace.
 	WorkspaceStatus *WorkspaceStatus
 }
@@ -47,6 +48,10 @@ func NewSessionStatusPublisher(client clientv1alpha2.SessionInterface, sessionNa
 			conditionStatus = metav1.ConditionTrue
 			reason = "TurnActive"
 			message = "Session runtime has an unfinished turn"
+			if status.WaitingForInput {
+				reason = "WaitingForInput"
+				message = "Session runtime is waiting for user input"
+			}
 		}
 		previousActive := apiMeta.FindStatusCondition(session.Status.Conditions, kelos.SessionConditionActive)
 		conditions := append([]metav1.Condition(nil), session.Status.Conditions...)

@@ -178,6 +178,7 @@ var _ = Describe("Session remote control", func() {
 		})
 		Expect(input.Questions).To(HaveLen(1))
 		Expect(input.Questions[0].Question).To(Equal("Which database?"))
+		waitForSessionActivityReason(f, f.Namespace, sessionName, metav1.ConditionTrue, "WaitingForInput")
 		sendSessionRequest(connection, sessionruntime.ClientRequest{
 			Type:    "input",
 			InputID: input.InputID,
@@ -1007,6 +1008,17 @@ func waitForSessionActivity(f *framework.Framework, namespace, name string, stat
 		}
 		return condition.Status
 	}, time.Minute, time.Second).Should(Equal(status), "Session %s/%s runtime did not report Active=%s", namespace, name, status)
+}
+
+func waitForSessionActivityReason(f *framework.Framework, namespace, name string, status metav1.ConditionStatus, reason string) {
+	Eventually(func(g Gomega) {
+		session, err := f.KelosClientset.ApiV1alpha2().Sessions(namespace).Get(context.TODO(), name, metav1.GetOptions{})
+		g.Expect(err).NotTo(HaveOccurred())
+		condition := apiMeta.FindStatusCondition(session.Status.Conditions, kelos.SessionConditionActive)
+		g.Expect(condition).NotTo(BeNil())
+		g.Expect(condition.Status).To(Equal(status))
+		g.Expect(condition.Reason).To(Equal(reason))
+	}, time.Minute, time.Second).Should(Succeed(), "Session %s/%s runtime did not report Active=%s with reason %s", namespace, name, status, reason)
 }
 
 func waitForSessionModel(f *framework.Framework, namespace, name, model string) {

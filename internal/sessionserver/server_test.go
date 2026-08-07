@@ -806,7 +806,7 @@ func TestSummarizeIncludesRuntimeStatus(t *testing.T) {
 			Conditions: []metav1.Condition{{
 				Type:   kelos.SessionConditionActive,
 				Status: metav1.ConditionTrue,
-				Reason: "TurnActive",
+				Reason: "WaitingForInput",
 			}},
 			PullRequest: &kelos.SessionPullRequest{
 				URL:   "https://github.com/kelos-dev/kelos/pull/42",
@@ -816,7 +816,7 @@ func TestSummarizeIncludesRuntimeStatus(t *testing.T) {
 	}
 
 	summary := summarize(session)
-	if summary.Active == nil || !*summary.Active || summary.Model != session.Status.Model || summary.Branch != session.Status.Branch || summary.PullRequest == nil || *summary.PullRequest != *session.Status.PullRequest || summary.Section != "Reviews" {
+	if summary.Active == nil || !*summary.Active || !summary.WaitingForInput || summary.Model != session.Status.Model || summary.Branch != session.Status.Branch || summary.PullRequest == nil || *summary.PullRequest != *session.Status.PullRequest || summary.Section != "Reviews" {
 		t.Fatalf("summarize() = %#v", summary)
 	}
 	if summary.CreatedAt == nil || !summary.CreatedAt.Equal(&createdAt) {
@@ -831,6 +831,9 @@ func TestSummarizeIncludesRuntimeStatus(t *testing.T) {
 	}
 	if !strings.Contains(string(data), `"model":"gpt-5.6-sol"`) {
 		t.Fatalf("Session summary JSON = %s, want runtime model", data)
+	}
+	if !strings.Contains(string(data), `"waitingForInput":true`) {
+		t.Fatalf("Session summary JSON = %s, want waiting-for-input state", data)
 	}
 }
 
@@ -914,6 +917,7 @@ func TestSessionViewsIncludeRuntimeStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 	for description, expected := range map[string]string{
+		"waiting display status":     `if (session.waitingForInput) return 'Waiting for input';`,
 		"active display status":      `if (session.active === true) return 'Active';`,
 		"idle display status":        `if (session.active === false) return 'Idle';`,
 		"activity status in sidebar": "activity.textContent = `· ${displayStatus}`;",
@@ -943,8 +947,9 @@ func TestSessionViewsIncludeRuntimeStatus(t *testing.T) {
 		t.Error("Session sidebar does not style branch information")
 	}
 	for state, expected := range map[string]string{
-		"idle":   `.phase-dot.ready, .phase-dot.idle {`,
-		"active": `.phase-dot.active {`,
+		"idle":              `.phase-dot.ready, .phase-dot.idle {`,
+		"active":            `.phase-dot.active {`,
+		"waiting for input": `.phase-dot.waiting-for-input {`,
 	} {
 		if !strings.Contains(string(styles), expected) {
 			t.Errorf("Session views do not style %s activity", state)
