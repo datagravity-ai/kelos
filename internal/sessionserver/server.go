@@ -96,20 +96,21 @@ func (c *sessionSocket) WriteMessage(messageType int, data []byte) error {
 }
 
 type sessionSummary struct {
-	Name           string                    `json:"name"`
-	Namespace      string                    `json:"namespace"`
-	UID            string                    `json:"uid,omitempty"`
-	Provider       string                    `json:"provider"`
-	Model          string                    `json:"model,omitempty"`
-	Phase          kelos.SessionPhase        `json:"phase,omitempty"`
-	Active         *bool                     `json:"active,omitempty"`
-	CreatedAt      *metav1.Time              `json:"createdAt,omitempty"`
-	LastActivityAt *metav1.Time              `json:"lastActivityAt,omitempty"`
-	Message        string                    `json:"message,omitempty"`
-	Branch         string                    `json:"branch,omitempty"`
-	PullRequest    *kelos.SessionPullRequest `json:"pullRequest,omitempty"`
-	Section        string                    `json:"section,omitempty"`
-	Resetting      bool                      `json:"resetting,omitempty"`
+	Name            string                    `json:"name"`
+	Namespace       string                    `json:"namespace"`
+	UID             string                    `json:"uid,omitempty"`
+	Provider        string                    `json:"provider"`
+	Model           string                    `json:"model,omitempty"`
+	Phase           kelos.SessionPhase        `json:"phase,omitempty"`
+	Active          *bool                     `json:"active,omitempty"`
+	WaitingForInput bool                      `json:"waitingForInput,omitempty"`
+	CreatedAt       *metav1.Time              `json:"createdAt,omitempty"`
+	LastActivityAt  *metav1.Time              `json:"lastActivityAt,omitempty"`
+	Message         string                    `json:"message,omitempty"`
+	Branch          string                    `json:"branch,omitempty"`
+	PullRequest     *kelos.SessionPullRequest `json:"pullRequest,omitempty"`
+	Section         string                    `json:"section,omitempty"`
+	Resetting       bool                      `json:"resetting,omitempty"`
 }
 
 type sessionOptions struct {
@@ -689,6 +690,7 @@ func summarize(session *kelos.Session) sessionSummary {
 	if condition := sessionActiveCondition(session); condition != nil && condition.Status != metav1.ConditionUnknown {
 		active := condition.Status == metav1.ConditionTrue
 		summary.Active = &active
+		summary.WaitingForInput = active && condition.Reason == "WaitingForInput"
 	}
 	return summary
 }

@@ -60,6 +60,7 @@ type turnRequest struct {
 
 type sessionStatusPublishRequest struct {
 	active                       bool
+	waitingForInput              bool
 	refreshWorkspaceAfterPublish bool
 	// settledTurnID is the completed-turn high-water mark captured when this
 	// request was enqueued. It becomes the persisted activity mark only after an
@@ -107,6 +108,7 @@ type Server struct {
 	updateReport       chan struct{}
 	activeMu           sync.Mutex
 	activeTurn         string
+	pendingInputCount  atomic.Int64
 
 	runtimeStatusMu             sync.RWMutex
 	runtimeStatus               RuntimeStatus
@@ -117,7 +119,7 @@ type Server struct {
 	pendingInputs                map[string]*pendingInput
 	nextInputID                  atomic.Int64
 	refreshWorkspaceStatus       func(context.Context) error
-	publishSessionStatus         func(context.Context, bool) error
+	publishSessionStatus         func(context.Context, bool, bool) error
 	workspaceStatusRefreshes     chan struct{}
 	sessionStatusMu              sync.Mutex
 	sessionStatusPublishQueue    []sessionStatusPublishRequest
@@ -198,9 +200,9 @@ func Run(ctx context.Context, config Config) error {
 		return err
 	}
 	server := NewServer(config, journal, provider)
-	publishSessionStatus := func(ctx context.Context, active bool) error {
+	publishSessionStatus := func(ctx context.Context, active, waitingForInput bool) error {
 		model := server.runtimeStatusSnapshot().Model
-		return publishObservedSessionStatus(ctx, config.PublishSessionStatus, active, model, func(ctx context.Context) (WorkspaceStatus, error) {
+		return publishObservedSessionStatus(ctx, config.PublishSessionStatus, active, waitingForInput, model, func(ctx context.Context) (WorkspaceStatus, error) {
 			return readWorkspaceStatus(ctx, realWorkspaceStatusRunner{}, config.StateDir, config.WorkingDir)
 		})
 	}
@@ -238,9 +240,9 @@ func Run(ctx context.Context, config Config) error {
 	return server.Serve(ctx)
 }
 
-func publishObservedSessionStatus(ctx context.Context, publisher SessionStatusPublisher, active bool, model string, readStatus func(context.Context) (WorkspaceStatus, error)) error {
+func publishObservedSessionStatus(ctx context.Context, publisher SessionStatusPublisher, active, waitingForInput bool, model string, readStatus func(context.Context) (WorkspaceStatus, error)) error {
 	workspaceStatus, readErr := readStatus(ctx)
-	status := ObservedSessionStatus{Active: active, Model: model}
+	status := ObservedSessionStatus{Active: active, WaitingForInput: waitingForInput, Model: model}
 	if readErr == nil {
 		status.WorkspaceStatus = &workspaceStatus
 	} else {
@@ -435,12 +437,16 @@ func (s *Server) queueSessionStatusPublish(force, refreshWorkspaceAfterPublish b
 	}
 	s.activeMu.Lock()
 	active := s.activeTurn != ""
+	waitingForInput := s.pendingInputCount.Load() > 0
 	settledTurnID := s.completedTurnID.Load()
 	s.sessionStatusMu.Lock()
-	queued := force || len(s.sessionStatusPublishQueue) == 0 || s.sessionStatusPublishQueue[len(s.sessionStatusPublishQueue)-1].active != active
+	queued := force || len(s.sessionStatusPublishQueue) == 0 ||
+		s.sessionStatusPublishQueue[len(s.sessionStatusPublishQueue)-1].active != active ||
+		s.sessionStatusPublishQueue[len(s.sessionStatusPublishQueue)-1].waitingForInput != waitingForInput
 	if queued {
 		s.sessionStatusPublishQueue = append(s.sessionStatusPublishQueue, sessionStatusPublishRequest{
 			active:                       active,
+			waitingForInput:              waitingForInput,
 			refreshWorkspaceAfterPublish: refreshWorkspaceAfterPublish,
 			settledTurnID:                settledTurnID,
 		})
@@ -609,7 +615,7 @@ func (s *Server) runSessionStatusPublishes(ctx context.Context) {
 			}
 		}
 		next := s.sessionStatusPublishInterval
-		err := s.publishSessionStatus(ctx, request.active)
+		err := s.publishSessionStatus(ctx, request.active, request.waitingForInput)
 		if err != nil {
 			log.Printf("Unable to publish Session runtime status error=%v", err)
 			next = s.sessionStatusRetryInterval
@@ -1045,10 +1051,14 @@ func (s *turnSink) RequestInput(ctx context.Context, request InputRequest) (map[
 	}
 	s.server.pendingInputs[request.ID] = pending
 	s.server.inputMu.Unlock()
+	s.server.pendingInputCount.Add(1)
+	s.server.requestSessionStatusPublish()
 	defer func() {
 		s.server.inputMu.Lock()
 		delete(s.server.pendingInputs, request.ID)
 		s.server.inputMu.Unlock()
+		s.server.pendingInputCount.Add(-1)
+		s.server.requestSessionStatusPublish()
 	}()
 
 	s.Emit(Event{

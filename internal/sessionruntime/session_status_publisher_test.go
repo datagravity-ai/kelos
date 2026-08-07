@@ -63,7 +63,21 @@ func TestSessionStatusPublisherPatchesLiveSession(t *testing.T) {
 		t.Fatalf("Session lastActivityTime was not initialized: %#v", got.Status)
 	}
 
+	want.WaitingForInput = true
+	if err := publisher(context.Background(), want); err != nil {
+		t.Fatal(err)
+	}
+	got, err = clientset.ApiV1alpha2().Sessions("default").Get(context.Background(), sessionName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	active = apiMeta.FindStatusCondition(got.Status.Conditions, kelos.SessionConditionActive)
+	if active == nil || active.Status != metav1.ConditionTrue || active.Reason != "WaitingForInput" {
+		t.Fatalf("Session Active condition = %#v, want True with reason WaitingForInput", active)
+	}
+
 	want.Active = false
+	want.WaitingForInput = false
 	if err := publisher(context.Background(), want); err != nil {
 		t.Fatal(err)
 	}
