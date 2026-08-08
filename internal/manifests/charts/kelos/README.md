@@ -207,8 +207,10 @@ the underlying PersistentVolume.
 
 The shared Session server serves the web application, bridges each chat to its
 Session Pod through Kubernetes exec, and can request a destructive Session
-workspace reset after user confirmation. It is disabled by default and requires
-a non-empty static token in an existing Secret:
+workspace reset after user confirmation. The web application opens long
+conversations at a bounded recent page and loads earlier messages on demand. It
+is disabled by default and requires a non-empty static token in an existing
+Secret:
 
 ```bash
 kubectl create secret generic kelos-session-auth \

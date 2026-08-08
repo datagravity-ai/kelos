@@ -269,9 +269,10 @@ sequences and displays at most five rendered output rows, retaining head and
 tail context. The web client displays a five-line preview and provides a control
 to expand retained results that exceed five lines.
 
-Selecting a Session in the web chat opens it at the latest retained message.
-Reconnecting preserves an intentional upward scroll position and shows the
-history that remains available on the Session workspace.
+Selecting a Session in the web chat opens a bounded page at the latest retained
+message. Use **Load earlier messages** to prepend the previous page without
+moving away from the current scroll position. Reconnecting preserves an
+intentional upward scroll position and the loaded conversation view.
 
 The Session sidebar shows compact relative activity times, and the selected
 Session header shows whether it is active now, when it was last active, or when

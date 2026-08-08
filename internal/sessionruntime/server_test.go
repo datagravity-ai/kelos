@@ -1597,6 +1597,7 @@ func TestServerPreservesStateOutsideProjectedHistoryPage(t *testing.T) {
 	startedAt := time.Date(2026, time.August, 8, 12, 0, 0, 0, time.UTC)
 	queuedText := strings.Repeat("queued ", maxHistoryMessageBytes)
 	for _, event := range []Event{
+		{Type: EventFileDiff, Diff: "diff --git a/old.txt b/old.txt\n-old\n+new"},
 		{Type: EventUserMessage, TurnID: "turn-1", Text: "active request"},
 		{Type: EventTurnStarted, TurnID: "turn-1", Timestamp: &startedAt, Status: "running"},
 		{Type: EventAssistantDelta, TurnID: "turn-1", Text: "partial answer"},
@@ -1658,6 +1659,9 @@ func TestServerPreservesStateOutsideProjectedHistoryPage(t *testing.T) {
 	}
 	if len(state.QueuedTurns) != 1 || state.QueuedTurns[0].TurnID != "turn-2" {
 		t.Fatalf("queued turns = %#v, want turn-2", state.QueuedTurns)
+	}
+	if state.FileDiff != "diff --git a/old.txt b/old.txt\n-old\n+new" {
+		t.Fatalf("file diff = %q, want state outside projected history page", state.FileDiff)
 	}
 	if text := state.QueuedTurns[0].Text; len(text) > maxHistoryMessageBytes || !strings.Contains(text, historyTruncationMarker) {
 		t.Fatalf("queued message preview has %d bytes", len(text))

@@ -94,6 +94,13 @@ const state = {
   runtimeStatus: null,
   progressTimer: null,
   replayingHistory: false,
+  historyCursor: '',
+  historyLastEventID: 0,
+  historyPageLoading: false,
+  historyPageReading: false,
+  historyPageCursor: '',
+  historyPageEvents: [],
+  historyRequestID: '',
   runtimeRecoveryActive: false,
   pinHistoryToBottom: false,
   fileChangesDirty: false,
@@ -116,6 +123,8 @@ const state = {
 
 const customOption = '__custom__';
 const maxCachedSessionViews = 5;
+const sessionHistoryItemLimit = 20;
+const sessionHistoryByteLimit = 128 * 1024;
 const sectionOrderStoragePrefix = 'kelos-session-section-order:';
 
 async function api(path, options = {}) {
@@ -177,6 +186,7 @@ function createSessionView() {
     interrupting: false,
     runtimeStatus: null,
     replayingHistory: false,
+    historyCursor: '',
     runtimeRecoveryActive: false,
     pinHistoryToBottom: false,
     fileChangesDirty: false,
@@ -206,6 +216,7 @@ function saveCurrentSessionView() {
   view.interrupting = state.interrupting;
   view.runtimeStatus = state.runtimeStatus;
   view.replayingHistory = state.replayingHistory;
+  view.historyCursor = state.historyCursor;
   view.runtimeRecoveryActive = state.runtimeRecoveryActive;
   view.pinHistoryToBottom = state.pinHistoryToBottom;
   view.fileChangesDirty = state.fileChangesDirty;
@@ -234,6 +245,13 @@ function activateSessionView(view) {
   state.interrupting = view.interrupting;
   state.runtimeStatus = view.runtimeStatus;
   state.replayingHistory = view.replayingHistory;
+  state.historyCursor = view.historyCursor;
+  state.historyLastEventID = 0;
+  state.historyPageLoading = false;
+  state.historyPageReading = false;
+  state.historyPageCursor = '';
+  state.historyPageEvents = [];
+  state.historyRequestID = '';
   state.runtimeRecoveryActive = view.runtimeRecoveryActive;
   state.pinHistoryToBottom = view.pinHistoryToBottom;
   state.fileChangesDirty = view.fileChangesDirty;
@@ -246,6 +264,7 @@ function activateSessionView(view) {
   if (!hasChanges) renderFileChanges();
   refreshSessionProgress();
   renderRuntimeStatus();
+  renderHistoryControl();
 }
 
 function cachedSessionView(session) {
@@ -281,6 +300,13 @@ function resetCurrentSessionView() {
   state.interrupting = false;
   state.runtimeStatus = null;
   state.replayingHistory = true;
+  state.historyCursor = '';
+  state.historyLastEventID = 0;
+  state.historyPageLoading = false;
+  state.historyPageReading = false;
+  state.historyPageCursor = '';
+  state.historyPageEvents = [];
+  state.historyRequestID = '';
   state.runtimeRecoveryActive = false;
   state.pinHistoryToBottom = true;
   state.fileChangesDirty = false;
@@ -292,6 +318,8 @@ function resetCurrentSessionView() {
     view.historyLoaded = false;
     view.statusPlaceholder = false;
     view.lastEventID = 0;
+    view.journalID = '';
+    view.historyCursor = '';
     view.assistantSegmentByTurn = state.assistantSegmentByTurn;
     view.assistantTextByTurn = state.assistantTextByTurn;
     view.tools = state.tools;
@@ -1554,6 +1582,7 @@ function closeSocket() {
     state.socket.close();
     state.socket = null;
   }
+  cancelOlderHistoryPage();
   setComposer(false);
   updateComposerAction();
 }
@@ -1574,15 +1603,19 @@ function connectSocket() {
   socket.addEventListener('open', () => {
     if (generation !== state.socketGeneration) return;
     state.reconnectDelay = 800;
+    const historyLoaded = Boolean(state.currentView?.historyLoaded);
     socket.send(JSON.stringify({
       type: 'subscribe',
-      since: state.lastEventID,
-      journalId: state.currentView?.journalID || '',
+      since: historyLoaded ? state.lastEventID : 0,
+      journalId: historyLoaded ? state.currentView?.journalID || '' : '',
       historyBounds: true,
+      historyItems: sessionHistoryItemLimit,
+      historyBytes: sessionHistoryByteLimit,
     }));
     setConnection('connected', 'Connected');
     setComposer(true);
     updateComposerAction();
+    renderHistoryControl();
     elements.input.focus();
   });
   socket.addEventListener('message', event => {
@@ -1596,6 +1629,7 @@ function connectSocket() {
   socket.addEventListener('close', () => {
     if (generation !== state.socketGeneration || !state.selected) return;
     state.socket = null;
+    cancelOlderHistoryPage();
     setConnection('error', 'Reconnecting');
     setComposer(false);
     updateComposerAction();
@@ -2254,9 +2288,82 @@ function completedAssistantText(eventText, streamedText) {
   return eventText || streamedText || '';
 }
 
-function finishHistoryReplay() {
-  const pinToBottom = state.pinHistoryToBottom;
-  state.replayingHistory = false;
+function sessionHistoryRequestID() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  return `history-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function renderHistoryControl() {
+  let control = elements.messages.querySelector('.history-page-control');
+  if (!state.historyCursor && !state.historyPageLoading) {
+    if (control) control.remove();
+    return;
+  }
+  if (!control) {
+    control = document.createElement('div');
+    control.className = 'history-page-control';
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.addEventListener('click', requestOlderHistory);
+    control.append(button);
+  }
+  const button = control.querySelector('button');
+  button.disabled = state.historyPageLoading || !state.socket || state.socket.readyState !== 1;
+  button.textContent = state.historyPageLoading ? 'Loading earlier messages…' : 'Load earlier messages';
+  elements.messages.prepend(control);
+}
+
+function cancelOlderHistoryPage() {
+  state.historyPageLoading = false;
+  state.historyPageReading = false;
+  state.historyPageCursor = '';
+  state.historyPageEvents = [];
+  state.historyRequestID = '';
+  renderHistoryControl();
+}
+
+function requestOlderHistory() {
+  if (state.historyPageLoading || !state.historyCursor || !state.socket || state.socket.readyState !== 1) return;
+  const requestID = sessionHistoryRequestID();
+  state.historyPageLoading = true;
+  state.historyRequestID = requestID;
+  renderHistoryControl();
+  try {
+    state.socket.send(JSON.stringify({type: 'history', requestId: requestID, historyCursor: state.historyCursor}));
+  } catch (error) {
+    cancelOlderHistoryPage();
+    showToast(`Could not load earlier messages: ${error.message}`);
+  }
+}
+
+function applyHistoryState(historyState) {
+  if (!historyState) return;
+  const activeTurnID = historyState.activeTurnId || '';
+  if (activeTurnID) {
+    const projectedBubble = state.assistantSegmentByTurn.get('current');
+    const projectedText = state.assistantTextByTurn.get('current');
+    if (projectedBubble) state.assistantSegmentByTurn.set(activeTurnID, projectedBubble);
+    if (projectedText !== undefined) state.assistantTextByTurn.set(activeTurnID, projectedText);
+    state.assistantSegmentByTurn.delete('current');
+    state.assistantTextByTurn.delete('current');
+  }
+  state.activeTurn = Boolean(activeTurnID);
+  state.activeTurnID = activeTurnID;
+  const startedAt = Date.parse(historyState.activeTurnStarted || '');
+  state.activeTurnStartedAt = Number.isNaN(startedAt) ? 0 : startedAt;
+  state.waitingForInput = Boolean(historyState.waitingForInput);
+  state.interrupting = Boolean(historyState.turnInterrupting);
+  if (historyState.fileDiff) updateFileChanges(parseFileDiffs(historyState.fileDiff));
+  elements.queue.replaceChildren();
+  state.queuedMessages = new Map();
+  for (const turn of historyState.queuedTurns || []) {
+    renderQueuedUser({type: 'user.message', turnId: turn.turnId, text: turn.text});
+  }
+  refreshSessionProgress();
+  updateComposerAction();
+}
+
+function flushDeferredHistoryRendering() {
   if (state.fileChangesDirty) {
     state.fileChangesDirty = false;
     renderFileChanges();
@@ -2267,29 +2374,132 @@ function finishHistoryReplay() {
     block.dirty = false;
     block.openFirst = false;
   }
+}
+
+function replayOlderHistoryPage(events) {
+  const messages = elements.messages;
+  const previousHeight = Number(messages.scrollHeight) || 0;
+  const previousTop = Number(messages.scrollTop) || 0;
+  const page = document.createElement('div');
+  const live = {
+    activeTurn: state.activeTurn,
+    activeTurnID: state.activeTurnID,
+    activeTurnStartedAt: state.activeTurnStartedAt,
+    waitingForInput: state.waitingForInput,
+    interrupting: state.interrupting,
+    runtimeRecoveryActive: state.runtimeRecoveryActive,
+    replayingHistory: state.replayingHistory,
+    pinHistoryToBottom: state.pinHistoryToBottom,
+    lastEventID: state.lastEventID,
+    assistantSegmentByTurn: state.assistantSegmentByTurn,
+    assistantTextByTurn: state.assistantTextByTurn,
+    fileChanges: new Map(state.fileChanges),
+  };
+
+  elements.messages = page;
+  state.assistantSegmentByTurn = new Map();
+  state.assistantTextByTurn = new Map();
+  state.replayingHistory = true;
+  state.pinHistoryToBottom = false;
+  for (const event of events) handleEvent(event);
+  for (const [name, diff] of live.fileChanges) state.fileChanges.set(name, diff);
+  flushDeferredHistoryRendering();
+  const rendered = moveChildren(page);
+
+  elements.messages = messages;
+  state.activeTurn = live.activeTurn;
+  state.activeTurnID = live.activeTurnID;
+  state.activeTurnStartedAt = live.activeTurnStartedAt;
+  state.waitingForInput = live.waitingForInput;
+  state.interrupting = live.interrupting;
+  state.runtimeRecoveryActive = live.runtimeRecoveryActive;
+  state.replayingHistory = live.replayingHistory;
+  state.pinHistoryToBottom = live.pinHistoryToBottom;
+  state.lastEventID = live.lastEventID;
+  state.assistantSegmentByTurn = live.assistantSegmentByTurn;
+  state.assistantTextByTurn = live.assistantTextByTurn;
+  messages.prepend(rendered);
+  renderHistoryControl();
+  const scrollBehavior = messages.style.scrollBehavior;
+  messages.style.scrollBehavior = 'auto';
+  messages.scrollTop = Math.max(0, previousTop + (Number(messages.scrollHeight) || 0) - previousHeight);
+  messages.style.scrollBehavior = scrollBehavior;
+  refreshSessionProgress();
+  updateComposerAction();
+}
+
+function finishOlderHistoryPage(event) {
+  if (event.requestId !== state.historyRequestID) return;
+  const events = state.historyPageEvents;
+  state.historyCursor = state.historyPageCursor;
+  state.historyPageLoading = false;
+  state.historyPageReading = false;
+  state.historyPageCursor = '';
+  state.historyPageEvents = [];
+  state.historyRequestID = '';
+  if (state.currentView) state.currentView.historyCursor = state.historyCursor;
+  replayOlderHistoryPage(events);
+}
+
+function finishHistoryReplay(historyState) {
+  const pinToBottom = state.pinHistoryToBottom;
+  state.lastEventID = Math.max(state.lastEventID, state.historyLastEventID);
+  applyHistoryState(historyState);
+  state.replayingHistory = false;
+  flushDeferredHistoryRendering();
   if (state.currentView) {
     state.currentView.historyLoaded = true;
     state.currentView.lastEventID = state.lastEventID;
+    state.currentView.historyCursor = state.historyCursor;
   }
   ensureConversation();
+  renderHistoryControl();
   if (pinToBottom) scheduleBottomAnchor();
   state.pinHistoryToBottom = false;
 }
 
 function handleEvent(event) {
+  if (state.historyPageReading) {
+    if (event.type === 'history.end' && event.historyPage) {
+      finishOlderHistoryPage(event);
+      return;
+    }
+    if (event.type === 'error' && event.requestId === state.historyRequestID) {
+      cancelOlderHistoryPage();
+    } else if (event.type === 'history.start' && !event.historyPage) {
+      cancelOlderHistoryPage();
+    } else {
+      state.historyPageEvents.push(event);
+      return;
+    }
+  }
   if (event.id) state.lastEventID = Math.max(state.lastEventID, event.id);
   const recoveredCompletion = state.runtimeRecoveryActive && event.type === 'turn.completed' && event.status === 'interrupted';
   if (state.runtimeRecoveryActive && !isRuntimeRecoveryEvent(event)) state.runtimeRecoveryActive = false;
   switch (event.type) {
-    case 'history.start':
-      if (event.reset || (state.currentView?.journalID && state.currentView.journalID !== event.journalId)) {
+    case 'history.start': {
+      if (event.historyPage) {
+        if (!state.historyPageLoading || event.requestId !== state.historyRequestID) return;
+        state.historyPageReading = true;
+        state.historyPageCursor = event.historyCursor || '';
+        state.historyPageEvents = [];
+        renderHistoryControl();
+        return;
+      }
+      const incompleteHistory = Boolean(state.currentView && !state.currentView.historyLoaded);
+      const replacedJournal = Boolean(state.currentView?.journalID && state.currentView.journalID !== event.journalId);
+      const replaceHistoryCursor = event.reset || replacedJournal || incompleteHistory || !state.currentView || state.lastEventID === 0;
+      if (event.reset || replacedJournal || incompleteHistory) {
         resetCurrentSessionView();
       }
       if (state.currentView && event.journalId) state.currentView.journalID = event.journalId;
+      if (replaceHistoryCursor) state.historyCursor = event.historyCursor || '';
+      state.historyLastEventID = event.lastEventId || 0;
       state.replayingHistory = true;
       break;
+    }
     case 'history.end':
-      finishHistoryReplay();
+      if (!event.historyPage) finishHistoryReplay(event.historyState);
       break;
     case 'runtime.status':
       state.runtimeStatus = event.runtime || null;
@@ -2357,6 +2567,7 @@ function handleEvent(event) {
       break;
     case 'error':
       endAssistantSegment(event.turnId);
+      if (event.requestId && event.requestId === state.historyRequestID) cancelOlderHistoryPage();
       renderError(event);
       break;
   }
@@ -2906,7 +3117,7 @@ function renderTurnEnd(event, recoveredCompletion = false) {
   acceptQueuedMessage(event.turnId);
   updateComposerAction();
   refreshSessionProgress();
-  if (event.status === 'interrupted') showToast('Active work interrupted');
+  if (event.status === 'interrupted' && !state.replayingHistory) showToast('Active work interrupted');
   const divider = document.createElement('div');
   divider.className = 'turn-divider';
   if (elapsed !== null) divider.textContent = `Worked for ${formatSessionProgressElapsed(elapsed)}`;
