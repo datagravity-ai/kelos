@@ -247,9 +247,10 @@ request number. Codex Sessions also show reported context use, weekly limit
 remaining, and cumulative input and output tokens. Less important status-bar
 items are omitted as the terminal narrows. The model is the same
 runtime-reported value persisted in `status.model`. Web chat is served by the
-optional shared `kelos-session-server`; it shows connection status separately
-from working, waiting-for-input, and interrupting progress, including elapsed
-time for active work. Both clients use the same event stream and provider
+optional shared `kelos-session-server`; it shows the same live runtime details
+beneath its composer. It shows connection status separately from working,
+waiting-for-input, and interrupting progress, including elapsed time for active
+work. Both clients use the same event stream and provider
 conversation. Both clients can stream agent and tool activity, answer
 user-input requests, and interrupt active work without ending the provider
 conversation.

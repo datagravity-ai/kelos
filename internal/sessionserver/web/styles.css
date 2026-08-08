@@ -260,6 +260,7 @@ button { color: inherit; }
 .send-button { flex: 0 0 auto; width: 36px; height: 36px; border: 0; border-radius: 11px; background: var(--accent); color: white; font-size: 20px; font-weight: 500; cursor: pointer; }
 .send-button[data-action="interrupt"] { background: var(--warning); font-size: 11px; }
 .send-button:disabled { background: #c8ceca; cursor: default; }
+.session-runtime-status { padding-top: 8px; overflow: hidden; color: var(--muted); font: 10px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
 .composer-hint { padding-top: 7px; text-align: center; color: var(--faint); font-size: 9.5px; }
 .primary-button, .secondary-button { padding: 10px 15px; border-radius: 10px; font-size: 12px; font-weight: 750; cursor: pointer; }
 .primary-button { border: 1px solid var(--accent); background: var(--accent); color: white; }
