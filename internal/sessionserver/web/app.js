@@ -478,7 +478,6 @@ function sessionTimestamp(session) {
 }
 
 function formatSessionRecency(session, compact = false, now = Date.now()) {
-  if (session.active === true) return compact ? 'Now' : 'Active now';
   const timestamp = sessionTimestamp(session);
   if (!timestamp) return '';
   const elapsed = Math.max(0, now - timestamp.date.getTime());
@@ -519,7 +518,7 @@ function createSessionTimestamp(session, compact, className) {
   element.dateTime = timestamp.date.toISOString();
   element.textContent = label;
   const exact = new Intl.DateTimeFormat(undefined, {dateStyle: 'medium', timeStyle: 'long'}).format(timestamp.date);
-  const exactLabel = `${session.active === true && timestamp.activity ? 'Active since' : timestamp.activity ? 'Last active' : 'Created'} ${exact}`;
+  const exactLabel = `${timestamp.activity ? 'Last active' : 'Created'} ${exact}`;
   element.title = exactLabel;
   element.setAttribute('aria-label', exactLabel);
   return element;

@@ -451,8 +451,8 @@ function testReselectRefreshesStatusPlaceholder() {
 function testSessionTimestampFormatting() {
   const now = Date.parse('2026-07-21T12:00:00Z');
   const active = {active: true, lastActivityAt: '2026-07-21T11:52:00Z'};
-  assert.equal(formatSessionRecency(active, true, now), 'Now');
-  assert.equal(formatSessionRecency(active, false, now), 'Active now');
+  assert.equal(formatSessionRecency(active, true, now), '8m');
+  assert.equal(formatSessionRecency(active, false, now), 'Last active 8 minutes ago');
 
   const idle = {active: false, lastActivityAt: '2026-07-21T11:52:00Z', createdAt: '2026-07-20T12:00:00Z'};
   assert.equal(formatSessionRecency(idle, true, now), '8m');
