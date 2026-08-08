@@ -100,6 +100,25 @@ func TestSessionTUIComposerUsesFullWidthPadding(t *testing.T) {
 	}
 }
 
+func TestSessionTUIComposerGapFollowsProgress(t *testing.T) {
+	model, _ := newSessionTUITestModel()
+	model.Update(tea.WindowSizeMsg{Width: 40, Height: 8})
+	model.ready = true
+	model.connectionStatus = ""
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventTurnStarted, TurnID: "turn-1"})
+
+	lines := strings.Split(stripSessionTUIANSI(model.View()), "\n")
+	if progress := strings.TrimSpace(lines[0]); !strings.HasPrefix(progress, "• Working (") {
+		t.Fatalf("first footer row = %q, want working progress", progress)
+	}
+	if gap := lines[1]; gap != "" {
+		t.Fatalf("row above composer = %q, want an unstyled blank row", gap)
+	}
+	if prompt := strings.TrimSpace(lines[3]); prompt != ">" {
+		t.Fatalf("composer prompt row = %q, want >", prompt)
+	}
+}
+
 func TestSessionTUIStatusBarShowsRuntimeAndWorkspaceDetails(t *testing.T) {
 	model, _ := newSessionTUITestModel()
 	model.Update(tea.WindowSizeMsg{Width: 180, Height: 12})
