@@ -137,6 +137,7 @@ function resetHarness() {
     runtimeStatus: null,
     progressTimer: null,
     replayingHistory: false,
+    runtimeRecoveryActive: false,
     pinHistoryToBottom: false,
     fileChangesDirty: false,
   };
@@ -334,6 +335,54 @@ function testRuntimeStatusTreatsOmittedContextTokensAsZero() {
   assert.equal(sessionRuntimeContextUsedPercent({contextWindow: 200000}), 0);
 }
 
+function testTurnDividerShowsDuration() {
+  resetHarness();
+  handleEvent({type: 'turn.started', turnId: 'turn-1', timestamp: '2026-08-08T12:00:00Z'});
+  handleEvent({type: 'turn.completed', turnId: 'turn-1', status: 'completed', timestamp: '2026-08-08T12:05:19Z'});
+
+  const divider = elements.messages.querySelector('.turn-divider');
+  assert.equal(divider.textContent, 'Worked for 5m 19s');
+}
+
+function testUntimestampedHistoryDividerOmitsDuration() {
+  resetHarness();
+  handleEvent({type: 'history.start'});
+  handleEvent({type: 'turn.started', turnId: 'turn-1'});
+  handleEvent({type: 'turn.completed', turnId: 'turn-1', status: 'completed'});
+
+  const divider = elements.messages.querySelector('.turn-divider');
+  assert.equal(divider.textContent, '');
+}
+
+function testUntimestampedLiveTurnUsesLocalDuration() {
+  resetHarness();
+  const originalNow = Date.now;
+  let now = Date.parse('2026-08-08T12:00:00Z');
+  Date.now = () => now;
+  try {
+    handleEvent({type: 'turn.started', turnId: 'turn-1'});
+    now += 65_000;
+    handleEvent({type: 'turn.completed', turnId: 'turn-1', status: 'completed'});
+  } finally {
+    Date.now = originalNow;
+  }
+
+  const divider = elements.messages.querySelector('.turn-divider');
+  assert.equal(divider.textContent, 'Worked for 1m 05s');
+}
+
+function testRuntimeRecoveryDividerOmitsDuration() {
+  resetHarness();
+  handleEvent({type: 'history.start'});
+  handleEvent({type: 'turn.started', turnId: 'turn-1', timestamp: '2026-08-08T12:00:00Z'});
+  handleEvent({type: 'runtime.recovered', text: 'Session runtime restarted'});
+  handleEvent({type: 'input.resolved', turnId: 'turn-1', inputId: 'input-1', status: 'cancelled'});
+  handleEvent({type: 'turn.completed', turnId: 'turn-1', status: 'interrupted', timestamp: '2026-08-08T13:00:00Z'});
+
+  const divider = elements.messages.querySelector('.turn-divider');
+  assert.equal(divider.textContent, '');
+}
+
 function testSessionResetClearsPromptDraft() {
   resetHarness();
   const session = {namespace: 'default', name: 'one', uid: 'uid-one', phase: 'Ready'};
@@ -496,6 +545,10 @@ testSessionProgressSurvivesCachedViewSwitch();
 testSessionProgressElapsedFormatting();
 testRuntimeStatusLifecycle();
 testRuntimeStatusTreatsOmittedContextTokensAsZero();
+testTurnDividerShowsDuration();
+testUntimestampedHistoryDividerOmitsDuration();
+testUntimestampedLiveTurnUsesLocalDuration();
+testRuntimeRecoveryDividerOmitsDuration();
 testSessionResetClearsPromptDraft();
 testHistoryReplayCompletion();
 testReselectRefreshesStatusPlaceholder();

@@ -94,6 +94,7 @@ const state = {
   runtimeStatus: null,
   progressTimer: null,
   replayingHistory: false,
+  runtimeRecoveryActive: false,
   pinHistoryToBottom: false,
   fileChangesDirty: false,
   defaultNamespace: 'default',
@@ -176,6 +177,7 @@ function createSessionView() {
     interrupting: false,
     runtimeStatus: null,
     replayingHistory: false,
+    runtimeRecoveryActive: false,
     pinHistoryToBottom: false,
     fileChangesDirty: false,
     historyLoaded: false,
@@ -204,6 +206,7 @@ function saveCurrentSessionView() {
   view.interrupting = state.interrupting;
   view.runtimeStatus = state.runtimeStatus;
   view.replayingHistory = state.replayingHistory;
+  view.runtimeRecoveryActive = state.runtimeRecoveryActive;
   view.pinHistoryToBottom = state.pinHistoryToBottom;
   view.fileChangesDirty = state.fileChangesDirty;
 }
@@ -231,6 +234,7 @@ function activateSessionView(view) {
   state.interrupting = view.interrupting;
   state.runtimeStatus = view.runtimeStatus;
   state.replayingHistory = view.replayingHistory;
+  state.runtimeRecoveryActive = view.runtimeRecoveryActive;
   state.pinHistoryToBottom = view.pinHistoryToBottom;
   state.fileChangesDirty = view.fileChangesDirty;
   const hasChanges = view.changes.hasChildNodes();
@@ -277,6 +281,7 @@ function resetCurrentSessionView() {
   state.interrupting = false;
   state.runtimeStatus = null;
   state.replayingHistory = true;
+  state.runtimeRecoveryActive = false;
   state.pinHistoryToBottom = true;
   state.fileChangesDirty = false;
   elements.messages.replaceChildren();
@@ -300,6 +305,7 @@ function resetCurrentSessionView() {
     view.waitingForInput = false;
     view.interrupting = false;
     view.runtimeStatus = null;
+    view.runtimeRecoveryActive = false;
     view.pinHistoryToBottom = true;
   }
   refreshSessionProgress();
@@ -2273,6 +2279,8 @@ function finishHistoryReplay() {
 
 function handleEvent(event) {
   if (event.id) state.lastEventID = Math.max(state.lastEventID, event.id);
+  const recoveredCompletion = state.runtimeRecoveryActive && event.type === 'turn.completed' && event.status === 'interrupted';
+  if (state.runtimeRecoveryActive && !isRuntimeRecoveryEvent(event)) state.runtimeRecoveryActive = false;
   switch (event.type) {
     case 'history.start':
       if (event.reset || (state.currentView?.journalID && state.currentView.journalID !== event.journalId)) {
@@ -2290,6 +2298,7 @@ function handleEvent(event) {
       renderRuntimeStatus();
       break;
     case 'runtime.recovered':
+      state.runtimeRecoveryActive = true;
       renderRecovery(event);
       break;
     case 'user.message':
@@ -2299,7 +2308,7 @@ function handleEvent(event) {
       endAssistantSegment(event.turnId);
       if (!state.activeTurn || state.activeTurnID !== event.turnId) {
         const timestamp = Date.parse(event.timestamp || '');
-        state.activeTurnStartedAt = Number.isNaN(timestamp) ? Date.now() : timestamp;
+        state.activeTurnStartedAt = Number.isNaN(timestamp) ? (state.replayingHistory ? 0 : Date.now()) : timestamp;
       }
       state.activeTurn = true;
       state.activeTurnID = event.turnId || '';
@@ -2345,7 +2354,7 @@ function handleEvent(event) {
       break;
     case 'turn.completed':
       endAssistantSegment(event.turnId);
-      renderTurnEnd(event);
+      renderTurnEnd(event, recoveredCompletion);
       break;
     case 'error':
       endAssistantSegment(event.turnId);
@@ -2883,7 +2892,13 @@ function renderRecovery(event) {
   scrollToBottom();
 }
 
-function renderTurnEnd(event) {
+function renderTurnEnd(event, recoveredCompletion = false) {
+  const completedAt = Date.parse(event.timestamp || '');
+  const matchingTurn = !event.turnId || !state.activeTurnID || event.turnId === state.activeTurnID;
+  const completedTimeKnown = !Number.isNaN(completedAt) || !state.replayingHistory;
+  const elapsed = state.activeTurnStartedAt > 0 && matchingTurn && completedTimeKnown && !recoveredCompletion
+    ? Math.max(0, (Number.isNaN(completedAt) ? Date.now() : completedAt) - state.activeTurnStartedAt)
+    : null;
   state.activeTurn = false;
   state.activeTurnID = '';
   state.activeTurnStartedAt = 0;
@@ -2895,8 +2910,15 @@ function renderTurnEnd(event) {
   if (event.status === 'interrupted') showToast('Active work interrupted');
   const divider = document.createElement('div');
   divider.className = 'turn-divider';
+  if (elapsed !== null) divider.textContent = `Worked for ${formatSessionProgressElapsed(elapsed)}`;
   elements.messages.append(divider);
   scrollToBottom();
+}
+
+function isRuntimeRecoveryEvent(event) {
+  return event.type === 'runtime.recovered'
+    || (event.type === 'input.resolved' && event.status === 'cancelled')
+    || (event.type === 'turn.completed' && event.status === 'interrupted');
 }
 
 function scrollToBottom(smooth = true) {

@@ -111,6 +111,151 @@ func TestSessionTerminalSeparatesStreamedTextBlocks(t *testing.T) {
 	}
 }
 
+func TestSessionTerminalRendersTurnDurationSeparator(t *testing.T) {
+	startedAt := time.Date(2026, time.August, 8, 12, 0, 0, 0, time.UTC)
+	completedAt := startedAt.Add(5*time.Minute + 19*time.Second)
+	var events bytes.Buffer
+	encoder := json.NewEncoder(&events)
+	for _, event := range []sessionruntime.Event{
+		{Type: sessionruntime.EventHistoryEnd},
+		{Type: sessionruntime.EventTurnStarted, TurnID: "turn-1", Timestamp: &startedAt},
+		{Type: sessionruntime.EventAssistantMessage, Text: "First reply"},
+		{Type: sessionruntime.EventTurnCompleted, TurnID: "turn-1", Timestamp: &completedAt},
+		{Type: sessionruntime.EventUserMessage, Text: "Second question"},
+	} {
+		if err := encoder.Encode(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	input, inputWriter := io.Pipe()
+	defer input.Close()
+	defer inputWriter.Close()
+	var output bytes.Buffer
+	var requests bytes.Buffer
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	if err := runSessionTerminal(ctx, input, &output, &events, &requests, false); err != nil {
+		t.Fatal(err)
+	}
+
+	got := output.String()
+	separator := formatSessionTurnSeparator(5*time.Minute+19*time.Second, sessionTUIDefaultWidth)
+	if !strings.Contains(got, separator+"\n") {
+		t.Fatalf("terminal output = %q, want separator %q", got, separator)
+	}
+	if replyAt, separatorAt, questionAt := strings.Index(got, "First reply"), strings.Index(got, separator), strings.Index(got, "Second question"); replyAt < 0 || separatorAt < replyAt || questionAt < separatorAt {
+		t.Fatalf("terminal output order = %q, want separator between turns", got)
+	}
+}
+
+func TestSessionPlainTerminalUsesCurrentWidthForTurnSeparator(t *testing.T) {
+	startedAt := time.Date(2026, time.August, 8, 12, 0, 0, 0, time.UTC)
+	var events bytes.Buffer
+	encoder := json.NewEncoder(&events)
+	for _, event := range []sessionruntime.Event{
+		{Type: sessionruntime.EventHistoryEnd},
+		{Type: sessionruntime.EventTurnStarted, TurnID: "turn-1", Timestamp: &startedAt},
+		{Type: sessionruntime.EventTurnCompleted, TurnID: "turn-1", Timestamp: timePointer(startedAt.Add(time.Second))},
+		{Type: sessionruntime.EventTurnStarted, TurnID: "turn-2", Timestamp: timePointer(startedAt.Add(2 * time.Second))},
+		{Type: sessionruntime.EventTurnCompleted, TurnID: "turn-2", Timestamp: timePointer(startedAt.Add(3 * time.Second))},
+	} {
+		if err := encoder.Encode(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	input, inputWriter := io.Pipe()
+	defer input.Close()
+	defer inputWriter.Close()
+	var output bytes.Buffer
+	widths := []int{36, 52}
+	widthIndex := 0
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	if err := runSessionPlainTerminalWithWidth(ctx, input, &output, json.NewDecoder(&events), json.NewEncoder(io.Discard), false, func() int {
+		width := widths[widthIndex]
+		widthIndex++
+		return width
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var gotWidths []int
+	for _, line := range strings.Split(output.String(), "\n") {
+		if strings.HasPrefix(line, "─ Worked for") {
+			gotWidths = append(gotWidths, len([]rune(line)))
+		}
+	}
+	if !reflect.DeepEqual(gotWidths, widths) {
+		t.Fatalf("turn separator widths = %v, want %v", gotWidths, widths)
+	}
+}
+
+func TestSessionPlainTerminalOmitsUnknownHistoryDuration(t *testing.T) {
+	var events bytes.Buffer
+	encoder := json.NewEncoder(&events)
+	for _, event := range []sessionruntime.Event{
+		{Type: sessionruntime.EventHistoryStart},
+		{Type: sessionruntime.EventTurnStarted, TurnID: "turn-1"},
+		{Type: sessionruntime.EventAssistantMessage, Text: "Historical reply"},
+		{Type: sessionruntime.EventTurnCompleted, TurnID: "turn-1"},
+		{Type: sessionruntime.EventHistoryEnd},
+	} {
+		if err := encoder.Encode(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	input, inputWriter := io.Pipe()
+	defer input.Close()
+	defer inputWriter.Close()
+	var output bytes.Buffer
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	if err := runSessionTerminal(ctx, input, &output, &events, io.Discard, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := output.String(); strings.Contains(got, "Worked for") {
+		t.Fatalf("terminal output = %q, want unknown history duration omitted", got)
+	}
+}
+
+func TestSessionPlainTerminalOmitsRuntimeRecoveryDuration(t *testing.T) {
+	startedAt := time.Date(2026, time.August, 8, 12, 0, 0, 0, time.UTC)
+	var events bytes.Buffer
+	encoder := json.NewEncoder(&events)
+	for _, event := range []sessionruntime.Event{
+		{Type: sessionruntime.EventHistoryStart},
+		{Type: sessionruntime.EventTurnStarted, TurnID: "turn-1", Timestamp: &startedAt},
+		{Type: sessionruntime.EventRuntimeRecovered, Text: "Session runtime restarted"},
+		{Type: sessionruntime.EventInputResolved, TurnID: "turn-1", InputID: "input-1", Status: "cancelled"},
+		{Type: sessionruntime.EventTurnCompleted, TurnID: "turn-1", Status: "interrupted", Timestamp: timePointer(startedAt.Add(time.Hour))},
+		{Type: sessionruntime.EventHistoryEnd},
+	} {
+		if err := encoder.Encode(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	input, inputWriter := io.Pipe()
+	defer input.Close()
+	defer inputWriter.Close()
+	var output bytes.Buffer
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	if err := runSessionTerminal(ctx, input, &output, &events, io.Discard, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := output.String(); strings.Contains(got, "Worked for") {
+		t.Fatalf("terminal output = %q, want runtime recovery duration omitted", got)
+	}
+}
+
+func timePointer(value time.Time) *time.Time {
+	return &value
+}
+
 func TestSessionTerminalFormatterUsesANSIStyles(t *testing.T) {
 	formatter := sessionTerminalFormatter{color: true}
 	if got, want := formatter.userMessage("hello"), "\x1b[7m  hello  \x1b[0m"; got != want {
