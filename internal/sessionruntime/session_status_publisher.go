@@ -63,9 +63,16 @@ func NewSessionStatusPublisher(client clientv1alpha2.SessionInterface, sessionNa
 			Message:            message,
 		})
 		activityTime := session.Status.LastActivityTime
-		if activityTime == nil || (previousActive != nil && previousActive.Status != metav1.ConditionUnknown && previousActive.Status != conditionStatus) {
+		activeStateChanged := previousActive != nil && previousActive.Status != metav1.ConditionUnknown &&
+			(previousActive.Status != conditionStatus || previousActive.Reason != reason)
+		if activityTime == nil || activeStateChanged {
 			if previousActive != nil && previousActive.Status != metav1.ConditionUnknown && previousActive.Status == conditionStatus {
-				activityTime = &previousActive.LastTransitionTime
+				if previousActive.Reason == reason {
+					activityTime = &previousActive.LastTransitionTime
+				} else {
+					now := metav1.Now()
+					activityTime = &now
+				}
 			} else if active := apiMeta.FindStatusCondition(conditions, kelos.SessionConditionActive); active != nil {
 				activityTime = &active.LastTransitionTime
 			}
