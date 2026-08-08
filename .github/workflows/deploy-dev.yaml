@@ -219,8 +219,8 @@ jobs:
       - name: Apply kanon self-development resources
         run: kubectl apply -f self-development/kanon/ -n "${KELOS_NAMESPACE}"
 
-      - name: Apply Actions Gateway self-development resources
-        run: kubectl apply -f self-development/actions-gateway/ -n "${KELOS_NAMESPACE}"
+      - name: Apply Open Actions self-development resources
+        run: kubectl apply -f self-development/open-actions/ -n "${KELOS_NAMESPACE}"
 
       - name: Show Cloudflare Access logs
         if: failure()

@@ -9,9 +9,9 @@ repository while keeping the configuration in this repo.
 The nested [`kanon/`](kanon/README.md) directory does the same for the sibling
 [`kelos-dev/kanon`](https://github.com/kelos-dev/kanon) repository.
 
-The nested [`actions-gateway/`](actions-gateway/README.md) directory provides
+The nested [`open-actions/`](open-actions/README.md) directory provides
 general and Kubernetes API reviewers for
-[`kelos-dev/actions-gateway`](https://github.com/kelos-dev/actions-gateway).
+[`kelos-dev/open-actions`](https://github.com/kelos-dev/open-actions).
 
 [`cs`](cs) creates persistent interactive Codex environments for developing
 Kelos with the same Workspace, credentials, model, effort, and Git identity as
@@ -22,7 +22,7 @@ the `kelos-workers` SessionSpawner.
 <img width="2694" height="1966" alt="kelos-self-development" src="https://github.com/user-attachments/assets/10719599-426e-4c3d-87a0-cde43e1b3113" />
 
 Every self-development Task, TaskSpawner, Session, and SessionSpawner in this
-directory and its nested Agora, Kanon, and Actions Gateway directories references
+directory and its nested Agora, Kanon, and Open Actions directories references
 [`base-agent.yaml`](base-agent.yaml), which copies
 [`gjkim42/kanon-repo`'s `instructions/AGENTS.md`](https://github.com/gjkim42/kanon-repo/blob/main/instructions/AGENTS.md)
 and installs all skills from that repository through `spec.skills`.
@@ -456,13 +456,13 @@ Before deploying these examples, you need to create the following resources:
 ### 1. Workspace Resources
 
 [`workspaces.yaml`](workspaces.yaml) defines the `kelos-agent`, `agora-agent`,
-`kanon-agent`, and `actions-gateway-agent` Workspaces used by Tasks and
+`kanon-agent`, and `open-actions-agent` Workspaces used by Tasks and
 TaskSpawners. They reference the `kelos-agent-credentials` Secret described
 below so GitHub operations use the Kelos bot identity.
 
 Sessions use dedicated Workspaces so they can authenticate with a personal
 token without changing Task credentials. The checked-in manifest includes
-Session Workspaces for Kelos, Agora, Kanon, and `kelos-dev/actions-gateway`.
+Session Workspaces for Kelos, Agora, Kanon, and `kelos-dev/open-actions`.
 Apply both manifests after creating their Secrets below:
 
 ```bash

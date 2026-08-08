@@ -1,10 +1,10 @@
 apiVersion: kelos.dev/v1alpha2
 kind: AgentConfig
 metadata:
-  name: actions-gateway-api-reviewer-agent
+  name: open-actions-api-reviewer-agent
 spec:
   agentsMD: |
-    # Actions Gateway API Reviewer Agent
+    # Open Actions API Reviewer Agent
 
     ## Environment
     You are running in an ephemeral container environment. Your file system
@@ -12,7 +12,7 @@ spec:
     issues, or comments.
 
     ## Identity
-    - When commenting on issues or PRs, always start with "🤖 **Actions Gateway API Reviewer Agent** @gjkim42\n\n"
+    - When commenting on issues or PRs, always start with "🤖 **Open Actions API Reviewer Agent** @gjkim42\n\n"
       so it is clearly distinguishable from human comments and triggers a notification
 
     ## Standards
@@ -26,18 +26,18 @@ spec:
       - `make update` — update generated Go types, CRDs, formatting, and module metadata
       - `make test` — run all unit tests
       - `make test-e2e` — run the Kind end-to-end test
-      - `make build` — build the Actions Gateway binary
+      - `make build` — build the Open Actions binary
     - Logging conventions: start log messages with capital letters and do not end with punctuation
     - Commit messages: do not include PR links in commit messages
 ---
 apiVersion: kelos.dev/v1alpha2
 kind: TaskSpawner
 metadata:
-  name: actions-gateway-api-reviewer
+  name: open-actions-api-reviewer
 spec:
   when:
     githubWebhook:
-      repository: kelos-dev/actions-gateway
+      repository: kelos-dev/open-actions
       events:
         - issue_comment
         - pull_request_review
@@ -65,7 +65,7 @@ spec:
   taskTemplate:
     worker:
       workspaceRef:
-        name: actions-gateway-agent
+        name: open-actions-agent
       model: gpt-5.6-sol
       effort: xhigh
       type: codex
@@ -83,7 +83,7 @@ spec:
             ephemeral-storage: "4Gi"
       agentConfigRefs:
         - name: base-agent
-        - name: actions-gateway-api-reviewer-agent
+        - name: open-actions-api-reviewer-agent
     ttlSecondsAfterFinished: 864000
     podFailurePolicy:
       rules:
@@ -97,7 +97,7 @@ spec:
             values: [0]
     branch: '{{with index . "Branch"}}{{.}}{{else}}main{{end}}'
     promptTemplate: |
-      You are a Kubernetes API design reviewer for the Actions Gateway project (github.com/kelos-dev/actions-gateway).
+      You are a Kubernetes API design reviewer for the Open Actions project (github.com/kelos-dev/open-actions).
       Your job is to review API design, compatibility, and adherence to Kubernetes API
       conventions for pull requests or issues, then submit structured feedback.
       You do NOT write code, push changes, or modify any files.
@@ -233,7 +233,7 @@ spec:
       - Does the feature/type name accurately describe what it does, and will
         it still make sense as the feature evolves? A wrong name is hard to
         fix once shipped.
-      - Are field and type names consistent with existing Actions Gateway CRDs under
+      - Are field and type names consistent with existing Open Actions CRDs under
         `api/`? Look for similar concepts already named — reuse the same term
         instead of inventing a synonym.
       - Are names consistent with Kubernetes native resources (Pod, Deployment,
@@ -283,32 +283,32 @@ spec:
       existing sticky comment when it exists; otherwise create it. Do NOT submit
       a GitHub PR review and do NOT create inline review comments.
 
-      Write the full comment body to `/tmp/actions-gateway-api-reviewer-comment.md`, then run:
+      Write the full comment body to `/tmp/open-actions-api-reviewer-comment.md`, then run:
 
       ```
       comment_author=$(gh api user --jq .login)
-      comment_id=$(STICKY_COMMENT_AUTHOR="$comment_author" gh api "repos/kelos-dev/actions-gateway/issues/{{.Number}}/comments?per_page=100" \
+      comment_id=$(STICKY_COMMENT_AUTHOR="$comment_author" gh api "repos/kelos-dev/open-actions/issues/{{.Number}}/comments?per_page=100" \
         --paginate \
         --slurp \
-        --jq 'flatten | map(select(.user.login == env.STICKY_COMMENT_AUTHOR and (.body | contains("<!-- actions-gateway-api-reviewer:sticky-review -->")))) | last | .id // empty')
+        --jq 'flatten | map(select(.user.login == env.STICKY_COMMENT_AUTHOR and (.body | contains("<!-- open-actions-api-reviewer:sticky-review -->")))) | last | .id // empty')
 
       if [ -n "$comment_id" ]; then
-        gh api --method PATCH "repos/kelos-dev/actions-gateway/issues/comments/$comment_id" \
-          -F body=@/tmp/actions-gateway-api-reviewer-comment.md
+        gh api --method PATCH "repos/kelos-dev/open-actions/issues/comments/$comment_id" \
+          -F body=@/tmp/open-actions-api-reviewer-comment.md
       else
-        gh api "repos/kelos-dev/actions-gateway/issues/{{.Number}}/comments" \
-          -F body=@/tmp/actions-gateway-api-reviewer-comment.md
+        gh api "repos/kelos-dev/open-actions/issues/{{.Number}}/comments" \
+          -F body=@/tmp/open-actions-api-reviewer-comment.md
       fi
       ```
 
-      **For issues**, post a comment using `gh issue comment {{.Number}} --body-file /tmp/actions-gateway-api-reviewer-comment.md`.
+      **For issues**, post a comment using `gh issue comment {{.Number}} --body-file /tmp/open-actions-api-reviewer-comment.md`.
 
       Format the PR comment body as:
 
       ```
-      🤖 **Actions Gateway API Reviewer Agent** @gjkim42
+      🤖 **Open Actions API Reviewer Agent** @gjkim42
 
-      <!-- actions-gateway-api-reviewer:sticky-review -->
+      <!-- open-actions-api-reviewer:sticky-review -->
 
       ## API Design Review
 
