@@ -73,6 +73,7 @@ func TestOpenCodeProviderStreamsOrderedEvents(t *testing.T) {
 		t.Fatal("OpenCode permission was not approved")
 	}
 	want := []Event{
+		{Type: EventRuntimeStatus, Runtime: &RuntimeStatus{Effort: "high"}},
 		{Type: EventAssistantDelta, Text: "hello"},
 		{Type: EventToolStarted, ToolID: "tool-1", ToolName: "bash", Status: "running"},
 		{Type: EventToolCompleted, ToolID: "tool-1", ToolName: "bash", Output: "ok\n", Status: "completed"},
@@ -121,6 +122,69 @@ func TestOpenCodeProviderAnswersQuestion(t *testing.T) {
 	fake.emit("session.idle", map[string]string{"sessionID": fake.sessionID})
 	if err := receiveOpenCodeResult(t, turnDone); err != nil {
 		t.Fatalf("RunTurn() error = %v", err)
+	}
+}
+
+// TestOpenCodeProviderRuntimeStatusMapping verifies that the model reported on
+// assistant messages and the per-step token usage become runtime status
+// updates, that a republished step-finish part is counted once, that reasoning
+// tokens count toward output, and that the context window comes from the
+// server's provider configuration.
+func TestOpenCodeProviderRuntimeStatusMapping(t *testing.T) {
+	fake := newFakeOpenCodeServer(t)
+	provider := newTestOpenCodeProvider(t, fake, ProviderConfig{
+		WorkingDir: t.TempDir(),
+		StateDir:   t.TempDir(),
+		Effort:     "high",
+	})
+	sink := newOpenCodeTestSink(nil)
+	turnDone := make(chan error, 1)
+	go func() { turnDone <- provider.RunTurn(t.Context(), "hello", sink) }()
+	receiveOpenCodePrompt(t, fake.prompts)
+
+	fake.emit("session.status", map[string]any{"sessionID": fake.sessionID, "status": map[string]string{"type": "busy"}})
+	fake.emit("message.updated", map[string]any{"info": map[string]string{
+		"id": "message-1", "sessionID": fake.sessionID, "role": "assistant",
+		"providerID": "anthropic", "modelID": "claude-opus-4-6",
+	}})
+	step1 := map[string]any{
+		"id": "step-1", "messageID": "message-1", "sessionID": fake.sessionID, "type": "step-finish",
+		"tokens": map[string]any{"input": 100, "output": 20, "cache": map[string]any{"read": 1000, "write": 50}},
+	}
+	fake.emit("message.part.updated", map[string]any{"part": step1})
+	fake.emit("message.part.updated", map[string]any{"part": step1})
+	fake.emit("message.part.updated", map[string]any{"part": map[string]any{
+		"id": "step-2", "messageID": "message-1", "sessionID": fake.sessionID, "type": "step-finish",
+		"tokens": map[string]any{"input": 200, "output": 30, "reasoning": 70, "cache": map[string]any{"read": 1100, "write": 0}},
+	}})
+	fake.emit("session.idle", map[string]string{"sessionID": fake.sessionID})
+	if err := receiveOpenCodeResult(t, turnDone); err != nil {
+		t.Fatalf("RunTurn() error = %v", err)
+	}
+
+	var statuses []Event
+	for _, event := range sink.snapshot() {
+		if event.Type == EventRuntimeStatus {
+			statuses = append(statuses, event)
+		}
+	}
+	if len(statuses) != 4 || statuses[3].Runtime == nil {
+		t.Fatalf("runtime status events = %#v", statuses)
+	}
+	status := statuses[3].Runtime
+	if status.Model != "anthropic/claude-opus-4-6" ||
+		status.Effort != "high" ||
+		status.Usage == nil ||
+		status.Usage.InputTokens != 2450 ||
+		status.Usage.OutputTokens != 120 ||
+		status.Usage.TotalTokens != 2570 ||
+		status.Usage.ContextTokens != 1400 ||
+		status.Usage.ContextWindow != 200000 {
+		t.Fatalf("OpenCode runtime status = %#v", status)
+	}
+	snapshot := provider.runtimeStatusSnapshot()
+	if snapshot.Model != "anthropic/claude-opus-4-6" || snapshot.Usage == nil || snapshot.Usage.ContextWindow != 200000 {
+		t.Fatalf("OpenCode runtime status snapshot = %#v", snapshot)
 	}
 }
 
@@ -260,6 +324,14 @@ func (f *fakeOpenCodeServer) serveHTTP(response http.ResponseWriter, request *ht
 	switch {
 	case request.Method == http.MethodGet && request.URL.Path == "/event":
 		f.serveEvents(response, request)
+	case request.Method == http.MethodGet && request.URL.Path == "/config/providers":
+		f.requireDirectory(request)
+		writeOpenCodeJSON(response, map[string]any{"providers": []map[string]any{{
+			"id": "anthropic",
+			"models": map[string]any{
+				"claude-opus-4-6": map[string]any{"limit": map[string]any{"context": 200000}},
+			},
+		}}})
 	case request.Method == http.MethodPost && request.URL.Path == "/session":
 		f.requireDirectory(request)
 		var body map[string]any

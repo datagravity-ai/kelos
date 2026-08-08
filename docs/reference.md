@@ -246,10 +246,11 @@ waiting-for-input, and interrupting progress with elapsed time. After a
 completed turn, both interactive and plain terminal output show a `Worked for
 ...` separator when the duration is known. A separate status bar beneath the
 composer shows the Session name, agent type, model and effort when available,
-working directory, git branch, and associated pull request number. Codex
-Sessions also show reported context use, weekly limit remaining, and cumulative
-input and output tokens. Less important status-bar items are omitted as the
-terminal narrows. The model is the same runtime-reported value persisted in
+working directory, git branch, and associated pull request number. Sessions
+also show reported context use and cumulative input and output tokens once the
+agent reports usage; Codex Sessions additionally show weekly limit remaining.
+Less important status-bar items are omitted as the terminal narrows. The
+model is the same runtime-reported value persisted in
 `status.model`. Web chat is served by the optional shared
 `kelos-session-server`; it shows the same live runtime details beneath its
 composer. It shows connection status separately from working, waiting-for-input,
