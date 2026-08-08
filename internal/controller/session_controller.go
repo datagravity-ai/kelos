@@ -31,6 +31,7 @@ import (
 	kelos "github.com/kelos-dev/kelos/api/v1alpha2"
 	"github.com/kelos-dev/kelos/internal/githubapp"
 	"github.com/kelos-dev/kelos/internal/sessionreset"
+	"github.com/kelos-dev/kelos/internal/sessionsuspend"
 	"github.com/kelos-dev/kelos/internal/sessionupdate"
 )
 
@@ -50,6 +51,8 @@ const (
 	sessionNameAnnotation             = "kelos.dev/session-name"
 	sessionPluginChecksumAnnotation   = "kelos.dev/plugin-content-checksum"
 	sessionTokenFingerprintAnnotation = "kelos.dev/github-token-mint-fingerprint"
+	idleResumeAcknowledgementGrace    = 5 * time.Second
+	idleResumeRequestTimeout          = 10 * time.Minute
 )
 
 // SessionReconciler reconciles a Session object.
@@ -126,7 +129,7 @@ func isSessionInputUnavailable(err error) bool {
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update
 
 // Reconcile creates and observes the StatefulSet that owns a Session conversation.
-func (r *SessionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *SessionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ctrl.Result, reconcileErr error) {
 	logger := log.FromContext(ctx)
 
 	var session kelos.Session
@@ -156,6 +159,86 @@ func (r *SessionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		}
 		return r.reconcileSessionReset(ctx, &session, &statefulSet)
 	}
+	if sessionSuspendedByUser(&session) && sessionsuspend.ResumeRequested(&session) {
+		if err := r.clearSessionIdleResumeRequest(ctx, &session); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{Requeue: true}, nil
+	}
+	if sessionsuspend.ResumeRequested(&session) {
+		protectionEndsAt := time.Time{}
+		if sessionsuspend.ResumeAcknowledged(&session) {
+			acknowledgedAt, observed := sessionsuspend.ResumeAcknowledgementTime(&session)
+			if !observed {
+				if err := r.setSessionIdleResumeTime(ctx, &session, sessionsuspend.ResumeAcknowledgementTimeAnnotation); err != nil {
+					return ctrl.Result{}, err
+				}
+				return ctrl.Result{Requeue: true}, nil
+			}
+			idleBaseline := acknowledgedAt.Truncate(time.Second)
+			if session.Status.LastActivityTime == nil || idleBaseline.After(session.Status.LastActivityTime.Time) {
+				lastActivityTime := metav1.NewTime(idleBaseline)
+				session.Status.LastActivityTime = &lastActivityTime
+				if err := r.Status().Update(ctx, &session); err != nil {
+					return ctrl.Result{}, fmt.Errorf("starting idle period for resumed Session %q: %w", session.Name, err)
+				}
+				return ctrl.Result{Requeue: true}, nil
+			}
+			protectionEndsAt = acknowledgedAt.Add(idleResumeAcknowledgementGrace)
+			if !time.Now().Before(protectionEndsAt) {
+				if err := r.clearSessionIdleResumeRequest(ctx, &session); err != nil {
+					return ctrl.Result{}, err
+				}
+				return ctrl.Result{Requeue: true}, nil
+			}
+		} else {
+			requestedAt, observed := sessionsuspend.ResumeRequestTime(&session)
+			if !observed {
+				if err := r.setSessionIdleResumeTime(ctx, &session, sessionsuspend.ResumeRequestTimeAnnotation); err != nil {
+					return ctrl.Result{}, err
+				}
+				return ctrl.Result{Requeue: true}, nil
+			}
+			protectionEndsAt = requestedAt.Add(idleResumeRequestTimeout)
+			if !time.Now().Before(protectionEndsAt) {
+				if statefulSetMissing {
+					return r.expireSessionIdleResumeRequest(ctx, &session, nil)
+				}
+				return r.expireSessionIdleResumeRequest(ctx, &session, &statefulSet)
+			}
+		}
+		defer func() {
+			if reconcileErr != nil || result.Requeue {
+				return
+			}
+			remaining := time.Until(protectionEndsAt)
+			if remaining <= 0 {
+				result = ctrl.Result{Requeue: true}
+				return
+			}
+			if result.RequeueAfter == 0 || remaining < result.RequeueAfter {
+				result.RequeueAfter = remaining
+			}
+		}()
+	}
+	idleSuspended := sessionsuspend.IsIdlePolicySuspended(&session)
+	if idleSuspended && sessionsuspend.ResumeRequested(&session) {
+		if session.Annotations[sessionupdate.IdleDrainRequestAnnotation] != "" ||
+			session.Annotations[sessionupdate.IdleDrainReportAnnotation] != "" {
+			if err := r.clearSessionIdleDrainRequest(ctx, &session); err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{Requeue: true}, nil
+		}
+		if err := r.updateSessionStatus(ctx, &session, nil, kelos.SessionPhasePending, "Session Pod is resuming after idle suspension", "IdleResumeRequested"); err != nil {
+			return ctrl.Result{}, err
+		}
+		logger.Info("Started resuming idle-suspended Session", "session", session.Name)
+		if r.Recorder != nil {
+			r.Recorder.Event(&session, corev1.EventTypeNormal, "SessionIdleResumeStarted", "Started resuming Session after a client requested a connection")
+		}
+		return ctrl.Result{Requeue: true}, nil
+	}
 	if statefulSetMissing {
 		// Reap an already-idle Session whose workload is gone rather than
 		// recreating it just to delete it later. A missing StatefulSet does not
@@ -165,17 +248,28 @@ func (r *SessionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		// reapIdleSession handles any status change since the fetch above.
 		if session.DeletionTimestamp == nil {
 			if expired, _ := sessionIdleExpired(&session); expired {
+				if idleSuspended {
+					return r.reapIdleSession(ctx, &session)
+				}
 				return r.reapMissingWorkloadIdleSession(ctx, &session, workloadName)
 			}
 		}
-		// The Session is no longer idle-expired; drop any idle-drain request left
-		// over from a prior expiry so a re-created runtime resumes accepting turns.
+		// Drop any idle-drain request before re-creating a runtime that must accept
+		// turns while the controller re-evaluates its activity.
 		if err := r.clearSessionIdleDrainRequest(ctx, &session); err != nil {
 			return ctrl.Result{}, err
 		}
 		return r.createSessionStatefulSet(ctx, &session)
 	}
 	if statefulSet.DeletionTimestamp != nil {
+		if idleSuspended {
+			if session.DeletionTimestamp == nil {
+				if expired, _ := sessionIdleExpired(&session); expired {
+					return r.reapIdleSession(ctx, &session)
+				}
+			}
+			return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+		}
 		return ctrl.Result{}, r.updateSessionStatus(ctx, &session, nil, kelos.SessionPhasePending, "Session StatefulSet is terminating and will be recreated", "StatefulSetTerminating")
 	}
 	suspended := sessionSuspended(&session)
@@ -185,6 +279,11 @@ func (r *SessionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		// still reconciled while the runtime remains stopped.
 		if err := r.setSessionReplicas(ctx, &statefulSet, 0); err != nil {
 			return ctrl.Result{}, err
+		}
+	}
+	if idleSuspended && session.DeletionTimestamp == nil {
+		if expired, _ := sessionIdleExpired(&session); expired {
+			return r.reapIdleSession(ctx, &session)
 		}
 	}
 	runtimeStopped := statefulSet.Spec.Replicas != nil && *statefulSet.Spec.Replicas == 0
@@ -203,11 +302,17 @@ func (r *SessionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if waitingMessage != "" {
 		phase := kelos.SessionPhasePending
 		message := waitingMessage
+		reason := "WaitingForDependency"
 		if suspended {
 			phase = kelos.SessionPhaseSuspended
-			message = fmt.Sprintf("Session runtime is suspended: %s", waitingMessage)
+			if idleSuspended {
+				message = "Session runtime is suspended after exceeding its idle policy"
+				reason = sessionsuspend.IdlePolicyReason
+			} else {
+				message = fmt.Sprintf("Session runtime is suspended: %s", waitingMessage)
+			}
 		}
-		if err := r.updateSessionStatus(ctx, &session, nil, phase, message, "WaitingForDependency"); err != nil {
+		if err := r.updateSessionStatus(ctx, &session, nil, phase, message, reason); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
@@ -240,9 +345,20 @@ func (r *SessionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		if err := r.setSessionReplicas(ctx, &statefulSet, 0); err != nil {
 			return ctrl.Result{}, err
 		}
+		if idleSuspended {
+			deleteExpired, deleteRemaining := sessionIdleExpired(&session)
+			if deleteExpired && session.DeletionTimestamp == nil {
+				return r.reapIdleSession(ctx, &session)
+			}
+			err := r.updateSessionStatus(ctx, &session, nil, kelos.SessionPhaseSuspended, "Session runtime is suspended after exceeding its idle policy", sessionsuspend.IdlePolicyReason)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{RequeueAfter: deleteRemaining}, nil
+		}
 		return ctrl.Result{}, r.updateSessionStatus(ctx, &session, nil, kelos.SessionPhaseSuspended, "Session runtime is suspended", "RuntimeSuspended")
 	}
-	result := ctrl.Result{}
+	result = ctrl.Result{}
 	if next, err := r.refreshSessionGitHubAppTokenIfNeeded(ctx, &session, &statefulSet.Spec.Template.Spec); err != nil {
 		logger.Error(err, "Unable to refresh Session GitHub App token", "session", session.Name)
 		if runtimeStopped {
@@ -292,25 +408,76 @@ func (r *SessionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if waitingForUpdate && (result.RequeueAfter == 0 || updateResult.RequeueAfter < result.RequeueAfter) {
 		result = updateResult
 	}
-	// Evaluate idle expiry only after the Active condition has been validated
+	// Evaluate idle actions only after the Active condition has been validated
 	// against the current Pod above, so a stale condition from a previous Pod
-	// cannot trigger deletion.
-	if session.DeletionTimestamp == nil {
-		expired, remaining := sessionIdleExpired(&session)
-		if expired {
+	// cannot trigger suspension or deletion.
+	if session.DeletionTimestamp == nil && !sessionsuspend.ResumeRequested(&session) {
+		deleteExpired, deleteRemaining := sessionIdleExpired(&session)
+		if deleteExpired {
 			return r.reconcileIdleReap(ctx, &session, &pod)
 		}
-		// The Session is no longer idle-expired (for example, activity resumed
-		// after a drain was requested). Cancel any pending idle-drain so the
-		// runtime resumes accepting turns.
+		suspendExpired, suspendRemaining := sessionIdleSuspendExpired(&session)
+		if suspendExpired {
+			return r.reconcileIdleSuspend(ctx, &session, &statefulSet, &pod)
+		}
+		// No idle action is due. Cancel any pending drain so the runtime resumes
+		// accepting turns after activity or a resume request.
 		if err := r.clearSessionIdleDrainRequest(ctx, &session); err != nil {
 			return ctrl.Result{}, err
 		}
-		if remaining > 0 && (result.RequeueAfter == 0 || remaining < result.RequeueAfter) {
-			result.RequeueAfter = remaining
+		for _, remaining := range []time.Duration{deleteRemaining, suspendRemaining} {
+			if remaining > 0 && (result.RequeueAfter == 0 || remaining < result.RequeueAfter) {
+				result.RequeueAfter = remaining
+			}
 		}
 	}
 	return result, nil
+}
+
+func (r *SessionReconciler) expireSessionIdleResumeRequest(
+	ctx context.Context,
+	session *kelos.Session,
+	statefulSet *appsv1.StatefulSet,
+) (ctrl.Result, error) {
+	var pod corev1.Pod
+	err := r.Get(ctx, client.ObjectKey{Namespace: session.Namespace, Name: sessionWorkloadName(session) + "-0"}, &pod)
+	if err != nil && !apierrors.IsNotFound(err) {
+		return ctrl.Result{}, fmt.Errorf("getting Session Pod before expiring resume request for Session %q: %w", session.Name, err)
+	}
+	podIsOurs := err == nil && (statefulSet != nil || pod.Annotations[sessionNameAnnotation] == session.Name)
+	if podIsOurs {
+		if pod.DeletionTimestamp != nil {
+			return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+		}
+		if pod.Status.Phase == corev1.PodRunning || pod.Status.Phase == corev1.PodUnknown {
+			drained, err := r.ensureSessionIdleDrained(
+				ctx,
+				session,
+				&pod,
+				"Waiting for Session Pod %s to drain after its idle resume request expired",
+			)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+			if !drained {
+				return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+			}
+		}
+	}
+
+	if err := r.updateSessionStatus(ctx, session, nil, kelos.SessionPhaseSuspended, "Session runtime is suspended after its idle resume request expired", sessionsuspend.IdlePolicyReason); err != nil {
+		return ctrl.Result{}, err
+	}
+	if err := r.clearSessionIdleResumeRequest(ctx, session); err != nil {
+		return ctrl.Result{}, err
+	}
+	if statefulSet != nil && statefulSet.DeletionTimestamp == nil {
+		if err := r.setSessionReplicas(ctx, statefulSet, 0); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+	log.FromContext(ctx).Info("Expired idle Session resume request", "session", session.Name)
+	return ctrl.Result{Requeue: true}, nil
 }
 
 // reapMissingWorkloadIdleSession reaps an idle Session whose StatefulSet has
@@ -370,25 +537,12 @@ func (r *SessionReconciler) reapMissingWorkloadIdleSession(ctx context.Context, 
 // lost. It sets an idle-drain request and waits for the runtime to acknowledge
 // that no turn is in flight and it is no longer accepting turns, then deletes.
 func (r *SessionReconciler) reconcileIdleReap(ctx context.Context, session *kelos.Session, pod *corev1.Pod) (ctrl.Result, error) {
-	if pod.UID == "" {
-		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
-	}
-	request, installed := installedSessionIdleDrainRequest(session, pod)
-	if !installed {
-		request = newSessionIdleDrainRequest(pod)
-		encoded, err := sessionupdate.Encode(request)
-		if err != nil {
-			return ctrl.Result{}, err
-		}
-		if err := r.setSessionIdleDrainRequest(ctx, session, encoded); err != nil {
-			return ctrl.Result{}, err
-		}
-		if r.Recorder != nil {
-			r.Recorder.Eventf(session, corev1.EventTypeNormal, "SessionIdleDraining", "Waiting for Session Pod %s to drain before reclaiming the idle Session", pod.Name)
-		}
-		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
-	}
-	drained, err := sessionIdleDrainComplete(session, request, pod)
+	drained, err := r.ensureSessionIdleDrained(
+		ctx,
+		session,
+		pod,
+		"Waiting for Session Pod %s to drain before reclaiming the idle Session",
+	)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -396,6 +550,75 @@ func (r *SessionReconciler) reconcileIdleReap(ctx context.Context, session *kelo
 		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
 	}
 	return r.reapIdleSession(ctx, session)
+}
+
+func (r *SessionReconciler) reconcileIdleSuspend(
+	ctx context.Context,
+	session *kelos.Session,
+	statefulSet *appsv1.StatefulSet,
+	pod *corev1.Pod,
+) (ctrl.Result, error) {
+	drained, err := r.ensureSessionIdleDrained(
+		ctx,
+		session,
+		pod,
+		"Waiting for Session Pod %s to drain before suspending the idle Session",
+	)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if !drained {
+		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+	}
+	if err := r.updateSessionStatus(
+		ctx,
+		session,
+		nil,
+		kelos.SessionPhaseSuspended,
+		"Session runtime is suspended after exceeding its idle policy",
+		sessionsuspend.IdlePolicyReason,
+	); err != nil {
+		return ctrl.Result{}, err
+	}
+	if err := r.setSessionReplicas(ctx, statefulSet, 0); err != nil {
+		return ctrl.Result{}, fmt.Errorf("suspending idle Session %q: %w", session.Name, err)
+	}
+	log.FromContext(ctx).Info("Suspended idle Session", "session", session.Name)
+	if r.Recorder != nil {
+		r.Recorder.Event(session, corev1.EventTypeNormal, "SessionIdleSuspended", "Suspended Session after exceeding its idle policy")
+	}
+	return ctrl.Result{Requeue: true}, nil
+}
+
+func (r *SessionReconciler) ensureSessionIdleDrained(
+	ctx context.Context,
+	session *kelos.Session,
+	pod *corev1.Pod,
+	eventMessage string,
+) (bool, error) {
+	if pod.UID == "" {
+		return false, nil
+	}
+	request, installed := installedSessionIdleDrainRequest(session, pod)
+	if !installed {
+		request = newSessionIdleDrainRequest(pod)
+		encoded, err := sessionupdate.Encode(request)
+		if err != nil {
+			return false, err
+		}
+		if err := r.setSessionIdleDrainRequest(ctx, session, encoded); err != nil {
+			return false, err
+		}
+		if r.Recorder != nil {
+			r.Recorder.Eventf(session, corev1.EventTypeNormal, "SessionIdleDraining", eventMessage, pod.Name)
+		}
+		return false, nil
+	}
+	drained, err := sessionIdleDrainComplete(session, request, pod)
+	if err != nil {
+		return false, err
+	}
+	return drained, nil
 }
 
 func (r *SessionReconciler) setSessionIdleDrainRequest(ctx context.Context, session *kelos.Session, value string) error {
@@ -485,7 +708,15 @@ func (r *SessionReconciler) createSessionStatefulSet(ctx context.Context, sessio
 		return ctrl.Result{}, err
 	}
 	if waitingMessage != "" {
-		if err := r.updateSessionStatus(ctx, session, nil, kelos.SessionPhasePending, waitingMessage, "WaitingForDependency"); err != nil {
+		phase := kelos.SessionPhasePending
+		message := waitingMessage
+		reason := "WaitingForDependency"
+		if sessionsuspend.IsIdlePolicySuspended(session) {
+			phase = kelos.SessionPhaseSuspended
+			message = "Session runtime is suspended after exceeding its idle policy"
+			reason = sessionsuspend.IdlePolicyReason
+		}
+		if err := r.updateSessionStatus(ctx, session, nil, phase, message, reason); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
@@ -519,7 +750,11 @@ func (r *SessionReconciler) createSessionStatefulSet(ctx context.Context, sessio
 	phase := kelos.SessionPhasePending
 	message := "Session Pod is starting"
 	reason := "PodStarting"
-	if sessionSuspended(session) {
+	if sessionsuspend.IsIdlePolicySuspended(session) {
+		phase = kelos.SessionPhaseSuspended
+		message = "Session runtime is suspended after exceeding its idle policy"
+		reason = sessionsuspend.IdlePolicyReason
+	} else if sessionSuspended(session) {
 		phase = kelos.SessionPhaseSuspended
 		message = "Session runtime is suspended"
 		reason = "RuntimeSuspended"
@@ -856,8 +1091,40 @@ func (r *SessionReconciler) setSessionReplicas(ctx context.Context, statefulSet 
 	return nil
 }
 
-func sessionSuspended(session *kelos.Session) bool {
+func (r *SessionReconciler) clearSessionIdleResumeRequest(ctx context.Context, session *kelos.Session) error {
+	if !sessionsuspend.ResumeRequested(session) {
+		return nil
+	}
+	original := session.DeepCopy()
+	delete(session.Annotations, sessionsuspend.ResumeRequestAnnotation)
+	delete(session.Annotations, sessionsuspend.ResumeRequestTimeAnnotation)
+	delete(session.Annotations, sessionsuspend.ResumeAcknowledgementAnnotation)
+	delete(session.Annotations, sessionsuspend.ResumeAcknowledgementTimeAnnotation)
+	if err := r.Patch(ctx, session, client.MergeFromWithOptions(original, client.MergeFromWithOptimisticLock{})); err != nil {
+		return fmt.Errorf("clearing idle resume request for Session %q: %w", session.Name, err)
+	}
+	return nil
+}
+
+func (r *SessionReconciler) setSessionIdleResumeTime(ctx context.Context, session *kelos.Session, annotation string) error {
+	original := session.DeepCopy()
+	if session.Annotations == nil {
+		session.Annotations = map[string]string{}
+	}
+	session.Annotations[annotation] = time.Now().UTC().Format(time.RFC3339Nano)
+	if err := r.Patch(ctx, session, client.MergeFromWithOptions(original, client.MergeFromWithOptimisticLock{})); err != nil {
+		return fmt.Errorf("recording idle resume progress for Session %q: %w", session.Name, err)
+	}
+	return nil
+}
+
+func sessionSuspendedByUser(session *kelos.Session) bool {
 	return ptr.Deref(session.Spec.Suspend, false)
+}
+
+func sessionSuspended(session *kelos.Session) bool {
+	return sessionSuspendedByUser(session) ||
+		(sessionsuspend.IsIdlePolicySuspended(session) && !sessionsuspend.ResumeRequested(session))
 }
 
 func sessionRuntimeReplicas(session *kelos.Session) int32 {
@@ -1672,14 +1939,30 @@ func sessionLabelValue(session *kelos.Session) string {
 // is only considered idle when its Active condition is explicitly False; an
 // active or unknown turn never counts as idle.
 func sessionIdleExpired(session *kelos.Session) (bool, time.Duration) {
-	if session.Spec.IdlePolicy == nil || session.Spec.IdlePolicy.DeleteAfterSeconds == nil {
+	if session.Spec.IdlePolicy == nil {
+		return false, 0
+	}
+	return sessionIdlePolicyExpired(session, session.Spec.IdlePolicy.DeleteAfterSeconds)
+}
+
+// sessionIdleSuspendExpired reports whether an idle Session has exceeded its
+// idle suspend policy.
+func sessionIdleSuspendExpired(session *kelos.Session) (bool, time.Duration) {
+	if session.Spec.IdlePolicy == nil || sessionSuspendedByUser(session) {
+		return false, 0
+	}
+	return sessionIdlePolicyExpired(session, session.Spec.IdlePolicy.SuspendAfterSeconds)
+}
+
+func sessionIdlePolicyExpired(session *kelos.Session, afterSeconds *int32) (bool, time.Duration) {
+	if afterSeconds == nil || sessionsuspend.ResumeRequested(session) {
 		return false, 0
 	}
 	active := apiMeta.FindStatusCondition(session.Status.Conditions, kelos.SessionConditionActive)
-	if active == nil || active.Status != metav1.ConditionFalse {
+	if (active == nil || active.Status != metav1.ConditionFalse) && !sessionsuspend.IsIdlePolicySuspended(session) {
 		return false, 0
 	}
-	ttl := time.Duration(*session.Spec.IdlePolicy.DeleteAfterSeconds) * time.Second
+	ttl := time.Duration(*afterSeconds) * time.Second
 	expireAt := sessionIdleSince(session).Add(ttl)
 	remaining := time.Until(expireAt)
 	if remaining <= 0 {

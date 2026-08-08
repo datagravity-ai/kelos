@@ -35,6 +35,7 @@ import (
 	kelos "github.com/kelos-dev/kelos/api/v1alpha2"
 	"github.com/kelos-dev/kelos/internal/githubapp"
 	"github.com/kelos-dev/kelos/internal/sessionreset"
+	"github.com/kelos-dev/kelos/internal/sessionsuspend"
 	"github.com/kelos-dev/kelos/internal/sessionupdate"
 )
 
@@ -2562,7 +2563,7 @@ func TestSessionIdleExpired(t *testing.T) {
 // newReadyIdleSessionFixture builds a Ready Session whose runtime has reported
 // Active=False since idleSince, backed by a matching StatefulSet and ready Pod,
 // so that Reconcile validates the idle condition against the current Pod before
-// evaluating the idle delete policy.
+// evaluating its idle policy.
 func newReadyIdleSessionFixture(t *testing.T, policy *kelos.SessionIdlePolicy, idleSince time.Time) (client.Client, *SessionReconciler, ctrl.Request) {
 	t.Helper()
 	scheme := runtime.NewScheme()
@@ -2617,6 +2618,21 @@ func newReadyIdleSessionFixture(t *testing.T, policy *kelos.SessionIdlePolicy, i
 	reconciler := testSessionReconciler(cl, scheme)
 	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(session)}
 	return cl, reconciler, request
+}
+
+func newIdleSuspendedSession(name string, policy *kelos.SessionIdlePolicy, idleSince time.Time) *kelos.Session {
+	session := testSession(name, "codex")
+	session.CreationTimestamp = metav1.NewTime(idleSince.Add(-time.Hour))
+	session.Spec.IdlePolicy = policy
+	activity := metav1.NewTime(idleSince)
+	session.Status.Phase = kelos.SessionPhaseSuspended
+	session.Status.LastActivityTime = &activity
+	apiMeta.SetStatusCondition(&session.Status.Conditions, metav1.Condition{
+		Type:   kelos.SessionConditionReady,
+		Status: metav1.ConditionFalse,
+		Reason: sessionsuspend.IdlePolicyReason,
+	})
+	return session
 }
 
 func TestSessionReconcileDrainsThenReapsIdleSession(t *testing.T) {
@@ -2688,6 +2704,625 @@ func TestSessionReconcileDrainsThenReapsIdleSession(t *testing.T) {
 	}
 	if !reaped {
 		t.Fatal("expected a SessionIdleReaped event to be recorded")
+	}
+}
+
+func TestSessionReconcileDrainsSuspendsAndResumesIdleSession(t *testing.T) {
+	cl, reconciler, request := newReadyIdleSessionFixture(t,
+		&kelos.SessionIdlePolicy{SuspendAfterSeconds: ptr.To(int32(60))},
+		time.Now().Add(-10*time.Minute))
+
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("Reconcile() drain-request error = %v", err)
+	}
+	var session kelos.Session
+	if err := cl.Get(context.Background(), request.NamespacedName, &session); err != nil {
+		t.Fatal(err)
+	}
+	drainRequest, err := sessionupdate.Decode(session.Annotations[sessionupdate.IdleDrainRequestAnnotation])
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := sessionupdate.EncodeReport(sessionupdate.Report{
+		RequestID: drainRequest.ID,
+		PodUID:    drainRequest.PodUID,
+		Phase:     sessionupdate.PhaseDrained,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	patched := session.DeepCopy()
+	patched.Annotations[sessionupdate.IdleDrainReportAnnotation] = report
+	if err := cl.Patch(context.Background(), patched, client.MergeFrom(&session)); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("Reconcile() suspend error = %v", err)
+	}
+	if err := cl.Get(context.Background(), request.NamespacedName, &session); err != nil {
+		t.Fatal(err)
+	}
+	if !sessionsuspend.IsIdlePolicySuspended(&session) {
+		t.Fatalf("Session status = %#v, want idle suspension", session.Status)
+	}
+	if ptr.Deref(session.Spec.Suspend, false) {
+		t.Fatal("idle suspension changed Session.spec.suspend")
+	}
+	var statefulSet appsv1.StatefulSet
+	if err := cl.Get(context.Background(), client.ObjectKey{Namespace: session.Namespace, Name: sessionWorkloadName(&session)}, &statefulSet); err != nil {
+		t.Fatal(err)
+	}
+	if ptr.Deref(statefulSet.Spec.Replicas, 1) != 0 {
+		t.Fatalf("StatefulSet replicas = %v, want 0", statefulSet.Spec.Replicas)
+	}
+
+	if _, requested, err := sessionsuspend.RequestResume(context.Background(), cl, request.NamespacedName); err != nil {
+		t.Fatal(err)
+	} else if !requested {
+		t.Fatal("RequestResume() requested = false, want true")
+	}
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("Reconcile() observe-request error = %v", err)
+	}
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("Reconcile() clear-drain error = %v", err)
+	}
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("Reconcile() begin-resume error = %v", err)
+	}
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("Reconcile() start-runtime error = %v", err)
+	}
+	if err := cl.Get(context.Background(), request.NamespacedName, &session); err != nil {
+		t.Fatal(err)
+	}
+	resumedAt := metav1.NewTime(time.Now().UTC().Truncate(time.Second))
+	session.Status.LastActivityTime = &resumedAt
+	apiMeta.SetStatusCondition(&session.Status.Conditions, metav1.Condition{
+		Type:               kelos.SessionConditionActive,
+		Status:             metav1.ConditionFalse,
+		ObservedGeneration: session.Generation,
+		Reason:             "Idle",
+		Message:            "Session runtime is idle",
+		LastTransitionTime: resumedAt,
+	})
+	if err := cl.Status().Update(context.Background(), &session); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("Reconcile() observed-runtime error = %v", err)
+	}
+	if err := cl.Get(context.Background(), request.NamespacedName, &session); err != nil {
+		t.Fatal(err)
+	}
+	if !sessionsuspend.ResumeRequested(&session) {
+		t.Fatal("resume request was cleared before a client connected")
+	}
+	if session.Status.LastActivityTime == nil || !session.Status.LastActivityTime.Equal(&resumedAt) {
+		t.Fatalf("last activity time = %v, want %v", session.Status.LastActivityTime, resumedAt)
+	}
+	if acknowledged, err := sessionsuspend.AcknowledgeResume(context.Background(), cl, request.NamespacedName, session.Annotations[sessionsuspend.ResumeRequestAnnotation]); err != nil {
+		t.Fatal(err)
+	} else if !acknowledged {
+		t.Fatal("AcknowledgeResume() acknowledged = false, want true")
+	}
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("Reconcile() observe-acknowledgement error = %v", err)
+	}
+	if err := cl.Get(context.Background(), request.NamespacedName, &session); err != nil {
+		t.Fatal(err)
+	}
+	acknowledgedAt, acknowledged := sessionsuspend.ResumeAcknowledgementTime(&session)
+	if !acknowledged {
+		t.Fatalf("resume acknowledgement was not recorded: %#v", session.Annotations)
+	}
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("Reconcile() after-resume error = %v", err)
+	}
+	if err := cl.Get(context.Background(), request.NamespacedName, &session); err != nil {
+		t.Fatal(err)
+	}
+	if !sessionsuspend.ResumeRequested(&session) {
+		t.Fatalf("resume request was cleared before the connection grace elapsed: %#v", session.Annotations)
+	}
+	if session.Status.LastActivityTime == nil || session.Status.LastActivityTime.Before(&metav1.Time{Time: acknowledgedAt.Truncate(time.Second)}) {
+		t.Fatalf("last activity time = %v, want at or after acknowledgement %v", session.Status.LastActivityTime, acknowledgedAt)
+	}
+	if session.Status.Phase != kelos.SessionPhaseReady {
+		t.Fatalf("Session phase = %q, want %q", session.Status.Phase, kelos.SessionPhaseReady)
+	}
+	if err := cl.Get(context.Background(), client.ObjectKeyFromObject(&statefulSet), &statefulSet); err != nil {
+		t.Fatal(err)
+	}
+	if ptr.Deref(statefulSet.Spec.Replicas, 0) != 1 {
+		t.Fatalf("StatefulSet replicas = %v, want 1", statefulSet.Spec.Replicas)
+	}
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("Reconcile() post-resume error = %v", err)
+	}
+	if err := cl.Get(context.Background(), request.NamespacedName, &session); err != nil {
+		t.Fatal(err)
+	}
+	if session.Annotations[sessionupdate.IdleDrainRequestAnnotation] != "" {
+		t.Fatalf("idle drain restarted immediately after resume: %#v", session.Annotations)
+	}
+}
+
+func TestSessionReconcileExpiresUnacknowledgedIdleResumeRequest(t *testing.T) {
+	scheme := runtime.NewScheme()
+	for _, add := range []func(*runtime.Scheme) error{appsv1.AddToScheme, corev1.AddToScheme, kelos.AddToScheme} {
+		if err := add(scheme); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	session := newIdleSuspendedSession(
+		"expired-idle-resume",
+		&kelos.SessionIdlePolicy{
+			SuspendAfterSeconds: ptr.To(int32(30)),
+			DeleteAfterSeconds:  ptr.To(int32(60)),
+		},
+		time.Now().Add(-time.Hour),
+	)
+	session.Status.Phase = kelos.SessionPhasePending
+	if session.Annotations == nil {
+		session.Annotations = map[string]string{}
+	}
+	session.Annotations[sessionsuspend.ResumeRequestAnnotation] = "expired-request"
+	session.Annotations[sessionsuspend.ResumeRequestTimeAnnotation] = time.Now().Add(-idleResumeRequestTimeout - time.Minute).UTC().Format(time.RFC3339Nano)
+	statefulSet := testSessionStatefulSet(session)
+	statefulSet.Spec.Replicas = ptr.To(int32(1))
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&kelos.Session{}, &appsv1.StatefulSet{}).
+		WithObjects(session, statefulSet).
+		Build()
+	reconciler := testSessionReconciler(cl, scheme)
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(session)}
+
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("Reconcile() expire request error = %v", err)
+	}
+	var current kelos.Session
+	if err := cl.Get(context.Background(), request.NamespacedName, &current); err != nil {
+		t.Fatal(err)
+	}
+	if sessionsuspend.ResumeRequested(&current) {
+		t.Fatalf("expired resume request was not cleared: %#v", current.Annotations)
+	}
+	if !sessionsuspend.IsIdlePolicySuspended(&current) {
+		t.Fatalf("Session status = %#v, want idle suspension", current.Status)
+	}
+
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("Reconcile() reap error = %v", err)
+	}
+	if err := cl.Get(context.Background(), request.NamespacedName, &kelos.Session{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("Session get after expired resume request = %v, want NotFound", err)
+	}
+}
+
+func TestSessionReconcileDrainsBeforeExpiringIdleResumeRequest(t *testing.T) {
+	cl, reconciler, request := newReadyIdleSessionFixture(t,
+		&kelos.SessionIdlePolicy{
+			SuspendAfterSeconds: ptr.To(int32(30)),
+			DeleteAfterSeconds:  ptr.To(int32(60)),
+		},
+		time.Now().Add(-time.Hour))
+
+	var session kelos.Session
+	if err := cl.Get(context.Background(), request.NamespacedName, &session); err != nil {
+		t.Fatal(err)
+	}
+	if session.Annotations == nil {
+		session.Annotations = map[string]string{}
+	}
+	session.Annotations[sessionsuspend.ResumeRequestAnnotation] = "expired-request"
+	session.Annotations[sessionsuspend.ResumeRequestTimeAnnotation] = time.Now().Add(-idleResumeRequestTimeout - time.Minute).UTC().Format(time.RFC3339Nano)
+	if err := cl.Update(context.Background(), &session); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("Reconcile() drain-request error = %v", err)
+	}
+	if err := cl.Get(context.Background(), request.NamespacedName, &session); err != nil {
+		t.Fatal(err)
+	}
+	if !sessionsuspend.ResumeRequested(&session) {
+		t.Fatal("resume request was cleared before the runtime drained")
+	}
+	drainRequest, err := sessionupdate.Decode(session.Annotations[sessionupdate.IdleDrainRequestAnnotation])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var statefulSet appsv1.StatefulSet
+	if err := cl.Get(context.Background(), client.ObjectKey{Namespace: session.Namespace, Name: sessionWorkloadName(&session)}, &statefulSet); err != nil {
+		t.Fatal(err)
+	}
+	if ptr.Deref(statefulSet.Spec.Replicas, 0) != 1 {
+		t.Fatalf("StatefulSet replicas = %v, want 1 while draining", statefulSet.Spec.Replicas)
+	}
+
+	report, err := sessionupdate.EncodeReport(sessionupdate.Report{
+		RequestID: drainRequest.ID,
+		PodUID:    drainRequest.PodUID,
+		Phase:     sessionupdate.PhaseDrained,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	patched := session.DeepCopy()
+	patched.Annotations[sessionupdate.IdleDrainReportAnnotation] = report
+	if err := cl.Patch(context.Background(), patched, client.MergeFrom(&session)); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("Reconcile() expire request error = %v", err)
+	}
+	if err := cl.Get(context.Background(), request.NamespacedName, &session); err != nil {
+		t.Fatal(err)
+	}
+	if sessionsuspend.ResumeRequested(&session) {
+		t.Fatalf("drained resume request was not cleared: %#v", session.Annotations)
+	}
+	if !sessionsuspend.IsIdlePolicySuspended(&session) {
+		t.Fatalf("Session status = %#v, want idle suspension", session.Status)
+	}
+	if err := cl.Get(context.Background(), client.ObjectKeyFromObject(&statefulSet), &statefulSet); err != nil {
+		t.Fatal(err)
+	}
+	if ptr.Deref(statefulSet.Spec.Replicas, 1) != 0 {
+		t.Fatalf("StatefulSet replicas = %v, want 0 after drain", statefulSet.Spec.Replicas)
+	}
+}
+
+func TestSessionReconcileDrainsSurvivingPodBeforeExpiringIdleResumeRequest(t *testing.T) {
+	cl, reconciler, request := newReadyIdleSessionFixture(t,
+		&kelos.SessionIdlePolicy{SuspendAfterSeconds: ptr.To(int32(30))},
+		time.Now().Add(-time.Hour))
+
+	var session kelos.Session
+	if err := cl.Get(context.Background(), request.NamespacedName, &session); err != nil {
+		t.Fatal(err)
+	}
+	if session.Annotations == nil {
+		session.Annotations = map[string]string{}
+	}
+	session.Annotations[sessionsuspend.ResumeRequestAnnotation] = "expired-request"
+	session.Annotations[sessionsuspend.ResumeRequestTimeAnnotation] = time.Now().Add(-idleResumeRequestTimeout - time.Minute).UTC().Format(time.RFC3339Nano)
+	if err := cl.Update(context.Background(), &session); err != nil {
+		t.Fatal(err)
+	}
+
+	workloadKey := client.ObjectKey{Namespace: session.Namespace, Name: sessionWorkloadName(&session)}
+	var statefulSet appsv1.StatefulSet
+	if err := cl.Get(context.Background(), workloadKey, &statefulSet); err != nil {
+		t.Fatal(err)
+	}
+	var pod corev1.Pod
+	if err := cl.Get(context.Background(), client.ObjectKey{Namespace: session.Namespace, Name: workloadKey.Name + "-0"}, &pod); err != nil {
+		t.Fatal(err)
+	}
+	if pod.Annotations == nil {
+		pod.Annotations = map[string]string{}
+	}
+	pod.Annotations[sessionNameAnnotation] = session.Name
+	if err := cl.Update(context.Background(), &pod); err != nil {
+		t.Fatal(err)
+	}
+	if err := cl.Delete(context.Background(), &statefulSet); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("Reconcile() drain-request error = %v", err)
+	}
+	if err := cl.Get(context.Background(), request.NamespacedName, &session); err != nil {
+		t.Fatal(err)
+	}
+	if !sessionsuspend.ResumeRequested(&session) {
+		t.Fatal("resume request was cleared before the surviving Pod drained")
+	}
+	drainRequest, err := sessionupdate.Decode(session.Annotations[sessionupdate.IdleDrainRequestAnnotation])
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := sessionupdate.EncodeReport(sessionupdate.Report{
+		RequestID: drainRequest.ID,
+		PodUID:    drainRequest.PodUID,
+		Phase:     sessionupdate.PhaseDrained,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	patched := session.DeepCopy()
+	patched.Annotations[sessionupdate.IdleDrainReportAnnotation] = report
+	if err := cl.Patch(context.Background(), patched, client.MergeFrom(&session)); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("Reconcile() expire request error = %v", err)
+	}
+	if err := cl.Get(context.Background(), request.NamespacedName, &session); err != nil {
+		t.Fatal(err)
+	}
+	if sessionsuspend.ResumeRequested(&session) {
+		t.Fatalf("drained resume request was not cleared: %#v", session.Annotations)
+	}
+	if !sessionsuspend.IsIdlePolicySuspended(&session) {
+		t.Fatalf("Session status = %#v, want idle suspension", session.Status)
+	}
+}
+
+func TestSessionReconcileDoesNotResuspendDuringResumeProtection(t *testing.T) {
+	cl, reconciler, request := newReadyIdleSessionFixture(t,
+		&kelos.SessionIdlePolicy{SuspendAfterSeconds: ptr.To(int32(0))},
+		time.Now().Add(-time.Hour))
+
+	var session kelos.Session
+	if err := cl.Get(context.Background(), request.NamespacedName, &session); err != nil {
+		t.Fatal(err)
+	}
+	if session.Annotations == nil {
+		session.Annotations = map[string]string{}
+	}
+	session.Annotations[sessionsuspend.ResumeRequestAnnotation] = "resume-request"
+	session.Annotations[sessionsuspend.ResumeRequestTimeAnnotation] = time.Now().UTC().Format(time.RFC3339Nano)
+	if err := cl.Update(context.Background(), &session); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := reconciler.Reconcile(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RequeueAfter <= 0 || result.RequeueAfter > idleResumeRequestTimeout {
+		t.Fatalf("Reconcile() requeueAfter = %s, want resume request expiry", result.RequeueAfter)
+	}
+	if err := cl.Get(context.Background(), request.NamespacedName, &session); err != nil {
+		t.Fatal(err)
+	}
+	if session.Annotations[sessionupdate.IdleDrainRequestAnnotation] != "" {
+		t.Fatalf("idle drain started before resume acknowledgement: %#v", session.Annotations)
+	}
+	requestValue := session.Annotations[sessionsuspend.ResumeRequestAnnotation]
+	if acknowledged, err := sessionsuspend.AcknowledgeResume(context.Background(), cl, request.NamespacedName, requestValue); err != nil {
+		t.Fatal(err)
+	} else if !acknowledged {
+		t.Fatal("AcknowledgeResume() acknowledged = false, want true")
+	}
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("Reconcile() observe-acknowledgement error = %v", err)
+	}
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("Reconcile() acknowledgement error = %v", err)
+	}
+	result, err = reconciler.Reconcile(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RequeueAfter <= 0 || result.RequeueAfter > idleResumeAcknowledgementGrace {
+		t.Fatalf("Reconcile() requeueAfter = %s, want acknowledgement grace", result.RequeueAfter)
+	}
+	if err := cl.Get(context.Background(), request.NamespacedName, &session); err != nil {
+		t.Fatal(err)
+	}
+	if !sessionsuspend.ResumeRequested(&session) {
+		t.Fatalf("resume request was cleared before the connection grace elapsed: %#v", session.Annotations)
+	}
+	if session.Annotations[sessionupdate.IdleDrainRequestAnnotation] != "" {
+		t.Fatalf("idle drain started during the connection grace: %#v", session.Annotations)
+	}
+}
+
+func TestSessionReconcileDeletesIdleSuspendedSessionAtDeleteDeadline(t *testing.T) {
+	cl, reconciler, request := newReadyIdleSessionFixture(t,
+		&kelos.SessionIdlePolicy{
+			SuspendAfterSeconds: ptr.To(int32(60)),
+			DeleteAfterSeconds:  ptr.To(int32(3600)),
+		},
+		time.Now().Add(-10*time.Minute))
+
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	var session kelos.Session
+	if err := cl.Get(context.Background(), request.NamespacedName, &session); err != nil {
+		t.Fatal(err)
+	}
+	drainRequest, err := sessionupdate.Decode(session.Annotations[sessionupdate.IdleDrainRequestAnnotation])
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := sessionupdate.EncodeReport(sessionupdate.Report{
+		RequestID: drainRequest.ID,
+		PodUID:    drainRequest.PodUID,
+		Phase:     sessionupdate.PhaseDrained,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	patched := session.DeepCopy()
+	patched.Annotations[sessionupdate.IdleDrainReportAnnotation] = report
+	if err := cl.Patch(context.Background(), patched, client.MergeFrom(&session)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if err := cl.Get(context.Background(), request.NamespacedName, &session); err != nil {
+		t.Fatal(err)
+	}
+	oldActivity := metav1.NewTime(time.Now().Add(-2 * time.Hour))
+	session.Status.LastActivityTime = &oldActivity
+	if err := cl.Status().Update(context.Background(), &session); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if err := cl.Get(context.Background(), request.NamespacedName, &kelos.Session{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("Session get after delete deadline = %v, want NotFound", err)
+	}
+}
+
+func TestSessionReconcileDeletesIdleSuspendedSessionWithMissingDependency(t *testing.T) {
+	scheme := runtime.NewScheme()
+	for _, add := range []func(*runtime.Scheme) error{appsv1.AddToScheme, corev1.AddToScheme, kelos.AddToScheme} {
+		if err := add(scheme); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	session := newIdleSuspendedSession(
+		"idle-suspended-missing-workspace",
+		&kelos.SessionIdlePolicy{
+			SuspendAfterSeconds: ptr.To(int32(30)),
+			DeleteAfterSeconds:  ptr.To(int32(60)),
+		},
+		time.Now().Add(-10*time.Minute),
+	)
+	session.Spec.Worker.WorkspaceRef = &kelos.WorkspaceReference{Name: "missing"}
+	statefulSet := testSessionStatefulSet(session)
+	statefulSet.Spec.Replicas = ptr.To(int32(0))
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&kelos.Session{}, &appsv1.StatefulSet{}).
+		WithObjects(session, statefulSet).
+		Build()
+	reconciler := testSessionReconciler(cl, scheme)
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(session)}
+
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if err := cl.Get(context.Background(), request.NamespacedName, &kelos.Session{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("Session get after delete deadline = %v, want NotFound", err)
+	}
+}
+
+func TestSessionReconcilePreservesIdleSuspensionAcrossStatefulSetRecreation(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		terminating bool
+	}{
+		{name: "missing"},
+		{name: "terminating", terminating: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			scheme := runtime.NewScheme()
+			for _, add := range []func(*runtime.Scheme) error{appsv1.AddToScheme, corev1.AddToScheme, rbacv1.AddToScheme, kelos.AddToScheme} {
+				if err := add(scheme); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			session := newIdleSuspendedSession(
+				"idle-suspended-statefulset-"+test.name,
+				&kelos.SessionIdlePolicy{
+					SuspendAfterSeconds: ptr.To(int32(60)),
+					DeleteAfterSeconds:  ptr.To(int32(3600)),
+				},
+				time.Now().Add(-10*time.Minute),
+			)
+			objects := []client.Object{session}
+			if test.terminating {
+				statefulSet := testSessionStatefulSet(session)
+				statefulSet.Spec.Replicas = ptr.To(int32(0))
+				now := metav1.Now()
+				statefulSet.DeletionTimestamp = &now
+				statefulSet.Finalizers = []string{"test.kelos.dev/terminating"}
+				objects = append(objects, statefulSet)
+			}
+			cl := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithStatusSubresource(&kelos.Session{}, &appsv1.StatefulSet{}).
+				WithObjects(objects...).
+				Build()
+			reconciler := testSessionReconciler(cl, scheme)
+			request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(session)}
+
+			if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+				t.Fatalf("Reconcile() error = %v", err)
+			}
+			var updated kelos.Session
+			if err := cl.Get(context.Background(), request.NamespacedName, &updated); err != nil {
+				t.Fatal(err)
+			}
+			if !sessionsuspend.IsIdlePolicySuspended(&updated) {
+				t.Fatalf("Session status = %#v, want idle suspension", updated.Status)
+			}
+
+			if !test.terminating {
+				var statefulSet appsv1.StatefulSet
+				if err := cl.Get(context.Background(), client.ObjectKey{Namespace: session.Namespace, Name: sessionWorkloadName(session)}, &statefulSet); err != nil {
+					t.Fatal(err)
+				}
+				if ptr.Deref(statefulSet.Spec.Replicas, 1) != 0 {
+					t.Fatalf("StatefulSet replicas = %v, want 0", statefulSet.Spec.Replicas)
+				}
+			}
+		})
+	}
+}
+
+func TestSessionReconcilePreservesIdleSuspensionWhileRecreationWaitsForDependency(t *testing.T) {
+	scheme := runtime.NewScheme()
+	for _, add := range []func(*runtime.Scheme) error{appsv1.AddToScheme, corev1.AddToScheme, rbacv1.AddToScheme, kelos.AddToScheme} {
+		if err := add(scheme); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	session := newIdleSuspendedSession(
+		"idle-suspended-missing-workspace",
+		&kelos.SessionIdlePolicy{
+			SuspendAfterSeconds: ptr.To(int32(60)),
+			DeleteAfterSeconds:  ptr.To(int32(3600)),
+		},
+		time.Now().Add(-10*time.Minute),
+	)
+	session.Spec.Worker.WorkspaceRef = &kelos.WorkspaceReference{Name: "workspace"}
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&kelos.Session{}, &appsv1.StatefulSet{}).
+		WithObjects(session).
+		Build()
+	reconciler := testSessionReconciler(cl, scheme)
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(session)}
+
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("Reconcile() waiting error = %v", err)
+	}
+	var updated kelos.Session
+	if err := cl.Get(context.Background(), request.NamespacedName, &updated); err != nil {
+		t.Fatal(err)
+	}
+	if !sessionsuspend.IsIdlePolicySuspended(&updated) {
+		t.Fatalf("Session status = %#v, want idle suspension while waiting for Workspace", updated.Status)
+	}
+
+	workspace := &kelos.Workspace{
+		ObjectMeta: metav1.ObjectMeta{Name: "workspace", Namespace: session.Namespace},
+		Spec:       kelos.WorkspaceSpec{Repo: "https://github.com/kelos-dev/kelos.git"},
+	}
+	if err := cl.Create(context.Background(), workspace); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("Reconcile() recreation error = %v", err)
+	}
+	var statefulSet appsv1.StatefulSet
+	if err := cl.Get(context.Background(), client.ObjectKey{Namespace: session.Namespace, Name: sessionWorkloadName(session)}, &statefulSet); err != nil {
+		t.Fatal(err)
+	}
+	if ptr.Deref(statefulSet.Spec.Replicas, 1) != 0 {
+		t.Fatalf("StatefulSet replicas = %v, want 0", statefulSet.Spec.Replicas)
 	}
 }
 
