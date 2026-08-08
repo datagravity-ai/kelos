@@ -112,6 +112,7 @@ function resetHarness() {
     progress: new TestNode('div'),
     progressLabel: new TestNode('span'),
     progressElapsed: new TestNode('span'),
+    runtimeStatus: new TestNode('div'),
     sidebar: new TestNode('aside'),
     welcome: null,
   };
@@ -133,6 +134,7 @@ function resetHarness() {
     activeTurnStartedAt: 0,
     waitingForInput: false,
     interrupting: false,
+    runtimeStatus: null,
     progressTimer: null,
     replayingHistory: false,
     pinHistoryToBottom: false,
@@ -283,6 +285,53 @@ function testSessionProgressElapsedFormatting() {
   assert.equal(formatSessionProgressElapsed(59000), '59s');
   assert.equal(formatSessionProgressElapsed(60000), '1m 00s');
   assert.equal(formatSessionProgressElapsed(7389000), '2h 03m 09s');
+}
+
+function testRuntimeStatusLifecycle() {
+  resetHarness();
+  const view = createSessionView();
+  activateSessionView(view);
+  assert.equal(elements.runtimeStatus.hidden, true);
+
+  handleEvent({
+    type: 'runtime.status',
+    runtime: {
+      sessionName: 'fix-cli-connect',
+      agentType: 'codex',
+      model: 'gpt-5.6-sol',
+      effort: 'xhigh',
+      workingDir: '/home/agent/workspace/repo',
+      homeDir: '/home/agent',
+      branch: 'main',
+      usage: {
+        inputTokens: 15900000,
+        outputTokens: 59100,
+        contextTokens: 90960,
+        contextWindow: 200000,
+      },
+      weeklyLimit: {usedPercent: 52},
+    },
+  });
+
+  const expected = 'fix-cli-connect · codex · gpt-5.6-sol xhigh · ~/workspace/repo · main · Context 42% used · weekly 48% left · 15.9M in · 59.1K out';
+  assert.equal(elements.runtimeStatus.hidden, false);
+  assert.equal(elements.runtimeStatus.textContent, expected);
+  assert.equal(elements.runtimeStatus.title, expected);
+  assert.equal(view.runtimeStatus, state.runtimeStatus);
+
+  saveCurrentSessionView();
+  activateSessionView(createSessionView());
+  assert.equal(elements.runtimeStatus.hidden, true);
+  activateSessionView(view);
+  assert.equal(elements.runtimeStatus.textContent, expected);
+
+  resetCurrentSessionView();
+  assert.equal(elements.runtimeStatus.hidden, true);
+  assert.equal(state.runtimeStatus, null);
+}
+
+function testRuntimeStatusTreatsOmittedContextTokensAsZero() {
+  assert.equal(sessionRuntimeContextUsedPercent({contextWindow: 200000}), 0);
 }
 
 function testSessionResetClearsPromptDraft() {
@@ -445,6 +494,8 @@ testSessionViewReset();
 testSessionProgressLifecycle();
 testSessionProgressSurvivesCachedViewSwitch();
 testSessionProgressElapsedFormatting();
+testRuntimeStatusLifecycle();
+testRuntimeStatusTreatsOmittedContextTokensAsZero();
 testSessionResetClearsPromptDraft();
 testHistoryReplayCompletion();
 testReselectRefreshesStatusPlaceholder();

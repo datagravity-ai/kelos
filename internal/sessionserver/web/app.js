@@ -26,6 +26,7 @@ const elements = {
   input: document.querySelector('#message-input'),
   send: document.querySelector('#send-message'),
   composerHint: document.querySelector('#composer-hint'),
+  runtimeStatus: document.querySelector('#session-runtime-status'),
   progress: document.querySelector('#session-progress'),
   progressLabel: document.querySelector('#session-progress-label'),
   progressElapsed: document.querySelector('#session-progress-elapsed'),
@@ -90,6 +91,7 @@ const state = {
   activeTurnStartedAt: 0,
   waitingForInput: false,
   interrupting: false,
+  runtimeStatus: null,
   progressTimer: null,
   replayingHistory: false,
   pinHistoryToBottom: false,
@@ -172,6 +174,7 @@ function createSessionView() {
     activeTurnStartedAt: 0,
     waitingForInput: false,
     interrupting: false,
+    runtimeStatus: null,
     replayingHistory: false,
     pinHistoryToBottom: false,
     fileChangesDirty: false,
@@ -199,6 +202,7 @@ function saveCurrentSessionView() {
   view.activeTurnStartedAt = state.activeTurnStartedAt;
   view.waitingForInput = state.waitingForInput;
   view.interrupting = state.interrupting;
+  view.runtimeStatus = state.runtimeStatus;
   view.replayingHistory = state.replayingHistory;
   view.pinHistoryToBottom = state.pinHistoryToBottom;
   view.fileChangesDirty = state.fileChangesDirty;
@@ -225,6 +229,7 @@ function activateSessionView(view) {
   state.activeTurnStartedAt = view.activeTurnStartedAt;
   state.waitingForInput = view.waitingForInput;
   state.interrupting = view.interrupting;
+  state.runtimeStatus = view.runtimeStatus;
   state.replayingHistory = view.replayingHistory;
   state.pinHistoryToBottom = view.pinHistoryToBottom;
   state.fileChangesDirty = view.fileChangesDirty;
@@ -236,6 +241,7 @@ function activateSessionView(view) {
   updateFileChangesHeader();
   if (!hasChanges) renderFileChanges();
   refreshSessionProgress();
+  renderRuntimeStatus();
 }
 
 function cachedSessionView(session) {
@@ -269,6 +275,7 @@ function resetCurrentSessionView() {
   state.activeTurnStartedAt = 0;
   state.waitingForInput = false;
   state.interrupting = false;
+  state.runtimeStatus = null;
   state.replayingHistory = true;
   state.pinHistoryToBottom = true;
   state.fileChangesDirty = false;
@@ -292,9 +299,11 @@ function resetCurrentSessionView() {
     view.activeTurnStartedAt = 0;
     view.waitingForInput = false;
     view.interrupting = false;
+    view.runtimeStatus = null;
     view.pinHistoryToBottom = true;
   }
   refreshSessionProgress();
+  renderRuntimeStatus();
 }
 
 function formatSessionProgressElapsed(elapsedMilliseconds) {
@@ -341,6 +350,72 @@ function refreshSessionProgress() {
   if (state.activeTurn) {
     state.progressTimer = window.setInterval(() => renderSessionProgress(), 1000);
   }
+}
+
+function sessionRuntimePath(workingDir = '', homeDir = '') {
+  const home = homeDir.replace(/\/$/, '');
+  if (!home) return workingDir;
+  if (workingDir === home) return '~';
+  if (workingDir.startsWith(`${home}/`)) return `~/${workingDir.slice(home.length + 1)}`;
+  return workingDir;
+}
+
+function sessionRuntimeContextUsedPercent(usage) {
+  const baselineTokens = 12000;
+  if (usage.contextWindow <= baselineTokens) return 100;
+  const effectiveWindow = usage.contextWindow - baselineTokens;
+  const used = Math.max(0, (Number(usage.contextTokens) || 0) - baselineTokens);
+  return Math.min(100, Math.round(used * 100 / effectiveWindow));
+}
+
+function formatSessionRuntimeTokens(value) {
+  const tokens = Math.max(0, Number(value) || 0);
+  if (tokens < 1000) return String(tokens);
+  let scaled = tokens / 1000;
+  let suffix = 'K';
+  if (tokens >= 1e12) {
+    scaled = tokens / 1e12;
+    suffix = 'T';
+  } else if (tokens >= 1e9) {
+    scaled = tokens / 1e9;
+    suffix = 'B';
+  } else if (tokens >= 1e6) {
+    scaled = tokens / 1e6;
+    suffix = 'M';
+  }
+  const decimals = scaled < 10 ? 2 : scaled < 100 ? 1 : 0;
+  return `${Number(scaled.toFixed(decimals))}${suffix}`;
+}
+
+function sessionRuntimeStatusText(status) {
+  if (!status) return '';
+  const parts = [];
+  const add = value => { if (value) parts.push(value); };
+  add(status.sessionName);
+  add(status.agentType);
+  add(`${status.model || ''} ${status.effort || ''}`.trim());
+  add(sessionRuntimePath(status.workingDir, status.homeDir));
+  add(status.branch);
+  if (status.pullRequestNumber > 0) add(`PR #${status.pullRequestNumber}`);
+  if (status.usage?.contextWindow > 0) {
+    add(`Context ${sessionRuntimeContextUsedPercent(status.usage)}% used`);
+  }
+  if (status.weeklyLimit) {
+    const remaining = 100 - Math.min(100, Math.max(0, status.weeklyLimit.usedPercent));
+    add(`weekly ${remaining}% left`);
+  }
+  if (status.usage) {
+    add(`${formatSessionRuntimeTokens(status.usage.inputTokens)} in`);
+    add(`${formatSessionRuntimeTokens(status.usage.outputTokens)} out`);
+  }
+  return parts.join(' · ');
+}
+
+function renderRuntimeStatus() {
+  const text = sessionRuntimeStatusText(state.runtimeStatus);
+  elements.runtimeStatus.textContent = text;
+  elements.runtimeStatus.title = text;
+  elements.runtimeStatus.hidden = !text;
 }
 
 function savePromptDraft(session) {
@@ -2208,6 +2283,11 @@ function handleEvent(event) {
       break;
     case 'history.end':
       finishHistoryReplay();
+      break;
+    case 'runtime.status':
+      state.runtimeStatus = event.runtime || null;
+      if (state.currentView) state.currentView.runtimeStatus = state.runtimeStatus;
+      renderRuntimeStatus();
       break;
     case 'runtime.recovered':
       renderRecovery(event);
