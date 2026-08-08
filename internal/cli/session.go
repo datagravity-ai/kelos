@@ -433,6 +433,7 @@ func connectSessionWithDependencies(
 	}()
 
 	var lastEventID int64
+	var historyLastEventID int64
 	var journalID string
 	connectedBefore := false
 	pendingRequests := make([]pendingSessionRequest, 0)
@@ -478,6 +479,8 @@ func connectSessionWithDependencies(
 			Since:         lastEventID,
 			JournalID:     journalID,
 			HistoryBounds: true,
+			HistoryItems:  sessionruntime.DefaultHistoryItemLimit,
+			HistoryBytes:  sessionruntime.DefaultHistoryByteLimit,
 		}); err != nil {
 			stream.Close()
 			if diagnosticWriter != nil {
@@ -558,13 +561,17 @@ func connectSessionWithDependencies(
 				if event.RequestID != "" {
 					pendingRequests = removePendingSessionRequest(pendingRequests, event.RequestID)
 				}
-				if event.Type == sessionruntime.EventHistoryStart {
+				if event.Type == sessionruntime.EventHistoryStart && !event.HistoryPage {
 					journalID = event.JournalID
+					historyLastEventID = event.LastEventID
 					if event.Reset {
 						lastEventID = 0
 					}
 				}
-				if event.Type == sessionruntime.EventHistoryEnd {
+				if event.Type == sessionruntime.EventHistoryEnd && !event.HistoryPage {
+					if historyLastEventID > lastEventID {
+						lastEventID = historyLastEventID
+					}
 					if announceReconnect {
 						reportSessionTerminalDiagnostic(diagnostics, sessionTerminalStatusConnected, "Reconnected to Session runtime")
 						announceReconnect = false

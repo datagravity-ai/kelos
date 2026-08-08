@@ -21,6 +21,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/kelos-dev/kelos/internal/sessionruntime"
 	"github.com/muesli/termenv"
+	"k8s.io/apimachinery/pkg/util/uuid"
 )
 
 const (
@@ -156,6 +157,17 @@ type sessionTUIModel struct {
 	historyWrites      []sessionTUIHistoryWrite
 	historyWriting     bool
 	nextHistoryID      uint64
+	hideNextHistory    bool
+	historyHiddenUntil int
+	historyCursor      string
+	historyNoticeAt    int
+	historyPageLoading bool
+	historyPageReading bool
+	historyPageCursor  string
+	historyPageEvents  []sessionruntime.Event
+	historyRequestID   string
+	historyPageStarted time.Time
+	historyAllReported bool
 	printHistory       func(string) tea.Cmd
 	waitForTermination tea.Cmd
 	now                func() time.Time
@@ -236,6 +248,7 @@ func newSessionTUIModel(events *json.Decoder, requests *json.Encoder, output io.
 		replayingHistory:   true,
 		historyAt:          -1,
 		streamingAt:        -1,
+		historyNoticeAt:    -1,
 		printHistory:       func(rendered string) tea.Cmd { return tea.Println(rendered) },
 		waitForTermination: waitForTermination,
 		now:                now,
@@ -374,6 +387,11 @@ func (m *sessionTUIModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.submitInput()
 			}
 			return m, nil
+		case tea.KeyPgUp:
+			if m.ready && m.input.Value() == "" {
+				return m, m.requestOlderHistory()
+			}
+			return m, nil
 		case tea.KeyCtrlJ:
 			if m.ready {
 				m.input.SetHeight(min(m.input.Height()+1, m.composerMaxHeight()))
@@ -429,6 +447,11 @@ func (m *sessionTUIModel) submitInput() tea.Cmd {
 	if line == "/quit" || line == "/exit" {
 		return m.quit()
 	}
+	if strings.TrimSpace(line) == "/history" {
+		m.input.Reset()
+		m.resizeComposer()
+		return m.requestOlderHistory()
+	}
 	request := sessionTerminalRequest(line)
 	if request.Type == "" {
 		m.input.Reset()
@@ -480,14 +503,41 @@ func (m *sessionTUIModel) nextInput() {
 
 func (m *sessionTUIModel) applyEvent(event sessionruntime.Event) sessionTUICommands {
 	var commands sessionTUICommands
+	if m.historyPageReading {
+		if event.Type == sessionruntime.EventHistoryEnd && event.HistoryPage {
+			return m.finishOlderHistoryPage()
+		}
+		if event.Type == sessionTerminalEventDiagnostic || (event.Type == sessionruntime.EventHistoryStart && !event.HistoryPage) {
+			m.cancelOlderHistoryPage()
+		} else {
+			m.historyPageEvents = append(m.historyPageEvents, event)
+			return commands
+		}
+	}
 	recoveredCompletion := sessionTerminalRecoveredCompletion(m.recoveryActive, event)
 	if m.recoveryActive && !sessionTerminalRuntimeRecoveryEvent(event) {
 		m.recoveryActive = false
 	}
 	switch event.Type {
 	case sessionruntime.EventHistoryStart:
+		if event.HistoryPage {
+			m.historyPageLoading = true
+			m.historyPageReading = true
+			m.historyPageCursor = event.HistoryCursor
+			m.historyPageEvents = nil
+			return commands
+		}
 		m.replayingHistory = true
+		if event.Reset || !m.ready {
+			m.historyCursor = event.HistoryCursor
+			m.historyAllReported = false
+		}
+		if event.HistoryLimited {
+			m.historyNoticeAt = len(m.blocks)
+			m.appendBlock(sessionTUIBlockNotice, "Earlier Session history is available. Use /history or Page Up to load the previous page.")
+		}
 		if event.Reset {
+			m.cancelOlderHistoryPage()
 			m.turnActive = false
 			m.activeTurnID = ""
 			m.activeTurnStarted = time.Time{}
@@ -500,7 +550,11 @@ func (m *sessionTUIModel) applyEvent(event sessionruntime.Event) sessionTUIComma
 		}
 	case sessionruntime.EventHistoryEnd:
 		m.replayingHistory = false
-		m.appendBlock(sessionTUIBlockNotice, "Connected. Enter sends, Ctrl+J inserts a newline, and Ctrl+C or Esc interrupts active work. Ctrl+C quits when idle. Use /answer INPUT QUESTION VALUE or /quit.")
+		m.applyHistoryState(event.HistoryState)
+		// A terminal-height transcript in both the managed view and native scrollback
+		// makes Bubble Tea move the smaller footer to the top when the copy is removed.
+		m.hideNextHistory = !m.ready
+		m.appendBlock(sessionTUIBlockNotice, "Connected. Enter sends, Ctrl+J inserts a newline, and Ctrl+C or Esc interrupts active work. Ctrl+C quits when idle. Use /history or Page Up for earlier history, /answer INPUT QUESTION VALUE, or /quit.")
 		m.ready = true
 		m.connectionStatus = ""
 		commands.ui = tea.Batch(m.input.Focus(), m.scheduleProgress())
@@ -513,6 +567,7 @@ func (m *sessionTUIModel) applyEvent(event sessionruntime.Event) sessionTUIComma
 		}
 		switch event.Status {
 		case sessionTerminalStatusConnecting, sessionTerminalStatusReconnecting:
+			m.cancelOlderHistoryPage()
 			if m.connectionStatus != event.Status {
 				m.connectionStarted = m.now()
 			}
@@ -595,6 +650,9 @@ func (m *sessionTUIModel) applyEvent(event sessionruntime.Event) sessionTUIComma
 		}
 	case sessionruntime.EventError:
 		m.finishStreaming()
+		if event.RequestID != "" && event.RequestID == m.historyRequestID {
+			m.cancelOlderHistoryPage()
+		}
 		if event.Status == "rejected" {
 			m.turnInterrupting = false
 		}
@@ -609,6 +667,131 @@ func (m *sessionTUIModel) applyEvent(event sessionruntime.Event) sessionTUIComma
 		m.refreshActiveView()
 	}
 	return commands
+}
+
+func (m *sessionTUIModel) applyHistoryState(state *sessionruntime.HistoryState) {
+	if state == nil {
+		return
+	}
+	m.queuedTurns = make(map[string]string, len(state.QueuedTurns))
+	m.queuedTurnOrder = make([]string, 0, len(state.QueuedTurns))
+	for _, turn := range state.QueuedTurns {
+		m.queuedTurns[turn.TurnID] = turn.Text
+		m.queuedTurnOrder = append(m.queuedTurnOrder, turn.TurnID)
+	}
+	m.activeTurnID = state.ActiveTurnID
+	m.turnActive = state.ActiveTurnID != ""
+	if state.ActiveTurnStarted != nil {
+		m.activeTurnStarted = *state.ActiveTurnStarted
+	} else if m.turnActive {
+		m.activeTurnStarted = m.now()
+	}
+	m.waitingForInput = state.WaitingForInput
+	m.turnInterrupting = state.TurnInterrupting
+}
+
+func (m *sessionTUIModel) requestOlderHistory() tea.Cmd {
+	if m.historyPageLoading {
+		return nil
+	}
+	if m.historyCursor == "" {
+		if m.historyAllReported {
+			return nil
+		}
+		m.historyAllReported = true
+		m.appendBlock(sessionTUIBlockNotice, "All retained Session history is loaded.")
+		command := m.queueReadyBlocks()
+		m.refreshActiveView()
+		return command
+	}
+	requestID := string(uuid.NewUUID())
+	if err := m.requests.Encode(sessionruntime.ClientRequest{
+		Type:          "history",
+		RequestID:     requestID,
+		HistoryCursor: m.historyCursor,
+	}); err != nil {
+		m.err = err
+		return m.quit()
+	}
+	m.historyPageLoading = true
+	m.historyRequestID = requestID
+	m.historyPageStarted = m.now()
+	return m.scheduleProgress()
+}
+
+func (m *sessionTUIModel) finishOlderHistoryPage() sessionTUICommands {
+	blocks := m.replayHistoryPage(m.historyPageEvents)
+	m.historyCursor = m.historyPageCursor
+	m.historyAllReported = m.historyCursor == ""
+	m.historyPageLoading = false
+	m.historyPageReading = false
+	m.historyPageCursor = ""
+	m.historyPageEvents = nil
+	m.historyRequestID = ""
+
+	noticeChanged := false
+	if m.historyCursor == "" && m.historyNoticeAt >= 0 && m.historyNoticeAt < len(m.blocks) {
+		m.blocks[m.historyNoticeAt].text = "All retained Session history is loaded."
+		m.blocks[m.historyNoticeAt].dirty = true
+		noticeChanged = true
+	}
+	command := m.prependHistoryBlocks(blocks)
+	if len(blocks) == 0 && noticeChanged {
+		m.reflowGeneration++
+		command = m.queueHistoryReflow(m.reflowGeneration)
+	}
+	m.refreshActiveView()
+	return sessionTUICommands{history: command}
+}
+
+func (m *sessionTUIModel) cancelOlderHistoryPage() {
+	m.historyPageLoading = false
+	m.historyPageReading = false
+	m.historyPageCursor = ""
+	m.historyPageEvents = nil
+	m.historyRequestID = ""
+}
+
+func (m *sessionTUIModel) replayHistoryPage(events []sessionruntime.Event) []sessionTUIBlock {
+	replay := &sessionTUIModel{
+		styles:          m.styles,
+		queuedTurns:     make(map[string]string),
+		toolNames:       make(map[string]string),
+		width:           m.width,
+		height:          m.height,
+		streamingAt:     -1,
+		historyNoticeAt: -1,
+		now:             m.now,
+	}
+	for _, event := range events {
+		replay.applyEvent(event)
+	}
+	replay.finishStreaming()
+	return replay.blocks
+}
+
+func (m *sessionTUIModel) prependHistoryBlocks(blocks []sessionTUIBlock) tea.Cmd {
+	if len(blocks) == 0 {
+		return nil
+	}
+	count := len(blocks)
+	m.blocks = append(blocks, m.blocks...)
+	if m.streamingAt >= 0 {
+		m.streamingAt += count
+	}
+	if m.historyNoticeAt >= 0 {
+		m.historyNoticeAt += count
+	}
+	m.committed += count
+	m.historyQueued += count
+	for index := range m.historyWrites {
+		if m.historyWrites[index].commitEnd > 0 {
+			m.historyWrites[index].commitEnd += count
+		}
+	}
+	m.invalidateTranscript()
+	m.reflowGeneration++
+	return m.queueHistoryReflow(m.reflowGeneration)
 }
 
 func (m *sessionTUIModel) scheduleRefresh() tea.Cmd {
@@ -634,7 +817,7 @@ func (m *sessionTUIModel) scheduleProgress() tea.Cmd {
 func (m *sessionTUIModel) progressVisible() bool {
 	connecting := m.connectionStatus == sessionTerminalStatusReconnecting ||
 		(m.connectionStatus == sessionTerminalStatusConnecting && !m.ready)
-	return connecting || m.activeTurnID != ""
+	return connecting || m.historyPageLoading || m.activeTurnID != ""
 }
 
 func (m *sessionTUIModel) canInterruptTurn() bool {
@@ -836,6 +1019,10 @@ func (m *sessionTUIModel) queueReadyBlocks() tea.Cmd {
 		rendered:  m.renderBlockRange(m.historyQueued, end),
 		commitEnd: end,
 	})
+	if m.hideNextHistory {
+		m.historyHiddenUntil = end
+		m.hideNextHistory = false
+	}
 	m.historyQueued = end
 	return m.startHistoryWrite()
 }
@@ -893,6 +1080,9 @@ func (m *sessionTUIModel) completeHistoryWrite(write sessionTUIHistoryWrite) {
 	if write.commitEnd > m.committed {
 		m.committed = write.commitEnd
 	}
+	if m.committed >= m.historyHiddenUntil {
+		m.historyHiddenUntil = 0
+	}
 	m.refreshActiveView()
 }
 
@@ -905,7 +1095,8 @@ func (m *sessionTUIModel) popHistoryWrite() {
 }
 
 func (m *sessionTUIModel) refreshActiveView() {
-	m.activeView = m.renderBlockRange(m.committed, len(m.blocks))
+	start := max(m.committed, m.historyHiddenUntil)
+	m.activeView = m.renderBlockRange(start, len(m.blocks))
 }
 
 func (m *sessionTUIModel) quit() tea.Cmd {
@@ -1372,6 +1563,9 @@ func (m *sessionTUIModel) progressView() string {
 	case m.connectionStatus == sessionTerminalStatusConnecting && !m.ready:
 		label = "Connecting"
 		started = m.connectionStarted
+	case m.historyPageLoading:
+		label = "Loading history"
+		started = m.historyPageStarted
 	case m.turnInterrupting:
 		label = "Interrupting"
 	case m.waitingForInput:

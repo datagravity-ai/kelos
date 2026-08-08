@@ -14,6 +14,7 @@ import (
 
 	"github.com/kelos-dev/kelos/internal/sessionruntime"
 	"golang.org/x/term"
+	"k8s.io/apimachinery/pkg/util/uuid"
 )
 
 const (
@@ -36,6 +37,11 @@ const (
 
 type sessionTerminalFormatter struct {
 	color bool
+}
+
+type sessionPlainAssistantState struct {
+	streaming bool
+	lineOpen  bool
 }
 
 func (f sessionTerminalFormatter) style(style, text string) string {
@@ -181,6 +187,12 @@ func runSessionPlainTerminal(ctx context.Context, input io.Reader, output io.Wri
 
 func runSessionPlainTerminalWithWidth(ctx context.Context, input io.Reader, output io.Writer, decoder *json.Decoder, encoder *json.Encoder, color bool, terminalWidth func() int) error {
 	var writeMu sync.Mutex
+	var historyMu sync.Mutex
+	historyCursor := ""
+	pendingHistoryCursor := ""
+	historyLoading := false
+	historyRequestID := ""
+	initialHistorySeen := false
 	write := func(format string, args ...any) {
 		writeMu.Lock()
 		defer writeMu.Unlock()
@@ -189,8 +201,20 @@ func runSessionPlainTerminalWithWidth(ctx context.Context, input io.Reader, outp
 	formatter := sessionTerminalFormatter{color: color}
 	done := make(chan error, 1)
 	go func() {
-		streaming := false
+		liveAssistant := sessionPlainAssistantState{}
+		pageAssistant := sessionPlainAssistantState{}
+		closeAssistantLine := func(assistant *sessionPlainAssistantState) {
+			if assistant.lineOpen {
+				write("\n")
+				assistant.lineOpen = false
+			}
+		}
+		finishAssistant := func(assistant *sessionPlainAssistantState) {
+			closeAssistantLine(assistant)
+			assistant.streaming = false
+		}
 		replayingHistory := true
+		historyPageReading := false
 		recoveryActive := false
 		activeTurnID := ""
 		var activeTurnStarted time.Time
@@ -200,67 +224,129 @@ func runSessionPlainTerminalWithWidth(ctx context.Context, input io.Reader, outp
 				done <- err
 				return
 			}
-			recoveredCompletion := sessionTerminalRecoveredCompletion(recoveryActive, event)
-			if recoveryActive && !sessionTerminalRuntimeRecoveryEvent(event) {
-				recoveryActive = false
+			if historyPageReading && event.Type == sessionruntime.EventHistoryStart && !event.HistoryPage {
+				finishAssistant(&pageAssistant)
+				historyPageReading = false
+				historyMu.Lock()
+				pendingHistoryCursor = ""
+				historyLoading = false
+				historyRequestID = ""
+				historyMu.Unlock()
+			}
+			pageEvent := historyPageReading || (event.Type == sessionruntime.EventHistoryStart && event.HistoryPage)
+			assistant := &liveAssistant
+			if pageEvent {
+				assistant = &pageAssistant
+			}
+			recoveredCompletion := false
+			if !pageEvent {
+				recoveredCompletion = sessionTerminalRecoveredCompletion(recoveryActive, event)
+				if recoveryActive && !sessionTerminalRuntimeRecoveryEvent(event) {
+					recoveryActive = false
+				}
 			}
 			switch event.Type {
 			case sessionruntime.EventHistoryStart:
 				replayingHistory = true
+				historyMu.Lock()
+				if event.HistoryPage {
+					pendingHistoryCursor = event.HistoryCursor
+				} else if event.Reset || !initialHistorySeen {
+					historyCursor = event.HistoryCursor
+				}
+				if !event.HistoryPage {
+					initialHistorySeen = true
+				}
+				historyMu.Unlock()
 				if event.Reset {
+					finishAssistant(&liveAssistant)
 					activeTurnID = ""
 					activeTurnStarted = time.Time{}
 				}
+				if event.HistoryPage {
+					closeAssistantLine(&liveAssistant)
+					pageAssistant = sessionPlainAssistantState{}
+					historyPageReading = true
+					write("\n%s\n", formatter.muted("Earlier Session history:"))
+				}
 			case sessionruntime.EventHistoryEnd:
 				replayingHistory = false
-				write("\n%s\n\n", formatter.muted("Connected. Type a message, /interrupt, /answer INPUT QUESTION VALUE, or /quit."))
-			case sessionruntime.EventRuntimeRecovered:
-				recoveryActive = true
-				if streaming {
+				if event.HistoryPage {
+					finishAssistant(&pageAssistant)
+					historyMu.Lock()
+					historyCursor = pendingHistoryCursor
+					pendingHistoryCursor = ""
+					if event.RequestID == historyRequestID {
+						historyLoading = false
+						historyRequestID = ""
+					}
+					historyMu.Unlock()
+					historyPageReading = false
 					write("\n")
-					streaming = false
+					continue
 				}
+				if event.HistoryState != nil {
+					activeTurnID = event.HistoryState.ActiveTurnID
+					activeTurnStarted = time.Time{}
+					if event.HistoryState.ActiveTurnStarted != nil {
+						activeTurnStarted = *event.HistoryState.ActiveTurnStarted
+					}
+				}
+				closeAssistantLine(&liveAssistant)
+				liveAssistant.streaming = liveAssistant.streaming && activeTurnID != ""
+				if event.HistoryState != nil && len(event.HistoryState.QueuedTurns) > 0 {
+					write("\n%s\n", formatter.muted("Queued messages:"))
+					for _, turn := range event.HistoryState.QueuedTurns {
+						write("%s\n", formatter.userMessage(turn.Text))
+					}
+				}
+				historyMu.Lock()
+				hasEarlierHistory := historyCursor != ""
+				historyMu.Unlock()
+				if hasEarlierHistory {
+					write("\n%s\n", formatter.muted("Earlier Session history is available. Use /history to load the previous page."))
+				}
+				write("\n%s\n\n", formatter.muted("Connected. Type a message, /history, /interrupt, /answer INPUT QUESTION VALUE, or /quit."))
+			case sessionruntime.EventRuntimeRecovered:
+				if !pageEvent {
+					recoveryActive = true
+				}
+				finishAssistant(assistant)
 				write("%s\n", formatter.warning(event.Text))
 			case sessionruntime.EventUserMessage:
-				if streaming {
-					write("\n")
-					streaming = false
-				}
+				finishAssistant(assistant)
 				write("%s\n", formatter.userMessage(event.Text))
 				if color {
 					write("\n")
 				}
 			case sessionruntime.EventTurnStarted:
+				if pageEvent {
+					continue
+				}
 				if activeTurnID != event.TurnID || activeTurnStarted.IsZero() {
 					activeTurnStarted = sessionTerminalTurnStartedAt(event, time.Now(), replayingHistory)
 				}
 				activeTurnID = event.TurnID
 			case sessionruntime.EventAssistantDelta:
-				if !streaming {
+				if !assistant.lineOpen {
 					write("%s", formatter.assistantPrefix())
-					streaming = true
+					assistant.lineOpen = true
 				}
+				assistant.streaming = true
 				write("%s", event.Text)
 			case sessionruntime.EventAssistantMessage:
-				if streaming {
-					write("\n")
-					streaming = false
+				if assistant.streaming {
+					finishAssistant(assistant)
 				} else if event.Text != "" {
 					write("%s%s\n", formatter.assistantPrefix(), event.Text)
 				}
 			case sessionruntime.EventToolStarted:
-				if streaming {
-					write("\n")
-					streaming = false
-				}
+				finishAssistant(assistant)
 				write("%s\n", formatter.tool(event.ToolName))
 			case sessionruntime.EventToolCompleted:
 				write("%s\n", formatter.toolStatus(event.Status))
 			case sessionruntime.EventInputRequested:
-				if streaming {
-					write("\n")
-					streaming = false
-				}
+				finishAssistant(assistant)
 				write("\n%s\n", formatter.inputHeading(fmt.Sprintf("Input %s requested:", event.InputID)))
 				for _, question := range event.Questions {
 					write("  %s — %s\n", formatter.accent(question.ID), question.Question)
@@ -272,22 +358,13 @@ func runSessionPlainTerminalWithWidth(ctx context.Context, input io.Reader, outp
 			case sessionruntime.EventInputResolved:
 				write("\nInput %s %s.\n", event.InputID, formatter.status(event.Status))
 			case sessionruntime.EventTurnInterrupting:
-				if streaming {
-					write("\n")
-					streaming = false
-				}
+				finishAssistant(assistant)
 				write("\n%s\n", formatter.warning("Interrupting active work…"))
 			case sessionruntime.EventFileDiff:
-				if streaming {
-					write("\n")
-					streaming = false
-				}
+				finishAssistant(assistant)
 				write("\n%s\n%s\n", formatter.accent("--- file changes ---"), formatter.diff(event.Diff))
 			case sessionruntime.EventTurnCompleted:
-				if streaming {
-					write("\n")
-					streaming = false
-				}
+				finishAssistant(assistant)
 				if event.Status == "interrupted" {
 					write("%s\n", formatter.warning("Turn interrupted."))
 				}
@@ -299,10 +376,14 @@ func runSessionPlainTerminalWithWidth(ctx context.Context, input io.Reader, outp
 					write("\n")
 				}
 			case sessionruntime.EventError:
-				if streaming {
-					write("\n")
-					streaming = false
+				finishAssistant(assistant)
+				historyMu.Lock()
+				if event.RequestID != "" && event.RequestID == historyRequestID {
+					historyLoading = false
+					historyRequestID = ""
+					pendingHistoryCursor = ""
 				}
+				historyMu.Unlock()
 				write("%s\n", formatter.error("error: "+event.Text))
 			}
 		}
@@ -340,6 +421,28 @@ func runSessionPlainTerminalWithWidth(ctx context.Context, input io.Reader, outp
 			}
 			if line == "/quit" || line == "/exit" {
 				return nil
+			}
+			if strings.TrimSpace(line) == "/history" {
+				historyMu.Lock()
+				if historyLoading {
+					historyMu.Unlock()
+					write("%s\n", formatter.muted("Session history is already loading."))
+					continue
+				}
+				cursor := historyCursor
+				if cursor == "" {
+					historyMu.Unlock()
+					write("%s\n", formatter.muted("All retained Session history is loaded."))
+					continue
+				}
+				requestID := string(uuid.NewUUID())
+				historyLoading = true
+				historyRequestID = requestID
+				historyMu.Unlock()
+				if err := encoder.Encode(sessionruntime.ClientRequest{Type: "history", RequestID: requestID, HistoryCursor: cursor}); err != nil {
+					return err
+				}
+				continue
 			}
 			request := sessionTerminalRequest(line)
 			if request.Type == "" {

@@ -23,6 +23,9 @@ const (
 	EventFileDiff         = "file.diff"
 	EventTurnCompleted    = "turn.completed"
 	EventError            = "error"
+
+	DefaultHistoryItemLimit = 20
+	DefaultHistoryByteLimit = 128 * 1024
 )
 
 // Event is one conversation event exposed through the shared Session control interface.
@@ -30,22 +33,41 @@ type Event struct {
 	ID   int64  `json:"id,omitempty"`
 	Type string `json:"type"`
 	// Timestamp records when a durable conversation event was first appended.
-	Timestamp    *time.Time      `json:"timestamp,omitempty"`
-	RequestID    string          `json:"requestId,omitempty"`
-	TurnID       string          `json:"turnId,omitempty"`
-	Text         string          `json:"text,omitempty"`
-	ToolID       string          `json:"toolId,omitempty"`
-	ToolName     string          `json:"toolName,omitempty"`
-	Output       string          `json:"output,omitempty"`
-	Status       string          `json:"status,omitempty"`
-	InputID      string          `json:"inputId,omitempty"`
-	Questions    []InputQuestion `json:"questions,omitempty"`
-	Diff         string          `json:"diff,omitempty"`
-	FirstEventID int64           `json:"firstEventId,omitempty"`
-	LastEventID  int64           `json:"lastEventId,omitempty"`
-	JournalID    string          `json:"journalId,omitempty"`
-	Reset        bool            `json:"reset,omitempty"`
-	Runtime      *RuntimeStatus  `json:"runtime,omitempty"`
+	Timestamp      *time.Time      `json:"timestamp,omitempty"`
+	RequestID      string          `json:"requestId,omitempty"`
+	TurnID         string          `json:"turnId,omitempty"`
+	Text           string          `json:"text,omitempty"`
+	ToolID         string          `json:"toolId,omitempty"`
+	ToolName       string          `json:"toolName,omitempty"`
+	Output         string          `json:"output,omitempty"`
+	Status         string          `json:"status,omitempty"`
+	InputID        string          `json:"inputId,omitempty"`
+	Questions      []InputQuestion `json:"questions,omitempty"`
+	Diff           string          `json:"diff,omitempty"`
+	FirstEventID   int64           `json:"firstEventId,omitempty"`
+	LastEventID    int64           `json:"lastEventId,omitempty"`
+	JournalID      string          `json:"journalId,omitempty"`
+	Reset          bool            `json:"reset,omitempty"`
+	HistoryLimited bool            `json:"historyLimited,omitempty"`
+	HistoryPage    bool            `json:"historyPage,omitempty"`
+	HistoryCursor  string          `json:"historyCursor,omitempty"`
+	HistoryState   *HistoryState   `json:"historyState,omitempty"`
+	Runtime        *RuntimeStatus  `json:"runtime,omitempty"`
+}
+
+// HistoryState describes conversation state that is independent of transcript paging.
+type HistoryState struct {
+	ActiveTurnID      string              `json:"activeTurnId,omitempty"`
+	ActiveTurnStarted *time.Time          `json:"activeTurnStarted,omitempty"`
+	TurnInterrupting  bool                `json:"turnInterrupting,omitempty"`
+	WaitingForInput   bool                `json:"waitingForInput,omitempty"`
+	QueuedTurns       []HistoryQueuedTurn `json:"queuedTurns,omitempty"`
+}
+
+// HistoryQueuedTurn describes one user message waiting to run.
+type HistoryQueuedTurn struct {
+	TurnID string `json:"turnId"`
+	Text   string `json:"text"`
 }
 
 // RuntimeStatus describes the current Session and workspace for connected clients.
@@ -83,6 +105,9 @@ type ClientRequest struct {
 	Since         int64               `json:"since,omitempty"`
 	JournalID     string              `json:"journalId,omitempty"`
 	HistoryBounds bool                `json:"historyBounds,omitempty"`
+	HistoryItems  int                 `json:"historyItems,omitempty"`
+	HistoryBytes  int                 `json:"historyBytes,omitempty"`
+	HistoryCursor string              `json:"historyCursor,omitempty"`
 	Text          string              `json:"text,omitempty"`
 	InputID       string              `json:"inputId,omitempty"`
 	Answers       map[string][]string `json:"answers,omitempty"`

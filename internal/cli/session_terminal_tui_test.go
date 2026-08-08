@@ -610,6 +610,151 @@ func TestSessionTUIBatchesLoadedHistory(t *testing.T) {
 	}
 }
 
+func TestSessionTUIKeepsPendingInitialHistoryOutOfManagedView(t *testing.T) {
+	model, _ := newSessionTUITestModel()
+	model.resize(40, 8)
+	writes := captureAsynchronousSessionTUIHistory(model)
+	question := strings.Repeat("long history line\n", 10)
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventUserMessage, Text: question})
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventAssistantMessage, Text: "loaded answer"})
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventHistoryEnd})
+
+	if len(*writes) != 1 || !strings.Contains((*writes)[0], "long history line") {
+		t.Fatalf("initial history write = %q", *writes)
+	}
+	view := stripSessionTUIANSI(model.View())
+	if strings.Contains(view, "long history line") || strings.Contains(view, "loaded answer") {
+		t.Fatalf("pending initial history remains in managed view: %q", view)
+	}
+	if lines := strings.Count(view, "\n") + 1; lines > model.footerHeight()+1 {
+		t.Fatalf("managed view has %d lines, want only footer height %d: %q", lines, model.footerHeight(), view)
+	}
+	if model.historyHiddenUntil != len(model.blocks) {
+		t.Fatalf("hidden history boundary = %d, want %d", model.historyHiddenUntil, len(model.blocks))
+	}
+
+	model.finishHistoryWrite(model.historyWrites[0].id)
+	if model.historyHiddenUntil != 0 || model.committed != len(model.blocks) {
+		t.Fatalf("completed history state = hidden %d committed %d, want hidden 0 committed %d", model.historyHiddenUntil, model.committed, len(model.blocks))
+	}
+}
+
+func TestSessionTUIReportsLimitedHistory(t *testing.T) {
+	model, _ := newSessionTUITestModel()
+	history := captureSessionTUIHistory(model)
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventHistoryStart, HistoryLimited: true, HistoryCursor: "cursor-1"})
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventHistoryEnd})
+
+	if len(*history) != 1 {
+		t.Fatalf("history was committed in %d batches, want 1: %q", len(*history), *history)
+	}
+	if got := stripSessionTUIANSI((*history)[0]); !strings.Contains(got, "/history or Page Up") {
+		t.Fatalf("limited history notice = %q", got)
+	}
+}
+
+func TestSessionTUILoadsAndPrependsOlderHistoryPage(t *testing.T) {
+	model, requests := newSessionTUITestModel()
+	history := captureSessionTUIHistory(model)
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventHistoryStart, HistoryLimited: true, HistoryCursor: "cursor-1"})
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventUserMessage, TurnID: "turn-2", Text: "recent question"})
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventTurnStarted, TurnID: "turn-2"})
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventAssistantMessage, TurnID: "turn-2", Text: "recent answer"})
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventTurnCompleted, TurnID: "turn-2", Status: "completed"})
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventHistoryEnd})
+
+	model.input.SetValue("/history")
+	model.submitInput()
+	var request sessionruntime.ClientRequest
+	if err := json.NewDecoder(requests).Decode(&request); err != nil {
+		t.Fatal(err)
+	}
+	if request.Type != "history" || request.RequestID == "" || request.HistoryCursor != "cursor-1" {
+		t.Fatalf("history request = %#v", request)
+	}
+	if !model.historyPageLoading || !strings.Contains(stripSessionTUIANSI(model.progressView()), "Loading history") {
+		t.Fatalf("history request did not enter loading state: loading=%t progress=%q", model.historyPageLoading, stripSessionTUIANSI(model.progressView()))
+	}
+
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventHistoryStart, HistoryPage: true, RequestID: request.RequestID})
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventUserMessage, TurnID: "turn-1", Text: "earlier question"})
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventTurnStarted, TurnID: "turn-1"})
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventAssistantMessage, TurnID: "turn-1", Text: "earlier answer"})
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventTurnCompleted, TurnID: "turn-1", Status: "completed"})
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventHistoryEnd, HistoryPage: true, RequestID: request.RequestID})
+
+	if len(*history) != 2 {
+		t.Fatalf("history writes = %d, want initial write and replay: %q", len(*history), *history)
+	}
+	replayed := (*history)[1]
+	if !strings.HasPrefix(replayed, sessionTUIClearHistory) {
+		t.Fatalf("older history replay = %q, want terminal history reset", replayed)
+	}
+	view := stripSessionTUIANSI(replayed)
+	for _, want := range []string{"earlier question", "earlier answer", "recent question", "recent answer", "All retained Session history is loaded"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("older history replay = %q, want %q", view, want)
+		}
+	}
+	if strings.Index(view, "earlier question") > strings.Index(view, "recent question") {
+		t.Fatalf("older history was not prepended: %q", view)
+	}
+	if model.historyCursor != "" || model.historyPageLoading || model.historyPageReading {
+		t.Fatalf("history page state was not completed: cursor=%q loading=%t reading=%t", model.historyCursor, model.historyPageLoading, model.historyPageReading)
+	}
+}
+
+func TestSessionTUIAppliesStateFromProjectedHistory(t *testing.T) {
+	model, _ := newSessionTUITestModel()
+	startedAt := time.Date(2026, time.August, 8, 12, 0, 0, 0, time.UTC)
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventHistoryStart})
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventUserMessage, Text: "active request"})
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventInputRequested, InputID: "input-1", Questions: []sessionruntime.InputQuestion{{ID: "confirm", Question: "Continue?"}}})
+	model.applyEvent(sessionruntime.Event{
+		Type: sessionruntime.EventHistoryEnd,
+		HistoryState: &sessionruntime.HistoryState{
+			ActiveTurnID:      "turn-2",
+			ActiveTurnStarted: &startedAt,
+			WaitingForInput:   true,
+			QueuedTurns: []sessionruntime.HistoryQueuedTurn{
+				{TurnID: "turn-3", Text: "queued request"},
+			},
+		},
+	})
+
+	if !model.turnActive || model.activeTurnID != "turn-2" || !model.activeTurnStarted.Equal(startedAt) || !model.waitingForInput {
+		t.Fatalf("active state = active %t ID %q started %v waiting %t", model.turnActive, model.activeTurnID, model.activeTurnStarted, model.waitingForInput)
+	}
+	if len(model.queuedTurnOrder) != 1 || model.queuedTurns["turn-3"] != "queued request" {
+		t.Fatalf("queued state = order %#v turns %#v", model.queuedTurnOrder, model.queuedTurns)
+	}
+	if transcript := stripSessionTUIANSI(model.renderTranscript()); !strings.Contains(transcript, "active request") || !strings.Contains(transcript, "Continue?") {
+		t.Fatalf("projected transcript = %q", transcript)
+	}
+}
+
+func TestSessionTUICancelsPartialHistoryPageOnReconnect(t *testing.T) {
+	model, _ := newSessionTUITestModel()
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventHistoryStart, HistoryLimited: true, HistoryCursor: "cursor-1"})
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventHistoryEnd})
+	model.historyPageLoading = true
+	model.historyRequestID = "history-1"
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventHistoryStart, HistoryPage: true, RequestID: "history-1", HistoryCursor: "cursor-2"})
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventUserMessage, TurnID: "turn-1", Text: "partial page"})
+
+	model.applyEvent(sessionruntime.Event{Type: sessionTerminalEventDiagnostic, Status: sessionTerminalStatusReconnecting})
+
+	if model.historyPageLoading || model.historyPageReading || len(model.historyPageEvents) != 0 {
+		t.Fatalf("partial history page was not discarded: loading=%t reading=%t events=%#v", model.historyPageLoading, model.historyPageReading, model.historyPageEvents)
+	}
+	if model.historyCursor != "cursor-1" {
+		t.Fatalf("history cursor = %q, want retry cursor", model.historyCursor)
+	}
+	if strings.Contains(model.renderTranscript(), "partial page") {
+		t.Fatalf("partial history page was rendered: %q", stripSessionTUIANSI(model.renderTranscript()))
+	}
+}
+
 func TestSessionTUICoalescesAssistantDeltaRefreshes(t *testing.T) {
 	model, _ := newSessionTUITestModel()
 	model.ready = true

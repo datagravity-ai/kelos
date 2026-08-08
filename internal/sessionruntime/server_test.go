@@ -1479,6 +1479,191 @@ func TestServerResetsHistoryForReplacedJournalWithOverlappingIDs(t *testing.T) {
 	}
 }
 
+func TestServerPagesProjectedHistoryItems(t *testing.T) {
+	journal := NewJournal()
+	defer journal.Close()
+	for _, event := range []Event{
+		{Type: EventUserMessage, TurnID: "turn-1", Text: "first"},
+		{Type: EventTurnStarted, TurnID: "turn-1", Status: "running"},
+		{Type: EventAssistantDelta, TurnID: "turn-1", Text: "first "},
+		{Type: EventAssistantDelta, TurnID: "turn-1", Text: "answer"},
+		{Type: EventAssistantMessage, TurnID: "turn-1", Text: "first answer"},
+		{Type: EventTurnCompleted, TurnID: "turn-1", Status: "completed"},
+		{Type: EventUserMessage, TurnID: "turn-2", Text: "second"},
+		{Type: EventTurnStarted, TurnID: "turn-2", Status: "running"},
+		{Type: EventAssistantMessage, TurnID: "turn-2", Text: "second answer"},
+		{Type: EventTurnCompleted, TurnID: "turn-2", Status: "completed"},
+	} {
+		if err := journal.Append(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	server := &Server{journal: journal}
+	serverConnection, clientConnection := net.Pipe()
+	defer clientConnection.Close()
+	go server.handleConnection(t.Context(), serverConnection)
+	if err := json.NewEncoder(clientConnection).Encode(ClientRequest{
+		Type:          "subscribe",
+		HistoryBounds: true,
+		HistoryItems:  2,
+		HistoryBytes:  DefaultHistoryByteLimit,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	decoder := json.NewDecoder(clientConnection)
+	var start Event
+	if err := decoder.Decode(&start); err != nil {
+		t.Fatal(err)
+	}
+	if start.Type != EventHistoryStart || !start.HistoryLimited || start.HistoryCursor == "" {
+		t.Fatalf("history start = %#v, want limited history", start)
+	}
+
+	var retained []Event
+	var end Event
+	for {
+		var event Event
+		if err := decoder.Decode(&event); err != nil {
+			t.Fatal(err)
+		}
+		if event.Type == EventHistoryEnd {
+			end = event
+			break
+		}
+		retained = append(retained, event)
+	}
+	wantIDs := []int64{7, 9}
+	if len(retained) != len(wantIDs) {
+		t.Fatalf("retained events = %#v, want IDs %v", retained, wantIDs)
+	}
+	for index, event := range retained {
+		if event.ID != wantIDs[index] {
+			t.Fatalf("retained event IDs = %#v, want %v", retained, wantIDs)
+		}
+		if event.TurnID != "" {
+			t.Fatalf("projected event retains turn state: %#v", retained)
+		}
+	}
+	assertEventTypes(t, retained, EventUserMessage, EventAssistantMessage)
+	if end.HistoryState == nil {
+		t.Fatalf("history end = %#v, want state snapshot", end)
+	}
+
+	if err := json.NewEncoder(clientConnection).Encode(ClientRequest{
+		Type:          "history",
+		RequestID:     "history-1",
+		HistoryCursor: start.HistoryCursor,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var pageStart Event
+	if err := decoder.Decode(&pageStart); err != nil {
+		t.Fatal(err)
+	}
+	if pageStart.Type != EventHistoryStart || !pageStart.HistoryPage || pageStart.RequestID != "history-1" || pageStart.HistoryCursor != "" {
+		t.Fatalf("older history start = %#v", pageStart)
+	}
+	retained = nil
+	for {
+		var event Event
+		if err := decoder.Decode(&event); err != nil {
+			t.Fatal(err)
+		}
+		if event.Type == EventHistoryEnd {
+			if !event.HistoryPage || event.RequestID != "history-1" {
+				t.Fatalf("older history end = %#v", event)
+			}
+			break
+		}
+		retained = append(retained, event)
+	}
+	wantIDs = []int64{1, 5}
+	if len(retained) != len(wantIDs) {
+		t.Fatalf("older retained events = %#v, want IDs %v", retained, wantIDs)
+	}
+	for index, event := range retained {
+		if event.ID != wantIDs[index] || event.TurnID != "" {
+			t.Fatalf("older retained events = %#v, want projected IDs %v", retained, wantIDs)
+		}
+	}
+	assertEventTypes(t, retained, EventUserMessage, EventAssistantMessage)
+}
+
+func TestServerPreservesStateOutsideProjectedHistoryPage(t *testing.T) {
+	journal := NewJournal()
+	defer journal.Close()
+	startedAt := time.Date(2026, time.August, 8, 12, 0, 0, 0, time.UTC)
+	queuedText := strings.Repeat("queued ", maxHistoryMessageBytes)
+	for _, event := range []Event{
+		{Type: EventUserMessage, TurnID: "turn-1", Text: "active request"},
+		{Type: EventTurnStarted, TurnID: "turn-1", Timestamp: &startedAt, Status: "running"},
+		{Type: EventAssistantDelta, TurnID: "turn-1", Text: "partial answer"},
+		{Type: EventInputRequested, TurnID: "turn-1", InputID: "input-1", Questions: []InputQuestion{{ID: "confirm", Question: "Continue?"}}, Status: "pending"},
+		{Type: EventUserMessage, TurnID: "turn-2", Text: queuedText},
+	} {
+		if err := journal.Append(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	server := &Server{journal: journal}
+	serverConnection, clientConnection := net.Pipe()
+	defer clientConnection.Close()
+	go server.handleConnection(t.Context(), serverConnection)
+	if err := json.NewEncoder(clientConnection).Encode(ClientRequest{
+		Type:          "subscribe",
+		HistoryBounds: true,
+		HistoryItems:  1,
+		HistoryBytes:  DefaultHistoryByteLimit,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	decoder := json.NewDecoder(clientConnection)
+	var start Event
+	if err := decoder.Decode(&start); err != nil {
+		t.Fatal(err)
+	}
+	if start.Type != EventHistoryStart || !start.HistoryLimited || start.HistoryCursor == "" {
+		t.Fatalf("history start = %#v, want limited history", start)
+	}
+	var retained []Event
+	var end Event
+	for {
+		var event Event
+		if err := decoder.Decode(&event); err != nil {
+			t.Fatal(err)
+		}
+		if event.Type == EventHistoryEnd {
+			end = event
+			break
+		}
+		retained = append(retained, event)
+	}
+	assertEventTypes(t, retained, EventAssistantMessage, EventInputRequested)
+	if retained[0].Text != "partial answer" || retained[0].TurnID != "" {
+		t.Fatalf("projected assistant message = %#v", retained[0])
+	}
+	if retained[1].InputID != "input-1" || retained[1].TurnID != "" || len(retained[1].Questions) != 1 || retained[1].Questions[0].Question != "Continue?" {
+		t.Fatalf("pending input = %#v", retained[1])
+	}
+	if end.HistoryState == nil {
+		t.Fatalf("history end = %#v, want state snapshot", end)
+	}
+	state := end.HistoryState
+	if state.ActiveTurnID != "turn-1" || state.ActiveTurnStarted == nil || !state.ActiveTurnStarted.Equal(startedAt) || !state.WaitingForInput {
+		t.Fatalf("history state = %#v, want active turn waiting for input", state)
+	}
+	if len(state.QueuedTurns) != 1 || state.QueuedTurns[0].TurnID != "turn-2" {
+		t.Fatalf("queued turns = %#v, want turn-2", state.QueuedTurns)
+	}
+	if text := state.QueuedTurns[0].Text; len(text) > maxHistoryMessageBytes || !strings.Contains(text, historyTruncationMarker) {
+		t.Fatalf("queued message preview has %d bytes", len(text))
+	}
+}
+
 func TestServerStreamsRuntimeStatusOutsideConversationHistory(t *testing.T) {
 	journal := NewJournal()
 	defer journal.Close()

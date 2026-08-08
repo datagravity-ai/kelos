@@ -239,7 +239,9 @@ metadata, conversation, or persistent-volume data.
 Use `kelos session connect NAME` for terminal chat. In an interactive terminal,
 press Enter to send a message, Ctrl+J to insert a newline, and Ctrl+C or Esc to
 interrupt an active turn. Ctrl+C exits the terminal client when no turn is
-active. The terminal client shows live connecting, reconnecting, working,
+active. The terminal initially loads a bounded page of recent transcript items.
+Use `/history` or Page Up to load the previous page.
+The terminal client shows live connecting, reconnecting, working,
 waiting-for-input, and interrupting progress with elapsed time. After a
 completed turn, both interactive and plain terminal output show a `Worked for
 ...` separator when the duration is known. A separate status bar beneath the
