@@ -240,7 +240,12 @@ button { color: inherit; }
 .diff-line.metadata { color: var(--muted); }
 .error-card { padding: 12px 14px; border-color: rgba(167,63,63,.25); background: #fff6f6; color: var(--danger); font-size: 12px; line-height: 1.5; }
 .recovery-card { padding: 12px 14px; border-color: rgba(197,138,62,.3); background: #fff9ef; color: #8a5b1f; font-size: 12px; line-height: 1.5; }
-.turn-divider { height: 1px; margin: 2px 0 22px 40px; background: linear-gradient(90deg,var(--line),transparent); }
+.turn-divider { margin: 2px 0 22px 40px; color: var(--faint); font-size: 10px; line-height: 1; white-space: nowrap; }
+.turn-divider:empty { height: 1px; background: linear-gradient(90deg,var(--line),transparent); }
+.turn-divider:not(:empty) { display: flex; align-items: center; gap: 8px; }
+.turn-divider:not(:empty)::before, .turn-divider:not(:empty)::after { height: 1px; background: var(--line); content: ""; }
+.turn-divider:not(:empty)::before { flex: 0 0 10px; }
+.turn-divider:not(:empty)::after { flex: 1; }
 .composer-wrap { padding: 12px max(24px, calc((100% - 850px) / 2)) 19px; background: linear-gradient(transparent, var(--canvas) 20%); }
 .session-progress { display: flex; align-items: center; gap: 5px; min-height: 18px; margin: 0 4px 7px; color: var(--muted); font-size: 11px; font-weight: 650; font-variant-numeric: tabular-nums; }
 .session-progress[hidden] { display: none; }

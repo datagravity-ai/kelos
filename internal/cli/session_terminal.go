@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/kelos-dev/kelos/internal/sessionruntime"
 	"golang.org/x/term"
@@ -87,6 +88,10 @@ func (f sessionTerminalFormatter) status(status string) string {
 
 func (f sessionTerminalFormatter) muted(text string) string {
 	return f.style(sessionANSIDim, text)
+}
+
+func (f sessionTerminalFormatter) turnSeparator(elapsed time.Duration, width int) string {
+	return f.muted(formatSessionTurnSeparator(elapsed, width))
 }
 
 func (f sessionTerminalFormatter) warning(text string) string {
@@ -169,6 +174,12 @@ func sessionTerminalDiagnosticsUseTUI(input io.Reader, output, diagnostics io.Wr
 }
 
 func runSessionPlainTerminal(ctx context.Context, input io.Reader, output io.Writer, decoder *json.Decoder, encoder *json.Encoder, color bool) error {
+	return runSessionPlainTerminalWithWidth(ctx, input, output, decoder, encoder, color, func() int {
+		return sessionPlainTerminalWidth(output)
+	})
+}
+
+func runSessionPlainTerminalWithWidth(ctx context.Context, input io.Reader, output io.Writer, decoder *json.Decoder, encoder *json.Encoder, color bool, terminalWidth func() int) error {
 	var writeMu sync.Mutex
 	write := func(format string, args ...any) {
 		writeMu.Lock()
@@ -179,16 +190,32 @@ func runSessionPlainTerminal(ctx context.Context, input io.Reader, output io.Wri
 	done := make(chan error, 1)
 	go func() {
 		streaming := false
+		replayingHistory := true
+		recoveryActive := false
+		activeTurnID := ""
+		var activeTurnStarted time.Time
 		for {
 			var event sessionruntime.Event
 			if err := decoder.Decode(&event); err != nil {
 				done <- err
 				return
 			}
+			recoveredCompletion := sessionTerminalRecoveredCompletion(recoveryActive, event)
+			if recoveryActive && !sessionTerminalRuntimeRecoveryEvent(event) {
+				recoveryActive = false
+			}
 			switch event.Type {
+			case sessionruntime.EventHistoryStart:
+				replayingHistory = true
+				if event.Reset {
+					activeTurnID = ""
+					activeTurnStarted = time.Time{}
+				}
 			case sessionruntime.EventHistoryEnd:
+				replayingHistory = false
 				write("\n%s\n\n", formatter.muted("Connected. Type a message, /interrupt, /answer INPUT QUESTION VALUE, or /quit."))
 			case sessionruntime.EventRuntimeRecovered:
+				recoveryActive = true
 				if streaming {
 					write("\n")
 					streaming = false
@@ -203,6 +230,11 @@ func runSessionPlainTerminal(ctx context.Context, input io.Reader, output io.Wri
 				if color {
 					write("\n")
 				}
+			case sessionruntime.EventTurnStarted:
+				if activeTurnID != event.TurnID || activeTurnStarted.IsZero() {
+					activeTurnStarted = sessionTerminalTurnStartedAt(event, time.Now(), replayingHistory)
+				}
+				activeTurnID = event.TurnID
 			case sessionruntime.EventAssistantDelta:
 				if !streaming {
 					write("%s", formatter.assistantPrefix())
@@ -259,7 +291,13 @@ func runSessionPlainTerminal(ctx context.Context, input io.Reader, output io.Wri
 				if event.Status == "interrupted" {
 					write("%s\n", formatter.warning("Turn interrupted."))
 				}
-				write("\n")
+				if elapsed, ok := sessionTerminalTurnElapsed(activeTurnID, activeTurnStarted, event, time.Now(), replayingHistory, recoveredCompletion); ok {
+					write("%s\n\n", formatter.turnSeparator(elapsed, terminalWidth()))
+					activeTurnID = ""
+					activeTurnStarted = time.Time{}
+				} else {
+					write("\n")
+				}
 			case sessionruntime.EventError:
 				if streaming {
 					write("\n")
@@ -312,6 +350,60 @@ func runSessionPlainTerminal(ctx context.Context, input io.Reader, output io.Wri
 			}
 		}
 	}
+}
+
+func sessionPlainTerminalWidth(output io.Writer) int {
+	file, ok := output.(*os.File)
+	if !ok {
+		return sessionTUIDefaultWidth
+	}
+	width, _, err := term.GetSize(int(file.Fd()))
+	if err != nil || width <= 0 {
+		return sessionTUIDefaultWidth
+	}
+	return width
+}
+
+func sessionTerminalEventTime(event sessionruntime.Event, fallback time.Time) time.Time {
+	if event.Timestamp != nil {
+		return *event.Timestamp
+	}
+	return fallback
+}
+
+func sessionTerminalTurnStartedAt(event sessionruntime.Event, fallback time.Time, replayingHistory bool) time.Time {
+	if event.Timestamp != nil {
+		return *event.Timestamp
+	}
+	if replayingHistory {
+		return time.Time{}
+	}
+	return fallback
+}
+
+func sessionTerminalRecoveredCompletion(recoveryActive bool, event sessionruntime.Event) bool {
+	return recoveryActive && event.Type == sessionruntime.EventTurnCompleted && event.Status == "interrupted"
+}
+
+func sessionTerminalRuntimeRecoveryEvent(event sessionruntime.Event) bool {
+	return event.Type == sessionruntime.EventRuntimeRecovered ||
+		(event.Type == sessionruntime.EventInputResolved && event.Status == "cancelled") ||
+		(event.Type == sessionruntime.EventTurnCompleted && event.Status == "interrupted")
+}
+
+func sessionTerminalTurnElapsed(activeTurnID string, started time.Time, event sessionruntime.Event, fallback time.Time, replayingHistory, recoveredCompletion bool) (time.Duration, bool) {
+	if started.IsZero() || recoveredCompletion || (replayingHistory && event.Timestamp == nil) || (event.TurnID != "" && activeTurnID != "" && event.TurnID != activeTurnID) {
+		return 0, false
+	}
+	elapsed := sessionTerminalEventTime(event, fallback).Sub(started)
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	return elapsed, true
+}
+
+func formatSessionTurnSeparator(elapsed time.Duration, width int) string {
+	return formatSessionTurnSeparatorText(formatSessionTUIElapsed(elapsed), width)
 }
 
 func sessionTerminalRequest(line string) sessionruntime.ClientRequest {

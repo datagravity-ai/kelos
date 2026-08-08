@@ -55,6 +55,7 @@ const (
 	sessionTUIBlockError
 	sessionTUIBlockInput
 	sessionTUIBlockDiff
+	sessionTUIBlockTurnSeparator
 )
 
 type sessionTUIBlock struct {
@@ -133,6 +134,8 @@ type sessionTUIModel struct {
 	width              int
 	height             int
 	ready              bool
+	replayingHistory   bool
+	recoveryActive     bool
 	turnActive         bool
 	streamingAt        int
 	connectionStatus   string
@@ -230,6 +233,7 @@ func newSessionTUIModel(events *json.Decoder, requests *json.Encoder, output io.
 		height:             sessionTUIDefaultHeight,
 		connectionStatus:   sessionTerminalStatusConnecting,
 		connectionStarted:  now(),
+		replayingHistory:   true,
 		historyAt:          -1,
 		streamingAt:        -1,
 		printHistory:       func(rendered string) tea.Cmd { return tea.Println(rendered) },
@@ -476,11 +480,17 @@ func (m *sessionTUIModel) nextInput() {
 
 func (m *sessionTUIModel) applyEvent(event sessionruntime.Event) sessionTUICommands {
 	var commands sessionTUICommands
+	recoveredCompletion := sessionTerminalRecoveredCompletion(m.recoveryActive, event)
+	if m.recoveryActive && !sessionTerminalRuntimeRecoveryEvent(event) {
+		m.recoveryActive = false
+	}
 	switch event.Type {
 	case sessionruntime.EventHistoryStart:
+		m.replayingHistory = true
 		if event.Reset {
 			m.turnActive = false
 			m.activeTurnID = ""
+			m.activeTurnStarted = time.Time{}
 			m.waitingForInput = false
 			m.turnInterrupting = false
 		}
@@ -489,11 +499,13 @@ func (m *sessionTUIModel) applyEvent(event sessionruntime.Event) sessionTUIComma
 			m.runtimeStatus = *event.Runtime
 		}
 	case sessionruntime.EventHistoryEnd:
+		m.replayingHistory = false
 		m.appendBlock(sessionTUIBlockNotice, "Connected. Enter sends, Ctrl+J inserts a newline, and Ctrl+C or Esc interrupts active work. Ctrl+C quits when idle. Use /answer INPUT QUESTION VALUE or /quit.")
 		m.ready = true
 		m.connectionStatus = ""
 		commands.ui = tea.Batch(m.input.Focus(), m.scheduleProgress())
 	case sessionruntime.EventRuntimeRecovered:
+		m.recoveryActive = true
 		m.appendBlock(sessionTUIBlockWarning, event.Text)
 	case sessionTerminalEventDiagnostic:
 		if event.Text != "" {
@@ -520,10 +532,7 @@ func (m *sessionTUIModel) applyEvent(event sessionruntime.Event) sessionTUIComma
 		m.turnActive = true
 		m.acceptQueuedTurn(event.TurnID)
 		if m.activeTurnID != event.TurnID {
-			m.activeTurnStarted = m.now()
-			if event.Timestamp != nil {
-				m.activeTurnStarted = *event.Timestamp
-			}
+			m.activeTurnStarted = sessionTerminalTurnStartedAt(event, m.now(), m.replayingHistory)
 		}
 		m.activeTurnID = event.TurnID
 		m.waitingForInput = false
@@ -571,13 +580,18 @@ func (m *sessionTUIModel) applyEvent(event sessionruntime.Event) sessionTUIComma
 		m.turnActive = false
 		m.acceptQueuedTurn(event.TurnID)
 		m.finishStreaming()
+		elapsed, hasElapsed := sessionTerminalTurnElapsed(m.activeTurnID, m.activeTurnStarted, event, m.now(), m.replayingHistory, recoveredCompletion)
 		if event.TurnID == "" || event.TurnID == m.activeTurnID {
 			m.activeTurnID = ""
+			m.activeTurnStarted = time.Time{}
 			m.waitingForInput = false
 			m.turnInterrupting = false
 		}
 		if event.Status == "interrupted" {
 			m.appendBlock(sessionTUIBlockWarning, "Turn interrupted.")
+		}
+		if hasElapsed {
+			m.appendBlock(sessionTUIBlockTurnSeparator, formatSessionTUIElapsed(elapsed))
 		}
 	case sessionruntime.EventError:
 		m.finishStreaming()
@@ -934,6 +948,8 @@ func (m *sessionTUIModel) renderBlock(block sessionTUIBlock) string {
 		return m.renderIndentedBlock(text, 0, m.styles.inputHeading)
 	case sessionTUIBlockDiff:
 		return m.renderDiff(text)
+	case sessionTUIBlockTurnSeparator:
+		return m.styles.muted.Render(formatSessionTurnSeparatorText(text, m.width))
 	default:
 		return ""
 	}
@@ -1386,6 +1402,13 @@ func formatSessionTUIElapsed(elapsed time.Duration) string {
 		return fmt.Sprintf("%dm %02ds", seconds/60, seconds%60)
 	}
 	return fmt.Sprintf("%dh %02dm %02ds", seconds/(60*60), (seconds/60)%60, seconds%60)
+}
+
+func formatSessionTurnSeparatorText(elapsed string, width int) string {
+	width = max(1, width)
+	label := "─ Worked for " + elapsed + " "
+	label = truncateSessionTUIStatus(label, width)
+	return label + strings.Repeat("─", max(0, width-lipgloss.Width(label)))
 }
 
 func truncateSessionTUIProgress(text string, width int) string {

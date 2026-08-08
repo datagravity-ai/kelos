@@ -417,6 +417,64 @@ func TestSessionTUIShowsTurnProgressUntilCompletion(t *testing.T) {
 	if progress := model.progressView(); progress != "" {
 		t.Fatalf("completed progress = %q, want empty", progress)
 	}
+	if transcript := stripSessionTUIANSI(model.renderTranscript()); !strings.Contains(transcript, "─ Worked for 1m 05s ─") {
+		t.Fatalf("completed transcript = %q, want live fallback duration", transcript)
+	}
+}
+
+func TestSessionTUIRendersTurnDurationSeparator(t *testing.T) {
+	model, _ := newSessionTUITestModel()
+	model.Update(tea.WindowSizeMsg{Width: 48, Height: 12})
+	startedAt := time.Date(2026, time.August, 8, 12, 0, 0, 0, time.UTC)
+	completedAt := startedAt.Add(5*time.Minute + 19*time.Second)
+
+	model.applyEvent(sessionruntime.Event{
+		Type:      sessionruntime.EventTurnStarted,
+		TurnID:    "turn-1",
+		Timestamp: &startedAt,
+	})
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventAssistantMessage, Text: "First reply"})
+	model.applyEvent(sessionruntime.Event{
+		Type:      sessionruntime.EventTurnCompleted,
+		TurnID:    "turn-1",
+		Timestamp: &completedAt,
+	})
+
+	lines := strings.Split(stripSessionTUIANSI(model.renderTranscript()), "\n")
+	separator := lines[len(lines)-1]
+	if !strings.HasPrefix(separator, "─ Worked for 5m 19s ─") {
+		t.Fatalf("turn separator = %q, want worked duration", separator)
+	}
+	assertSessionTUIBlockWidth(t, separator, 48)
+}
+
+func TestSessionTUIOmitsUnknownHistoryDuration(t *testing.T) {
+	model, _ := newSessionTUITestModel()
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventHistoryStart})
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventTurnStarted, TurnID: "turn-1"})
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventAssistantMessage, Text: "Historical reply"})
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventTurnCompleted, TurnID: "turn-1"})
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventHistoryEnd})
+
+	if transcript := stripSessionTUIANSI(model.renderTranscript()); strings.Contains(transcript, "Worked for") {
+		t.Fatalf("historical transcript = %q, want unknown duration omitted", transcript)
+	}
+}
+
+func TestSessionTUIOmitsRuntimeRecoveryDuration(t *testing.T) {
+	model, _ := newSessionTUITestModel()
+	startedAt := time.Date(2026, time.August, 8, 12, 0, 0, 0, time.UTC)
+	completedAt := startedAt.Add(time.Hour)
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventHistoryStart})
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventTurnStarted, TurnID: "turn-1", Timestamp: &startedAt})
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventRuntimeRecovered, Text: "Session runtime restarted"})
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventInputResolved, TurnID: "turn-1", InputID: "input-1", Status: "cancelled"})
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventTurnCompleted, TurnID: "turn-1", Status: "interrupted", Timestamp: &completedAt})
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventHistoryEnd})
+
+	if transcript := stripSessionTUIANSI(model.renderTranscript()); strings.Contains(transcript, "Worked for") {
+		t.Fatalf("historical transcript = %q, want runtime recovery duration omitted", transcript)
+	}
 }
 
 func TestSessionTUIRestoresTurnProgressFromHistoryTimestamp(t *testing.T) {
