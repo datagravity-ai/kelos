@@ -355,6 +355,22 @@ func (j *Journal) Snapshot() []Event {
 	return append([]Event(nil), j.events[j.firstEvent:]...)
 }
 
+// SnapshotWithBounds returns the retained events and their current journal identity.
+func (j *Journal) SnapshotWithBounds() (HistoryBounds, []Event) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	firstEventID := j.nextID
+	lastEventID := j.nextID - 1
+	if j.firstEvent < len(j.events) {
+		firstEventID = j.events[j.firstEvent].ID
+	}
+	return HistoryBounds{
+		FirstEventID: firstEventID,
+		LastEventID:  lastEventID,
+		JournalID:    j.journalID,
+	}, append([]Event(nil), j.events[j.firstEvent:]...)
+}
+
 // Failed is closed if durable journal writes fail.
 func (j *Journal) Failed() <-chan struct{} {
 	return j.failure

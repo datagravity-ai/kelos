@@ -3,6 +3,7 @@ package sessionruntime
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -848,6 +849,7 @@ func (s *Server) handleConnection(ctx context.Context, connection net.Conn) {
 	defer cancel()
 
 	out := make(chan Event, 512)
+	var writeMu sync.Mutex
 	writerDone := make(chan error, 1)
 	go func() {
 		encoder := json.NewEncoder(connection)
@@ -872,7 +874,7 @@ func (s *Server) handleConnection(ctx context.Context, connection net.Conn) {
 			subscriptionCancel()
 		}
 	}()
-	subscribe := func(since int64, journalID string, includeHistoryBounds bool) {
+	subscribe := func(since int64, journalID string, includeHistoryBounds bool, historyItems, historyBytes int) {
 		if subscriptionCancel != nil {
 			return
 		}
@@ -885,6 +887,25 @@ func (s *Server) handleConnection(ctx context.Context, connection net.Conn) {
 			bounds, retained, stream, overflow, stop = s.journal.SubscribeWithBounds(since, journalID)
 		} else {
 			retained, stream, overflow, stop = s.journal.Subscribe(since)
+		}
+		historyCursor := ""
+		var historyState *HistoryState
+		if includeHistoryBounds && historyItems > 0 && historyBytes > 0 && (since == 0 || bounds.Reset) {
+			historyItems = min(historyItems, maxHistoryItemLimit)
+			historyBytes = min(historyBytes, maxHistoryByteLimit)
+			items, state, essential := projectHistory(retained)
+			var beforeEventID int64
+			retained, beforeEventID = historyItemsPage(items, 0, historyItems, historyBytes)
+			retained = append(retained, essential...)
+			historyState = &state
+			if beforeEventID > 0 {
+				historyCursor = encodeHistoryCursor(sessionHistoryCursor{
+					JournalID:     bounds.JournalID,
+					BeforeEventID: beforeEventID,
+					ItemLimit:     historyItems,
+					ByteLimit:     historyBytes,
+				})
+			}
 		}
 		statusStream, stopStatus := s.subscribeRuntimeStatus()
 		subscriptionCancel = func() {
@@ -907,11 +928,13 @@ func (s *Server) handleConnection(ctx context.Context, connection net.Conn) {
 			}
 		}
 		if includeHistoryBounds && !enqueue(Event{
-			Type:         EventHistoryStart,
-			FirstEventID: bounds.FirstEventID,
-			LastEventID:  bounds.LastEventID,
-			JournalID:    bounds.JournalID,
-			Reset:        bounds.Reset,
+			Type:           EventHistoryStart,
+			FirstEventID:   bounds.FirstEventID,
+			LastEventID:    bounds.LastEventID,
+			JournalID:      bounds.JournalID,
+			Reset:          bounds.Reset,
+			HistoryLimited: historyCursor != "",
+			HistoryCursor:  historyCursor,
 		}) {
 			return
 		}
@@ -925,7 +948,7 @@ func (s *Server) handleConnection(ctx context.Context, connection net.Conn) {
 				return
 			}
 		}
-		if !enqueue(Event{Type: EventHistoryEnd}) {
+		if !enqueue(Event{Type: EventHistoryEnd, HistoryState: historyState}) {
 			return
 		}
 		go func() {
@@ -941,14 +964,20 @@ func (s *Server) handleConnection(ctx context.Context, connection net.Conn) {
 						disconnect()
 						return
 					}
-					if !sendLiveEvent(connectionCtx, out, overflow, event, disconnect) {
+					writeMu.Lock()
+					sent := sendLiveEvent(connectionCtx, out, overflow, event, disconnect)
+					writeMu.Unlock()
+					if !sent {
 						return
 					}
 				case status, ok := <-statusStream:
 					if !ok {
 						return
 					}
-					if !sendLiveEvent(connectionCtx, out, overflow, Event{Type: EventRuntimeStatus, Runtime: &status}, disconnect) {
+					writeMu.Lock()
+					sent := sendLiveEvent(connectionCtx, out, overflow, Event{Type: EventRuntimeStatus, Runtime: &status}, disconnect)
+					writeMu.Unlock()
+					if !sent {
 						return
 					}
 				}
@@ -969,19 +998,31 @@ func (s *Server) handleConnection(ctx context.Context, connection net.Conn) {
 		}
 		switch request.Type {
 		case "subscribe":
-			subscribe(request.Since, request.JournalID, request.HistoryBounds)
+			subscribe(request.Since, request.JournalID, request.HistoryBounds, request.HistoryItems, request.HistoryBytes)
+		case "history":
+			start, retained, err := s.loadHistoryPage(request.RequestID, request.HistoryCursor)
+			if err != nil {
+				out <- Event{Type: EventError, RequestID: request.RequestID, Text: err.Error(), Status: "rejected"}
+				continue
+			}
+			writeMu.Lock()
+			sent := sendHistoryPage(connectionCtx, out, start, retained)
+			writeMu.Unlock()
+			if !sent {
+				return
+			}
 		case "message":
-			subscribe(0, "", false)
+			subscribe(0, "", false, 0, 0)
 			if err := s.submitMessage(request.Text, request.RequestID); err != nil {
 				out <- Event{Type: EventError, RequestID: request.RequestID, Text: err.Error(), Status: "rejected"}
 			}
 		case "input":
-			subscribe(0, "", false)
+			subscribe(0, "", false, 0, 0)
 			if err := s.resolveInput(request.InputID, request.Answers, request.Cancel, request.RequestID); err != nil {
 				out <- Event{Type: EventError, RequestID: request.RequestID, Text: err.Error(), Status: "rejected"}
 			}
 		case "interrupt":
-			subscribe(0, "", false)
+			subscribe(0, "", false, 0, 0)
 			if err := s.interruptTurn(connectionCtx, request.RequestID); err != nil {
 				out <- Event{Type: EventError, RequestID: request.RequestID, Text: err.Error(), Status: "rejected"}
 			}
@@ -989,6 +1030,79 @@ func (s *Server) handleConnection(ctx context.Context, connection net.Conn) {
 			out <- Event{Type: EventError, RequestID: request.RequestID, Text: fmt.Sprintf("unsupported client request type %q", request.Type), Status: "rejected"}
 		}
 	}
+}
+
+type sessionHistoryCursor struct {
+	JournalID     string `json:"journalId"`
+	BeforeEventID int64  `json:"beforeEventId"`
+	ItemLimit     int    `json:"itemLimit"`
+	ByteLimit     int    `json:"byteLimit"`
+}
+
+func encodeHistoryCursor(cursor sessionHistoryCursor) string {
+	encoded, _ := json.Marshal(cursor)
+	return base64.RawURLEncoding.EncodeToString(encoded)
+}
+
+func decodeHistoryCursor(value string) (sessionHistoryCursor, error) {
+	encoded, err := base64.RawURLEncoding.DecodeString(value)
+	if err != nil {
+		return sessionHistoryCursor{}, errors.New("invalid Session history cursor")
+	}
+	var cursor sessionHistoryCursor
+	if err := json.Unmarshal(encoded, &cursor); err != nil ||
+		cursor.JournalID == "" || cursor.BeforeEventID <= 0 ||
+		cursor.ItemLimit <= 0 || cursor.ItemLimit > maxHistoryItemLimit ||
+		cursor.ByteLimit <= 0 || cursor.ByteLimit > maxHistoryByteLimit {
+		return sessionHistoryCursor{}, errors.New("invalid Session history cursor")
+	}
+	return cursor, nil
+}
+
+func (s *Server) loadHistoryPage(requestID, value string) (Event, []Event, error) {
+	cursor, err := decodeHistoryCursor(value)
+	if err != nil {
+		return Event{}, nil, err
+	}
+	bounds, events := s.journal.SnapshotWithBounds()
+	if bounds.JournalID != cursor.JournalID {
+		return Event{}, nil, errors.New("Session history cursor expired; reconnect to reload history")
+	}
+	items, _, _ := projectHistory(events)
+	retained, beforeEventID := historyItemsPage(items, cursor.BeforeEventID, cursor.ItemLimit, cursor.ByteLimit)
+	nextCursor := ""
+	if beforeEventID > 0 {
+		cursor.BeforeEventID = beforeEventID
+		nextCursor = encodeHistoryCursor(cursor)
+	}
+	return Event{
+		Type:           EventHistoryStart,
+		RequestID:      requestID,
+		JournalID:      bounds.JournalID,
+		HistoryPage:    true,
+		HistoryLimited: nextCursor != "",
+		HistoryCursor:  nextCursor,
+	}, retained, nil
+}
+
+func sendHistoryPage(ctx context.Context, out chan<- Event, start Event, events []Event) bool {
+	send := func(event Event) bool {
+		select {
+		case out <- event:
+			return true
+		case <-ctx.Done():
+			return false
+		}
+	}
+	if !send(start) {
+		return false
+	}
+	for _, event := range events {
+		if !send(event) {
+			return false
+		}
+	}
+	return send(Event{Type: EventHistoryEnd, RequestID: start.RequestID, HistoryPage: true})
 }
 
 func sendLiveEvent(ctx context.Context, out chan<- Event, overflow <-chan struct{}, event Event, disconnect func()) bool {
