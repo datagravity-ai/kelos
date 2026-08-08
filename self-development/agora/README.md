@@ -19,13 +19,14 @@ instructions where needed: triage and squash-commits share `agentconfig.yaml`
 define their own AgentConfig inline.
 
 Autonomous discovery agents that publish GitHub issues maintain at most one
-open `generated-by-kelos` issue slot per TaskSpawner. The issue body includes a
-`kelos-taskspawner=<name>` marker so later runs can find it. A run may update
-the unassigned slot when it finds a clearly more impactful or important
-candidate, but it exits without changes when the slot has assignees. Assigned
-issues and PRs are treated as ongoing human or agent work and are not updated by
-autonomous discovery jobs. This cap does not apply to follow-up issues created
-while a worker or PR responder is handling an explicitly requested issue or PR.
+open `generated-by-kelos` issue slot per TaskSpawner. Its title starts with the
+TaskSpawner name in brackets, and its body includes both a
+`kelos-taskspawner=<name>` marker and one replaceable `Latest verdict` section.
+Each run checks whether an unassigned slot is still valid against the current
+repository before retaining, replacing, or closing it. Assigned issues and PRs
+are treated as ongoing human or agent work and are not updated by autonomous
+discovery jobs. This cap does not apply to follow-up issues created while a
+worker or PR responder is handling an explicitly requested issue or PR.
 
 The two SessionSpawners operate on the Agora repository through the
 `agora-session-agent` Workspace, which uses the personal Session token. Six
