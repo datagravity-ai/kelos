@@ -1668,7 +1668,7 @@ func TestPrepareSessionWorkspaceInitPreservesCloneCommands(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			containers := []corev1.Container{tt.container}
-			if err := prepareSessionWorkspaceInit(containers); err != nil {
+			if err := prepareSessionWorkspaceInit(containers, ""); err != nil {
 				t.Fatal(err)
 			}
 			script := ""
@@ -1687,6 +1687,29 @@ func TestPrepareSessionWorkspaceInitPreservesCloneCommands(t *testing.T) {
 				t.Fatalf("prepared args = %#v, want suffix %#v", containers[0].Args, tt.wantArgs)
 			}
 		})
+	}
+}
+
+func TestPrepareSessionWorkspaceInitRefreshesCredentials(t *testing.T) {
+	credentialHelper := gitCredentialHelperForTokenFile("/test/GITHUB_TOKEN")
+	containers := []corev1.Container{{
+		Name:    "git-clone",
+		Command: []string{"sh", "-c", `git -c credential.helper= "$@"`},
+		Args:    []string{"--", "clone", "repo", "/workspace/repo"},
+	}}
+
+	if err := prepareSessionWorkspaceInit(containers, credentialHelper); err != nil {
+		t.Fatal(err)
+	}
+	script := containers[0].Command[2]
+	marker := strings.Index(script, sessionInitializedPath)
+	config := strings.Index(script, "config credential.username "+gitCredentialDefaultUsername)
+	exit := strings.Index(script, "exit 0")
+	if marker == -1 || config <= marker || exit <= config {
+		t.Fatalf("prepared command does not refresh credentials before exiting: %q", script)
+	}
+	if !strings.Contains(script, credentialHelper) {
+		t.Fatal("prepared command does not persist the credential helper")
 	}
 }
 

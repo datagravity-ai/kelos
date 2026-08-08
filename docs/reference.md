@@ -543,12 +543,26 @@ The secret contains a single key:
 
 | Key | Description |
 |-----|-------------|
-| `GITHUB_TOKEN` | GitHub Personal Access Token for git auth and `gh` CLI |
+| `GITHUB_TOKEN` | Personal access token for HTTPS git authentication and the GitHub `gh` CLI |
 
 ```bash
 kubectl create secret generic github-token \
   --from-literal=GITHUB_TOKEN=<your-pat>
 ```
+
+For repositories that require a username with PAT authentication, include the
+username in `spec.repo` and store the PAT in the Secret's `GITHUB_TOKEN` key:
+
+```yaml
+spec:
+  repo: https://username@bitbucket.example/scm/team/repo.git
+  secretRef:
+    name: github-token
+```
+
+Kelos preserves a username included in the repository URL. When the URL omits
+the username, Kelos uses `x-access-token`, which is compatible with GitHub PATs
+and GitHub App installation tokens.
 
 **GitHub App (recommended for production/org use):**
 

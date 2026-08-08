@@ -108,6 +108,8 @@ const (
 	// GitHubTokenMountPath + "/" + GitHubTokenSecretKey.
 	GitHubTokenSecretKey = "GITHUB_TOKEN"
 
+	gitCredentialDefaultUsername = "x-access-token"
+
 	// AgentUID is the UID shared between the git-clone init
 	// container and the agent container. Custom agent images must run
 	// as this UID so that both containers can read and write the
@@ -561,16 +563,16 @@ func (b *JobBuilder) buildAgentJob(task *kelos.Task, workspace *kelos.WorkspaceS
 			initContainer.Args = []string{"--", workspace.Repo, targetPath, workspace.Ref}
 		} else if workspace.SecretRef != nil {
 			credentialHelper := gitCredentialHelper()
+			credentialConfig := workspaceGitCredentialConfigScript(credentialHelper)
 			// Clear inherited credential helpers with an empty -c credential.helper=
 			// before setting the workspace helper, then persist the same
 			// configuration into the repo so the agent container is
 			// independent from global/system helpers.
 			initContainer.Command = []string{"sh", "-c",
 				fmt.Sprintf(
-					`git -c credential.helper= -c credential.helper='%s' "$@" && { `+
-						`git -C %s/repo config --unset-all credential.helper 2>/dev/null || true; `+
-						`git -C %s/repo config --add credential.helper '%s'; }`,
-					credentialHelper, WorkspaceMountPath, WorkspaceMountPath, credentialHelper,
+					`git -c credential.helper= -c credential.helper='%s' -c credential.username=%s "$@" && { `+
+						`%s; }`,
+					credentialHelper, gitCredentialDefaultUsername, credentialConfig,
 				),
 			}
 			initContainer.Args = append([]string{"--"}, cloneArgs...)
@@ -609,7 +611,10 @@ func (b *JobBuilder) buildAgentJob(task *kelos.Task, workspace *kelos.WorkspaceS
 			remoteGit := "git"
 			if workspace.SecretRef != nil {
 				credHelper := gitCredentialHelper()
-				remoteGit = fmt.Sprintf(`git -c credential.helper= -c credential.helper='%s'`, credHelper)
+				remoteGit = fmt.Sprintf(
+					`git -c credential.helper= -c credential.helper='%s' -c credential.username=%s`,
+					credHelper, gitCredentialDefaultUsername,
+				)
 			}
 			branchSetupScript := fmt.Sprintf(
 				`set -e
@@ -1032,7 +1037,10 @@ func isFullGitCommitSHA(ref string) bool {
 func buildCommitRefCheckoutScript(credentialHelper string) string {
 	fetchCmd := `git -C "$target" fetch --depth 1 origin "$ref"`
 	if credentialHelper != "" {
-		fetchCmd = fmt.Sprintf(`git -C "$target" -c credential.helper= -c credential.helper='%s' fetch --depth 1 origin "$ref"`, credentialHelper)
+		fetchCmd = fmt.Sprintf(
+			`git -C "$target" -c credential.helper= -c credential.helper='%s' -c credential.username=%s fetch --depth 1 origin "$ref"`,
+			credentialHelper, gitCredentialDefaultUsername,
+		)
 	}
 
 	lines := []string{
@@ -1050,6 +1058,7 @@ func buildCommitRefCheckoutScript(credentialHelper string) string {
 		lines = append(lines,
 			`git -C "$target" config --unset-all credential.helper 2>/dev/null || true`,
 			fmt.Sprintf(`git -C "$target" config --add credential.helper '%s'`, credentialHelper),
+			fmt.Sprintf(`git -C "$target" config credential.username %s`, gitCredentialDefaultUsername),
 		)
 	}
 
@@ -1061,12 +1070,28 @@ func buildCommitRefCheckoutScript(credentialHelper string) string {
 // falling back to the inherited $GITHUB_TOKEN env var when the file is not
 // present. Reading the file each time lets git pick up controller-side
 // token refreshes (e.g. for GitHub App installation tokens that expire
-// in ~1h) without restarting the pod.
+// in ~1h) without restarting the pod. Git's credential.username configuration
+// supplies the default username separately so a username in the remote URL
+// takes precedence.
 func gitCredentialHelper() string {
 	tokenFile := GitHubTokenMountPath + "/" + GitHubTokenSecretKey
+	return gitCredentialHelperForTokenFile(tokenFile)
+}
+
+func gitCredentialHelperForTokenFile(tokenFile string) string {
 	return fmt.Sprintf(
-		`!f() { echo "username=x-access-token"; if [ -r %q ]; then echo "password=$(cat %q)"; else echo "password=$GITHUB_TOKEN"; fi; }; f`,
+		`!f() { if [ -r %q ]; then echo "password=$(cat %q)"; else echo "password=$GITHUB_TOKEN"; fi; }; f`,
 		tokenFile, tokenFile,
+	)
+}
+
+func workspaceGitCredentialConfigScript(credentialHelper string) string {
+	return fmt.Sprintf(
+		`git -C %s/repo config --unset-all credential.helper 2>/dev/null || true; `+
+			`git -C %s/repo config --add credential.helper '%s' && `+
+			`git -C %s/repo config credential.username %s`,
+		WorkspaceMountPath, WorkspaceMountPath, credentialHelper,
+		WorkspaceMountPath, gitCredentialDefaultUsername,
 	)
 }
 
