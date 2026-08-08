@@ -41,13 +41,14 @@ All other AgentConfigs provide only role- or repository-specific instructions;
 they do not duplicate the shared skills.
 
 Autonomous discovery agents that publish GitHub issues maintain at most one
-open `generated-by-kelos` issue slot per TaskSpawner. The issue body includes a
-`kelos-taskspawner=<name>` marker so later runs can find it. A run may update
-the unassigned slot when it finds a clearly more impactful or important
-candidate, but it exits without changes when the slot has assignees. Assigned
-issues and PRs are treated as ongoing human or agent work and are not updated by
-autonomous discovery jobs. This cap does not apply to follow-up issues created
-while a worker or PR responder is handling an explicitly requested issue or PR.
+open `generated-by-kelos` issue slot per TaskSpawner. Its title starts with the
+TaskSpawner name in brackets, and its body includes both a
+`kelos-taskspawner=<name>` marker and one replaceable `Latest verdict` section.
+Each run checks whether an unassigned slot is still valid against the current
+repository before retaining, replacing, or closing it. Assigned issues and PRs
+are treated as ongoing human or agent work and are not updated by autonomous
+discovery jobs. This cap does not apply to follow-up issues created while a
+worker or PR responder is handling an explicitly requested issue or PR.
 
 ## Spawners
 
