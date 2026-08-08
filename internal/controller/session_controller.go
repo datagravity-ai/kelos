@@ -1474,7 +1474,11 @@ func (r *SessionReconciler) buildSessionStatefulSet(session *kelos.Session, work
 			WhenScaled:  appsv1.RetainPersistentVolumeClaimRetentionPolicyType,
 		}
 	}
-	if err := prepareSessionWorkspaceInit(podSpec.InitContainers); err != nil {
+	credentialHelper := ""
+	if workspace != nil && workspace.SecretRef != nil {
+		credentialHelper = gitCredentialHelper()
+	}
+	if err := prepareSessionWorkspaceInit(podSpec.InitContainers, credentialHelper); err != nil {
 		return nil, nil, err
 	}
 
@@ -1593,12 +1597,19 @@ func sessionSelectorLabels(session *kelos.Session) map[string]string {
 	}
 }
 
-func prepareSessionWorkspaceInit(containers []corev1.Container) error {
+func prepareSessionWorkspaceInit(containers []corev1.Container, credentialHelper string) error {
 	for i := range containers {
 		container := &containers[i]
 		switch container.Name {
 		case "git-clone":
-			prefix := `if [ -f ` + sessionInitializedPath + ` ]; then exit 0; fi
+			initializedAction := "exit 0"
+			if credentialHelper != "" {
+				initializedAction = fmt.Sprintf(
+					`{ %s; } || exit $?; exit 0`,
+					workspaceGitCredentialConfigScript(credentialHelper),
+				)
+			}
+			prefix := `if [ -f ` + sessionInitializedPath + ` ]; then ` + initializedAction + `; fi
 rm -rf -- /workspace/repo
 `
 			if len(container.Command) == 0 {

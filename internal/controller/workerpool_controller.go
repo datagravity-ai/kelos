@@ -749,29 +749,34 @@ func (r *WorkerPoolReconciler) buildStatefulSet(pool *kelos.WorkerPool, stsName,
 			},
 		}
 
+		credentialHelper := ""
+		credentialConfig := ""
+		if workspace.SecretRef != nil {
+			credentialHelper = gitCredentialHelper()
+			credentialConfig = workspaceGitCredentialConfigScript(credentialHelper)
+		}
+
 		if commitRef {
-			credentialHelper := ""
-			if workspace.SecretRef != nil {
-				credentialHelper = gitCredentialHelper()
+			existingRepoAction := "exit 0"
+			if credentialConfig != "" {
+				existingRepoAction = fmt.Sprintf(`{ %s; } || exit $?; exit 0`, credentialConfig)
 			}
 			gitClone.Command = []string{"sh", "-c",
-				fmt.Sprintf("if [ -d '%s/repo/.git' ]; then echo 'Workspace exists, skipping clone'; exit 0; fi; %s",
-					WorkspaceMountPath, buildCommitRefCheckoutScript(credentialHelper)),
+				fmt.Sprintf("if [ -d '%s/repo/.git' ]; then echo 'Workspace exists, skipping clone'; %s; fi; %s",
+					WorkspaceMountPath, existingRepoAction, buildCommitRefCheckoutScript(credentialHelper)),
 			}
 			gitClone.Args = []string{"--", workspace.Repo, targetPath, workspace.Ref}
 		} else if workspace.SecretRef != nil {
-			credentialHelper := gitCredentialHelper()
 			// Build the inner clone command with credential helper
 			innerCmd := fmt.Sprintf(
-				`git -c credential.helper= -c credential.helper='%s' "$@" && { `+
-					`git -C %s/repo config --unset-all credential.helper 2>/dev/null || true; `+
-					`git -C %s/repo config --add credential.helper '%s'; }`,
-				credentialHelper, WorkspaceMountPath, WorkspaceMountPath, credentialHelper,
+				`git -c credential.helper= -c credential.helper='%s' -c credential.username=%s "$@" && { `+
+					`%s; }`,
+				credentialHelper, gitCredentialDefaultUsername, credentialConfig,
 			)
 			// Wrap with exists check so it skips if workspace already exists on PVC
 			gitClone.Command = []string{"sh", "-c",
-				fmt.Sprintf("if [ -d '%s/repo/.git' ]; then echo 'Workspace exists, skipping clone'; exit 0; fi; %s",
-					WorkspaceMountPath, innerCmd),
+				fmt.Sprintf("if [ -d '%s/repo/.git' ]; then echo 'Workspace exists, skipping clone'; { %s; } || exit $?; exit 0; fi; %s",
+					WorkspaceMountPath, credentialConfig, innerCmd),
 			}
 			gitClone.Args = append([]string{"--"}, cloneArgs...)
 		} else {

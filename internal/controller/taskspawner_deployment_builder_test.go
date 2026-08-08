@@ -109,6 +109,13 @@ func TestParseGitHubRepo(t *testing.T) {
 			wantRepo:  "kelos",
 		},
 		{
+			name:      "github.com HTTPS with username",
+			repoURL:   "https://username@github.com/kelos-dev/kelos.git",
+			wantHost:  "github.com",
+			wantOwner: "kelos-dev",
+			wantRepo:  "kelos",
+		},
+		{
 			name:      "github.com SSH",
 			repoURL:   "git@github.com:kelos-dev/kelos.git",
 			wantHost:  "github.com",
