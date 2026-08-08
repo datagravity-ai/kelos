@@ -407,9 +407,9 @@ func (m *sessionTUIModel) View() string {
 	}
 	footer := m.footerView()
 	if m.activeView == "" {
-		return "\n" + footer
+		return footer
 	}
-	return m.activeView + "\n\n" + footer
+	return m.activeView + "\n" + footer
 }
 
 func (m *sessionTUIModel) readEvent() tea.Cmd {
@@ -1155,7 +1155,7 @@ func (m *sessionTUIModel) footerHeight() int {
 }
 
 func (m *sessionTUIModel) footerView() string {
-	parts := make([]string, 0, 4)
+	parts := make([]string, 0, 5)
 	if progress := m.progressView(); progress != "" {
 		parts = append(parts, progress)
 	}
@@ -1163,7 +1163,7 @@ func (m *sessionTUIModel) footerView() string {
 	if queue != "" {
 		parts = append(parts, queue)
 	}
-	parts = append(parts, m.composerView(), m.statusBarView())
+	parts = append(parts, "", m.composerView(), m.statusBarView())
 	return strings.Join(parts, "\n")
 }
 
