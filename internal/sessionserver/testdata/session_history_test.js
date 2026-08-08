@@ -13,6 +13,9 @@ class TestNode {
     this.dataset = {};
     this.attributes = new Map();
     this.classes = new Set();
+    this.listeners = new Map();
+    this.style = {};
+    this.scrollTop = 0;
     this.classList = {
       add: (...names) => names.forEach((name) => this.classes.add(name)),
       remove: (...names) => names.forEach((name) => this.classes.delete(name)),
@@ -21,6 +24,14 @@ class TestNode {
 
   get firstChild() {
     return this.children[0] || null;
+  }
+
+  get lastChild() {
+    return this.children[this.children.length - 1] || null;
+  }
+
+  get scrollHeight() {
+    return this.children.length * 20;
   }
 
   hasChildNodes() {
@@ -45,6 +56,28 @@ class TestNode {
     }
   }
 
+  prepend(...nodes) {
+    const added = [];
+    for (const node of nodes) {
+      if (node.tag === '#fragment') {
+        while (node.firstChild) {
+          const child = node.firstChild;
+          node.removeChild(child);
+          added.push(child);
+        }
+        continue;
+      }
+      if (node.parent) node.parent.removeChild(node);
+      added.push(node);
+    }
+    for (const node of added) node.parent = this;
+    this.children = [...added, ...this.children];
+  }
+
+  remove() {
+    if (this.parent) this.parent.removeChild(this);
+  }
+
   replaceChildren(...nodes) {
     for (const child of this.children) child.parent = null;
     this.children = [];
@@ -52,7 +85,7 @@ class TestNode {
   }
 
   querySelector(selector) {
-    if (selector.startsWith('.') && this.classes.has(selector.slice(1))) return this;
+    if ((selector.startsWith('.') && this.classes.has(selector.slice(1))) || this.tag === selector) return this;
     for (const child of this.children) {
       const match = child.querySelector(selector);
       if (match) return match;
@@ -60,8 +93,24 @@ class TestNode {
     return null;
   }
 
+  querySelectorAll(selector) {
+    const matches = [];
+    for (const child of this.children) {
+      const classMatch = selector === '.file-change[open]'
+        ? child.classes.has('file-change') && child.open
+        : selector.startsWith('.') && child.classes.has(selector.slice(1));
+      if (classMatch || child.tag === selector) matches.push(child);
+      matches.push(...child.querySelectorAll(selector));
+    }
+    return matches;
+  }
+
   setAttribute(name, value) {
     this.attributes.set(name, String(value));
+  }
+
+  addEventListener(name, listener) {
+    this.listeners.set(name, listener);
   }
 
   set textContent(value) {
@@ -91,6 +140,7 @@ global.document = {
 let bottomAnchors;
 let socketConnections;
 let progressTimers;
+let toasts;
 
 global.window = {
   clearInterval: (timer) => progressTimers.delete(timer),
@@ -120,6 +170,7 @@ function resetHarness() {
     selected: null,
     currentView: null,
     sessionViews: new Map(),
+    socket: null,
     promptDrafts: new Map(),
     lastEventID: 0,
     assistantSegmentByTurn: new Map(),
@@ -137,6 +188,13 @@ function resetHarness() {
     runtimeStatus: null,
     progressTimer: null,
     replayingHistory: false,
+    historyCursor: '',
+    historyLastEventID: 0,
+    historyPageLoading: false,
+    historyPageReading: false,
+    historyPageCursor: '',
+    historyPageEvents: [],
+    historyRequestID: '',
     runtimeRecoveryActive: false,
     pinHistoryToBottom: false,
     fileChangesDirty: false,
@@ -144,11 +202,14 @@ function resetHarness() {
   bottomAnchors = 0;
   socketConnections = 0;
   progressTimers = new Map();
+  toasts = [];
 }
 
 global.maxCachedSessionViews = 5;
 global.renderFileChanges = () => {};
 global.renderDiffBlock = () => {};
+global.renderMessageMarkdown = (element, text) => { element.textContent = text || ''; };
+global.providerInitials = () => 'A';
 global.savePromptDraft = () => {};
 global.restorePromptDraft = () => {};
 global.closeSocket = () => {};
@@ -159,12 +220,13 @@ global.resizeComposer = () => {};
 global.scheduleBottomAnchor = () => { bottomAnchors++; };
 global.connectSocket = () => { socketConnections++; };
 global.updateComposerAction = () => {};
+global.updateFileChangesHeader = () => {};
 global.endAssistantSegment = () => {};
 global.acceptQueuedMessage = () => {};
 global.renderInputRequest = () => {};
 global.resolveInputCard = () => {};
 global.scrollToBottom = () => {};
-global.showToast = () => {};
+global.showToast = (message) => { toasts.push(message); };
 
 const application = fs.readFileSync(path.join(__dirname, '..', 'web', 'app.js'), 'utf8');
 
@@ -181,9 +243,11 @@ vm.runInThisContext(applicationSlice('function savePromptDraft', 'function provi
 vm.runInThisContext(applicationSlice('function parseSessionTimestamp', 'function safeHTTPURL'), {filename: 'app.js'});
 vm.runInThisContext(applicationSlice('function selectSession', 'function renderHeader'), {filename: 'app.js'});
 vm.runInThisContext(applicationSlice('function ensureConversation', 'function trimURLSuffix'), {filename: 'app.js'});
-vm.runInThisContext(applicationSlice('function finishHistoryReplay', 'function handleEvent'), {filename: 'app.js'});
+vm.runInThisContext(applicationSlice('function completedAssistantText', 'function handleEvent'), {filename: 'app.js'});
 vm.runInThisContext(applicationSlice('function handleEvent', 'function renderUser'), {filename: 'app.js'});
+vm.runInThisContext(applicationSlice('function renderUser', 'function renderTool'), {filename: 'app.js'});
 vm.runInThisContext(applicationSlice('function renderTool', 'function renderInputRequest'), {filename: 'app.js'});
+vm.runInThisContext(applicationSlice('function renderDiff', 'function setActiveView'), {filename: 'app.js'});
 vm.runInThisContext(applicationSlice('function renderError', 'function scrollToBottom'), {filename: 'app.js'});
 
 function testSessionViewSaveAndRestore() {
@@ -195,17 +259,20 @@ function testSessionViewSaveAndRestore() {
   message.textContent = 'first conversation';
   elements.messages.append(message);
   state.lastEventID = 7;
+  state.historyCursor = 'cursor-1';
   state.tools.set('tool-1', {status: 'completed'});
 
   saveCurrentSessionView();
   assert.equal(elements.messages.hasChildNodes(), false);
-  assert.equal(view.messages.textContent, 'first conversation');
+  assert.match(view.messages.textContent, /first conversation/);
   assert.equal(view.lastEventID, 7);
+  assert.equal(view.historyCursor, 'cursor-1');
 
   activateSessionView(createSessionView());
   activateSessionView(view);
-  assert.equal(elements.messages.textContent, 'first conversation');
+  assert.match(elements.messages.textContent, /first conversation/);
   assert.equal(state.lastEventID, 7);
+  assert.equal(state.historyCursor, 'cursor-1');
   assert.equal(state.tools.get('tool-1').status, 'completed');
 }
 
@@ -217,16 +284,19 @@ function testSessionViewReset() {
   activateSessionView(view);
   elements.messages.append(document.createTextNode('stale history'));
   state.lastEventID = 12;
+  state.historyCursor = 'cursor-1';
   state.tools.set('tool-1', {});
 
   resetCurrentSessionView();
   assert.equal(elements.messages.hasChildNodes(), false);
   assert.equal(state.lastEventID, 0);
+  assert.equal(state.historyCursor, '');
   assert.equal(state.tools.size, 0);
   assert.equal(state.replayingHistory, true);
   assert.equal(state.pinHistoryToBottom, true);
   assert.equal(view.historyLoaded, false);
   assert.equal(view.statusPlaceholder, false);
+  assert.equal(view.historyCursor, '');
 }
 
 function testSessionProgressLifecycle() {
@@ -419,6 +489,108 @@ function testHistoryReplayCompletion() {
   assert.equal(bottomAnchors, 1);
 }
 
+function testProjectedHistoryRestoresStateAndReconnectHighWater() {
+  resetHarness();
+  const view = createSessionView();
+  view.historyLoaded = true;
+  view.historyCursor = 'stale-cursor';
+  activateSessionView(view);
+
+  const fileDiff = 'diff --git a/old.txt b/old.txt\n--- a/old.txt\n+++ b/old.txt\n-old\n+new';
+  handleEvent({
+    type: 'history.start',
+    journalId: 'journal-1',
+    lastEventId: 12,
+    historyLimited: true,
+    historyCursor: 'cursor-1',
+  });
+  handleEvent({type: 'assistant.delta', id: 9, text: 'working'});
+  handleEvent({
+    type: 'history.end',
+    historyState: {
+      activeTurnId: 'turn-1',
+      activeTurnStarted: '2026-08-08T12:00:00Z',
+      waitingForInput: true,
+      turnInterrupting: true,
+      queuedTurns: [{turnId: 'turn-2', text: 'queued request'}],
+      fileDiff,
+    },
+  });
+
+  assert.equal(state.lastEventID, 12);
+  assert.equal(view.lastEventID, 12);
+  assert.equal(state.historyCursor, 'cursor-1');
+  assert.equal(view.historyCursor, 'cursor-1');
+  assert.equal(state.activeTurn, true);
+  assert.equal(state.activeTurnID, 'turn-1');
+  assert.equal(state.activeTurnStartedAt, Date.parse('2026-08-08T12:00:00Z'));
+  assert.equal(state.waitingForInput, true);
+  assert.equal(state.interrupting, true);
+  assert.equal(state.assistantTextByTurn.get('turn-1'), 'working');
+  assert.equal(state.assistantTextByTurn.has('current'), false);
+  assert.equal(state.queuedMessages.get('turn-2').event.text, 'queued request');
+  assert.equal(state.fileChanges.get('old.txt'), fileDiff);
+  assert.equal(elements.messages.querySelector('.history-page-control').textContent, 'Load earlier messages');
+
+  handleEvent({type: 'assistant.message', id: 13, turnId: 'turn-1', text: 'working done'});
+  assert.equal(elements.messages.textContent.match(/working done/g).length, 1);
+}
+
+function testOlderHistoryPageIsPrependedWithoutChangingLiveState() {
+  resetHarness();
+  const view = createSessionView();
+  view.historyLoaded = true;
+  view.historyCursor = 'cursor-1';
+  view.lastEventID = 50;
+  activateSessionView(view);
+  state.activeTurn = true;
+  state.activeTurnID = 'turn-live';
+  state.activeTurnStartedAt = Date.parse('2026-08-08T12:00:00Z');
+  state.waitingForInput = true;
+  const sent = [];
+  state.socket = {readyState: 1, send: (payload) => sent.push(JSON.parse(payload))};
+  const recent = document.createElement('article');
+  recent.textContent = 'recent response';
+  elements.messages.append(recent);
+  renderHistoryControl();
+
+  requestOlderHistory();
+  requestOlderHistory();
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].type, 'history');
+  assert.equal(sent[0].historyCursor, 'cursor-1');
+  assert.ok(sent[0].requestId);
+
+  handleEvent({type: 'history.start', historyPage: true, requestId: sent[0].requestId, historyCursor: 'cursor-2'});
+  elements.messages.scrollTop = 15;
+  const previousTop = elements.messages.scrollTop;
+  const previousHeight = elements.messages.scrollHeight;
+  handleEvent({type: 'user.message', id: 1, text: 'earlier request'});
+  handleEvent({type: 'assistant.message', id: 2, text: 'earlier response'});
+  handleEvent({type: 'turn.completed', id: 3, status: 'interrupted'});
+  assert.doesNotMatch(elements.messages.textContent, /earlier response/);
+  handleEvent({type: 'history.end', historyPage: true, requestId: sent[0].requestId});
+
+  const text = elements.messages.textContent;
+  assert.ok(text.indexOf('earlier request') < text.indexOf('recent response'));
+  assert.ok(text.indexOf('earlier response') < text.indexOf('recent response'));
+  assert.equal(state.activeTurn, true);
+  assert.equal(state.activeTurnID, 'turn-live');
+  assert.equal(state.activeTurnStartedAt, Date.parse('2026-08-08T12:00:00Z'));
+  assert.equal(state.waitingForInput, true);
+  assert.equal(state.interrupting, false);
+  assert.equal(state.lastEventID, 50);
+  assert.equal(state.historyCursor, 'cursor-2');
+  assert.equal(state.historyPageLoading, false);
+  assert.deepEqual(toasts, []);
+  assert.ok(elements.messages.scrollHeight > previousHeight);
+  assert.equal(elements.messages.scrollTop, previousTop + elements.messages.scrollHeight - previousHeight);
+
+  requestOlderHistory();
+  assert.equal(sent.length, 2);
+  assert.equal(sent[1].historyCursor, 'cursor-2');
+}
+
 function testReselectRefreshesStatusPlaceholder() {
   resetHarness();
   const first = {
@@ -551,6 +723,8 @@ testUntimestampedLiveTurnUsesLocalDuration();
 testRuntimeRecoveryDividerOmitsDuration();
 testSessionResetClearsPromptDraft();
 testHistoryReplayCompletion();
+testProjectedHistoryRestoresStateAndReconnectHighWater();
+testOlderHistoryPageIsPrependedWithoutChangingLiveState();
 testReselectRefreshesStatusPlaceholder();
 testSessionTimestampFormatting();
 testSessionTimestampElement();

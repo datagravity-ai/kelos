@@ -62,6 +62,7 @@ type HistoryState struct {
 	TurnInterrupting  bool                `json:"turnInterrupting,omitempty"`
 	WaitingForInput   bool                `json:"waitingForInput,omitempty"`
 	QueuedTurns       []HistoryQueuedTurn `json:"queuedTurns,omitempty"`
+	FileDiff          string              `json:"fileDiff,omitempty"`
 }
 
 // HistoryQueuedTurn describes one user message waiting to run.

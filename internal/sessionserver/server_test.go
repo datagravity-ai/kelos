@@ -145,18 +145,21 @@ func TestSessionJavaScriptCachesIncrementalHistory(t *testing.T) {
 	}
 	javascript := string(source)
 	for description, expected := range map[string]string{
-		"bounded Session view cache":       "const maxCachedSessionViews = 5;",
-		"Session incarnation cache key":    "function sessionViewKey(session) {",
-		"recreated Session invalidation":   "state.selected.uid !== current.uid",
-		"view state preservation":          "function saveCurrentSessionView() {",
-		"incremental history subscription": "historyBounds: true",
-		"journal identity subscription":    "journalId: state.currentView?.journalID || '',",
-		"stale history reset":              "if (event.reset ||",
-		"replaced journal reset":           "state.currentView.journalID !== event.journalId",
-		"deferred history rendering":       "function finishHistoryReplay() {",
-		"selection bottom pin":             "state.pinHistoryToBottom = true;",
-		"frame-batched bottom anchor":      "function scheduleBottomAnchor() {",
-		"instant bottom positioning":       "elements.messages.scrollTop = elements.messages.scrollHeight;",
+		"bounded Session view cache":        "const maxCachedSessionViews = 5;",
+		"Session incarnation cache key":     "function sessionViewKey(session) {",
+		"recreated Session invalidation":    "state.selected.uid !== current.uid",
+		"view state preservation":           "function saveCurrentSessionView() {",
+		"bounded history item subscription": "historyItems: sessionHistoryItemLimit",
+		"bounded history byte subscription": "historyBytes: sessionHistoryByteLimit",
+		"history cursor preservation":       "view.historyCursor = state.historyCursor",
+		"reconnect high-water tracking":     "state.lastEventID = Math.max(state.lastEventID, state.historyLastEventID)",
+		"older history request guard":       "if (state.historyPageLoading || !state.historyCursor",
+		"older history isolation":           "function replayOlderHistoryPage(events) {",
+		"replaced journal reset":            "state.currentView.journalID !== event.journalId",
+		"deferred history rendering":        "function finishHistoryReplay(historyState) {",
+		"selection bottom pin":              "state.pinHistoryToBottom = true;",
+		"frame-batched bottom anchor":       "function scheduleBottomAnchor() {",
+		"instant bottom positioning":        "elements.messages.scrollTop = elements.messages.scrollHeight;",
 	} {
 		if !strings.Contains(javascript, expected) {
 			t.Errorf("Session JavaScript is missing %s: %s", description, expected)
