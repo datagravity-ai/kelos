@@ -31,9 +31,9 @@ spec:
 apiVersion: kelos.dev/v1alpha2
 kind: Workspace
 metadata:
-  name: actions-gateway-session-agent
+  name: open-actions-session-agent
 spec:
-  repo: https://github.com/kelos-dev/actions-gateway.git
+  repo: https://github.com/kelos-dev/open-actions.git
   ref: main
   secretRef:
     name: personal-github-token
