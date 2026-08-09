@@ -82,7 +82,7 @@ spec:
         - `kind/bug` — something is broken or behaving incorrectly
         - `kind/feature` — a request for new functionality
         - `kind/api` — introduces or changes a user-facing API surface:
-          CRD fields under `api/` (`ActionsGateway`, `Runner`, `WorkflowRun`,
+          CRD fields under `api/` (`Project`, `Runner`, `WorkflowRun`,
           `WorkflowJob`), generated CRD schemas, controller flags, the webhook
           request/response contract, or the supported workflow subset —
           anything an existing manifest, workflow file, or integration depends on
