@@ -22,11 +22,11 @@ spec:
 
     ## Project Conventions
     - When referencing project validation commands, use Makefile targets instead of discovering build/test commands yourself:
-      - `make verify` — verify formatting, modules, generated artifacts, Kustomize output, and vet
+      - `make verify` — verify formatting, modules, generated artifacts, Helm chart rendering, and vet
       - `make update` — update generated Go types, CRDs, formatting, and module metadata
       - `make test` — run all unit tests
       - `make test-e2e` — run the Kind end-to-end test
-      - `make build` — build the Open Actions binary
+      - `make build` — build the CLI, controller, and runner binaries
     - Logging conventions: start log messages with capital letters and do not end with punctuation
     - Commit messages: do not include PR links in commit messages
 ---
@@ -229,8 +229,8 @@ spec:
         when a security guarantee is overstated; P2 otherwise.
       - In CRD reference docs, flag bare field references that omit the
         owning kind when the field lives on a sibling CRD (e.g. cite
-        `WorkflowRun.spec.gatewayRef`, not bare `gatewayRef`, when discussing
-        an `ActionsGateway`). A reader should be able to locate the cited field
+        `WorkflowRun.spec.projectRef`, not bare `projectRef`, when discussing
+        a `Project`). A reader should be able to locate the cited field
         without already knowing the layout of every CRD. P2.
 
       **Documentation completeness**:
@@ -245,7 +245,7 @@ spec:
       - No unnecessary code, comments, or dead variables
       - Changes are minimal and focused — no unrelated refactoring
       - Naming is clear and consistent with the codebase
-      - When an operation can fail for a named gateway, workflow run,
+      - When an operation can fail for a named project, workflow run,
         repository, workflow, or Job, flag errors that omit that identity.
         Prefer `fmt.Errorf("workflow %s failed: %w", name, err)` over
         `errors.New("workflow failed")`. P2.

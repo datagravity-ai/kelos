@@ -24,7 +24,7 @@ spec:
       - `make verify` — verify formatting, modules, generated artifacts, and vet
       - `make update` — update generated Go types, CRDs, formatting, and module metadata
       - `make test` — run unit and schema tests
-      - `make build` — build the controller and runner binaries
+      - `make build` — build the CLI, controller, and runner binaries
 ---
 apiVersion: kelos.dev/v1alpha2
 kind: TaskSpawner
@@ -76,19 +76,19 @@ spec:
       Pick ONE of the following areas to focus on (choose the one most likely to have actionable improvements):
 
       1. **Documentation & Onboarding**
-         - Read the README and try to follow the installation instructions (`make install`, GitHub App setup, gateway and Runner creation)
+         - Read the README and try to follow the installation instructions (`open-actions install`, GitHub App setup, Project and Runner creation)
          - Check whether the supported workflow subset and its limitations are clearly documented
          - Look for missing or outdated documentation, or flags/behavior the README does not mention
 
       2. **Developer Experience**
          - Build the binaries (`make build`) and run the unit and schema tests (`make test`)
-         - Review error messages, status conditions, and events — are they actionable and do they name the resource (gateway, workflow run, Job, etc.)?
-         - Check whether common operator workflows (installing, registering an `ActionsGateway`, adding `Runner` slots, debugging a failed `WorkflowRun`) are easy to accomplish and well-explained
+         - Review error messages, status conditions, and events — are they actionable and do they name the resource (Project, WorkflowRun, Job, etc.)?
+         - Check whether common operator workflows (installing, registering a `Project`, adding `Runner` slots, debugging a failed `WorkflowRun`) are easy to accomplish and well-explained
          - Look for rough edges in the controller flags or CRD schemas
 
       3. **Examples & Use Cases**
          - Review the manifests under `config/samples/` and any example snippets in the README
-         - Check if the sample `ActionsGateway`, `Runner`, and `WorkflowRun` manifests are correct and well-documented
+         - Check if the sample `Project`, `Runner`, and `WorkflowRun` manifests are correct and well-documented
          - Identify missing examples that would help new users (e.g., a worked end-to-end setup for a real repository)
 
       Actions:

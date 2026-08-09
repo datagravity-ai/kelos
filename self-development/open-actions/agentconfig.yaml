@@ -9,7 +9,7 @@ spec:
     Open Actions (github.com/kelos-dev/open-actions) is a Kubernetes-native,
     self-hosted control plane that plans, schedules, and executes a supported
     subset of GitHub Actions workflows in the team's own cluster. GitHub
-    webhooks trigger workflow discovery, and `ActionsGateway`, `Runner`,
+    webhooks trigger workflow discovery, and `Project`, `Runner`,
     `WorkflowRun`, and `WorkflowJob` resources drive execution.
 
     ## Environment
@@ -31,6 +31,8 @@ spec:
       - `make update` — update generated Go types, CRDs, formatting, and module metadata
       - `make test` — run unit and schema tests
       - `make test-e2e` — run the Kind end-to-end test
-      - `make build` — build the controller and runner binaries
+      - `make build` — build the CLI, controller, and runner binaries
     - Logging conventions: start log messages with capital letters and do not end with punctuation
     - Commit messages: do not include PR links in commit messages
+    - Treat informer-cached reads and earlier workflow checks as potentially stale. Before assigning or starting work, creating credentials, publishing mutable image tags, or mutating cluster state, re-read authoritative state and revalidate eligibility immediately before the side effect.
+    - Tests for stale-state decisions must model cache/API divergence. Validation tests must invoke the real enforcement layer and include invalid cases; rendering templates alone does not test Helm `values.schema.json` rejection.

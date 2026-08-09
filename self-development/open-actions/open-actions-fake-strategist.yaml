@@ -24,7 +24,7 @@ spec:
       - `make verify` — verify formatting, modules, generated artifacts, and vet
       - `make update` — update generated Go types, CRDs, formatting, and module metadata
       - `make test` — run unit and schema tests
-      - `make build` — build the controller and runner binaries
+      - `make build` — build the CLI, controller, and runner binaries
 ---
 apiVersion: kelos.dev/v1alpha2
 kind: TaskSpawner
@@ -78,7 +78,7 @@ spec:
       1. **New Use Cases**
          - Explore what types of teams, repositories, and CI workloads could benefit from self-hosted, high-volume workflow execution
          - Look at how teams handle growing CI demand, runner fleets, and hosted-scheduler limits today
-         - Propose example `ActionsGateway`, `Runner`, and workflow configurations for new use cases
+         - Propose example `Project`, `Runner`, and workflow configurations for new use cases
          - Consider both small teams outgrowing hosted runners and large fleets with strict infrastructure requirements
 
       2. **Integration Opportunities**
@@ -88,7 +88,7 @@ spec:
          - Consider GitHub Enterprise setups and secret-management backends
 
       3. **New CRDs & API Extensions**
-         - Review the current CRDs (`ActionsGateway`, `Runner`, `WorkflowRun`, `WorkflowJob`) and identify gaps
+         - Review the current CRDs (`Project`, `Runner`, `WorkflowRun`, `WorkflowJob`) and identify gaps
          - Propose extensions to the supported workflow subset or new fields with concrete use cases
          - Suggest new CRDs or controller capabilities (e.g. runner pools, scheduling policies) with clear semantics
          - Consider backward compatibility with existing manifests and incremental adoption
