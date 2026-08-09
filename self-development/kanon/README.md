@@ -16,7 +16,7 @@ Every spawner references the root [`base-agent`](../base-agent.yaml) for shared
 instructions and skills. The issue and PR pick-up SessionSpawners reference
 only `base-agent`. The remaining TaskSpawners add repository- or role-specific
 instructions where needed: triage and squash-commits share `agentconfig.yaml`
-(`kanon-dev-agent`), while planner, reviewer, fake-user, and fake-strategist
+(`kanon-dev-agent`), while planner, the two reviewers, fake-user, and fake-strategist
 define their own AgentConfig inline.
 
 Autonomous discovery agents that publish GitHub issues maintain at most one
@@ -31,7 +31,7 @@ worker or PR responder is handling an explicitly requested issue or PR.
 
 The two SessionSpawners operate on the Kanon repository through the
 `kanon-session-agent` Workspace, which uses the personal Session token. Six
-TaskSpawners use the `kanon-agent` Workspace. The two meta-maintenance spawners
+Seven TaskSpawners use the `kanon-agent` Workspace. The two meta-maintenance spawners
 (`kanon-config-update`, `kanon-self-update`) are different: the files they
 maintain (`self-development/kanon/*`) live in *this* repository, so they use the
 `kelos-agent` Workspace and the `kelos-dev-agent` role AgentConfig from
@@ -45,6 +45,7 @@ maintain (`self-development/kanon/*`) live in *this* repository, so they use the
 | **kanon-workers** | Webhook: issue comment `/kelos pick-up` | Codex | Creates durable Sessions for issue work, including PR creation or updates |
 | **kanon-planner** | Webhook: issue comment `/kelos plan` | Codex | Investigates an issue and posts a structured implementation plan — advisory only, no code changes |
 | **kanon-reviewer** | Webhook: PR comment `/kelos review` | Codex | Reviews PRs on demand — analyzes code, checks conventions, and updates a sticky review comment |
+| **kanon-claude-reviewer** | Webhook: PR comment `/kelos claude-review` | Claude Fable | Runs an independent review path through Claude Code and updates a Claude-specific sticky review comment |
 | **kanon-pr-responder** | Webhook: PR review/comment with `/kelos pick-up` | Codex | Creates durable Sessions for PR review feedback on the existing branch |
 | **kanon-triage** | Webhook: issue opened/reopened (untriaged) | Codex | Classifies issues by kind/priority, detects duplicates, and recommends an actor |
 | **kanon-fake-user** | Cron (daily 09:00 UTC) | Codex | Tests DX as a new user and maintains one unassigned issue slot for the highest-impact problem found |
@@ -53,7 +54,7 @@ maintain (`self-development/kanon/*`) live in *this* repository, so they use the
 | **kanon-self-update** | Cron (daily 06:00 UTC) | Codex | Reviews and tunes the `self-development/kanon/` prompts, configs, and README while maintaining one unassigned improvement issue slot |
 | **kanon-squash-commits** | Webhook: PR comment `/kelos squash-commits` | Codex | Rebases and squashes PR branch commits into a single clean commit |
 
-> **Not ported from `self-development/`:** `kelos-api-reviewer` (Kanon has no
+> **Not ported from `self-development/`:** the Kelos API reviewers (Kanon has no
 > Kubernetes CRDs/API surface to review) and `kelos-image-update` (Kanon has no
 > coding-agent Dockerfiles to bump).
 
@@ -144,6 +145,30 @@ Reviews open pull requests on demand when a maintainer posts `/kelos review` or 
 **Deploy:**
 ```bash
 kubectl apply -f self-development/kanon/kanon-reviewer.yaml
+```
+
+### kanon-claude-reviewer.yaml
+
+Runs a Claude Fable review when a maintainer posts `/kelos claude-review` or
+a Kanon worker hands off a pull request with that command.
+
+| | |
+|---|---|
+| **Trigger** | GitHub PR comment or review webhook with `/kelos claude-review` from a maintainer or worker handoff |
+| **Agent** | Claude Fable via Claude Code |
+| **Concurrency** | 3 |
+
+**Key features:**
+
+- Uses the same repository-specific checklist and sticky comment format as `kanon-reviewer`
+- Pays special attention to CLI and configuration compatibility
+- Creates or updates a Claude-specific sticky PR comment
+- Read-only agent — does not push code, modify files, or run local validation
+
+**Deploy:**
+
+```bash
+kubectl apply -f self-development/kanon/kanon-claude-reviewer.yaml
 ```
 
 ### kanon-pr-responder.yaml
@@ -322,7 +347,7 @@ Three Workspaces are referenced:
   [`session-workspaces.yaml`](../session-workspaces.yaml) and references the
   `personal-github-token` Secret.
 
-- **`kanon-agent`** — points at the Kanon repository and is used by the six
+- **`kanon-agent`** — points at the Kanon repository and is used by the seven
   TaskSpawners that operate directly on Kanon. It is defined in
   [`workspaces.yaml`](../workspaces.yaml) and references the
   `kelos-agent-credentials` Secret.
@@ -392,14 +417,16 @@ existing issue or PR with a fresh matching event if needed.
 ### 5. Agent Credentials Secret
 
 The spawners reuse the `kelos-credentials` secret (the AI agent credentials are
-the same regardless of repository). The checked-in spawners use Codex OAuth:
+the same regardless of repository). The Codex spawners use Codex OAuth, and
+the Claude reviewer uses Claude Code OAuth:
 
 ```bash
 kubectl create secret generic kelos-credentials \
-  --from-file=CODEX_AUTH_JSON=$HOME/.codex/auth.json
+  --from-file=CODEX_AUTH_JSON=$HOME/.codex/auth.json \
+  --from-literal=CLAUDE_CODE_OAUTH_TOKEN=<your-claude-code-oauth-token>
 ```
 
-For API-key auth, change the worker credential type to `api-key` and use
+For Codex API-key auth, change the worker credential type to `api-key` and use
 `--from-literal=CODEX_API_KEY=<your-openai-api-key>`.
 
 ## Customizing
