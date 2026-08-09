@@ -58,9 +58,9 @@ worker or PR responder is handling an explicitly requested issue or PR.
 | **kelos-workers** | Webhook: issue comment `/kelos pick-up` | Codex | Picks up an open issue in a durable Session, creates or updates its PR, self-reviews, and ensures CI passes |
 | **kelos-planner** | Webhook: issue comment `/kelos plan` | Codex | Investigates an issue and posts a structured implementation plan — advisory only, no code changes |
 | **kelos-reviewer** | Webhook: PR comment `/kelos review` | Codex | Reviews PRs on demand — analyzes code, checks conventions, and updates a sticky review comment |
-| **kelos-glm-reviewer** | Webhook: PR comment `/kelos glm-review` | GLM-5.2 | Runs a second code review path with Z.AI GLM-5.2 through OpenCode and updates a sticky review comment |
+| **kelos-claude-reviewer** | Webhook: PR comment `/kelos claude-review` | Claude Fable | Runs an additional code review path with Claude Code and updates a Claude-specific sticky review comment |
 | **kelos-api-reviewer** | Webhook: issue/PR comment `/kelos api-review` | Codex | Reviews Kubernetes API design on issues or PRs — naming, compatibility, CRD validation |
-| **kelos-glm-api-reviewer** | Webhook: issue/PR comment `/kelos glm-api-review` | GLM-5.2 | Runs a second Kubernetes API design review path with Z.AI GLM-5.2 through OpenCode and updates sticky PR comments |
+| **kelos-claude-api-reviewer** | Webhook: issue/PR comment `/kelos claude-api-review` | Claude Fable | Runs an additional Kubernetes API design review path with Claude Code and updates Claude-specific sticky PR comments |
 | **kelos-pr-responder** | Webhook: PR comment/review `/kelos pick-up` | Codex | Picks up an open PR in a durable Session and updates its existing branch incrementally |
 | **kelos-triage** | Webhook: issue opened/labeled/reopened (`needs-actor`) | Codex | Classifies issues by kind/priority, detects duplicates, and recommends an actor |
 | **kelos-fake-user** | Cron (daily 09:00 UTC) | Codex | Tests DX as a new user and maintains one unassigned issue slot for the highest-impact problem found |
@@ -154,27 +154,29 @@ Reviews open pull requests on demand when a maintainer posts `/kelos review` or 
 kubectl apply -f self-development/kelos-reviewer.yaml
 ```
 
-### kelos-glm-reviewer.yaml
+### kelos-claude-reviewer.yaml
 
-Runs a GLM-5.2 review when a maintainer posts `/kelos glm-review`, using
-Z.AI GLM-5.2 through the OpenCode runner. It uses a separate trigger from
-`kelos-reviewer`, which continues to handle `/kelos review`.
+Runs a Claude Fable review when a maintainer posts `/kelos claude-review`,
+using the Claude Code runner. It uses a separate trigger from the Codex
+reviewer.
 
 | | |
 |---|---|
-| **Trigger** | GitHub PR comment webhook with `/kelos glm-review` from a maintainer or Kelos worker handoff |
-| **Agent** | GLM-5.2 via OpenCode |
+| **Trigger** | GitHub PR comment webhook with `/kelos claude-review` from a maintainer or Kelos worker handoff |
+| **Agent** | Claude Fable via Claude Code |
 | **Concurrency** | 3 |
 
 **Key features:**
+
 - Uses the same code review checklist and structured sticky comment output as `kelos-reviewer`
-- Creates or updates a single GLM-specific sticky PR comment with the structured review result
+- Creates or updates a single Claude-specific sticky PR comment with the structured review result
 - Provides an independent model-family review without replacing the Codex reviewer
 - Read-only agent — does not push code or modify files
 
 **Deploy:**
+
 ```bash
-kubectl apply -f self-development/kelos-glm-reviewer.yaml
+kubectl apply -f self-development/kelos-claude-reviewer.yaml
 ```
 
 ### kelos-api-reviewer.yaml
@@ -208,31 +210,32 @@ Reviews issues and pull requests for Kubernetes API design conventions, compatib
 kubectl apply -f self-development/kelos-api-reviewer.yaml
 ```
 
-### kelos-glm-api-reviewer.yaml
+### kelos-claude-api-reviewer.yaml
 
-Runs a GLM-5.2 API design review when a maintainer posts
-`/kelos glm-api-review`, using Z.AI GLM-5.2 through the OpenCode runner. It
-uses a separate trigger from `kelos-api-reviewer`, which continues to handle
-`/kelos api-review`.
+Runs a Claude Fable API design review when a maintainer posts
+`/kelos claude-api-review`, using the Claude Code runner. It uses a separate
+trigger from the Codex API reviewer.
 
 | | |
 |---|---|
-| **Trigger** | GitHub issue/PR comment webhook with `/kelos glm-api-review` from a maintainer or Kelos worker handoff |
-| **Agent** | GLM-5.2 via OpenCode |
+| **Trigger** | GitHub issue/PR comment webhook with `/kelos claude-api-review` from a maintainer or Kelos worker handoff |
+| **Agent** | Claude Fable via Claude Code |
 | **Concurrency** | 3 |
 
 **Key features:**
+
 - Uses the `api-review` skill for API design analysis and verdicts
 - Uses the same Kubernetes API design checklist and structured output as `kelos-api-reviewer`
-- Works on both issues (API design proposals) and pull requests (API implementation review)
-- For PRs: creates or updates a single GLM-specific sticky PR comment with structured API review feedback
-- For issues: posts a structured comment with API design guidance
+- Works on both issues and pull requests
+- Creates or updates a Claude-specific sticky PR comment for pull requests
+- Posts a structured API design comment for issues
 - Provides an independent model-family review without replacing the Codex API reviewer
 - Read-only agent — does not push code or modify files
 
 **Deploy:**
+
 ```bash
-kubectl apply -f self-development/kelos-glm-api-reviewer.yaml
+kubectl apply -f self-development/kelos-claude-api-reviewer.yaml
 ```
 
 ### kelos-pr-responder.yaml
@@ -537,21 +540,20 @@ retrigger it with a fresh comment or relabel after deployment.
 ### 5. Agent Credentials Secret
 
 Create a secret with your agent credentials. Most checked-in spawners use
-Codex OAuth. The GLM reviewer spawners use OpenCode with Z.AI GLM-5.2 and read
-the Z.AI key from `OPENCODE_API_KEY` in the same Secret:
+Codex OAuth, and the Claude reviewer spawners use Claude Code with OAuth from
+the same Secret:
 
 ```bash
 kubectl create secret generic kelos-credentials \
   --from-file=CODEX_AUTH_JSON=$HOME/.codex/auth.json \
-  --from-literal=OPENCODE_API_KEY=<your-zai-api-key>
+  --from-literal=CLAUDE_CODE_OAUTH_TOKEN=<your-claude-code-oauth-token>
 kubectl label secret kelos-credentials kelos.dev/codex-oauth-refresh=true
 ```
 
 Labeling the OAuth Secret opts it into controller-managed Codex OAuth refresh.
 Kelos creates one CronJob per labeled Secret with a non-empty `CODEX_AUTH_JSON`
 key, skips unlabeled Secrets and API-key credentials, and preserves other keys
-such as `OPENCODE_API_KEY`. The OpenCode entrypoint maps `OPENCODE_API_KEY` to
-Z.AI's `ZHIPU_API_KEY` for `zai/*` models.
+such as `CLAUDE_CODE_OAUTH_TOKEN`.
 
 For API-key auth, change the task template credential type to `api-key` and
 create the secret without the OAuth refresh label:

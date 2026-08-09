@@ -17,7 +17,7 @@ Every spawner references the root [`base-agent`](../base-agent.yaml) for shared
 instructions and skills. The issue and PR pick-up SessionSpawners reference
 only `base-agent`. The remaining TaskSpawners add repository- or role-specific
 instructions where needed: triage and squash-commits share `agentconfig.yaml`
-(`open-actions-dev-agent`), while the planner, the two reviewers, fake-user,
+(`open-actions-dev-agent`), while the planner, the four reviewers, fake-user,
 and fake-strategist define their own AgentConfig inline.
 
 Autonomous discovery agents that publish GitHub issues maintain at most one
@@ -32,7 +32,7 @@ worker or PR responder is handling an explicitly requested issue or PR.
 
 The two SessionSpawners operate on the Open Actions repository through the
 `open-actions-session-agent` Workspace, which uses the personal Session token.
-Seven TaskSpawners use the `open-actions-agent` Workspace. The two
+Nine TaskSpawners use the `open-actions-agent` Workspace. The two
 meta-maintenance spawners (`open-actions-config-update`,
 `open-actions-self-update`) are different: the files they maintain
 (`self-development/open-actions/*`) live in *this* repository, so they use the
@@ -48,6 +48,8 @@ meta-maintenance spawners (`open-actions-config-update`,
 | **open-actions-planner** | Webhook: issue comment `/kelos plan` | Codex | Investigates an issue and posts a structured implementation plan — advisory only, no code changes |
 | **open-actions-reviewer** | Webhook: PR comment or review `/kelos review` | Codex | Reviews PRs on demand — analyzes code, checks conventions, and updates a sticky review comment |
 | **open-actions-api-reviewer** | Webhook: issue/PR comment or review `/kelos api-review` | Codex | Reviews Kubernetes API design on issues or PRs — naming, compatibility, CRD validation |
+| **open-actions-claude-reviewer** | Webhook: PR comment or review `/kelos claude-review` | Claude Fable | Runs an independent review path through Claude Code and updates a Claude-specific sticky review comment |
+| **open-actions-claude-api-reviewer** | Webhook: issue/PR comment or review `/kelos claude-api-review` | Claude Fable | Runs an independent API design review path through Claude Code and updates Claude-specific sticky PR comments |
 | **open-actions-pr-responder** | Webhook: PR review/comment with `/kelos pick-up` | Codex | Creates durable Sessions for PR review feedback on the existing branch |
 | **open-actions-triage** | Webhook: issue opened/reopened (untriaged) | Codex | Classifies issues by kind/priority, detects duplicates, and recommends an actor |
 | **open-actions-fake-user** | Cron (daily 09:00 UTC) | Codex | Tests DX as a new user and maintains one unassigned issue slot for the highest-impact problem found |
@@ -151,6 +153,30 @@ and confirming CI passes.
 kubectl apply -f self-development/open-actions/open-actions-reviewer.yaml
 ```
 
+### open-actions-claude-reviewer.yaml
+
+Runs a Claude Fable review when a maintainer posts `/kelos claude-review` or
+an Open Actions worker hands off a pull request with that command.
+
+| | |
+|---|---|
+| **Trigger** | GitHub PR comment or review webhook with `/kelos claude-review` from a maintainer or worker handoff |
+| **Agent** | Claude Fable via Claude Code |
+| **Concurrency** | 3 |
+
+**Key features:**
+
+- Uses the same repository-specific checklist and sticky comment format as `open-actions-reviewer`
+- Flags obvious CRD permanence risks and defers the deep API checklist to `/kelos claude-api-review`
+- Creates or updates a Claude-specific sticky PR comment
+- Read-only agent — does not push code, modify files, or run local validation
+
+**Deploy:**
+
+```bash
+kubectl apply -f self-development/open-actions/open-actions-claude-reviewer.yaml
+```
+
 ### open-actions-api-reviewer.yaml
 
 Reviews issues and pull requests for Kubernetes API design conventions,
@@ -175,6 +201,33 @@ or when an Open Actions worker hands off a generated API PR.
 **Deploy:**
 ```bash
 kubectl apply -f self-development/open-actions/open-actions-api-reviewer.yaml
+```
+
+### open-actions-claude-api-reviewer.yaml
+
+Runs a Claude Fable API design review when a maintainer posts
+`/kelos claude-api-review` or an Open Actions worker hands off an API pull
+request with that command.
+
+| | |
+|---|---|
+| **Trigger** | GitHub issue/PR comment or review webhook with `/kelos claude-api-review` from a maintainer or worker handoff |
+| **Agent** | Claude Fable via Claude Code |
+| **Concurrency** | 3 |
+
+**Key features:**
+
+- Uses the `api-review` skill for API design analysis and verdicts
+- Covers the same user-facing API surfaces as `open-actions-api-reviewer`
+- Works on both issues and pull requests
+- Creates or updates a Claude-specific sticky PR comment for pull requests
+- Posts a structured API design comment for issues
+- Read-only agent — does not push code or modify files
+
+**Deploy:**
+
+```bash
+kubectl apply -f self-development/open-actions/open-actions-claude-api-reviewer.yaml
 ```
 
 ### open-actions-pr-responder.yaml
@@ -364,7 +417,7 @@ Three Workspaces are referenced:
   references the `personal-github-token` Secret.
 
 - **`open-actions-agent`** — points at the Open Actions repository and is used
-  by the seven TaskSpawners that operate directly on Open Actions. It is
+  by the nine TaskSpawners that operate directly on Open Actions. It is
   defined in [`workspaces.yaml`](../workspaces.yaml) and references the
   `kelos-agent-credentials` Secret, which must contain the Kelos GitHub App
   credentials so reviews and comments are published by `kelos-bot[bot]`.
@@ -436,14 +489,16 @@ existing issue or PR with a fresh matching event if needed.
 ### 5. Agent Credentials Secret
 
 The spawners reuse the `kelos-credentials` secret (the AI agent credentials are
-the same regardless of repository). The checked-in spawners use Codex OAuth:
+the same regardless of repository). The Codex spawners use Codex OAuth, and
+the Claude reviewers use Claude Code OAuth:
 
 ```bash
 kubectl create secret generic kelos-credentials \
-  --from-file=CODEX_AUTH_JSON=$HOME/.codex/auth.json
+  --from-file=CODEX_AUTH_JSON=$HOME/.codex/auth.json \
+  --from-literal=CLAUDE_CODE_OAUTH_TOKEN=<your-claude-code-oauth-token>
 ```
 
-For API-key auth, change the worker credential type to `api-key` and use
+For Codex API-key auth, change the worker credential type to `api-key` and use
 `--from-literal=CODEX_API_KEY=<your-openai-api-key>`.
 
 ## Customizing
