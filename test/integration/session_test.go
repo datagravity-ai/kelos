@@ -97,7 +97,7 @@ spec:
 
 		var statefulSet appsv1.StatefulSet
 		Eventually(func(g Gomega) {
-			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: "session-" + session.Name}, &statefulSet)).To(Succeed())
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: session.Name}, &statefulSet)).To(Succeed())
 			g.Expect(metav1.IsControlledBy(&statefulSet, session)).To(BeTrue())
 			g.Expect(statefulSet.Spec.Replicas).NotTo(BeNil())
 			g.Expect(*statefulSet.Spec.Replicas).To(Equal(int32(1)))
@@ -153,6 +153,23 @@ spec:
 		}, 10*time.Second, 100*time.Millisecond).Should(Succeed())
 	})
 
+	It("creates a governing Service for a digit-leading Session name", func() {
+		session := validSession(namespace, "123-chat", "codex")
+		session.Spec.Suspend = ptr.To(true)
+		Expect(k8sClient.Create(ctx, session)).To(Succeed())
+
+		Eventually(func(g Gomega) {
+			var statefulSet appsv1.StatefulSet
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(session), &statefulSet)).To(Succeed())
+			g.Expect(statefulSet.Spec.ServiceName).To(Equal("s-" + session.Name))
+
+			var service corev1.Service
+			serviceKey := client.ObjectKey{Namespace: namespace, Name: statefulSet.Spec.ServiceName}
+			g.Expect(k8sClient.Get(ctx, serviceKey, &service)).To(Succeed())
+			g.Expect(metav1.IsControlledBy(&service, session)).To(BeTrue())
+		}, 10*time.Second, 100*time.Millisecond).Should(Succeed())
+	})
+
 	It("reconciles controller-managed fields on an existing persistent StatefulSet", func() {
 		session := validSession(namespace, "existing-statefulset", "codex")
 		session.Spec.Suspend = ptr.To(true)
@@ -165,7 +182,7 @@ spec:
 			g.Expect(current.Status.Message).To(Equal(`Waiting for AgentConfig "late-config"`))
 		}, 10*time.Second, 100*time.Millisecond).Should(Succeed())
 
-		workloadName := "session-" + session.Name
+		workloadName := session.Name
 		selector := map[string]string{
 			"kelos.dev/component": "session",
 			"kelos.dev/session":   session.Name,
@@ -178,7 +195,7 @@ spec:
 			},
 			Spec: appsv1.StatefulSetSpec{
 				Replicas:            ptr.To(int32(0)),
-				ServiceName:         workloadName,
+				ServiceName:         "s-" + workloadName,
 				PodManagementPolicy: appsv1.ParallelPodManagement,
 				Selector:            &metav1.LabelSelector{MatchLabels: selector},
 				UpdateStrategy:      appsv1.StatefulSetUpdateStrategy{Type: appsv1.RollingUpdateStatefulSetStrategyType},
@@ -236,7 +253,7 @@ spec:
 		session := validSession(namespace, "suspend", "codex")
 		Expect(k8sClient.Create(ctx, session)).To(Succeed())
 
-		statefulSetKey := client.ObjectKey{Namespace: namespace, Name: "session-" + session.Name}
+		statefulSetKey := client.ObjectKey{Namespace: namespace, Name: session.Name}
 		Eventually(func(g Gomega) {
 			var statefulSet appsv1.StatefulSet
 			g.Expect(k8sClient.Get(ctx, statefulSetKey, &statefulSet)).To(Succeed())
@@ -246,7 +263,7 @@ spec:
 
 		claim := &corev1.PersistentVolumeClaim{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:            "workspace-session-" + session.Name + "-0",
+				Name:            "workspace-" + session.Name + "-0",
 				Namespace:       namespace,
 				OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(session, kelos.GroupVersion.WithKind("Session"))},
 			},
@@ -301,7 +318,7 @@ spec:
 		session := validSession(namespace, "runtime-update", "codex")
 		Expect(k8sClient.Create(ctx, session)).To(Succeed())
 
-		key := client.ObjectKey{Namespace: namespace, Name: "session-" + session.Name}
+		key := client.ObjectKey{Namespace: namespace, Name: session.Name}
 		var statefulSet appsv1.StatefulSet
 		Eventually(func(g Gomega) {
 			g.Expect(k8sClient.Get(ctx, key, &statefulSet)).To(Succeed())
@@ -349,7 +366,7 @@ spec:
 		Expect(k8sClient.Create(ctx, session)).To(Succeed())
 
 		Consistently(func() error {
-			return k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: "session-" + session.Name}, &appsv1.StatefulSet{})
+			return k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: session.Name}, &appsv1.StatefulSet{})
 		}, time.Second, 100*time.Millisecond).ShouldNot(Succeed())
 		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(session), session)).To(Succeed())
 
@@ -359,13 +376,13 @@ spec:
 		}
 		statefulSet := &appsv1.StatefulSet{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:            "session-" + session.Name,
+				Name:            session.Name,
 				Namespace:       namespace,
 				OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(session, kelos.GroupVersion.WithKind("Session"))},
 			},
 			Spec: appsv1.StatefulSetSpec{
 				Replicas:             ptr.To(int32(0)),
-				ServiceName:          "session-" + session.Name,
+				ServiceName:          "s-" + session.Name,
 				RevisionHistoryLimit: ptr.To(int32(1)),
 				Selector:             &metav1.LabelSelector{MatchLabels: selector},
 				Template: corev1.PodTemplateSpec{
@@ -407,7 +424,7 @@ spec:
 		session.Spec.Worker.AgentConfigRefs = []kelos.AgentConfigReference{{Name: agentConfig.Name}}
 		Expect(k8sClient.Create(ctx, session)).To(Succeed())
 
-		key := client.ObjectKey{Namespace: namespace, Name: "session-" + session.Name}
+		key := client.ObjectKey{Namespace: namespace, Name: session.Name}
 		var originalChecksum string
 		var pluginConfigMapName string
 		Eventually(func(g Gomega) {
@@ -467,7 +484,7 @@ spec:
 
 		Eventually(func(g Gomega) {
 			var statefulSet appsv1.StatefulSet
-			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: "session-" + session.Name}, &statefulSet)).To(Succeed())
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: session.Name}, &statefulSet)).To(Succeed())
 			g.Expect(statefulSet.Spec.VolumeClaimTemplates).To(BeEmpty())
 			var workspace *corev1.Volume
 			for i := range statefulSet.Spec.Template.Spec.Volumes {
@@ -519,7 +536,7 @@ spec:
 		session.Spec.Worker.Model = "initial-model"
 		Expect(k8sClient.Create(ctx, session)).To(Succeed())
 
-		statefulSetKey := client.ObjectKey{Namespace: namespace, Name: "session-" + session.Name}
+		statefulSetKey := client.ObjectKey{Namespace: namespace, Name: session.Name}
 		Eventually(func(g Gomega) {
 			var statefulSet appsv1.StatefulSet
 			g.Expect(k8sClient.Get(ctx, statefulSetKey, &statefulSet)).To(Succeed())

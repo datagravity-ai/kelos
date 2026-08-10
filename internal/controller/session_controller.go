@@ -1299,7 +1299,7 @@ func (r *SessionReconciler) ensureSessionWorkspaceClaimOwnership(ctx context.Con
 
 func (r *SessionReconciler) ensureSessionService(ctx context.Context, session *kelos.Session) error {
 	var existing corev1.Service
-	key := client.ObjectKey{Namespace: session.Namespace, Name: sessionWorkloadName(session)}
+	key := client.ObjectKey{Namespace: session.Namespace, Name: sessionServiceName(session)}
 	if err := r.Get(ctx, key, &existing); err == nil {
 		if !metav1.IsControlledBy(&existing, session) {
 			return fmt.Errorf("Service %q already exists and is not controlled by this Session", existing.Name)
@@ -1806,7 +1806,7 @@ func (r *SessionReconciler) buildSessionStatefulSet(session *kelos.Session, work
 		},
 		Spec: appsv1.StatefulSetSpec{
 			Replicas:                             ptr.To(sessionRuntimeReplicas(session)),
-			ServiceName:                          sessionWorkloadName(session),
+			ServiceName:                          sessionServiceName(session),
 			PodManagementPolicy:                  appsv1.OrderedReadyPodManagement,
 			Selector:                             &metav1.LabelSelector{MatchLabels: selector},
 			UpdateStrategy:                       appsv1.StatefulSetUpdateStrategy{Type: appsv1.OnDeleteStatefulSetStrategyType},
@@ -1844,7 +1844,7 @@ func buildSessionService(session *kelos.Session) *corev1.Service {
 	labels := sessionSelectorLabels(session)
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      sessionWorkloadName(session),
+			Name:      sessionServiceName(session),
 			Namespace: session.Namespace,
 			Labels:    labels,
 		},
@@ -1856,7 +1856,11 @@ func buildSessionService(session *kelos.Session) *corev1.Service {
 }
 
 func sessionWorkloadName(session *kelos.Session) string {
-	return truncateResourceNameTo("session-"+session.Name, sessionWorkloadNameMaxLength)
+	return truncateResourceNameTo(session.Name, sessionWorkloadNameMaxLength)
+}
+
+func sessionServiceName(session *kelos.Session) string {
+	return truncateResourceName("s-" + session.Name)
 }
 
 func sessionSelectorLabels(session *kelos.Session) map[string]string {

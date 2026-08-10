@@ -160,7 +160,7 @@ func TestSessionReconcilerReconcilesSuspendedStatefulSetSpec(t *testing.T) {
 			session.Spec.Worker.Image = tt.imageOverride
 			statefulSet := testSessionStatefulSet(session)
 			statefulSet.Spec.Replicas = ptr.To(int32(0))
-			statefulSet.Spec.ServiceName = sessionWorkloadName(session)
+			statefulSet.Spec.ServiceName = sessionServiceName(session)
 			statefulSet.Spec.PodManagementPolicy = appsv1.ParallelPodManagement
 			statefulSet.Spec.Selector = &metav1.LabelSelector{MatchLabels: sessionSelectorLabels(session)}
 			statefulSet.Spec.VolumeClaimTemplates = []corev1.PersistentVolumeClaim{{
@@ -328,7 +328,7 @@ func TestSessionGitHubTokenMinimumValidity(t *testing.T) {
 			currentStatefulSet: true,
 			replicas:           ptr.To(int32(0)),
 			phase:              kelos.SessionPhaseReady,
-			podName:            "session-token-policy-0",
+			podName:            "token-policy-0",
 			usesToken:          true,
 			want:               tokenRefreshMargin,
 		},
@@ -337,7 +337,7 @@ func TestSessionGitHubTokenMinimumValidity(t *testing.T) {
 			currentStatefulSet: true,
 			replicas:           ptr.To(int32(1)),
 			phase:              kelos.SessionPhasePending,
-			podName:            "session-token-policy-0",
+			podName:            "token-policy-0",
 			usesToken:          true,
 			want:               tokenRefreshMargin,
 		},
@@ -354,14 +354,14 @@ func TestSessionGitHubTokenMinimumValidity(t *testing.T) {
 			currentStatefulSet: true,
 			replicas:           ptr.To(int32(1)),
 			phase:              kelos.SessionPhaseReady,
-			podName:            "session-token-policy-0",
+			podName:            "token-policy-0",
 			want:               tokenRefreshMargin,
 		},
 		{
 			name:               "ready runtime using token",
 			currentStatefulSet: true,
 			phase:              kelos.SessionPhaseReady,
-			podName:            "session-token-policy-0",
+			podName:            "token-policy-0",
 			usesToken:          true,
 			want:               0,
 		},
@@ -403,7 +403,7 @@ func TestSessionReconcilerPreservesReadyStatusWhenInputReadFails(t *testing.T) {
 	session := testSession("ready-input-retry", "codex")
 	session.Spec.Worker.WorkspaceRef = &kelos.WorkspaceReference{Name: "workspace"}
 	session.Status.Phase = kelos.SessionPhaseReady
-	session.Status.PodName = "session-ready-input-retry-0"
+	session.Status.PodName = "ready-input-retry-0"
 	session.Status.PodUID = types.UID("ready-pod-uid")
 	session.Status.Conditions = []metav1.Condition{{
 		Type:               kelos.SessionConditionReady,
@@ -918,7 +918,7 @@ func TestSessionReconcilerDoesNotStealWorkspaceClaim(t *testing.T) {
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(session, statefulSet, otherOwner, claim).Build()
 	reconciler := testSessionReconciler(cl, scheme)
 	err := reconciler.ensureSessionWorkspaceClaimOwnership(context.Background(), session, statefulSet)
-	if err == nil || !strings.Contains(err.Error(), `PersistentVolumeClaim "workspace-session-chat-0" is controlled by ConfigMap "other-owner"`) {
+	if err == nil || !strings.Contains(err.Error(), `PersistentVolumeClaim "workspace-chat-0" is controlled by ConfigMap "other-owner"`) {
 		t.Fatalf("ensureSessionWorkspaceClaimOwnership() error = %v", err)
 	}
 }
@@ -1282,8 +1282,9 @@ func TestSessionReconcilerCreatesStatefulSetAndObservesPod(t *testing.T) {
 	if statefulSet.Spec.Replicas == nil || *statefulSet.Spec.Replicas != 1 {
 		t.Fatalf("StatefulSet replicas = %v, want 1", statefulSet.Spec.Replicas)
 	}
-	if statefulSet.Spec.ServiceName != workloadKey.Name {
-		t.Fatalf("StatefulSet serviceName = %q, want %q", statefulSet.Spec.ServiceName, workloadKey.Name)
+	serviceKey := client.ObjectKey{Namespace: session.Namespace, Name: sessionServiceName(session)}
+	if statefulSet.Spec.ServiceName != serviceKey.Name {
+		t.Fatalf("StatefulSet serviceName = %q, want %q", statefulSet.Spec.ServiceName, serviceKey.Name)
 	}
 	if statefulSet.Spec.UpdateStrategy.Type != appsv1.OnDeleteStatefulSetStrategyType || statefulSet.Spec.UpdateStrategy.RollingUpdate != nil {
 		t.Fatalf("StatefulSet updateStrategy = %#v, want OnDelete", statefulSet.Spec.UpdateStrategy)
@@ -1293,7 +1294,7 @@ func TestSessionReconcilerCreatesStatefulSetAndObservesPod(t *testing.T) {
 		t.Fatalf("Session serviceAccountName = %q, want %q", statefulSet.Spec.Template.Spec.ServiceAccountName, accessName)
 	}
 	var service corev1.Service
-	if err := cl.Get(context.Background(), workloadKey, &service); err != nil {
+	if err := cl.Get(context.Background(), serviceKey, &service); err != nil {
 		t.Fatalf("getting Session Service: %v", err)
 	}
 	if !metav1.IsControlledBy(&service, session) || service.Spec.ClusterIP != corev1.ClusterIPNone {
@@ -1868,8 +1869,8 @@ func TestSessionGitHubTokenSecretNameBoundsLongNames(t *testing.T) {
 
 func TestSessionWorkloadNameBoundsStatefulSetRevisionLabel(t *testing.T) {
 	t.Parallel()
-	if got := sessionWorkloadName(testSession("chat", "codex")); got != "session-chat" {
-		t.Fatalf("Session workload name = %q, want %q", got, "session-chat")
+	if got := sessionWorkloadName(testSession("chat", "codex")); got != "chat" {
+		t.Fatalf("Session workload name = %q, want %q", got, "chat")
 	}
 
 	for _, sessionName := range []string{
@@ -1892,11 +1893,32 @@ func TestSessionWorkloadNameBoundsStatefulSetRevisionLabel(t *testing.T) {
 	}
 }
 
+func TestSessionServiceName(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		sessionName string
+		want        string
+	}{
+		{sessionName: "chat", want: "s-chat"},
+		{sessionName: "123-chat", want: "s-123-chat"},
+		{sessionName: "s-123-chat", want: "s-s-123-chat"},
+	} {
+		if got := sessionServiceName(testSession(tt.sessionName, "codex")); got != tt.want {
+			t.Errorf("Session Service name for %q = %q, want %q", tt.sessionName, got, tt.want)
+		}
+	}
+
+	longSession := testSession(strings.Repeat("a", 253), "codex")
+	if got := sessionServiceName(longSession); len(got) > 63 {
+		t.Fatalf("Session Service name length = %d, want at most 63", len(got))
+	}
+}
+
 func TestSessionReconcilerMapsStatefulSetPod(t *testing.T) {
 	t.Parallel()
 	reconciler := &SessionReconciler{}
 	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
-		Name:        "session-chat-0",
+		Name:        "chat-0",
 		Namespace:   "default",
 		Annotations: map[string]string{sessionNameAnnotation: "chat"},
 	}}
@@ -2361,7 +2383,7 @@ func TestSessionReconcilerSuspendsBeforeResolvingWorkspace(t *testing.T) {
 	session.Spec.Suspend = ptr.To(true)
 	session.Spec.Worker.WorkspaceRef = &kelos.WorkspaceReference{Name: "missing"}
 	session.Status.Phase = kelos.SessionPhaseReady
-	session.Status.PodName = "session-suspend-with-missing-workspace-0"
+	session.Status.PodName = "suspend-with-missing-workspace-0"
 	session.Status.PodUID = types.UID("stale-pod-uid")
 	statefulSet := testSessionStatefulSet(session)
 	statefulSet.Spec.Replicas = ptr.To(int32(1))
