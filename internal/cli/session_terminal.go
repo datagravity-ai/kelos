@@ -18,7 +18,9 @@ import (
 )
 
 const (
-	sessionTerminalEventDiagnostic = "terminal.diagnostic"
+	sessionTerminalEventDiagnostic      = "terminal.diagnostic"
+	sessionTerminalEventAttachmentAdded = "terminal.attachment-added"
+	sessionTerminalRequestAttachment    = "terminal.attach"
 
 	sessionTerminalStatusConnected    = "connected"
 	sessionTerminalStatusConnecting   = "connecting"
@@ -188,6 +190,8 @@ func runSessionPlainTerminal(ctx context.Context, input io.Reader, output io.Wri
 func runSessionPlainTerminalWithWidth(ctx context.Context, input io.Reader, output io.Writer, decoder *json.Decoder, encoder *json.Encoder, color bool, terminalWidth func() int) error {
 	var writeMu sync.Mutex
 	var historyMu sync.Mutex
+	var attachmentMu sync.Mutex
+	pendingAttachments := make([]sessionruntime.Attachment, 0)
 	historyCursor := ""
 	pendingHistoryCursor := ""
 	historyLoading := false
@@ -297,7 +301,7 @@ func runSessionPlainTerminalWithWidth(ctx context.Context, input io.Reader, outp
 				if event.HistoryState != nil && len(event.HistoryState.QueuedTurns) > 0 {
 					write("\n%s\n", formatter.muted("Queued messages:"))
 					for _, turn := range event.HistoryState.QueuedTurns {
-						write("%s\n", formatter.userMessage(turn.Text))
+						write("%s\n", formatter.userMessage(sessionTerminalMessageText(turn.Text, turn.Attachments)))
 					}
 				}
 				historyMu.Lock()
@@ -306,7 +310,7 @@ func runSessionPlainTerminalWithWidth(ctx context.Context, input io.Reader, outp
 				if hasEarlierHistory {
 					write("\n%s\n", formatter.muted("Earlier Session history is available. Use /history to load the previous page."))
 				}
-				write("\n%s\n\n", formatter.muted("Connected. Type a message, /history, /interrupt, /answer INPUT QUESTION VALUE, or /quit."))
+				write("\n%s\n\n", formatter.muted("Connected. Type a message, /attach PATH, /history, /interrupt, /answer INPUT QUESTION VALUE, or /quit."))
 			case sessionruntime.EventRuntimeRecovered:
 				if !pageEvent {
 					recoveryActive = true
@@ -315,9 +319,16 @@ func runSessionPlainTerminalWithWidth(ctx context.Context, input io.Reader, outp
 				write("%s\n", formatter.warning(event.Text))
 			case sessionruntime.EventUserMessage:
 				finishAssistant(assistant)
-				write("%s\n", formatter.userMessage(event.Text))
+				write("%s\n", formatter.userMessage(sessionTerminalMessageText(event.Text, event.Attachments)))
 				if color {
 					write("\n")
+				}
+			case sessionTerminalEventAttachmentAdded:
+				attachmentMu.Lock()
+				pendingAttachments = append(pendingAttachments, event.Attachments...)
+				attachmentMu.Unlock()
+				for _, attachment := range event.Attachments {
+					write("%s\n", formatter.muted(fmt.Sprintf("Attached %s (%d bytes). Send a message to include it.", attachment.Name, attachment.SizeBytes)))
 				}
 			case sessionruntime.EventTurnStarted:
 				if pageEvent {
@@ -448,6 +459,21 @@ func runSessionPlainTerminalWithWidth(ctx context.Context, input io.Reader, outp
 			if request.Type == "" {
 				continue
 			}
+			if request.Type == "message" {
+				attachmentMu.Lock()
+				if request.Text == "" && len(pendingAttachments) == 0 {
+					attachmentMu.Unlock()
+					continue
+				}
+				request.AttachmentIDs = sessionAttachmentIDs(pendingAttachments)
+				if err := encoder.Encode(request); err != nil {
+					attachmentMu.Unlock()
+					return err
+				}
+				pendingAttachments = nil
+				attachmentMu.Unlock()
+				continue
+			}
 			if err := encoder.Encode(request); err != nil {
 				return err
 			}
@@ -511,6 +537,16 @@ func formatSessionTurnSeparator(elapsed time.Duration, width int) string {
 
 func sessionTerminalRequest(line string) sessionruntime.ClientRequest {
 	line = strings.TrimSpace(line)
+	if line == "/send" {
+		return sessionruntime.ClientRequest{Type: "message"}
+	}
+	if strings.HasPrefix(line, "/attach ") {
+		path := strings.TrimSpace(strings.TrimPrefix(line, "/attach "))
+		if path != "" {
+			return sessionruntime.ClientRequest{Type: sessionTerminalRequestAttachment, Text: path}
+		}
+		return sessionruntime.ClientRequest{}
+	}
 	if line == "/interrupt" {
 		return sessionruntime.ClientRequest{Type: "interrupt"}
 	}
@@ -537,4 +573,27 @@ func sessionTerminalRequest(line string) sessionruntime.ClientRequest {
 		return sessionruntime.ClientRequest{}
 	}
 	return sessionruntime.ClientRequest{Type: "message", Text: line}
+}
+
+func sessionTerminalMessageText(text string, attachments []sessionruntime.Attachment) string {
+	if len(attachments) == 0 {
+		return text
+	}
+	names := make([]string, len(attachments))
+	for index := range attachments {
+		names[index] = attachments[index].Name
+	}
+	attachmentText := "Attachments: " + strings.Join(names, ", ")
+	if strings.TrimSpace(text) == "" {
+		return attachmentText
+	}
+	return text + "\n" + attachmentText
+}
+
+func sessionAttachmentIDs(attachments []sessionruntime.Attachment) []string {
+	ids := make([]string, len(attachments))
+	for index := range attachments {
+		ids[index] = attachments[index].ID
+	}
+	return ids
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -41,11 +42,24 @@ func TestOpenCodeProviderStreamsOrderedEvents(t *testing.T) {
 
 	sink := newOpenCodeTestSink(nil)
 	turnDone := make(chan error, 1)
-	go func() { turnDone <- provider.RunTurn(t.Context(), "hello", sink) }()
+	attachmentPath := filepath.Join(t.TempDir(), "screen.png")
+	go func() {
+		turnDone <- provider.RunTurn(t.Context(), TurnInput{
+			Text: "hello",
+			Attachments: []ResolvedAttachment{{
+				Attachment: Attachment{Name: "screen.png", MediaType: "image/png"},
+				Path:       attachmentPath,
+			}},
+		}, sink)
+	}()
 	request := receiveOpenCodePrompt(t, fake.prompts)
 	parts, ok := request["parts"].([]any)
-	if !ok || len(parts) != 1 || parts[0].(map[string]any)["text"] != "hello" {
+	if !ok || len(parts) != 2 || !strings.Contains(parts[0].(map[string]any)["text"].(string), attachmentPath) {
 		t.Fatalf("OpenCode prompt request = %#v", request)
+	}
+	filePart := parts[1].(map[string]any)
+	if filePart["type"] != "file" || filePart["mime"] != "image/png" || filePart["filename"] != "screen.png" || filePart["url"] != (&url.URL{Scheme: "file", Path: attachmentPath}).String() {
+		t.Fatalf("OpenCode file part = %#v", filePart)
 	}
 
 	fake.emit("session.status", map[string]any{"sessionID": fake.sessionID, "status": map[string]string{"type": "busy"}})
@@ -89,7 +103,7 @@ func TestOpenCodeProviderAnswersQuestion(t *testing.T) {
 	provider := newTestOpenCodeProvider(t, fake, ProviderConfig{WorkingDir: t.TempDir(), StateDir: t.TempDir()})
 	sink := newOpenCodeTestSink(map[string][]string{"question-1": {"PostgreSQL"}})
 	turnDone := make(chan error, 1)
-	go func() { turnDone <- provider.RunTurn(t.Context(), "choose a database", sink) }()
+	go func() { turnDone <- provider.RunTurn(t.Context(), TurnInput{Text: "choose a database"}, sink) }()
 	receiveOpenCodePrompt(t, fake.prompts)
 
 	fake.emit("session.status", map[string]any{"sessionID": fake.sessionID, "status": map[string]string{"type": "busy"}})
@@ -139,7 +153,7 @@ func TestOpenCodeProviderRuntimeStatusMapping(t *testing.T) {
 	})
 	sink := newOpenCodeTestSink(nil)
 	turnDone := make(chan error, 1)
-	go func() { turnDone <- provider.RunTurn(t.Context(), "hello", sink) }()
+	go func() { turnDone <- provider.RunTurn(t.Context(), TurnInput{Text: "hello"}, sink) }()
 	receiveOpenCodePrompt(t, fake.prompts)
 
 	fake.emit("session.status", map[string]any{"sessionID": fake.sessionID, "status": map[string]string{"type": "busy"}})
@@ -192,7 +206,9 @@ func TestOpenCodeProviderInterruptsActiveTurn(t *testing.T) {
 	fake := newFakeOpenCodeServer(t)
 	provider := newTestOpenCodeProvider(t, fake, ProviderConfig{WorkingDir: t.TempDir(), StateDir: t.TempDir()})
 	turnDone := make(chan error, 1)
-	go func() { turnDone <- provider.RunTurn(t.Context(), "keep working", newOpenCodeTestSink(nil)) }()
+	go func() {
+		turnDone <- provider.RunTurn(t.Context(), TurnInput{Text: "keep working"}, newOpenCodeTestSink(nil))
+	}()
 	receiveOpenCodePrompt(t, fake.prompts)
 
 	if err := provider.Interrupt(t.Context()); err != nil {

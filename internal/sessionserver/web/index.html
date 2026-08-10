@@ -84,7 +84,10 @@
           <span id="session-progress-elapsed" aria-hidden="true"></span>
         </div>
         <div class="queued-prompts" id="queued-prompts" aria-label="Queued prompts" aria-live="polite" hidden></div>
+        <div class="pending-attachments" id="pending-attachments" aria-label="Files ready to attach" hidden></div>
         <form class="composer" id="composer">
+          <input id="attachment-input" type="file" multiple hidden>
+          <button class="attach-button" id="attach-files" type="button" aria-label="Attach files" title="Attach files" disabled>＋</button>
           <textarea id="message-input" rows="1" placeholder="Choose a ready session to start chatting" aria-label="Message" disabled></textarea>
           <button class="send-button" id="send-message" type="submit" aria-label="Send message" data-action="send" disabled>↑</button>
         </form>

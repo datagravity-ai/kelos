@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os/exec"
@@ -27,8 +29,26 @@ import (
 
 	kelos "github.com/kelos-dev/kelos/api/v1alpha2"
 	"github.com/kelos-dev/kelos/internal/sessionreset"
+	"github.com/kelos-dev/kelos/internal/sessionruntime"
 	"github.com/kelos-dev/kelos/internal/sessionsuspend"
 )
+
+type fakeSessionAttachmentTransfer struct {
+	uploadedName string
+	uploadedData []byte
+	attachment   sessionruntime.Attachment
+	downloadData []byte
+}
+
+func (f *fakeSessionAttachmentTransfer) Upload(_ context.Context, _, _, name string, source io.Reader) (sessionruntime.Attachment, error) {
+	f.uploadedName = name
+	f.uploadedData, _ = io.ReadAll(source)
+	return f.attachment, nil
+}
+
+func (f *fakeSessionAttachmentTransfer) Download(_ context.Context, _, _, _ string) (sessionruntime.Attachment, []byte, error) {
+	return f.attachment, f.downloadData, nil
+}
 
 func TestAuthenticationProtectsApplicationAndAPI(t *testing.T) {
 	server := testServer(t)
@@ -559,6 +579,11 @@ func TestSessionComposerUsesOneSendAndInterruptAction(t *testing.T) {
 	if !strings.Contains(body, `id="session-progress"`) {
 		t.Error("Session composer does not contain the agent progress region")
 	}
+	for _, expected := range []string{`id="attachment-input" type="file" multiple`, `id="attach-files"`, `id="pending-attachments"`} {
+		if !strings.Contains(body, expected) {
+			t.Errorf("Session composer does not contain attachment control %s", expected)
+		}
+	}
 	if strings.Contains(body, `id="stop-session"`) {
 		t.Error("Session header contains a separate interrupt action")
 	}
@@ -600,9 +625,27 @@ func TestSessionComposerKeepsDraftsPerSession(t *testing.T) {
 		"draft clear key":         `state.promptDrafts.delete(sessionKey(session))`,
 		"Session selection save":  "function selectSession(session, resumeIdle = false) {\n  savePromptDraft(state.selected);",
 		"Session draft restore":   `state.promptDrafts.get(sessionKey(session))`,
-		"prompt submission clear": "state.socket.send(JSON.stringify({type: 'message', text}));\n    clearPromptDraft(state.selected);",
+		"prompt submission clear": "state.socket.send(JSON.stringify({type: 'message', text, attachmentIds: attachments.map(attachment => attachment.id)}));\n    clearPromptDraft(session);",
 		"Session deletion clear":  "selectSession(null);\n    clearPromptDraft(session);",
 		"composer input save":     "elements.input.addEventListener('input', () => {\n  savePromptDraft(state.selected);",
+	} {
+		if !strings.Contains(string(source), expected) {
+			t.Errorf("Session composer is missing %s: %s", description, expected)
+		}
+	}
+}
+
+func TestSessionComposerUploadsDroppedAttachments(t *testing.T) {
+	source, err := webFiles.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for description, expected := range map[string]string{
+		"drop handling":       "event.dataTransfer?.files?.length",
+		"multipart upload":    "const body = new FormData();",
+		"attachment endpoint": "/attachments`, {",
+		"message references":  "attachmentIds: attachments.map(attachment => attachment.id)",
+		"history rendering":   "appendMessageAttachments(bubble, event.attachments || [])",
 	} {
 		if !strings.Contains(string(source), expected) {
 			t.Errorf("Session composer is missing %s: %s", description, expected)
@@ -1522,6 +1565,55 @@ func TestConnectSessionBridgesAndAcknowledgesResumedSession(t *testing.T) {
 	}
 	if !sessionsuspend.ResumeAcknowledged(&updated) {
 		t.Fatalf("resume request was not acknowledged: %#v", updated.Annotations)
+	}
+}
+
+func TestSessionAttachmentUploadAndDownload(t *testing.T) {
+	server := testServer(t)
+	if err := server.client.Create(t.Context(), &kelos.Session{
+		ObjectMeta: metav1.ObjectMeta{Name: "chat", Namespace: "team-a"},
+		Spec: kelos.SessionSpec{Worker: kelos.WorkerSpec{
+			Type:        "codex",
+			Credentials: &kelos.Credentials{Type: kelos.CredentialTypeNone},
+		}},
+		Status: kelos.SessionStatus{Phase: kelos.SessionPhaseReady, PodName: "chat-pod"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	transfer := &fakeSessionAttachmentTransfer{
+		attachment:   sessionruntime.Attachment{ID: "attachment-id", Name: "screen.png", MediaType: "image/png", SizeBytes: 7},
+		downloadData: []byte("content"),
+	}
+	server.attachments = transfer
+
+	var body bytes.Buffer
+	multipartWriter := multipart.NewWriter(&body)
+	part, err := multipartWriter.CreateFormFile("file", "screen.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = part.Write([]byte("content"))
+	if err := multipartWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/sessions/team-a/chat/attachments", &body)
+	request.Header.Set("Authorization", "Bearer secret-token")
+	request.Header.Set("Content-Type", multipartWriter.FormDataContentType())
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusCreated || transfer.uploadedName != "screen.png" || string(transfer.uploadedData) != "content" {
+		t.Fatalf("upload status = %d name = %q data = %q body = %s", response.Code, transfer.uploadedName, transfer.uploadedData, response.Body.String())
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/api/sessions/team-a/chat/attachments/attachment-id", nil)
+	request.Header.Set("Authorization", "Bearer secret-token")
+	response = httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || response.Header().Get("Content-Type") != "image/png" || response.Body.String() != "content" {
+		t.Fatalf("download status = %d content-type = %q body = %q", response.Code, response.Header().Get("Content-Type"), response.Body.String())
+	}
+	if !strings.Contains(response.Header().Get("Content-Disposition"), "inline") || !strings.Contains(response.Header().Get("Content-Disposition"), "screen.png") {
+		t.Fatalf("download content disposition = %q", response.Header().Get("Content-Disposition"))
 	}
 }
 

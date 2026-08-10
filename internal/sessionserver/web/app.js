@@ -24,6 +24,9 @@ const elements = {
   composerWrap: document.querySelector('.composer-wrap'),
   composer: document.querySelector('#composer'),
   input: document.querySelector('#message-input'),
+  attachmentInput: document.querySelector('#attachment-input'),
+  attachFiles: document.querySelector('#attach-files'),
+  pendingAttachments: document.querySelector('#pending-attachments'),
   send: document.querySelector('#send-message'),
   composerHint: document.querySelector('#composer-hint'),
   runtimeStatus: document.querySelector('#session-runtime-status'),
@@ -86,6 +89,8 @@ const state = {
   fileChanges: new Map(),
   queuedMessages: new Map(),
   promptDrafts: new Map(),
+  attachmentDrafts: new Map(),
+  sendingMessage: false,
   activeTurn: false,
   activeTurnID: '',
   activeTurnStartedAt: 0,
@@ -474,6 +479,12 @@ function clearPromptDraft(session) {
     resizeComposer();
     updateComposerAction();
   }
+}
+
+function clearAttachmentDraft(session) {
+  if (!session) return;
+  state.attachmentDrafts.delete(sessionKey(session));
+  if (state.selected && sessionKey(state.selected) === sessionKey(session)) renderPendingAttachments();
 }
 
 function providerLabel(provider) {
@@ -1426,6 +1437,7 @@ function selectSession(session, resumeIdle = false) {
   state.currentView = null;
   setActiveView('conversation');
   restorePromptDraft(session);
+  renderPendingAttachments();
   elements.messages.replaceChildren();
   elements.queue.replaceChildren();
   elements.changesList.replaceChildren();
@@ -1547,6 +1559,7 @@ function setConnection(status, label) {
 
 function setComposer(enabled) {
   elements.input.disabled = !enabled;
+  elements.attachFiles.disabled = !enabled || state.sendingMessage;
   elements.input.placeholder = enabled ? 'Message the agent…' : 'Choose a ready session to start chatting';
   updateComposerAction();
 }
@@ -1556,7 +1569,7 @@ function usesTouchComposer() {
 }
 
 function composerInterruptAction() {
-  return state.activeTurn && (elements.input.disabled || !elements.input.value.trim());
+  return state.activeTurn && (elements.input.disabled || (!elements.input.value.trim() && currentAttachmentFiles().length === 0));
 }
 
 function updateComposerAction() {
@@ -1568,7 +1581,7 @@ function updateComposerAction() {
   elements.send.textContent = actionSymbol;
   elements.send.setAttribute('aria-label', interrupt ? 'Interrupt active work' : 'Send message');
   elements.send.title = interrupt ? 'Interrupt active work' : 'Send message';
-  elements.send.disabled = !connected || (interrupt ? state.interrupting : elements.input.disabled);
+  elements.send.disabled = !connected || state.sendingMessage || (interrupt ? state.interrupting : elements.input.disabled);
   elements.composerHint.textContent = usesTouchComposer()
     ? `Tap ${actionSymbol} to ${action} · Return for a new line`
     : (interrupt && elements.input.disabled
@@ -2597,6 +2610,7 @@ function renderAcceptedUser(event) {
   const bubble = document.createElement('div');
   bubble.className = 'message-bubble';
   renderMessageMarkdown(bubble, event.text);
+  appendMessageAttachments(bubble, event.attachments || []);
   message.append(bubble);
   row.append(message);
   elements.messages.append(row);
@@ -2609,7 +2623,8 @@ function renderQueuedUser(event) {
   item.className = 'queued-prompt';
   const text = document.createElement('div');
   text.className = 'queued-prompt-text';
-  text.textContent = event.text;
+  const names = (event.attachments || []).map(attachment => attachment.name);
+  text.textContent = [event.text, names.length ? `Attachments: ${names.join(', ')}` : ''].filter(Boolean).join(' · ');
   const status = document.createElement('span');
   status.className = 'queued-prompt-status';
   status.textContent = 'Queued';
@@ -2617,6 +2632,36 @@ function renderQueuedUser(event) {
   elements.queue.append(item);
   elements.queue.hidden = false;
   state.queuedMessages.set(event.turnId, {event, item});
+}
+
+function attachmentURL(attachment) {
+  if (!state.selected) return '#';
+  return `/api/sessions/${encodeURIComponent(state.selected.namespace)}/${encodeURIComponent(state.selected.name)}/attachments/${encodeURIComponent(attachment.id)}`;
+}
+
+function appendMessageAttachments(parent, attachments) {
+  if (!attachments.length) return;
+  const list = document.createElement('div');
+  list.className = 'message-attachments';
+  for (const attachment of attachments) {
+    const link = document.createElement('a');
+    link.className = 'message-attachment';
+    link.href = attachmentURL(attachment);
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    if ((attachment.mediaType || '').startsWith('image/')) {
+      const preview = document.createElement('img');
+      preview.src = link.href;
+      preview.alt = attachment.name;
+      preview.loading = 'lazy';
+      link.append(preview);
+    }
+    const label = document.createElement('span');
+    label.textContent = attachment.name;
+    link.append(label);
+    list.append(link);
+  }
+  parent.append(list);
 }
 
 function acceptQueuedMessage(turnID) {
@@ -3168,21 +3213,132 @@ function scheduleBottomAnchor() {
   });
 }
 
-function submitComposer() {
+function currentAttachmentFiles() {
+  if (!state.selected) return [];
+  return state.attachmentDrafts.get(sessionKey(state.selected)) || [];
+}
+
+function renderPendingAttachments() {
+  const files = currentAttachmentFiles();
+  elements.pendingAttachments.replaceChildren();
+  elements.pendingAttachments.hidden = files.length === 0;
+  files.forEach((file, index) => {
+    const item = document.createElement('span');
+    item.className = 'pending-attachment';
+    item.textContent = file.name;
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.setAttribute('aria-label', `Remove ${file.name}`);
+    remove.textContent = '×';
+    remove.addEventListener('click', () => {
+      const remaining = currentAttachmentFiles().filter((_, fileIndex) => fileIndex !== index);
+      state.attachmentDrafts.set(sessionKey(state.selected), remaining);
+      renderPendingAttachments();
+      updateComposerAction();
+    });
+    item.append(remove);
+    elements.pendingAttachments.append(item);
+  });
+}
+
+function stageAttachments(fileList) {
+  if (!state.selected || elements.input.disabled) return;
+  const incoming = Array.from(fileList || []);
+  const existing = currentAttachmentFiles();
+  const accepted = [];
+  for (const file of incoming) {
+    if (file.size > 10 * 1024 * 1024) {
+      showToast(`${file.name} exceeds the 10 MiB attachment limit`);
+      continue;
+    }
+    if (existing.length + accepted.length >= 8) {
+      showToast('A message supports at most 8 attachments');
+      break;
+    }
+    accepted.push(file);
+  }
+  if (accepted.length) state.attachmentDrafts.set(sessionKey(state.selected), [...existing, ...accepted]);
+  renderPendingAttachments();
+  updateComposerAction();
+}
+
+async function uploadAttachment(session, file) {
+  const body = new FormData();
+  body.append('file', file, file.name);
+  const response = await fetch(`/api/sessions/${encodeURIComponent(session.namespace)}/${encodeURIComponent(session.name)}/attachments`, {
+    method: 'POST',
+    body,
+  });
+  if (response.status === 401) {
+    window.location.replace('/login');
+    throw new Error('Authentication required');
+  }
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.error || `${response.status} ${response.statusText}`);
+  }
+  return response.json();
+}
+
+async function submitComposer() {
+  if (state.sendingMessage) return;
   const text = elements.input.value.trim();
   if (!state.socket || state.socket.readyState !== WebSocket.OPEN) return;
   if (composerInterruptAction()) {
     interruptActiveTurn();
-  } else if (text) {
-    state.socket.send(JSON.stringify({type: 'message', text}));
-    clearPromptDraft(state.selected);
+    return;
+  }
+  const session = state.selected;
+  const files = [...currentAttachmentFiles()];
+  if (!text && files.length === 0) return;
+  state.sendingMessage = true;
+  updateComposerAction();
+  elements.attachFiles.disabled = true;
+  try {
+    const attachments = await Promise.all(files.map(file => uploadAttachment(session, file)));
+    if (!state.selected || sessionViewKey(state.selected) !== sessionViewKey(session) || !state.socket || state.socket.readyState !== WebSocket.OPEN) {
+      throw new Error('Session disconnected before the message could be sent');
+    }
+    state.socket.send(JSON.stringify({type: 'message', text, attachmentIds: attachments.map(attachment => attachment.id)}));
+    clearPromptDraft(session);
+    state.attachmentDrafts.delete(sessionKey(session));
+    renderPendingAttachments();
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    state.sendingMessage = false;
+    updateComposerAction();
+    elements.attachFiles.disabled = elements.input.disabled;
   }
 }
 
 elements.composer.addEventListener('submit', event => {
   event.preventDefault();
-  submitComposer();
+  void submitComposer();
 });
+
+elements.attachFiles.addEventListener('click', () => elements.attachmentInput.click());
+elements.attachmentInput.addEventListener('change', () => {
+  stageAttachments(elements.attachmentInput.files);
+  elements.attachmentInput.value = '';
+});
+for (const eventName of ['dragenter', 'dragover']) {
+  elements.composerWrap.addEventListener(eventName, event => {
+    if (!event.dataTransfer?.types?.includes('Files')) return;
+    event.preventDefault();
+    elements.composerWrap.classList.add('attachment-drop-target');
+    event.dataTransfer.dropEffect = 'copy';
+  });
+}
+for (const eventName of ['dragleave', 'drop']) {
+  elements.composerWrap.addEventListener(eventName, event => {
+    elements.composerWrap.classList.remove('attachment-drop-target');
+    if (eventName === 'drop' && event.dataTransfer?.files?.length) {
+      event.preventDefault();
+      stageAttachments(event.dataTransfer.files);
+    }
+  });
+}
 
 elements.input.addEventListener('keydown', event => {
   if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && !usesTouchComposer()) {
@@ -3433,6 +3589,7 @@ elements.deleteButton.addEventListener('click', async () => {
     discardSessionView(session);
     selectSession(null);
     clearPromptDraft(session);
+    clearAttachmentDraft(session);
     await loadSessions();
     showToast('Session deleted');
   } catch (error) {
@@ -3449,6 +3606,7 @@ elements.resetButton.addEventListener('click', async () => {
     discardSessionView(session);
     state.currentView = null;
     clearPromptDraft(session);
+    clearAttachmentDraft(session);
     selectSession(resetting);
     await loadSessions();
     showToast('Session reset requested');

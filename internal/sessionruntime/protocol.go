@@ -53,6 +53,7 @@ type Event struct {
 	HistoryCursor  string          `json:"historyCursor,omitempty"`
 	HistoryState   *HistoryState   `json:"historyState,omitempty"`
 	Runtime        *RuntimeStatus  `json:"runtime,omitempty"`
+	Attachments    []Attachment    `json:"attachments,omitempty"`
 }
 
 // HistoryState describes conversation state that is independent of transcript paging.
@@ -67,8 +68,9 @@ type HistoryState struct {
 
 // HistoryQueuedTurn describes one user message waiting to run.
 type HistoryQueuedTurn struct {
-	TurnID string `json:"turnId"`
-	Text   string `json:"text"`
+	TurnID      string       `json:"turnId"`
+	Text        string       `json:"text"`
+	Attachments []Attachment `json:"attachments,omitempty"`
 }
 
 // RuntimeStatus describes the current Session and workspace for connected clients.
@@ -110,6 +112,7 @@ type ClientRequest struct {
 	HistoryBytes  int                 `json:"historyBytes,omitempty"`
 	HistoryCursor string              `json:"historyCursor,omitempty"`
 	Text          string              `json:"text,omitempty"`
+	AttachmentIDs []string            `json:"attachmentIds,omitempty"`
 	InputID       string              `json:"inputId,omitempty"`
 	Answers       map[string][]string `json:"answers,omitempty"`
 	Cancel        bool                `json:"cancel,omitempty"`

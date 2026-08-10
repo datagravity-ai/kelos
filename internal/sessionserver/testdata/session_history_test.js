@@ -163,6 +163,8 @@ function resetHarness() {
     changesSummary: new TestNode('span'),
     composerHint: new TestNode('span'),
     input: new TestNode('textarea'),
+    attachFiles: new TestNode('button'),
+    pendingAttachments: new TestNode('div'),
     send: new TestNode('button'),
     progress: new TestNode('div'),
     progressLabel: new TestNode('span'),
@@ -177,6 +179,8 @@ function resetHarness() {
     sessionViews: new Map(),
     socket: null,
     promptDrafts: new Map(),
+    attachmentDrafts: new Map(),
+    sendingMessage: false,
     lastEventID: 0,
     assistantSegmentByTurn: new Map(),
     assistantTextByTurn: new Map(),
@@ -257,7 +261,7 @@ vm.runInThisContext(applicationSlice('function renderUser', 'function renderTool
 vm.runInThisContext(applicationSlice('function renderTool', 'function renderInputRequest'), {filename: 'app.js'});
 vm.runInThisContext(applicationSlice('function renderDiff', 'function setActiveView'), {filename: 'app.js'});
 vm.runInThisContext(applicationSlice('function renderError', 'function scrollToBottom'), {filename: 'app.js'});
-vm.runInThisContext(applicationSlice('function submitComposer', "elements.composer.addEventListener('submit'"), {filename: 'app.js'});
+vm.runInThisContext(applicationSlice('function currentAttachmentFiles', "elements.composer.addEventListener('submit'"), {filename: 'app.js'});
 
 function testSessionViewSaveAndRestore() {
   resetHarness();
@@ -373,6 +377,23 @@ function testComposerInterruptsWhileInputIsDisabled() {
   state.interrupting = true;
   updateComposerAction();
   assert.equal(elements.send.disabled, true);
+}
+
+async function testComposerIgnoresReentrantSubmission() {
+  resetHarness();
+  const sent = [];
+  state.selected = {namespace: 'default', name: 'one', uid: 'uid-one'};
+  state.socket = {
+    readyState: WebSocket.OPEN,
+    send: (message) => sent.push(message),
+  };
+  state.sendingMessage = true;
+  elements.input.value = 'duplicate';
+
+  await submitComposer();
+
+  assert.deepEqual(sent, []);
+  assert.equal(state.sendingMessage, true);
 }
 
 function testSessionProgressSurvivesCachedViewSwitch() {
@@ -752,6 +773,21 @@ function testHistoryToolCompletionRendersOutputWithoutStart() {
   assert.equal(card.querySelector('.tool-output-preview').textContent, 'result');
 }
 
+function testUserAttachmentRendering() {
+  resetHarness();
+  state.selected = {namespace: 'team-a', name: 'chat'};
+  renderAcceptedUser({
+    type: 'user.message',
+    text: 'review this',
+    attachments: [{id: 'attachment-1', name: 'screen.png', mediaType: 'image/png', sizeBytes: 7}],
+  });
+
+  const link = elements.messages.querySelector('.message-attachment');
+  assert.equal(link.href, '/api/sessions/team-a/chat/attachments/attachment-1');
+  assert.equal(link.querySelector('img').src, link.href);
+  assert.match(link.textContent, /screen\.png/);
+}
+
 testSessionViewSaveAndRestore();
 testSessionViewReset();
 testSessionProgressLifecycle();
@@ -774,5 +810,10 @@ testSessionTimestampElement();
 testToolOutputRendering();
 testToolOutputRenderingNormalizesCarriageReturns();
 testHistoryToolCompletionRendersOutputWithoutStart();
-
-process.stdout.write('Session history tests passed\n');
+testUserAttachmentRendering();
+testComposerIgnoresReentrantSubmission()
+  .then(() => process.stdout.write('Session history tests passed\n'))
+  .catch(error => {
+    process.stderr.write(`${error.stack}\n`);
+    process.exitCode = 1;
+  });

@@ -116,7 +116,11 @@ func projectHistory(source []Event) ([]historyItem, HistoryState, []Event) {
 			activeEventID = turn.activityEventID
 		}
 		if turn.user != nil && !turn.started && turn.activityEventID == 0 && !turn.completed {
-			queued = append(queued, HistoryQueuedTurn{TurnID: turnID, Text: boundedHistoryText(turn.user.Text, maxHistoryMessageBytes)})
+			queued = append(queued, HistoryQueuedTurn{
+				TurnID:      turnID,
+				Text:        boundedHistoryText(turn.user.Text, maxHistoryMessageBytes),
+				Attachments: turn.user.Attachments,
+			})
 			queuedEventIDs[turnID] = turn.userEventID
 		}
 	}

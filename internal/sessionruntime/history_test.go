@@ -25,7 +25,7 @@ func TestProjectHistoryNormalizesProviderEventsAndPreservesState(t *testing.T) {
 		{ID: 13, Type: EventAssistantDelta, TurnID: "turn-2", Text: "Open"},
 		{ID: 14, Type: EventAssistantDelta, TurnID: "turn-2", Text: "Code answer"},
 		{ID: 15, Type: EventInputRequested, TurnID: "turn-2", InputID: "input-2", Questions: []InputQuestion{{ID: "confirm", Question: "Continue?"}}, Status: "pending"},
-		{ID: 16, Type: EventUserMessage, TurnID: "turn-3", Text: "queued first"},
+		{ID: 16, Type: EventUserMessage, TurnID: "turn-3", Text: "queued first", Attachments: []Attachment{{ID: "attachment-1", Name: "screen.png", MediaType: "image/png", SizeBytes: 7}}},
 		{ID: 17, Type: EventUserMessage, TurnID: "turn-4", Text: "queued second"},
 	}
 
@@ -38,6 +38,9 @@ func TestProjectHistoryNormalizesProviderEventsAndPreservesState(t *testing.T) {
 	}
 	if len(state.QueuedTurns) != 2 || state.QueuedTurns[0].TurnID != "turn-3" || state.QueuedTurns[1].TurnID != "turn-4" {
 		t.Fatalf("queued turns = %#v", state.QueuedTurns)
+	}
+	if len(state.QueuedTurns[0].Attachments) != 1 || state.QueuedTurns[0].Attachments[0].Name != "screen.png" {
+		t.Fatalf("queued turn attachments = %#v", state.QueuedTurns[0].Attachments)
 	}
 	if len(essential) != 1 || essential[0].Type != EventInputRequested || essential[0].InputID != "input-2" || essential[0].TurnID != "" {
 		t.Fatalf("essential history events = %#v", essential)

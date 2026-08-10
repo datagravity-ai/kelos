@@ -182,6 +182,9 @@ button { color: inherit; }
 .message-bubble pre { max-width: 100%; margin: 0; overflow-x: auto; border: 0; background: var(--code-bg); color: var(--code-ink); white-space: pre; overflow-wrap: normal; }
 .message-bubble pre code { display: block; min-width: max-content; padding: 12px 14px; font: 12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace; white-space: inherit; }
 .user .message-bubble { border-bottom-right-radius: 5px; background: #dfe9e2; }
+.message-attachments { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 9px; }
+.message-attachment { display: inline-flex; max-width: 260px; flex-direction: column; gap: 5px; padding: 6px 8px; border: 1px solid rgba(57,112,84,.2); border-radius: 9px; color: var(--accent-2); font-size: 11px; text-decoration: none !important; }
+.message-attachment img { display: block; max-width: 240px; max-height: 180px; border-radius: 6px; object-fit: contain; }
 .assistant { gap: 11px; align-items: flex-start; }
 .agent-avatar { flex: 0 0 auto; width: 29px; height: 29px; display: grid; place-items: center; margin-top: 2px; border-radius: 9px; background: var(--accent); color: white; font: 700 11px/1 ui-monospace, monospace; }
 .assistant .message-bubble { max-width: calc(100% - 45px); padding: 2px 2px 3px; border-radius: 0; background: transparent; }
@@ -251,6 +254,7 @@ button { color: inherit; }
 .turn-divider:not(:empty)::before { flex: 0 0 10px; }
 .turn-divider:not(:empty)::after { flex: 1; }
 .composer-wrap { min-width: 0; padding: 12px max(24px, calc((100% - 850px) / 2)) 19px; background: linear-gradient(transparent, var(--canvas) 20%); }
+.composer-wrap.attachment-drop-target .composer { border-color: var(--accent); box-shadow: 0 0 0 4px rgba(57,112,84,.12); }
 .session-progress { display: flex; align-items: center; gap: 5px; min-height: 18px; margin: 0 4px 7px; color: var(--muted); font-size: 11px; font-weight: 650; font-variant-numeric: tabular-nums; }
 .session-progress[hidden] { display: none; }
 .session-progress-dot { color: var(--accent-2); animation: pulse 1.1s infinite; }
@@ -262,10 +266,16 @@ button { color: inherit; }
 .queued-prompt { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 11px; background: var(--accent-soft); }
 .queued-prompt-text { overflow: hidden; color: var(--ink); font-size: 11.5px; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
 .queued-prompt-status { color: var(--accent-2); font-size: 9px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
+.pending-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 4px 8px; }
+.pending-attachments[hidden] { display: none; }
+.pending-attachment { display: inline-flex; max-width: 220px; align-items: center; gap: 5px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--accent-soft); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pending-attachment button { flex: none; padding: 0; border: 0; background: transparent; color: var(--muted); cursor: pointer; }
 .composer { display: flex; align-items: flex-end; gap: 10px; padding: 9px 9px 9px 16px; border: 1px solid #d1d8d2; border-radius: 17px; background: var(--card); box-shadow: 0 12px 38px rgba(28,45,36,.08); transition: border .15s, box-shadow .15s; }
 .composer:focus-within { border-color: #85a493; box-shadow: 0 12px 38px rgba(28,45,36,.1), 0 0 0 3px rgba(57,112,84,.08); }
 .composer textarea { flex: 1; max-height: 160px; resize: none; border: 0; outline: 0; padding: 8px 0 6px; background: transparent; color: var(--ink); font-size: 14px; line-height: 1.45; }
 .composer textarea::placeholder { color: #99a19c; }
+.attach-button { flex: none; width: 30px; height: 36px; padding: 0; border: 0; background: transparent; color: var(--accent-2); font-size: 22px; cursor: pointer; }
+.attach-button:disabled { color: var(--faint); cursor: default; }
 .send-button { flex: 0 0 auto; width: 36px; height: 36px; border: 0; border-radius: 11px; background: var(--accent); color: white; font-size: 20px; font-weight: 500; cursor: pointer; }
 .send-button[data-action="interrupt"] { background: var(--warning); font-size: 11px; }
 .send-button:disabled { background: #c8ceca; cursor: default; }

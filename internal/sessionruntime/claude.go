@@ -151,7 +151,7 @@ func claudeCommandArgs(config ProviderConfig, sessionID string, resume bool) []s
 }
 
 // RunTurn sends one prompt while keeping the Claude Code process alive between turns.
-func (p *ClaudeProvider) RunTurn(ctx context.Context, prompt string, sink EventSink) error {
+func (p *ClaudeProvider) RunTurn(ctx context.Context, input TurnInput, sink EventSink) error {
 	p.turnMu.Lock()
 	defer p.turnMu.Unlock()
 
@@ -190,7 +190,7 @@ func (p *ClaudeProvider) RunTurn(ctx context.Context, prompt string, sink EventS
 			"role": "user",
 			"content": []map[string]string{{
 				"type": "text",
-				"text": prompt,
+				"text": attachmentPrompt(input),
 			}},
 		},
 		"parent_tool_use_id": nil,
