@@ -1838,11 +1838,15 @@ func poolWorkerCredentialsSecretName(pool *kelos.WorkerPool) string {
 }
 
 func truncateResourceName(name string) string {
-	if len(name) <= 63 {
+	return truncateResourceNameTo(name, 63)
+}
+
+func truncateResourceNameTo(name string, maxLength int) string {
+	if len(name) <= maxLength {
 		return name
 	}
 	sum := sha1.Sum([]byte(name))
 	suffix := hex.EncodeToString(sum[:])[:8]
-	maxPrefixLen := 63 - len(suffix) - 1
+	maxPrefixLen := maxLength - len(suffix) - 1
 	return name[:maxPrefixLen] + "-" + suffix
 }
