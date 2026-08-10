@@ -1866,15 +1866,29 @@ func TestSessionGitHubTokenSecretNameBoundsLongNames(t *testing.T) {
 	}
 }
 
-func TestSessionWorkloadNameBoundsLongNames(t *testing.T) {
+func TestSessionWorkloadNameBoundsStatefulSetRevisionLabel(t *testing.T) {
 	t.Parallel()
-	session := testSession(strings.Repeat("a", 253), "codex")
-	name := sessionWorkloadName(session)
-	if len(name) > 63 {
-		t.Fatalf("Session workload name length = %d, want at most 63", len(name))
+	if got := sessionWorkloadName(testSession("chat", "codex")); got != "session-chat" {
+		t.Fatalf("Session workload name = %q, want %q", got, "session-chat")
 	}
-	if name != sessionWorkloadName(session) {
-		t.Fatal("Session workload name is not deterministic")
+
+	for _, sessionName := range []string{
+		"open-actions-workers-issue-comment-bbc08c8a77c3",
+		strings.Repeat("a", 253),
+	} {
+		session := testSession(sessionName, "codex")
+		name := sessionWorkloadName(session)
+		if len(name) > sessionWorkloadNameMaxLength {
+			t.Fatalf("Session workload name length = %d, want at most %d", len(name), sessionWorkloadNameMaxLength)
+		}
+		if name != sessionWorkloadName(session) {
+			t.Fatal("Session workload name is not deterministic")
+		}
+	}
+
+	if sessionWorkloadName(testSession(strings.Repeat("a", 253), "codex")) ==
+		sessionWorkloadName(testSession(strings.Repeat("b", 253), "codex")) {
+		t.Fatal("different Session names produced the same workload name")
 	}
 }
 

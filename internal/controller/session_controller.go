@@ -51,8 +51,10 @@ const (
 	sessionNameAnnotation             = "kelos.dev/session-name"
 	sessionPluginChecksumAnnotation   = "kelos.dev/plugin-content-checksum"
 	sessionTokenFingerprintAnnotation = "kelos.dev/github-token-mint-fingerprint"
-	idleResumeAcknowledgementGrace    = 5 * time.Second
-	idleResumeRequestTimeout          = 10 * time.Minute
+	// ControllerRevision names append a hyphen and up to 10 hash characters and are used as Pod label values.
+	sessionWorkloadNameMaxLength   = 52
+	idleResumeAcknowledgementGrace = 5 * time.Second
+	idleResumeRequestTimeout       = 10 * time.Minute
 )
 
 // SessionReconciler reconciles a Session object.
@@ -1854,7 +1856,7 @@ func buildSessionService(session *kelos.Session) *corev1.Service {
 }
 
 func sessionWorkloadName(session *kelos.Session) string {
-	return truncateResourceName("session-" + session.Name)
+	return truncateResourceNameTo("session-"+session.Name, sessionWorkloadNameMaxLength)
 }
 
 func sessionSelectorLabels(session *kelos.Session) map[string]string {
