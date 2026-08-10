@@ -55,9 +55,10 @@ type Config struct {
 }
 
 type turnRequest struct {
-	id       string
-	text     string
-	accepted chan struct{}
+	id          string
+	text        string
+	attachments []Attachment
+	accepted    chan struct{}
 }
 
 type sessionStatusPublishRequest struct {
@@ -88,6 +89,7 @@ type Server struct {
 	config            Config
 	journal           *Journal
 	provider          Provider
+	attachmentStore   *AttachmentStore
 	providerCloseOnce sync.Once
 	providerCloseErr  error
 
@@ -160,6 +162,7 @@ func NewServer(config Config, journal *Journal, provider Provider) *Server {
 	}
 	if config.StateDir != "" {
 		server.activityMarkerPath = filepath.Join(config.StateDir, activityPublishedFile)
+		server.attachmentStore, _ = NewAttachmentStore(config.StateDir)
 	}
 	if provider, ok := provider.(runtimeStatusProvider); ok {
 		server.updateProviderRuntimeStatus(provider.runtimeStatusSnapshot())
@@ -711,15 +714,21 @@ func (s *Server) runTurn(ctx context.Context, turn turnRequest) {
 		return
 	}
 	sink := &turnSink{server: s, turnID: turn.id}
+	resolvedAttachments, err := s.resolveAttachments(turn.attachments)
+	if err != nil {
+		_ = s.journal.Append(Event{Type: EventError, TurnID: turn.id, Text: err.Error(), Status: "failed"})
+		_ = s.journal.Append(Event{Type: EventTurnCompleted, TurnID: turn.id, Status: "failed"})
+		return
+	}
 	result := make(chan error, 1)
 	go func() {
-		result <- s.provider.RunTurn(turnCtx, turn.text, sink)
+		result <- s.provider.RunTurn(turnCtx, TurnInput{Text: turn.text, Attachments: resolvedAttachments}, sink)
 	}()
-	var err error
+	var runErr error
 	select {
-	case err = <-result:
+	case runErr = <-result:
 	case <-turnCtx.Done():
-		err = context.Cause(turnCtx)
+		runErr = context.Cause(turnCtx)
 	}
 	if s.config.AgentType == "claude-code" || s.config.AgentType == "opencode" {
 		if diff := workspaceDiff(turnCtx, s.config.WorkingDir); diff != "" {
@@ -727,15 +736,15 @@ func (s *Server) runTurn(ctx context.Context, turn turnRequest) {
 		}
 	}
 	sink.stop()
-	if errors.Is(err, ErrTurnInterrupted) || errors.Is(context.Cause(turnCtx), ErrTurnInterrupted) {
+	if errors.Is(runErr, ErrTurnInterrupted) || errors.Is(context.Cause(turnCtx), ErrTurnInterrupted) {
 		_ = s.journal.Append(Event{Type: EventTurnCompleted, TurnID: turn.id, Status: "interrupted"})
 		return
 	}
-	if err != nil {
+	if runErr != nil {
 		if turnCtx.Err() != nil {
 			return
 		}
-		_ = s.journal.Append(Event{Type: EventError, TurnID: turn.id, Text: err.Error(), Status: "failed"})
+		_ = s.journal.Append(Event{Type: EventError, TurnID: turn.id, Text: runErr.Error(), Status: "failed"})
 		_ = s.journal.Append(Event{Type: EventTurnCompleted, TurnID: turn.id, Status: "failed"})
 		return
 	}
@@ -756,9 +765,17 @@ func workspaceDiff(ctx context.Context, workingDir string) string {
 	return string(output)
 }
 
-func (s *Server) submitMessage(text, requestID string) error {
-	if strings.TrimSpace(text) == "" {
+func (s *Server) submitMessage(text, requestID string, attachmentIDs ...string) error {
+	if strings.TrimSpace(text) == "" && len(attachmentIDs) == 0 {
 		return errors.New("message must not be empty")
+	}
+	resolvedAttachments, err := s.resolveAttachmentIDs(attachmentIDs)
+	if err != nil {
+		return err
+	}
+	attachments := make([]Attachment, len(resolvedAttachments))
+	for index := range resolvedAttachments {
+		attachments[index] = resolvedAttachments[index].Attachment
 	}
 	s.submitMu.Lock()
 	defer s.submitMu.Unlock()
@@ -775,14 +792,15 @@ func (s *Server) submitMessage(text, requestID string) error {
 		return fmt.Errorf("recording Session message: %w", err)
 	}
 	turn := turnRequest{
-		id:       fmt.Sprintf("turn-%d", s.nextTurnID.Add(1)),
-		text:     text,
-		accepted: make(chan struct{}),
+		id:          fmt.Sprintf("turn-%d", s.nextTurnID.Add(1)),
+		text:        text,
+		attachments: attachments,
+		accepted:    make(chan struct{}),
 	}
 	select {
 	case s.turns <- turn:
 		s.outstanding++
-		if err := s.appendMessage(Event{Type: EventUserMessage, RequestID: requestID, TurnID: turn.id, Text: turn.text}); err != nil {
+		if err := s.appendMessage(Event{Type: EventUserMessage, RequestID: requestID, TurnID: turn.id, Text: turn.text, Attachments: turn.attachments}); err != nil {
 			s.outstanding--
 			return fmt.Errorf("recording Session message: %w", err)
 		}
@@ -793,6 +811,24 @@ func (s *Server) submitMessage(text, requestID string) error {
 	}
 }
 
+func (s *Server) resolveAttachmentIDs(ids []string) ([]ResolvedAttachment, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	if s.attachmentStore == nil {
+		return nil, errors.New("Session attachment storage is unavailable")
+	}
+	return s.attachmentStore.Resolve(ids)
+}
+
+func (s *Server) resolveAttachments(attachments []Attachment) ([]ResolvedAttachment, error) {
+	ids := make([]string, len(attachments))
+	for index := range attachments {
+		ids[index] = attachments[index].ID
+	}
+	return s.resolveAttachmentIDs(ids)
+}
+
 type journalRecovery struct {
 	nextTurnID      int64
 	nextInputID     int64
@@ -801,10 +837,11 @@ type journalRecovery struct {
 }
 
 type journalTurnRecovery struct {
-	id        string
-	text      string
-	started   bool
-	completed bool
+	id          string
+	text        string
+	attachments []Attachment
+	started     bool
+	completed   bool
 }
 
 // hasUnsettledActivity reports whether the journal holds locally accepted turns
@@ -845,6 +882,7 @@ func recoverJournal(journal *Journal) (journalRecovery, error) {
 		case EventUserMessage:
 			if turn != nil {
 				turn.text = event.Text
+				turn.attachments = event.Attachments
 			}
 		case EventTurnCompleted:
 			if turn != nil {
@@ -897,7 +935,7 @@ func recoverJournal(journal *Journal) (journalRecovery, error) {
 		if !turn.started {
 			accepted := make(chan struct{})
 			close(accepted)
-			recovery.queuedTurns = append(recovery.queuedTurns, turnRequest{id: turn.id, text: turn.text, accepted: accepted})
+			recovery.queuedTurns = append(recovery.queuedTurns, turnRequest{id: turn.id, text: turn.text, attachments: turn.attachments, accepted: accepted})
 			continue
 		}
 		if err := journal.Append(Event{Type: EventTurnCompleted, TurnID: turnID, Status: "interrupted"}); err != nil {
@@ -1191,7 +1229,7 @@ func (s *Server) handleConnection(ctx context.Context, connection net.Conn) {
 			}
 		case "message":
 			subscribe(0, "", false, 0, 0)
-			if err := s.submitMessage(request.Text, request.RequestID); err != nil {
+			if err := s.submitMessage(request.Text, request.RequestID, request.AttachmentIDs...); err != nil {
 				out <- Event{Type: EventError, RequestID: request.RequestID, Text: err.Error(), Status: "rejected"}
 			}
 		case "input":

@@ -28,6 +28,7 @@ import (
 type fakeProvider struct {
 	mu        sync.Mutex
 	prompts   []string
+	inputs    []TurnInput
 	resume    chan struct{}
 	closed    bool
 	done      chan struct{}
@@ -41,7 +42,7 @@ type inputProvider struct {
 	closeOnce sync.Once
 }
 
-func (p *inputProvider) RunTurn(ctx context.Context, _ string, sink EventSink) error {
+func (p *inputProvider) RunTurn(ctx context.Context, _ TurnInput, sink EventSink) error {
 	answers, err := sink.RequestInput(ctx, InputRequest{
 		ID: "input-test",
 		Questions: []InputQuestion{
@@ -99,7 +100,7 @@ type turnCompletionRaceProvider struct {
 	closeOnce       sync.Once
 }
 
-func (p *turnCompletionRaceProvider) RunTurn(ctx context.Context, _ string, _ EventSink) error {
+func (p *turnCompletionRaceProvider) RunTurn(ctx context.Context, _ TurnInput, _ EventSink) error {
 	p.mu.Lock()
 	p.runCount++
 	runCount := p.runCount
@@ -138,7 +139,7 @@ func (p *turnCompletionRaceProvider) Close() error {
 	return nil
 }
 
-func (p *stuckInterruptProvider) RunTurn(ctx context.Context, _ string, _ EventSink) error {
+func (p *stuckInterruptProvider) RunTurn(ctx context.Context, _ TurnInput, _ EventSink) error {
 	p.startOnce.Do(func() { close(p.started) })
 	<-p.runStopped
 	return ctx.Err()
@@ -169,7 +170,7 @@ func (p *stuckInterruptProvider) Close() error {
 	return nil
 }
 
-func (p *interruptProvider) RunTurn(context.Context, string, EventSink) error {
+func (p *interruptProvider) RunTurn(context.Context, TurnInput, EventSink) error {
 	p.startOnce.Do(func() { close(p.started) })
 	<-p.interrupted
 	return ErrTurnInterrupted
@@ -186,9 +187,10 @@ func (p *interruptProvider) Close() error {
 	return nil
 }
 
-func (p *fakeProvider) RunTurn(ctx context.Context, prompt string, sink EventSink) error {
+func (p *fakeProvider) RunTurn(ctx context.Context, input TurnInput, sink EventSink) error {
 	p.mu.Lock()
-	p.prompts = append(p.prompts, prompt)
+	p.prompts = append(p.prompts, input.Text)
+	p.inputs = append(p.inputs, input)
 	p.mu.Unlock()
 	sink.Emit(Event{Type: EventAssistantDelta, Text: "working"})
 	if p.resume != nil {
@@ -220,6 +222,42 @@ func (p *fakeProvider) Close() error {
 		close(p.done)
 	})
 	return nil
+}
+
+func TestServerSubmitsAttachmentToProviderAndJournal(t *testing.T) {
+	stateDir := t.TempDir()
+	store, err := NewAttachmentStore(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attachment, err := store.Put("notes.txt", strings.NewReader("important context"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal := NewJournal()
+	t.Cleanup(journal.Close)
+	provider := &fakeProvider{}
+	server := NewServer(Config{StateDir: stateDir}, journal, provider)
+	if err := server.submitMessage("review this", "request-attachment", attachment.ID); err != nil {
+		t.Fatal(err)
+	}
+	turn := <-server.turns
+	<-turn.accepted
+	server.runTurn(t.Context(), turn)
+
+	provider.mu.Lock()
+	inputs := append([]TurnInput(nil), provider.inputs...)
+	provider.mu.Unlock()
+	if len(inputs) != 1 || inputs[0].Text != "review this" || len(inputs[0].Attachments) != 1 {
+		t.Fatalf("provider inputs = %#v", inputs)
+	}
+	if inputs[0].Attachments[0].ID != attachment.ID || !strings.HasSuffix(inputs[0].Attachments[0].Path, filepath.Join(attachment.ID, attachmentDataFileName)) {
+		t.Fatalf("resolved provider attachment = %#v", inputs[0].Attachments[0])
+	}
+	events := journal.Snapshot()
+	if len(events) == 0 || events[0].Type != EventUserMessage || !reflect.DeepEqual(events[0].Attachments, []Attachment{attachment}) {
+		t.Fatalf("journal events = %#v", events)
+	}
 }
 
 func TestSessionSetupEnvironmentKeepsWorkspaceSetupCommand(t *testing.T) {
@@ -2370,7 +2408,7 @@ done
 	if _, err := os.Stat(sessionPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("Claude session ID exists before a completed turn: %v", err)
 	}
-	if err := provider.RunTurn(t.Context(), "hello", &collectingSink{}); err != nil {
+	if err := provider.RunTurn(t.Context(), TurnInput{Text: "hello"}, &collectingSink{}); err != nil {
 		t.Fatalf("RunTurn() error = %v", err)
 	}
 	data, err := os.ReadFile(sessionPath)

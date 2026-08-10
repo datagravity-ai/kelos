@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"reflect"
 	"regexp"
 	"strings"
@@ -1196,6 +1197,44 @@ func TestSessionTUISubmittedTextRendersFromUserEventOnce(t *testing.T) {
 	}
 	if view := stripSessionTUIANSI(model.View()); strings.Contains(view, "hello") {
 		t.Fatalf("submitted text remains in inline view after commit: %q", view)
+	}
+}
+
+func TestSessionTUIDroppedFileIsAttachedToNextMessage(t *testing.T) {
+	path := t.TempDir() + "/screen shot.png"
+	if err := os.WriteFile(path, []byte("image"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	model, requests := newSessionTUITestModel()
+	model.ready = true
+	model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(path), Paste: true})
+	decoder := json.NewDecoder(requests)
+	var attachmentRequest sessionruntime.ClientRequest
+	if err := decoder.Decode(&attachmentRequest); err != nil {
+		t.Fatal(err)
+	}
+	if attachmentRequest.Type != sessionTerminalRequestAttachment || attachmentRequest.Text != path {
+		t.Fatalf("attachment request = %#v", attachmentRequest)
+	}
+
+	attachment := sessionruntime.Attachment{ID: "attachment-1", Name: "screen shot.png", MediaType: "image/png", SizeBytes: 5}
+	model.applyEvent(sessionruntime.Event{Type: sessionTerminalEventAttachmentAdded, Attachments: []sessionruntime.Attachment{attachment}})
+	if !strings.Contains(stripSessionTUIANSI(model.composerView()), "Attached: screen shot.png") {
+		t.Fatalf("composer = %q", stripSessionTUIANSI(model.composerView()))
+	}
+	model.input.SetValue("review this")
+	if cmd := model.submitInput(); cmd != nil {
+		t.Fatal("submitInput() returned a command")
+	}
+	var message sessionruntime.ClientRequest
+	if err := decoder.Decode(&message); err != nil {
+		t.Fatal(err)
+	}
+	if message.Type != "message" || message.Text != "review this" || !reflect.DeepEqual(message.AttachmentIDs, []string{"attachment-1"}) {
+		t.Fatalf("message request = %#v", message)
+	}
+	if len(model.pendingAttachments) != 0 {
+		t.Fatalf("pending attachments = %#v", model.pendingAttachments)
 	}
 }
 

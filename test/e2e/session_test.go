@@ -7,11 +7,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -214,6 +216,15 @@ var _ = Describe("Session remote control", func() {
 			return event.Type == sessionruntime.EventAssistantDelta && event.Text == "turn 7: state written"
 		})
 		waitForTurnCompletion(connection, "completed")
+
+		By("uploading an attachment before Session Pod recovery")
+		attachmentData := []byte("web attachment persisted across recovery\n")
+		attachment := uploadSessionAttachment(webClient, baseURL, f.Namespace, sessionName, "web-attachment.txt", attachmentData)
+		Expect(attachment.ID).NotTo(BeEmpty())
+		Expect(attachment.Name).To(Equal("web-attachment.txt"))
+		Expect(attachment.MediaType).To(Equal("text/plain"))
+		Expect(attachment.SizeBytes).To(Equal(int64(len(attachmentData))))
+
 		sendSessionRequest(connection, sessionruntime.ClientRequest{Type: "message", Text: "block"})
 		waitForSessionEvent(connection, func(event sessionruntime.Event) bool {
 			return event.Type == sessionruntime.EventTurnStarted && event.TurnID == "turn-8"
@@ -244,9 +255,30 @@ var _ = Describe("Session remote control", func() {
 		}
 		Expect(seenRecovery).To(BeTrue())
 		Expect(seenInterruptedTurn).To(BeTrue())
+
+		By("submitting the persisted attachment through web chat")
+		status, headers, downloaded := downloadSessionAttachment(webClient, baseURL, f.Namespace, sessionName, attachment.ID)
+		Expect(status).To(Equal(http.StatusOK), "Session attachment download response: %s", downloaded)
+		Expect(headers.Get("Content-Type")).To(Equal("text/plain"))
+		Expect(headers.Get("Content-Disposition")).To(ContainSubstring(`filename=web-attachment.txt`))
+		Expect(downloaded).To(Equal(attachmentData))
+		sendSessionRequest(connection, sessionruntime.ClientRequest{
+			Type:          "message",
+			Text:          "attachment-check",
+			AttachmentIDs: []string{attachment.ID},
+		})
+		message := waitForSessionEvent(connection, func(event sessionruntime.Event) bool {
+			return event.Type == sessionruntime.EventUserMessage && event.Text == "attachment-check"
+		})
+		Expect(message.Attachments).To(Equal([]sessionruntime.Attachment{attachment}))
+		waitForSessionEvent(connection, func(event sessionruntime.Event) bool {
+			return event.Type == sessionruntime.EventAssistantDelta && event.Text == "attachment: web attachment persisted across recovery"
+		})
+		waitForTurnCompletion(connection, "completed")
+
 		sendSessionRequest(connection, sessionruntime.ClientRequest{Type: "message", Text: "read-state"})
 		waitForSessionEvent(connection, func(event sessionruntime.Event) bool {
-			return event.Type == sessionruntime.EventAssistantDelta && event.Text == "turn 9: state preserved"
+			return event.Type == sessionruntime.EventAssistantDelta && event.Text == "turn 10: state preserved"
 		})
 		waitForTurnCompletion(connection, "completed")
 
@@ -274,12 +306,18 @@ var _ = Describe("Session remote control", func() {
 
 		connection = connectSessionWebSocket(webClient, baseURL, f.Namespace, sessionName)
 		sendSessionRequest(connection, sessionruntime.ClientRequest{Type: "subscribe"})
-		waitForSessionEvent(connection, func(event sessionruntime.Event) bool {
-			return event.Type == sessionruntime.EventHistoryEnd
-		})
+		seenAttachment := false
+		for {
+			event := readSessionEvent(connection)
+			seenAttachment = seenAttachment || (event.Type == sessionruntime.EventUserMessage && len(event.Attachments) == 1 && event.Attachments[0] == attachment)
+			if event.Type == sessionruntime.EventHistoryEnd {
+				break
+			}
+		}
+		Expect(seenAttachment).To(BeTrue())
 		sendSessionRequest(connection, sessionruntime.ClientRequest{Type: "message", Text: "read-state"})
 		waitForSessionEvent(connection, func(event sessionruntime.Event) bool {
-			return event.Type == sessionruntime.EventAssistantDelta && event.Text == "turn 10: state preserved"
+			return event.Type == sessionruntime.EventAssistantDelta && event.Text == "turn 11: state preserved"
 		})
 		waitForTurnCompletion(connection, "completed")
 
@@ -312,6 +350,13 @@ var _ = Describe("Session remote control", func() {
 			return event.Type == sessionruntime.EventAssistantDelta && event.Text == "turn 1: state missing"
 		})
 		waitForTurnCompletion(connection, "completed")
+		status, _, _ = downloadSessionAttachment(webClient, baseURL, f.Namespace, sessionName, attachment.ID)
+		Expect(status).To(Equal(http.StatusNotFound))
+
+		By("submitting an attachment through the terminal client")
+		terminalAttachmentPath := filepath.Join(GinkgoT().TempDir(), "terminal-attachment.txt")
+		Expect(os.WriteFile(terminalAttachmentPath, []byte("terminal attachment contents\n"), 0o600)).To(Succeed())
+		runTerminalAttachmentTurn(f.Namespace, sessionName, terminalAttachmentPath, "attachment-check", ContainSubstring("agent › attachment: terminal attachment contents"))
 
 		By("deleting the Session and its StatefulSet-backed Pod")
 		Expect(f.KelosClientset.ApiV1alpha2().Sessions(f.Namespace).Delete(context.TODO(), sessionName, metav1.DeleteOptions{})).To(Succeed())
@@ -1212,6 +1257,29 @@ func runTerminalTurn(namespace, name, prompt string, outputMatcher gomegatypes.G
 	Expect(command.Wait()).To(Succeed(), "terminal output:\n%s", output.String())
 }
 
+func runTerminalAttachmentTurn(namespace, name, path, prompt string, outputMatcher gomegatypes.GomegaMatcher) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	command := exec.CommandContext(ctx, framework.KelosBin(), "session", "connect", name, "-n", namespace)
+	output := &lockedBuffer{}
+	command.Stdout = io.MultiWriter(GinkgoWriter, output)
+	command.Stderr = GinkgoWriter
+	stdin, err := command.StdinPipe()
+	Expect(err).NotTo(HaveOccurred())
+	Expect(command.Start()).To(Succeed())
+	Eventually(output.String, 30*time.Second, 100*time.Millisecond).Should(ContainSubstring("Connected. Type a message"))
+	_, err = io.WriteString(stdin, "/attach "+path+"\n")
+	Expect(err).NotTo(HaveOccurred())
+	Eventually(output.String, 3*time.Minute, 200*time.Millisecond).Should(ContainSubstring("Attached " + filepath.Base(path)))
+	_, err = io.WriteString(stdin, prompt+"\n")
+	Expect(err).NotTo(HaveOccurred())
+	Eventually(output.String, 3*time.Minute, 200*time.Millisecond).Should(outputMatcher)
+	_, err = io.WriteString(stdin, "/quit\n")
+	Expect(err).NotTo(HaveOccurred())
+	Expect(stdin.Close()).To(Succeed())
+	Expect(command.Wait()).To(Succeed(), "terminal output:\n%s", output.String())
+}
+
 func startSessionServerPortForward() string {
 	ctx, cancel := context.WithCancel(context.Background())
 	command := exec.CommandContext(ctx, "kubectl", "--namespace", "kelos-system", "port-forward", "--address", "127.0.0.1", "service/kelos-session-server", ":80")
@@ -1280,6 +1348,40 @@ func resetSessionThroughWeb(client *http.Client, baseURL, namespace, name string
 	}
 	Expect(json.Unmarshal(body, &summary)).To(Succeed())
 	Expect(summary.Resetting).To(BeTrue())
+}
+
+func uploadSessionAttachment(client *http.Client, baseURL, namespace, name, filename string, data []byte) sessionruntime.Attachment {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", filename)
+	Expect(err).NotTo(HaveOccurred())
+	_, err = part.Write(data)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(writer.Close()).To(Succeed())
+
+	endpoint := fmt.Sprintf("%s/api/sessions/%s/%s/attachments", baseURL, url.PathEscape(namespace), url.PathEscape(name))
+	request, err := http.NewRequest(http.MethodPost, endpoint, &body)
+	Expect(err).NotTo(HaveOccurred())
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	response, err := client.Do(request)
+	Expect(err).NotTo(HaveOccurred())
+	defer response.Body.Close()
+	responseBody, err := io.ReadAll(response.Body)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(response.StatusCode).To(Equal(http.StatusCreated), "Session attachment upload response: %s", responseBody)
+	var attachment sessionruntime.Attachment
+	Expect(json.Unmarshal(responseBody, &attachment)).To(Succeed())
+	return attachment
+}
+
+func downloadSessionAttachment(client *http.Client, baseURL, namespace, name, id string) (int, http.Header, []byte) {
+	endpoint := fmt.Sprintf("%s/api/sessions/%s/%s/attachments/%s", baseURL, url.PathEscape(namespace), url.PathEscape(name), url.PathEscape(id))
+	response, err := client.Get(endpoint)
+	Expect(err).NotTo(HaveOccurred())
+	defer response.Body.Close()
+	data, err := io.ReadAll(response.Body)
+	Expect(err).NotTo(HaveOccurred())
+	return response.StatusCode, response.Header.Clone(), data
 }
 
 func listWebSessions(client *http.Client, baseURL, namespace string) []string {

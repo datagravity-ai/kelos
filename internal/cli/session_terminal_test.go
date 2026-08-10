@@ -457,6 +457,8 @@ func TestSessionTerminalRequest(t *testing.T) {
 		want  sessionruntime.ClientRequest
 	}{
 		{input: "hello", want: sessionruntime.ClientRequest{Type: "message", Text: "hello"}},
+		{input: "/send", want: sessionruntime.ClientRequest{Type: "message"}},
+		{input: "/attach /tmp/screen shot.png", want: sessionruntime.ClientRequest{Type: sessionTerminalRequestAttachment, Text: "/tmp/screen shot.png"}},
 		{input: "/interrupt", want: sessionruntime.ClientRequest{Type: "interrupt"}},
 		{input: "/answer input-1 question-1 first, second", want: sessionruntime.ClientRequest{Type: "input", InputID: "input-1", Answers: map[string][]string{"question-1": {"first", "second"}}}},
 		{input: "/cancel-input input-2", want: sessionruntime.ClientRequest{Type: "input", InputID: "input-2", Cancel: true}},

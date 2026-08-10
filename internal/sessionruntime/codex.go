@@ -271,7 +271,7 @@ func codexTurnID(result json.RawMessage) string {
 }
 
 // RunTurn starts one Codex turn and waits for its completion notification.
-func (p *CodexProvider) RunTurn(ctx context.Context, prompt string, sink EventSink) error {
+func (p *CodexProvider) RunTurn(ctx context.Context, input TurnInput, sink EventSink) error {
 	p.turnMu.Lock()
 	defer p.turnMu.Unlock()
 
@@ -305,10 +305,7 @@ func (p *CodexProvider) RunTurn(ctx context.Context, prompt string, sink EventSi
 
 	params := map[string]any{
 		"threadId": p.threadID,
-		"input": []map[string]any{{
-			"type": "text",
-			"text": prompt,
-		}},
+		"input":    codexTurnInputItems(input),
 	}
 	if p.config.Model != "" {
 		params["model"] = p.config.Model
@@ -349,6 +346,19 @@ func (p *CodexProvider) RunTurn(ctx context.Context, prompt string, sink EventSi
 		}
 		return errors.New("Codex app-server stopped")
 	}
+}
+
+func codexTurnInputItems(input TurnInput) []map[string]any {
+	items := []map[string]any{{
+		"type": "text",
+		"text": attachmentPrompt(input),
+	}}
+	for _, attachment := range input.Attachments {
+		if nativeImageAttachment(attachment.MediaType) {
+			items = append(items, map[string]any{"type": "localImage", "path": attachment.Path})
+		}
+	}
+	return items
 }
 
 // Interrupt stops the active Codex turn without closing its thread.

@@ -241,6 +241,17 @@ press Enter to send a message, Ctrl+J to insert a newline, and Ctrl+C or Esc to
 interrupt an active turn. Ctrl+C exits the terminal client when no turn is
 active. The terminal initially loads a bounded page of recent transcript items.
 Use `/history` or Page Up to load the previous page.
+Attach a local file with `/attach PATH`; the next message includes all staged
+files. In the interactive terminal UI, dragging a file into a terminal that
+supports bracketed paste stages the file directly. Use `/send` in the plain
+terminal to send staged files without message text. The web composer accepts
+files from its attachment button or by drag and drop. Each message supports up
+to eight files of 10 MiB each. A Session retains up to 128 attachments and 100
+MiB of attachment data. Attachments share the Session workspace lifecycle, so
+they survive Pod replacement only when `spec.volumeClaimTemplate` is configured
+and are removed by Session reset or deletion. Retained messages show attachment
+names, and the web client provides authenticated previews or downloads while
+the Session is ready.
 The terminal client shows live connecting, reconnecting, working,
 waiting-for-input, and interrupting progress with elapsed time. After a
 completed turn, both interactive and plain terminal output show a `Worked for

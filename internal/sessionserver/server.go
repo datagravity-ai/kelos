@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"mime"
 	"net/http"
 	"sort"
 	"strings"
@@ -39,6 +40,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	kelos "github.com/kelos-dev/kelos/api/v1alpha2"
+	"github.com/kelos-dev/kelos/internal/sessionattachment"
 	"github.com/kelos-dev/kelos/internal/sessionreset"
 	"github.com/kelos-dev/kelos/internal/sessionruntime"
 	"github.com/kelos-dev/kelos/internal/sessionsuspend"
@@ -51,6 +53,7 @@ const (
 	sessionSectionAnnotation = "kelos.dev/session-section"
 	maxSessionSectionLength  = 64
 	requestBodyLimit         = 1024 * 1024
+	attachmentRequestLimit   = sessionruntime.MaxAttachmentBytes + 1024*1024
 )
 
 //go:embed web/*
@@ -78,6 +81,12 @@ type Server struct {
 	handler          http.Handler
 	upgrader         websocket.Upgrader
 	bridge           func(context.Context, *sessionSocket, string, string, func() error) error
+	attachments      sessionAttachmentTransfer
+}
+
+type sessionAttachmentTransfer interface {
+	Upload(context.Context, string, string, string, io.Reader) (sessionruntime.Attachment, error)
+	Download(context.Context, string, string, string) (sessionruntime.Attachment, []byte, error)
 }
 
 type sessionSocket struct {
@@ -176,6 +185,10 @@ func New(config Config) (*Server, error) {
 	if config.Client == nil || config.Clientset == nil || config.RESTConfig == nil {
 		return nil, errors.New("Kubernetes clients and REST config are required")
 	}
+	attachmentClient, err := sessionattachment.New(config.RESTConfig)
+	if err != nil {
+		return nil, err
+	}
 	digest := hmac.New(sha256.New, []byte(config.Token))
 	_, _ = digest.Write([]byte("kelos-session-web-cookie-v1"))
 	server := &Server{
@@ -186,6 +199,7 @@ func New(config Config) (*Server, error) {
 		restConfig:       config.RESTConfig,
 		defaultNamespace: defaultNamespace,
 		secureCookie:     config.SecureCookie,
+		attachments:      attachmentClient,
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  16 * 1024,
 			WriteBufferSize: 16 * 1024,
@@ -323,6 +337,14 @@ func (s *Server) api(writer http.ResponseWriter, request *http.Request) {
 	namespace, name := parts[1], parts[2]
 	if len(parts) == 4 && parts[3] == "connect" && request.Method == http.MethodGet {
 		s.connectSession(writer, request, namespace, name)
+		return
+	}
+	if len(parts) == 4 && parts[3] == "attachments" && request.Method == http.MethodPost {
+		s.uploadSessionAttachment(writer, request, namespace, name)
+		return
+	}
+	if len(parts) == 5 && parts[3] == "attachments" && request.Method == http.MethodGet {
+		s.downloadSessionAttachment(writer, request, namespace, name, parts[4])
 		return
 	}
 	if len(parts) == 4 && parts[3] == "reset" && request.Method == http.MethodPost {
@@ -746,6 +768,95 @@ func sessionActivityTime(session *kelos.Session) time.Time {
 		activity = condition.LastTransitionTime.Time
 	}
 	return activity
+}
+
+func (s *Server) uploadSessionAttachment(writer http.ResponseWriter, request *http.Request, namespace, name string) {
+	session, ok := s.readySession(writer, request, namespace, name)
+	if !ok {
+		return
+	}
+	request.Body = http.MaxBytesReader(writer, request.Body, attachmentRequestLimit)
+	reader, err := request.MultipartReader()
+	if err != nil {
+		writeError(writer, http.StatusBadRequest, "attachment upload must use multipart form data")
+		return
+	}
+	for {
+		part, err := reader.NextPart()
+		if errors.Is(err, io.EOF) {
+			writeError(writer, http.StatusBadRequest, "attachment file is required")
+			return
+		}
+		if err != nil {
+			writeError(writer, http.StatusBadRequest, fmt.Sprintf("reading attachment upload: %v", err))
+			return
+		}
+		if part.FormName() != "file" || part.FileName() == "" {
+			_ = part.Close()
+			continue
+		}
+		attachment, err := s.attachments.Upload(request.Context(), namespace, session.Status.PodName, part.FileName(), part)
+		_ = part.Close()
+		if err != nil {
+			status := attachmentUploadStatus(err)
+			writeError(writer, status, fmt.Sprintf("uploading attachment to Session %q: %v", name, err))
+			return
+		}
+		writeJSON(writer, http.StatusCreated, attachment)
+		return
+	}
+}
+
+func (s *Server) downloadSessionAttachment(writer http.ResponseWriter, request *http.Request, namespace, name, id string) {
+	session, ok := s.readySession(writer, request, namespace, name)
+	if !ok {
+		return
+	}
+	attachment, data, err := s.attachments.Download(request.Context(), namespace, session.Status.PodName, id)
+	if err != nil {
+		status := http.StatusBadGateway
+		if strings.Contains(strings.ToLower(err.Error()), "attachment not found") {
+			status = http.StatusNotFound
+		}
+		writeError(writer, status, fmt.Sprintf("downloading attachment from Session %q: %v", name, err))
+		return
+	}
+	disposition := "attachment"
+	if strings.HasPrefix(attachment.MediaType, "image/") {
+		disposition = "inline"
+	}
+	writer.Header().Set("Cache-Control", "private, no-store")
+	writer.Header().Set("Content-Type", attachment.MediaType)
+	writer.Header().Set("Content-Disposition", mime.FormatMediaType(disposition, map[string]string{"filename": attachment.Name}))
+	writer.WriteHeader(http.StatusOK)
+	_, _ = writer.Write(data)
+}
+
+func attachmentUploadStatus(err error) int {
+	message := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(message, "too large") || strings.Contains(message, "exceeds the"):
+		return http.StatusRequestEntityTooLarge
+	case strings.Contains(message, "storage quota exceeded"):
+		return http.StatusInsufficientStorage
+	case strings.Contains(message, "storing session attachment failed"):
+		return http.StatusBadRequest
+	default:
+		return http.StatusBadGateway
+	}
+}
+
+func (s *Server) readySession(writer http.ResponseWriter, request *http.Request, namespace, name string) (*kelos.Session, bool) {
+	var session kelos.Session
+	if err := s.client.Get(request.Context(), client.ObjectKey{Namespace: namespace, Name: name}, &session); err != nil {
+		writeKubernetesError(writer, fmt.Sprintf("getting Session %q", name), err)
+		return nil, false
+	}
+	if session.Status.Phase != kelos.SessionPhaseReady || session.Status.PodName == "" {
+		writeError(writer, http.StatusConflict, fmt.Sprintf("Session %q is not ready", name))
+		return nil, false
+	}
+	return &session, true
 }
 
 func (s *Server) connectSession(writer http.ResponseWriter, request *http.Request, namespace, name string) {

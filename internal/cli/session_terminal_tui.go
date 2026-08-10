@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -176,6 +177,7 @@ type sessionTUIModel struct {
 	quitRequested      bool
 	quitting           bool
 	runtimeStatus      sessionruntime.RuntimeStatus
+	pendingAttachments []sessionruntime.Attachment
 }
 
 func runSessionTUI(ctx context.Context, input io.Reader, output io.Writer, events *json.Decoder, requests *json.Encoder, color bool) error {
@@ -376,6 +378,11 @@ func (m *sessionTUIModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if m.quitRequested {
 			return m, nil
 		}
+		if message.Paste && m.ready {
+			if path, ok := sessionTerminalDroppedFile(string(message.Runes)); ok {
+				return m, m.attachFile(path)
+			}
+		}
 		switch message.Type {
 		case tea.KeyCtrlC:
 			if m.turnActive {
@@ -453,9 +460,20 @@ func (m *sessionTUIModel) submitInput() tea.Cmd {
 		return m.requestOlderHistory()
 	}
 	request := sessionTerminalRequest(line)
+	if request.Type == "" && len(m.pendingAttachments) > 0 && strings.TrimSpace(line) == "" {
+		request = sessionruntime.ClientRequest{Type: "message"}
+	}
 	if request.Type == "" {
 		m.input.Reset()
 		return nil
+	}
+	if request.Type == sessionTerminalRequestAttachment {
+		m.input.Reset()
+		m.resizeComposer()
+		return m.attachFile(request.Text)
+	}
+	if request.Type == "message" {
+		request.AttachmentIDs = sessionAttachmentIDs(m.pendingAttachments)
 	}
 	if err := m.requests.Encode(request); err != nil {
 		m.err = err
@@ -464,11 +482,50 @@ func (m *sessionTUIModel) submitInput() tea.Cmd {
 	if request.Type != "input" {
 		m.history = append(m.history, line)
 	}
+	if request.Type == "message" {
+		m.pendingAttachments = nil
+	}
 	m.historyAt = -1
 	m.draft = ""
 	m.input.Reset()
 	m.resizeComposer()
 	return nil
+}
+
+func (m *sessionTUIModel) attachFile(path string) tea.Cmd {
+	if len(m.pendingAttachments) >= sessionruntime.MaxAttachmentsPerMessage {
+		m.appendBlock(sessionTUIBlockError, fmt.Sprintf("error: a message supports at most %d attachments", sessionruntime.MaxAttachmentsPerMessage))
+		m.refreshActiveView()
+		return m.queueReadyBlocks()
+	}
+	if err := m.requests.Encode(sessionruntime.ClientRequest{Type: sessionTerminalRequestAttachment, Text: path}); err != nil {
+		m.err = err
+		return m.quit()
+	}
+	return nil
+}
+
+func sessionTerminalDroppedFile(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	if strings.ContainsAny(value, "\r\n") {
+		return "", false
+	}
+	if strings.HasPrefix(value, "file://") {
+		parsed, err := url.Parse(value)
+		if err != nil || (parsed.Host != "" && parsed.Host != "localhost") {
+			return "", false
+		}
+		value = parsed.Path
+	}
+	if len(value) >= 2 && ((value[0] == '\'' && value[len(value)-1] == '\'') || (value[0] == '"' && value[len(value)-1] == '"')) {
+		value = value[1 : len(value)-1]
+	}
+	value = strings.ReplaceAll(value, `\ `, " ")
+	info, err := os.Stat(value)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > sessionruntime.MaxAttachmentBytes {
+		return "", false
+	}
+	return value, true
 }
 
 func (m *sessionTUIModel) previousInput() {
@@ -507,7 +564,7 @@ func (m *sessionTUIModel) applyEvent(event sessionruntime.Event) sessionTUIComma
 		if event.Type == sessionruntime.EventHistoryEnd && event.HistoryPage {
 			return m.finishOlderHistoryPage()
 		}
-		if event.Type == sessionTerminalEventDiagnostic || (event.Type == sessionruntime.EventHistoryStart && !event.HistoryPage) {
+		if event.Type == sessionTerminalEventDiagnostic || event.Type == sessionTerminalEventAttachmentAdded || (event.Type == sessionruntime.EventHistoryStart && !event.HistoryPage) {
 			m.cancelOlderHistoryPage()
 		} else {
 			m.historyPageEvents = append(m.historyPageEvents, event)
@@ -554,7 +611,7 @@ func (m *sessionTUIModel) applyEvent(event sessionruntime.Event) sessionTUIComma
 		// A terminal-height transcript in both the managed view and native scrollback
 		// makes Bubble Tea move the smaller footer to the top when the copy is removed.
 		m.hideNextHistory = !m.ready
-		m.appendBlock(sessionTUIBlockNotice, "Connected. Enter sends, Ctrl+J inserts a newline, and Ctrl+C or Esc interrupts active work. Ctrl+C quits when idle. Use /history or Page Up for earlier history, /answer INPUT QUESTION VALUE, or /quit.")
+		m.appendBlock(sessionTUIBlockNotice, "Connected. Enter sends, Ctrl+J inserts a newline, and Ctrl+C or Esc interrupts active work. Drag a file here or use /attach PATH. Use /history or Page Up for earlier history, /answer INPUT QUESTION VALUE, or /quit.")
 		m.ready = true
 		m.connectionStatus = ""
 		commands.ui = tea.Batch(m.input.Focus(), m.scheduleProgress())
@@ -579,9 +636,14 @@ func (m *sessionTUIModel) applyEvent(event sessionruntime.Event) sessionTUIComma
 	case sessionruntime.EventUserMessage:
 		if event.TurnID == "" {
 			m.finishStreaming()
-			m.appendBlock(sessionTUIBlockUser, event.Text)
+			m.appendBlock(sessionTUIBlockUser, sessionTerminalMessageText(event.Text, event.Attachments))
 		} else {
-			m.appendQueuedUser(event.TurnID, event.Text)
+			m.appendQueuedUser(event.TurnID, sessionTerminalMessageText(event.Text, event.Attachments))
+		}
+	case sessionTerminalEventAttachmentAdded:
+		m.pendingAttachments = append(m.pendingAttachments, event.Attachments...)
+		for _, attachment := range event.Attachments {
+			m.appendBlock(sessionTUIBlockNotice, fmt.Sprintf("Attached %s (%d bytes). Send a message to include it.", attachment.Name, attachment.SizeBytes))
 		}
 	case sessionruntime.EventTurnStarted:
 		m.turnActive = true
@@ -676,7 +738,7 @@ func (m *sessionTUIModel) applyHistoryState(state *sessionruntime.HistoryState) 
 	m.queuedTurns = make(map[string]string, len(state.QueuedTurns))
 	m.queuedTurnOrder = make([]string, 0, len(state.QueuedTurns))
 	for _, turn := range state.QueuedTurns {
-		m.queuedTurns[turn.TurnID] = turn.Text
+		m.queuedTurns[turn.TurnID] = sessionTerminalMessageText(turn.Text, turn.Attachments)
 		m.queuedTurnOrder = append(m.queuedTurnOrder, turn.TurnID)
 	}
 	m.activeTurnID = state.ActiveTurnID
@@ -1321,6 +1383,14 @@ func (m *sessionTUIModel) composerView() string {
 		return blank + "\n" + loading + "\n" + blank
 	}
 	middle := strings.TrimSuffix(m.input.View(), "\n")
+	attachmentLine := ""
+	if len(m.pendingAttachments) > 0 {
+		names := make([]string, len(m.pendingAttachments))
+		for index := range m.pendingAttachments {
+			names[index] = m.pendingAttachments[index].Name
+		}
+		attachmentLine = m.renderUserRow("  " + m.styles.muted.Render("Attached: "+strings.Join(names, ", ")))
+	}
 	lines := strings.Split(middle, "\n")
 	continuation := strings.Repeat(" ", len(sessionTUIComposerPrompt))
 	for index := range lines {
@@ -1332,6 +1402,9 @@ func (m *sessionTUIModel) composerView() string {
 	}
 	middle = strings.Join(lines, "\n")
 	middle = m.renderUserRow(middle)
+	if attachmentLine != "" {
+		return attachmentLine + "\n" + middle + "\n" + blank
+	}
 	return blank + "\n" + middle + "\n" + blank
 }
 
@@ -1354,7 +1427,11 @@ func (m *sessionTUIModel) composerMaxHeight() int {
 }
 
 func (m *sessionTUIModel) composerHeight() int {
-	return m.input.Height() + sessionTUIComposerMinHeight - 1
+	height := m.input.Height() + sessionTUIComposerMinHeight - 1
+	if len(m.pendingAttachments) > 0 {
+		height++
+	}
+	return height
 }
 
 func (m *sessionTUIModel) footerHeight() int {

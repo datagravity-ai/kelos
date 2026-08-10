@@ -22,6 +22,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	kelos "github.com/kelos-dev/kelos/api/v1alpha2"
+	"github.com/kelos-dev/kelos/internal/sessionattachment"
 	"github.com/kelos-dev/kelos/internal/sessionruntime"
 	"github.com/kelos-dev/kelos/internal/sessionsuspend"
 )
@@ -137,6 +138,7 @@ type sessionReconnectDependencies struct {
 	acknowledgeResume func(context.Context, string, string, string) error
 	openStream        func(context.Context, string, string, io.Writer) (*sessionPodStream, error)
 	runTerminal       func(context.Context, io.Reader, io.Writer, io.Reader, io.Writer, bool) error
+	uploadAttachment  func(context.Context, string, string, string) (sessionruntime.Attachment, error)
 }
 
 type sessionEventResult struct {
@@ -297,6 +299,10 @@ func connectSession(ctx context.Context, restConfig *rest.Config, namespace, nam
 	if err != nil {
 		return fmt.Errorf("creating Kubernetes client: %w", err)
 	}
+	attachmentClient, err := sessionattachment.New(restConfig)
+	if err != nil {
+		return err
+	}
 	dependencies := sessionReconnectDependencies{
 		getSession: func(ctx context.Context, namespace, name string) (*kelos.Session, error) {
 			session := &kelos.Session{}
@@ -326,6 +332,24 @@ func connectSession(ctx context.Context, restConfig *rest.Config, namespace, nam
 			return openSessionPodStream(ctx, restConfig, namespace, podName, diagnostics)
 		},
 		runTerminal: runSessionTerminal,
+		uploadAttachment: func(ctx context.Context, namespace, podName, path string) (sessionruntime.Attachment, error) {
+			file, err := os.Open(path)
+			if err != nil {
+				return sessionruntime.Attachment{}, fmt.Errorf("opening attachment %q: %w", path, err)
+			}
+			defer file.Close()
+			info, err := file.Stat()
+			if err != nil {
+				return sessionruntime.Attachment{}, fmt.Errorf("checking attachment %q: %w", path, err)
+			}
+			if !info.Mode().IsRegular() {
+				return sessionruntime.Attachment{}, fmt.Errorf("attachment %q is not a regular file", path)
+			}
+			if info.Size() > sessionruntime.MaxAttachmentBytes {
+				return sessionruntime.Attachment{}, fmt.Errorf("attachment %q exceeds the %d byte limit", path, sessionruntime.MaxAttachmentBytes)
+			}
+			return attachmentClient.Upload(ctx, namespace, podName, info.Name(), file)
+		},
 	}
 	return connectSessionWithDependencies(ctx, namespace, name, stdin, stdout, stderr, color, dependencies)
 }
@@ -538,6 +562,24 @@ func connectSessionWithDependencies(
 				return err
 			case request := <-requests:
 				if request.Type == "subscribe" {
+					continue
+				}
+				if request.Type == sessionTerminalRequestAttachment {
+					var event sessionruntime.Event
+					if dependencies.uploadAttachment == nil {
+						event = sessionruntime.Event{Type: sessionruntime.EventError, Text: "Session attachment upload is unavailable", Status: "rejected"}
+					} else {
+						attachment, err := dependencies.uploadAttachment(terminalCtx, namespace, session.Status.PodName, request.Text)
+						if err != nil {
+							event = sessionruntime.Event{Type: sessionruntime.EventError, Text: err.Error(), Status: "rejected"}
+						} else {
+							event = sessionruntime.Event{Type: sessionTerminalEventAttachmentAdded, Attachments: []sessionruntime.Attachment{attachment}}
+						}
+					}
+					if err := eventSink.send(event); err != nil {
+						stream.Close()
+						return err
+					}
 					continue
 				}
 				if request.RequestID == "" {

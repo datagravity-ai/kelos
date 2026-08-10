@@ -28,7 +28,7 @@ type ProviderConfig struct {
 
 // Provider runs turns against one provider-owned conversation.
 type Provider interface {
-	RunTurn(ctx context.Context, prompt string, sink EventSink) error
+	RunTurn(ctx context.Context, input TurnInput, sink EventSink) error
 	Interrupt(ctx context.Context) error
 	Done() <-chan struct{}
 	Close() error

@@ -380,7 +380,7 @@ func openCodeVariant(provider, effort string) string {
 }
 
 // RunTurn submits one prompt to the persistent OpenCode session.
-func (p *OpenCodeProvider) RunTurn(ctx context.Context, prompt string, sink EventSink) error {
+func (p *OpenCodeProvider) RunTurn(ctx context.Context, input TurnInput, sink EventSink) error {
 	p.turnMu.Lock()
 	defer p.turnMu.Unlock()
 
@@ -427,8 +427,17 @@ func (p *OpenCodeProvider) RunTurn(ctx context.Context, prompt string, sink Even
 		p.activeMu.Unlock()
 	}()
 
+	parts := []map[string]string{{"type": "text", "text": attachmentPrompt(input)}}
+	for _, attachment := range input.Attachments {
+		parts = append(parts, map[string]string{
+			"type":     "file",
+			"mime":     attachment.MediaType,
+			"filename": attachment.Name,
+			"url":      (&url.URL{Scheme: "file", Path: attachment.Path}).String(),
+		})
+	}
 	request := map[string]any{
-		"parts": []map[string]string{{"type": "text", "text": prompt}},
+		"parts": parts,
 	}
 	if err := p.client.doJSON(ctx, http.MethodPost, "/session/"+url.PathEscape(p.currentSessionID())+"/prompt_async", true, request, nil); err != nil {
 		return fmt.Errorf("starting OpenCode turn: %w", err)
