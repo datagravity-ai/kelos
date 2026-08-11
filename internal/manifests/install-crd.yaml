@@ -7983,6 +7983,32 @@ spec:
                 description: PullRequest describes the pull request associated with
                   Branch, when one exists.
                 properties:
+                  checks:
+                    description: Checks summarizes the GitHub checks reported for
+                      the pull request.
+                    properties:
+                      completed:
+                        description: Completed is the number of checks that have completed.
+                        format: int32
+                        minimum: 0
+                        type: integer
+                      state:
+                        description: State is the aggregate state of the checks.
+                        enum:
+                        - Pending
+                        - Success
+                        - Failure
+                        type: string
+                      total:
+                        description: Total is the total number of checks.
+                        format: int32
+                        minimum: 1
+                        type: integer
+                    required:
+                    - completed
+                    - state
+                    - total
+                    type: object
                   state:
                     description: State is the pull request lifecycle state.
                     enum:

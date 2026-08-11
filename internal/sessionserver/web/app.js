@@ -582,6 +582,18 @@ function sessionPRState(value) {
   return ['Draft', 'Open', 'Merged', 'Closed'].includes(value) ? value : '';
 }
 
+function sessionPRChecks(checks) {
+  if (!checks || !Number.isInteger(checks.completed) || !Number.isInteger(checks.total) || checks.total < 1) return null;
+  if (!['Pending', 'Success', 'Failure'].includes(checks.state)) return null;
+  const completed = Math.max(0, Math.min(checks.completed, checks.total));
+  const labels = {
+    Pending: `Checks ${completed}/${checks.total}`,
+    Success: 'Checks passed',
+    Failure: 'Checks failed',
+  };
+  return {state: checks.state.toLowerCase(), label: labels[checks.state]};
+}
+
 function createPullRequestLink(pullRequest, className) {
   const url = safeHTTPURL(pullRequest?.url);
   if (!url) return null;
@@ -593,7 +605,15 @@ function createPullRequestLink(pullRequest, className) {
   const state = sessionPRState(pullRequest.state);
   link.textContent = state ? `${pullRequestLabel(url)} · ${state}` : pullRequestLabel(url);
   if (state) link.dataset.state = state.toLowerCase();
-  link.title = pullRequest.url;
+  const checks = sessionPRChecks(pullRequest.checks);
+  if (checks) {
+    const checkStatus = document.createElement('span');
+    checkStatus.className = 'pull-request-checks';
+    checkStatus.dataset.state = checks.state;
+    checkStatus.textContent = `· ${checks.label}`;
+    link.append(checkStatus);
+  }
+  link.title = checks ? `${pullRequest.url} · ${checks.label}` : pullRequest.url;
   return link;
 }
 

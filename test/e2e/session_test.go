@@ -691,6 +691,11 @@ var _ = Describe("Session remote control", func() {
 		pullRequest := &kelos.SessionPullRequest{
 			URL:   "https://github.com/kelos-dev/kelos/pull/42",
 			State: kelos.SessionPullRequestStateOpen,
+			Checks: &kelos.SessionPullRequestChecks{
+				State:     kelos.SessionPullRequestChecksStatePending,
+				Completed: 2,
+				Total:     3,
+			},
 		}
 		sessionName := "workspace-status"
 		configMapName := sessionName + "-provider"

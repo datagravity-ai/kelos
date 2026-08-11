@@ -90,6 +90,9 @@ button { color: inherit; }
 .pull-request-link[data-state="open"] { color: var(--pr-open); }
 .pull-request-link[data-state="merged"] { color: var(--pr-merged); }
 .pull-request-link[data-state="closed"] { color: var(--pr-closed); }
+.pull-request-checks[data-state="pending"] { color: var(--warning); }
+.pull-request-checks[data-state="success"] { color: var(--pr-open); }
+.pull-request-checks[data-state="failure"] { color: var(--danger); }
 .session-item-pull-request { width: fit-content; max-width: calc(100% - 38px); margin: 0 10px 9px 28px; overflow: hidden; font-size: 10.5px; font-weight: 700; text-decoration: none; text-overflow: ellipsis; white-space: nowrap; }
 .session-item-pull-request:hover { text-decoration: underline; }
 .provider-badge { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

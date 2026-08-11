@@ -31,6 +31,13 @@ type workspaceStatusRunner interface {
 	run(context.Context, string, string, ...string) (string, error)
 }
 
+type githubStatusCheck struct {
+	TypeName   string `json:"__typename"`
+	Status     string `json:"status"`
+	Conclusion string `json:"conclusion"`
+	State      string `json:"state"`
+}
+
 type realWorkspaceStatusRunner struct{}
 
 func (realWorkspaceStatusRunner) run(ctx context.Context, workingDir, name string, args ...string) (string, error) {
@@ -113,7 +120,7 @@ func repositoryOwnerFromRemoteURL(remoteURL string) (string, error) {
 }
 
 func findPullRequest(ctx context.Context, runner workspaceStatusRunner, workingDir, branch, repo, headOwner string) (*kelos.SessionPullRequest, error) {
-	args := []string{"pr", "list", "--head", branch, "--state", "all", "--json", "url,headRepositoryOwner,state,isDraft", "--limit", "100"}
+	args := []string{"pr", "list", "--head", branch, "--state", "all", "--json", "url,headRepositoryOwner,state,isDraft,statusCheckRollup", "--limit", "100"}
 	if repo != "" {
 		args = append(args, "--repo", repo)
 	}
@@ -131,6 +138,7 @@ func findPullRequest(ctx context.Context, runner workspaceStatusRunner, workingD
 		HeadRepositoryOwner struct {
 			Login string `json:"login"`
 		} `json:"headRepositoryOwner"`
+		StatusCheckRollup []githubStatusCheck `json:"statusCheckRollup"`
 	}
 	if err := json.Unmarshal([]byte(output), &pullRequests); err != nil {
 		return nil, fmt.Errorf("decoding pull requests: %w", err)
@@ -141,10 +149,66 @@ func findPullRequest(ctx context.Context, runner workspaceStatusRunner, workingD
 			if err != nil {
 				return nil, err
 			}
-			return &kelos.SessionPullRequest{URL: pullRequest.URL, State: state}, nil
+			return &kelos.SessionPullRequest{
+				URL:    pullRequest.URL,
+				State:  state,
+				Checks: sessionPullRequestChecks(pullRequest.StatusCheckRollup),
+			}, nil
 		}
 	}
 	return nil, nil
+}
+
+func sessionPullRequestChecks(checks []githubStatusCheck) *kelos.SessionPullRequestChecks {
+	if len(checks) == 0 {
+		return nil
+	}
+
+	result := &kelos.SessionPullRequestChecks{
+		State: kelos.SessionPullRequestChecksStateSuccess,
+		Total: int32(len(checks)),
+	}
+	for _, check := range checks {
+		completed, failed := completedGitHubCheck(check)
+		if completed {
+			result.Completed++
+		}
+		if failed {
+			result.State = kelos.SessionPullRequestChecksStateFailure
+		}
+	}
+	if result.State != kelos.SessionPullRequestChecksStateFailure && result.Completed < result.Total {
+		result.State = kelos.SessionPullRequestChecksStatePending
+	}
+	return result
+}
+
+func completedGitHubCheck(check githubStatusCheck) (completed, failed bool) {
+	switch check.TypeName {
+	case "CheckRun":
+		if !strings.EqualFold(check.Status, "COMPLETED") {
+			return false, false
+		}
+		switch strings.ToUpper(check.Conclusion) {
+		case "SUCCESS", "NEUTRAL", "SKIPPED":
+			return true, false
+		case "ACTION_REQUIRED", "CANCELLED", "FAILURE", "STALE", "STARTUP_FAILURE", "TIMED_OUT":
+			return true, true
+		default:
+			return false, false
+		}
+	case "StatusContext":
+		switch strings.ToUpper(check.State) {
+		case "SUCCESS":
+			return true, false
+		case "ERROR", "FAILURE":
+			return true, true
+		default:
+			return false, false
+		}
+	default:
+		return false, false
+	}
 }
 
 func sessionPullRequestState(state string, draft bool) (kelos.SessionPullRequestState, error) {

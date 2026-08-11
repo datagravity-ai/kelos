@@ -944,6 +944,11 @@ func TestSummarizeIncludesRuntimeStatus(t *testing.T) {
 			PullRequest: &kelos.SessionPullRequest{
 				URL:   "https://github.com/kelos-dev/kelos/pull/42",
 				State: kelos.SessionPullRequestStateOpen,
+				Checks: &kelos.SessionPullRequestChecks{
+					State:     kelos.SessionPullRequestChecksStatePending,
+					Completed: 2,
+					Total:     3,
+				},
 			},
 		},
 	}
@@ -1061,6 +1066,8 @@ func TestSessionViewsIncludeRuntimeStatus(t *testing.T) {
 		"validated pull request URL": `const url = safeHTTPURL(pullRequest?.url);`,
 		"pull request state label":   "link.textContent = state ? `${pullRequestLabel(url)} · ${state}` : pullRequestLabel(url);",
 		"pull request state color":   `if (state) link.dataset.state = state.toLowerCase();`,
+		"pull request checks label":  "Pending: `Checks ${completed}/${checks.total}`",
+		"pull request checks state":  "checkStatus.dataset.state = checks.state;",
 		"pull request link target":   `link.target = '_blank';`,
 		"sidebar pull request link":  `createPullRequestLink(session.pullRequest, 'session-item-pull-request');`,
 		"header pull request link":   `createPullRequestLink(session.pullRequest, 'session-meta-pull-request');`,
@@ -1096,6 +1103,15 @@ func TestSessionViewsIncludeRuntimeStatus(t *testing.T) {
 	} {
 		if !strings.Contains(string(styles), expected) {
 			t.Errorf("Session views do not style %s pull requests", state)
+		}
+	}
+	for state, expected := range map[string]string{
+		"pending": `.pull-request-checks[data-state="pending"] { color: var(--warning); }`,
+		"success": `.pull-request-checks[data-state="success"] { color: var(--pr-open); }`,
+		"failure": `.pull-request-checks[data-state="failure"] { color: var(--danger); }`,
+	} {
+		if !strings.Contains(string(styles), expected) {
+			t.Errorf("Session views do not style %s pull request checks", state)
 		}
 	}
 }
