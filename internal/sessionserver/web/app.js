@@ -2,6 +2,13 @@ const elements = {
   list: document.querySelector('#session-list'),
   title: document.querySelector('#session-title'),
   meta: document.querySelector('#session-meta'),
+  displayNameButton: document.querySelector('#session-display-name'),
+  displayNameDialog: document.querySelector('#display-name-dialog'),
+  displayNameForm: document.querySelector('#display-name-form'),
+  displayNameDialogDescription: document.querySelector('#display-name-dialog-description'),
+  displayNameInput: document.querySelector('#session-display-name-input'),
+  displayNameDialogError: document.querySelector('#display-name-dialog-error'),
+  saveDisplayNameButton: document.querySelector('#save-session-display-name'),
   sectionButton: document.querySelector('#session-section'),
   sectionSelect: document.querySelector('#session-section-select'),
   sectionCustom: document.querySelector('#session-section-custom'),
@@ -120,6 +127,7 @@ const state = {
   creatingSession: false,
   sourceStorageClassNamePresent: false,
   loadedSource: null,
+  displayNameSaving: false,
   sectionSaving: false,
   sectionAssignments: new Set(),
   sectionOrders: new Map(),
@@ -158,6 +166,10 @@ function showToast(message) {
 
 function sessionKey(session) {
   return `${session.namespace}/${session.name}`;
+}
+
+function sessionDisplayName(session) {
+  return session?.displayName || session?.name || '';
 }
 
 function sessionViewKey(session) {
@@ -426,11 +438,11 @@ function formatSessionRuntimeTokens(value) {
   return `${Number(scaled.toFixed(decimals))}${suffix}`;
 }
 
-function sessionRuntimeStatusText(status) {
+function sessionRuntimeStatusText(status, displayName = '') {
   if (!status) return '';
   const parts = [];
   const add = value => { if (value) parts.push(value); };
-  add(status.sessionName);
+  add(displayName || status.sessionName);
   add(status.agentType);
   add(`${status.model || ''} ${status.effort || ''}`.trim());
   add(sessionRuntimePath(status.workingDir, status.homeDir));
@@ -451,7 +463,7 @@ function sessionRuntimeStatusText(status) {
 }
 
 function renderRuntimeStatus() {
-  const text = sessionRuntimeStatusText(state.runtimeStatus);
+  const text = sessionRuntimeStatusText(state.runtimeStatus, sessionDisplayName(state.selected));
   elements.runtimeStatus.textContent = text;
   elements.runtimeStatus.title = text;
   elements.runtimeStatus.hidden = !text;
@@ -702,7 +714,7 @@ function createSessionListItem(session, draggable = false) {
   titleRow.className = 'session-item-title-row';
   const name = document.createElement('div');
   name.className = 'session-item-name';
-  name.textContent = session.name;
+  name.textContent = sessionDisplayName(session);
   titleRow.append(name);
   const timestamp = createSessionTimestamp(session, true, 'session-item-time');
   if (timestamp) titleRow.append(timestamp);
@@ -712,7 +724,7 @@ function createSessionListItem(session, draggable = false) {
   provider.className = 'provider-badge';
   provider.textContent = providerLabel(session.provider);
   const namespace = document.createElement('span');
-  namespace.textContent = `· ${session.namespace}`;
+  namespace.textContent = sessionDisplayName(session) === session.name ? `· ${session.namespace}` : `· ${session.namespace}/${session.name}`;
   const activity = document.createElement('span');
   activity.textContent = `· ${displayStatus}`;
   meta.append(provider);
@@ -973,6 +985,20 @@ async function saveSessionSectionAssignment(session, section) {
   state.sessions = state.sessions.map(item => sessionKey(item) === sessionKey(updated) ? updated : item);
   if (state.selected && sessionKey(state.selected) === sessionKey(updated)) state.selected = updated;
   renderSectionOptions();
+  renderSessions();
+  renderHeader();
+  return updated;
+}
+
+async function saveSessionDisplayName(session, displayName) {
+  const generation = state.namespaceGeneration;
+  const updated = await api(
+    `/api/sessions/${encodeURIComponent(session.namespace)}/${encodeURIComponent(session.name)}/display-name`,
+    {method: 'PATCH', body: JSON.stringify({displayName})},
+  );
+  if (generation !== state.namespaceGeneration) return updated;
+  state.sessions = state.sessions.map(item => sessionKey(item) === sessionKey(updated) ? updated : item);
+  if (state.selected && sessionKey(state.selected) === sessionKey(updated)) state.selected = updated;
   renderSessions();
   renderHeader();
   return updated;
@@ -1524,6 +1550,8 @@ function createWelcome() {
 
 function renderHeader() {
   const session = state.selected;
+  elements.displayNameButton.hidden = !session;
+  elements.displayNameButton.disabled = !session;
   elements.sectionButton.hidden = !session;
   elements.sectionButton.disabled = !session;
   elements.resetButton.disabled = !session || session.resetting;
@@ -1536,12 +1564,14 @@ function renderHeader() {
     elements.meta.textContent = 'Select an existing conversation or create one.';
     setConnection('idle', 'Not connected');
     setComposer(false);
+    renderRuntimeStatus();
     return;
   }
-  elements.title.textContent = session.name;
+  elements.title.textContent = sessionDisplayName(session);
   elements.sectionButton.textContent = session.section ? `Section: ${session.section}` : '＋ Choose section';
   elements.sectionButton.title = session.section ? 'Move Session to another section' : 'Move Session to a section';
-  const details = [session.namespace, providerLabel(session.provider)];
+  const resourceName = sessionDisplayName(session) === session.name ? session.namespace : `${session.namespace}/${session.name}`;
+  const details = [resourceName, providerLabel(session.provider)];
   if (session.model) details.push(session.model);
   details.push(sessionDisplayStatus(session));
   if (session.branch) details.push(session.branch);
@@ -1570,6 +1600,7 @@ function renderHeader() {
     setConnection(session.phase === 'Failed' ? 'error' : 'connecting', session.phase || 'Pending');
     setComposer(false);
   }
+  renderRuntimeStatus();
 }
 
 function setConnection(status, label) {
@@ -3542,11 +3573,72 @@ elements.form.addEventListener('submit', async event => {
   }
 });
 
+function openDisplayNameDialog() {
+  const session = state.selected;
+  if (!session || state.displayNameSaving) return;
+  elements.displayNameDialogError.textContent = '';
+  elements.displayNameDialogDescription.textContent = `Set a display name for Session ${session.namespace}/${session.name} without changing its Kubernetes resource name.`;
+  elements.displayNameInput.value = sessionDisplayName(session) === session.name ? '' : sessionDisplayName(session);
+  elements.displayNameInput.placeholder = session.name;
+  elements.displayNameDialog.showModal();
+  window.setTimeout(() => elements.displayNameInput.focus(), 0);
+}
+
+function setDisplayNameSaving(saving) {
+  state.displayNameSaving = saving;
+  elements.displayNameInput.disabled = saving;
+  elements.saveDisplayNameButton.disabled = saving;
+  elements.displayNameDialog.setAttribute('aria-busy', String(saving));
+  document.querySelectorAll('.close-display-name-dialog').forEach(button => {
+    button.disabled = saving;
+  });
+}
+
+function closeDisplayNameDialog() {
+  if (!state.displayNameSaving) elements.displayNameDialog.close();
+}
+
+function handleDisplayNameDialogCancel(event) {
+  if (state.displayNameSaving) event.preventDefault();
+}
+
+elements.displayNameButton.addEventListener('click', openDisplayNameDialog);
+document.querySelectorAll('.close-display-name-dialog').forEach(button => {
+  button.addEventListener('click', closeDisplayNameDialog);
+});
+elements.displayNameDialog.addEventListener('cancel', handleDisplayNameDialogCancel);
+
+elements.displayNameForm.addEventListener('submit', async event => {
+  event.preventDefault();
+  if (state.displayNameSaving) return;
+  const session = state.selected;
+  if (!session) {
+    elements.displayNameDialog.close();
+    return;
+  }
+  const displayName = elements.displayNameInput.value.trim();
+  if ((displayName || session.name) === sessionDisplayName(session)) {
+    elements.displayNameDialog.close();
+    return;
+  }
+  elements.displayNameDialogError.textContent = '';
+  setDisplayNameSaving(true);
+  try {
+    await saveSessionDisplayName(session, displayName);
+    elements.displayNameDialog.close();
+    showToast(displayName ? 'Session renamed' : 'Session name reset');
+  } catch (error) {
+    elements.displayNameDialogError.textContent = error.message;
+  } finally {
+    setDisplayNameSaving(false);
+  }
+});
+
 function openSectionDialog() {
   const session = state.selected;
   if (!session || state.sectionSaving) return;
   elements.sectionDialogError.textContent = '';
-  elements.sectionDialogDescription.textContent = `Choose where Session ${session.name} appears in the sidebar.`;
+  elements.sectionDialogDescription.textContent = `Choose where Session ${sessionDisplayName(session)} appears in the sidebar.`;
   elements.sectionChoiceCustom.value = '';
   populateSectionSelect(elements.sectionChoice, session.section || '', 'Unsectioned (remove assignment)');
   updateCustomSectionField(elements.sectionChoice, elements.sectionChoiceCustom);

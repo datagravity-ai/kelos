@@ -105,7 +105,12 @@ button { color: inherit; }
 .conversation { min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; background: var(--canvas); }
 .conversation-header { min-height: 74px; display: flex; align-items: center; gap: 13px; padding: 13px 23px; border-bottom: 1px solid var(--line-soft); background: rgba(248,249,245,.88); backdrop-filter: blur(15px); }
 .session-heading { flex: 1; min-width: 0; }
-.session-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 600 17px/1.2 Georgia, "Times New Roman", serif; }
+.session-title-row { display: flex; align-items: center; gap: 7px; }
+.session-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 600 17px/1.2 Georgia, "Times New Roman", serif; }
+.session-display-name-button { flex: none; padding: 2px 6px; border: 0; border-radius: 6px; background: transparent; color: var(--faint); font-size: 9px; font-weight: 700; cursor: pointer; }
+.session-display-name-button:hover { background: var(--line-soft); color: var(--ink); }
+.session-display-name-button:disabled { opacity: .45; cursor: default; }
+.session-display-name-button[hidden] { display: none; }
 .session-meta { display: flex; align-items: center; gap: 5px; overflow: hidden; margin-top: 5px; color: var(--muted); font-size: 11px; white-space: nowrap; }
 .session-meta-details { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .session-meta-separator, .session-meta a, .session-meta-time { flex: none; }
@@ -293,6 +298,7 @@ button { color: inherit; }
 .session-dialog::backdrop { background: rgba(25,35,30,.38); backdrop-filter: blur(4px); }
 .session-dialog form { padding: 23px; }
 .section-dialog { width: min(94vw, 420px); }
+.display-name-dialog { width: min(94vw, 420px); }
 .dialog-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; }
 .dialog-header h2 { margin: 0; font: 600 25px/1.2 Georgia,"Times New Roman",serif; }
 .dialog-header p { margin: 6px 0 0; color: var(--muted); font-size: 12px; }

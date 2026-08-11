@@ -47,13 +47,15 @@ import (
 )
 
 const (
-	authCookieName           = "kelos_session_auth"
-	sessionRuntimeClient     = "/kelos/bin/kelos-session-runtime"
-	sessionApplyManager      = "kelos-session-server"
-	sessionSectionAnnotation = "kelos.dev/session-section"
-	maxSessionSectionLength  = 64
-	requestBodyLimit         = 1024 * 1024
-	attachmentRequestLimit   = sessionruntime.MaxAttachmentBytes + 1024*1024
+	authCookieName               = "kelos_session_auth"
+	sessionRuntimeClient         = "/kelos/bin/kelos-session-runtime"
+	sessionApplyManager          = "kelos-session-server"
+	sessionDisplayNameAnnotation = "kelos.dev/session-display-name"
+	sessionSectionAnnotation     = "kelos.dev/session-section"
+	maxSessionDisplayNameLength  = 64
+	maxSessionSectionLength      = 64
+	requestBodyLimit             = 1024 * 1024
+	attachmentRequestLimit       = sessionruntime.MaxAttachmentBytes + 1024*1024
 )
 
 //go:embed web/*
@@ -108,6 +110,7 @@ func (c *sessionSocket) WriteMessage(messageType int, data []byte) error {
 
 type sessionSummary struct {
 	Name            string                    `json:"name"`
+	DisplayName     string                    `json:"displayName"`
 	Namespace       string                    `json:"namespace"`
 	UID             string                    `json:"uid,omitempty"`
 	Provider        string                    `json:"provider"`
@@ -150,6 +153,10 @@ type createSessionRequest struct {
 
 type updateSessionSectionRequest struct {
 	Section string `json:"section"`
+}
+
+type updateSessionDisplayNameRequest struct {
+	DisplayName string `json:"displayName"`
 }
 
 type sessionManifest struct {
@@ -357,6 +364,10 @@ func (s *Server) api(writer http.ResponseWriter, request *http.Request) {
 	}
 	if len(parts) == 4 && parts[3] == "section" && request.Method == http.MethodPatch {
 		s.updateSessionSection(writer, request, namespace, name)
+		return
+	}
+	if len(parts) == 4 && parts[3] == "display-name" && request.Method == http.MethodPatch {
+		s.updateSessionDisplayName(writer, request, namespace, name)
 		return
 	}
 	if len(parts) != 3 {
@@ -723,9 +734,71 @@ func normalizeSessionSection(value string) (string, error) {
 	return value, nil
 }
 
+func (s *Server) updateSessionDisplayName(writer http.ResponseWriter, request *http.Request, namespace, name string) {
+	var payload updateSessionDisplayNameRequest
+	if err := decodeJSON(request.Body, &payload); err != nil {
+		writeError(writer, http.StatusBadRequest, err.Error())
+		return
+	}
+	displayName, err := normalizeSessionDisplayName(payload.DisplayName)
+	if err != nil {
+		writeError(writer, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	var session kelos.Session
+	if err := s.client.Get(request.Context(), client.ObjectKey{Namespace: namespace, Name: name}, &session); err != nil {
+		writeKubernetesError(writer, fmt.Sprintf("getting Session %q to update its display name", name), err)
+		return
+	}
+	original := session.DeepCopy()
+	if displayName == "" {
+		delete(session.Annotations, sessionDisplayNameAnnotation)
+	} else {
+		if session.Annotations == nil {
+			session.Annotations = map[string]string{}
+		}
+		session.Annotations[sessionDisplayNameAnnotation] = displayName
+	}
+	if err := s.client.Patch(
+		request.Context(),
+		&session,
+		client.MergeFromWithOptions(original, client.MergeFromWithOptimisticLock{}),
+	); err != nil {
+		status := http.StatusInternalServerError
+		switch {
+		case apierrors.IsNotFound(err):
+			status = http.StatusNotFound
+		case apierrors.IsInvalid(err):
+			status = http.StatusBadRequest
+		case apierrors.IsForbidden(err):
+			status = http.StatusForbidden
+		case apierrors.IsConflict(err):
+			status = http.StatusConflict
+		}
+		writeError(writer, status, fmt.Sprintf("updating display name for Session %q: %v", name, err))
+		return
+	}
+	writeJSON(writer, http.StatusOK, summarize(&session))
+}
+
+func normalizeSessionDisplayName(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if utf8.RuneCountInString(value) > maxSessionDisplayNameLength {
+		return "", fmt.Errorf("display name must be at most %d characters", maxSessionDisplayNameLength)
+	}
+	for _, character := range value {
+		if unicode.IsControl(character) {
+			return "", errors.New("display name must not contain control characters")
+		}
+	}
+	return value, nil
+}
+
 func summarize(session *kelos.Session) sessionSummary {
 	summary := sessionSummary{
 		Name:           session.Name,
+		DisplayName:    sessionDisplayName(session),
 		Namespace:      session.Namespace,
 		UID:            string(session.UID),
 		Provider:       session.Spec.Worker.Type,
@@ -749,6 +822,13 @@ func summarize(session *kelos.Session) sessionSummary {
 		summary.WaitingForInput = active && condition.Reason == "WaitingForInput"
 	}
 	return summary
+}
+
+func sessionDisplayName(session *kelos.Session) string {
+	if displayName := strings.TrimSpace(session.Annotations[sessionDisplayNameAnnotation]); displayName != "" {
+		return displayName
+	}
+	return session.Name
 }
 
 func sessionActiveCondition(session *kelos.Session) *metav1.Condition {

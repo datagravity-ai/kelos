@@ -247,7 +247,10 @@ the controls list existing section names in the active namespace or create a
 section once for later reuse. In the sidebar, Sessions can be dragged between
 sections, and section headings, including **Unsectioned**, can be dragged or
 moved with arrow controls. Each browser stores section order separately for each
-namespace. The creation dialog can generate a new Session from an existing
+namespace. The selected Session's **Rename** control sets a web-only display
+name without changing the Kubernetes resource name. Display names are stored in
+the `kelos.dev/session-display-name` annotation; clearing the value restores the
+resource name. The creation dialog can generate a new Session from an existing
 Session in that namespace,
 copying its complete `Session.spec` into the form and editable YAML manifest but
 not copying its metadata, conversation, or volume data. The creation form
