@@ -297,6 +297,14 @@ exact value is also available to assistive technology. A Session waiting for a
 user response is labeled **Waiting for input** in the sidebar and header, with a
 distinct red indicator in the sidebar.
 
+Use **Rename** beside the selected Session's title to set a display name for the
+web chat. The display name appears in the sidebar, conversation header, and web
+runtime status without changing the Session's Kubernetes resource name. An empty
+display name restores the resource name. Display names are stored in the
+`kelos.dev/session-display-name` annotation, so Session manifests can set the
+same annotation directly. Values are trimmed and limited to 64 characters when
+set through the web chat.
+
 Sessions can be categorized into sections from the creation form or from the
 section control beneath the selected Session's name. Both controls list the
 existing sections in the active namespace and include a **Create new section**

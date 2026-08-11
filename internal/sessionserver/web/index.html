@@ -41,7 +41,10 @@
       <header class="conversation-header">
         <button class="icon-button mobile-only" id="open-sidebar" aria-label="Open sessions" aria-controls="sidebar" aria-expanded="false">☰</button>
         <div class="session-heading">
-          <div class="session-title" id="session-title">Choose a session</div>
+          <div class="session-title-row">
+            <div class="session-title" id="session-title">Choose a session</div>
+            <button class="session-display-name-button" id="session-display-name" type="button" disabled hidden>Rename</button>
+          </div>
           <div class="session-meta" id="session-meta">Select an existing conversation or create one.</div>
           <button class="session-section-button" id="session-section" type="button" disabled hidden>＋ Add section</button>
         </div>
@@ -264,6 +267,28 @@
       <div class="dialog-actions">
         <button class="secondary-button close-section-dialog" type="button">Cancel</button>
         <button class="primary-button" id="save-session-section">Save section</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="session-dialog display-name-dialog" id="display-name-dialog" aria-labelledby="display-name-dialog-title" aria-describedby="display-name-dialog-description">
+    <form id="display-name-form">
+      <div class="dialog-header">
+        <div>
+          <h2 id="display-name-dialog-title">Rename Session</h2>
+          <p id="display-name-dialog-description">Set a display name without changing the Kubernetes resource name.</p>
+        </div>
+        <button class="icon-button close-display-name-dialog" type="button" aria-label="Close">×</button>
+      </div>
+      <label class="section-field">
+        <span>Display name</span>
+        <input name="displayName" id="session-display-name-input" maxlength="64" autocomplete="off">
+        <small>Leave blank to display the Kubernetes resource name.</small>
+      </label>
+      <div class="dialog-error" id="display-name-dialog-error" role="alert"></div>
+      <div class="dialog-actions">
+        <button class="secondary-button close-display-name-dialog" type="button">Cancel</button>
+        <button class="primary-button" id="save-session-display-name">Save name</button>
       </div>
     </form>
   </dialog>
