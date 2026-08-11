@@ -391,6 +391,17 @@ func TestApplicationSectionChooserBehavior(t *testing.T) {
 	}
 }
 
+func TestApplicationInputRequestBehavior(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("Node.js is not installed")
+	}
+	command := exec.Command(node, "testdata/input_request_test.js")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("running input request tests: %v\n%s", err, output)
+	}
+}
+
 func TestSessionFormAPICreatesPersistentSession(t *testing.T) {
 	server := testServer(t)
 	payload := `{

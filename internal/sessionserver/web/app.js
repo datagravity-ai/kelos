@@ -2805,6 +2805,19 @@ function completeTool(event) {
   renderToolOutput(card, event.output);
 }
 
+function bindOtherAnswer(controls, other, multiSelect) {
+  if (multiSelect) return;
+  for (const control of controls) {
+    control.addEventListener('change', () => {
+      if (control.checked) other.value = '';
+    });
+  }
+  other.addEventListener('input', () => {
+    if (!other.value.trim()) return;
+    controls.forEach(control => { control.checked = false; });
+  });
+}
+
 function renderInputRequest(event) {
   ensureConversation();
   if (!event.inputId || state.inputs.has(event.inputId)) return;
@@ -2848,6 +2861,7 @@ function renderInputRequest(event) {
     other.type = question.secret ? 'password' : 'text';
     other.placeholder = question.options?.length ? 'Or type another answer' : 'Type your answer';
     other.autocomplete = 'off';
+    bindOtherAnswer(controls, other, question.multiSelect);
     fieldset.append(legend, prompt, choices, other);
     card.append(fieldset);
     rows.push({question, controls, other});
