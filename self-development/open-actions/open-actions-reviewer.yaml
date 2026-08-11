@@ -48,7 +48,7 @@ spec:
           commentOn: PullRequest
           state: open
           author: gjkim42
-        # Allow the Kelos bot to request a review on PRs it opens.
+        # Allow Kelos bot comments to request a review.
         - event: issue_comment
           action: created
           bodyPattern: '(?m)^/kelos review[ \t]*\r?$'
