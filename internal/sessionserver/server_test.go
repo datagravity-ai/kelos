@@ -702,6 +702,8 @@ func TestSessionUIAdaptsToPhoneViewport(t *testing.T) {
 		"48-pixel touch targets":     `.icon-button { width: 48px; height: 48px; }`,
 		"phone safe-area padding":    `env(safe-area-inset-bottom)`,
 		"non-zooming form fields":    `.composer textarea, .yaml-panel textarea, .form-grid input`,
+		"desktop composer alignment": `.composer textarea { flex: 1; min-height: 36px;`,
+		"mobile composer alignment":  `.composer textarea { min-height: 48px; padding: 12px 0; line-height: 24px; }`,
 		"phone-sized dialog":         `max-height: calc(100dvh - 16px`,
 		"shrinking composer content": `.composer-wrap { min-width: 0;`,
 	} {

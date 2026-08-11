@@ -272,7 +272,7 @@ button { color: inherit; }
 .pending-attachment button { flex: none; padding: 0; border: 0; background: transparent; color: var(--muted); cursor: pointer; }
 .composer { display: flex; align-items: flex-end; gap: 10px; padding: 9px 9px 9px 16px; border: 1px solid #d1d8d2; border-radius: 17px; background: var(--card); box-shadow: 0 12px 38px rgba(28,45,36,.08); transition: border .15s, box-shadow .15s; }
 .composer:focus-within { border-color: #85a493; box-shadow: 0 12px 38px rgba(28,45,36,.1), 0 0 0 3px rgba(57,112,84,.08); }
-.composer textarea { flex: 1; max-height: 160px; resize: none; border: 0; outline: 0; padding: 7px 0; background: transparent; color: var(--ink); font-size: 14px; line-height: 1.45; }
+.composer textarea { flex: 1; min-height: 36px; max-height: 160px; resize: none; border: 0; outline: 0; padding: 8px 0; background: transparent; color: var(--ink); font-size: 14px; line-height: 20px; }
 .composer textarea::placeholder { color: #99a19c; }
 .attach-button { flex: none; width: 30px; height: 36px; padding: 0; border: 0; background: transparent; color: var(--accent-2); font-size: 22px; cursor: pointer; }
 .attach-button:disabled { color: var(--faint); cursor: default; }
@@ -371,6 +371,7 @@ button { color: inherit; }
   .composer-wrap { padding: 9px calc(10px + env(safe-area-inset-right)) calc(10px + env(safe-area-inset-bottom)) calc(10px + env(safe-area-inset-left)); }
   .composer { padding-left: 13px; }
   .composer textarea, .yaml-panel textarea, .form-grid input, .form-grid select, .source-picker select, .section-field input, .section-field select, .namespace-form input, .input-other { font-size: 16px; }
+  .composer textarea { min-height: 48px; padding: 12px 0; line-height: 24px; }
   .send-button { width: 48px; height: 48px; }
   .message-bubble, .user-message { max-width: 90%; }
   .tool-card, .input-card, .diff-card, .error-card, .recovery-card { margin-left: 0; }
