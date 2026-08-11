@@ -36,9 +36,10 @@ func TestCaptureWorkspaceStatus(t *testing.T) {
 		"/repo: git branch --show-current":                                              {output: "feature/status"},
 		"/repo: git for-each-ref --format=%(push:remotename) refs/heads/feature/status": {output: ""},
 		"/repo: git remote get-url --push origin":                                       {output: "https://github.com/kelos-dev/kelos.git"},
-		"/repo: gh pr list --head feature/status --state all --json url,headRepositoryOwner,state,isDraft,statusCheckRollup --limit 100": {
-			output: `[{"url":"https://github.com/kelos-dev/kelos/pull/42","state":"OPEN","isDraft":false,"headRepositoryOwner":{"login":"kelos-dev"},"statusCheckRollup":[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"},{"__typename":"CheckRun","status":"IN_PROGRESS","conclusion":""},{"__typename":"StatusContext","state":"SUCCESS"}]}]`,
+		"/repo: gh pr list --head feature/status --state all --json id,url,headRepositoryOwner,state,isDraft,statusCheckRollup --limit 100": {
+			output: `[{"id":"PR_42","url":"https://github.com/kelos-dev/kelos/pull/42","state":"OPEN","isDraft":false,"headRepositoryOwner":{"login":"kelos-dev"},"statusCheckRollup":[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"},{"__typename":"CheckRun","status":"IN_PROGRESS","conclusion":""},{"__typename":"StatusContext","state":"SUCCESS"}]}]`,
 		},
+		"/repo: gh api graphql -F id=PR_42 -f query=" + pullRequestMergeQueueQuery: {output: `{"data":{"node":{"mergeQueueEntry":null}}}`},
 	}}
 
 	got, err := captureWorkspaceStatus(context.Background(), runner, "/repo", nil)
@@ -62,15 +63,84 @@ func TestCaptureWorkspaceStatus(t *testing.T) {
 	}
 }
 
+func TestCaptureWorkspaceStatusUsesMergeQueueChecks(t *testing.T) {
+	runner := fakeWorkspaceStatusRunner{commands: map[string]workspaceStatusResult{
+		"/repo: git rev-parse --is-inside-work-tree":                                    {output: "true"},
+		"/repo: git branch --show-current":                                              {output: "feature/status"},
+		"/repo: git for-each-ref --format=%(push:remotename) refs/heads/feature/status": {output: ""},
+		"/repo: git remote get-url --push origin":                                       {output: "https://github.com/kelos-dev/kelos.git"},
+		"/repo: gh pr list --head feature/status --state all --json id,url,headRepositoryOwner,state,isDraft,statusCheckRollup --limit 100": {
+			output: `[{"id":"PR_42","url":"https://github.com/kelos-dev/kelos/pull/42","state":"OPEN","isDraft":false,"headRepositoryOwner":{"login":"kelos-dev"},"statusCheckRollup":[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}]}]`,
+		},
+		"/repo: gh api graphql -F id=PR_42 -f query=" + pullRequestMergeQueueQuery: {
+			output: `{"data":{"node":{"mergeQueueEntry":{"headCommit":{"statusCheckRollup":{"contexts":{"nodes":[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"},{"__typename":"CheckRun","status":"IN_PROGRESS","conclusion":""}]}}}}}}}`,
+		},
+	}}
+
+	got, err := captureWorkspaceStatus(context.Background(), runner, "/repo", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := WorkspaceStatus{
+		Branch: "feature/status",
+		PullRequest: &kelos.SessionPullRequest{
+			URL:   "https://github.com/kelos-dev/kelos/pull/42",
+			State: kelos.SessionPullRequestStateQueued,
+			Checks: &kelos.SessionPullRequestChecks{
+				State:     kelos.SessionPullRequestChecksStatePending,
+				Completed: 1,
+				Total:     2,
+			},
+		},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("captureWorkspaceStatus() = %#v, want %#v", got, want)
+	}
+}
+
+func TestCaptureWorkspaceStatusUsesPullRequestChecksOnMergeQueueLookupError(t *testing.T) {
+	runner := fakeWorkspaceStatusRunner{commands: map[string]workspaceStatusResult{
+		"/repo: git rev-parse --is-inside-work-tree":                                    {output: "true"},
+		"/repo: git branch --show-current":                                              {output: "feature/status"},
+		"/repo: git for-each-ref --format=%(push:remotename) refs/heads/feature/status": {output: ""},
+		"/repo: git remote get-url --push origin":                                       {output: "https://github.com/kelos-dev/kelos.git"},
+		"/repo: gh pr list --head feature/status --state all --json id,url,headRepositoryOwner,state,isDraft,statusCheckRollup --limit 100": {
+			output: `[{"id":"PR_42","url":"https://github.com/kelos-dev/kelos/pull/42","state":"OPEN","isDraft":false,"headRepositoryOwner":{"login":"kelos-dev"},"statusCheckRollup":[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}]}]`,
+		},
+		"/repo: gh api graphql -F id=PR_42 -f query=" + pullRequestMergeQueueQuery: {err: errors.New("merge queue unavailable")},
+	}}
+
+	got, err := captureWorkspaceStatus(context.Background(), runner, "/repo", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := WorkspaceStatus{
+		Branch: "feature/status",
+		PullRequest: &kelos.SessionPullRequest{
+			URL:   "https://github.com/kelos-dev/kelos/pull/42",
+			State: kelos.SessionPullRequestStateOpen,
+			Checks: &kelos.SessionPullRequestChecks{
+				State:     kelos.SessionPullRequestChecksStateSuccess,
+				Completed: 1,
+				Total:     1,
+			},
+		},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("captureWorkspaceStatus() = %#v, want %#v", got, want)
+	}
+}
+
 func TestCaptureWorkspaceStatusUsesBranchPushRemote(t *testing.T) {
 	runner := fakeWorkspaceStatusRunner{commands: map[string]workspaceStatusResult{
 		"/repo: git rev-parse --is-inside-work-tree":                                    {output: "true"},
 		"/repo: git branch --show-current":                                              {output: "feature/status"},
 		"/repo: git for-each-ref --format=%(push:remotename) refs/heads/feature/status": {output: "fork"},
 		"/repo: git remote get-url --push fork":                                         {output: "git@github.com:gjkim/kelos.git"},
-		"/repo: gh pr list --head feature/status --state all --json url,headRepositoryOwner,state,isDraft,statusCheckRollup --limit 100": {
-			output: `[{"url":"https://github.com/kelos-dev/kelos/pull/42","state":"OPEN","isDraft":false,"headRepositoryOwner":{"login":"gjkim"}}]`,
+		"/repo: gh pr list --head feature/status --state all --json id,url,headRepositoryOwner,state,isDraft,statusCheckRollup --limit 100": {
+			output: `[{"id":"PR_42","url":"https://github.com/kelos-dev/kelos/pull/42","state":"OPEN","isDraft":false,"headRepositoryOwner":{"login":"gjkim"}}]`,
 		},
+		"/repo: gh api graphql -F id=PR_42 -f query=" + pullRequestMergeQueueQuery: {output: `{"data":{"node":{"mergeQueueEntry":null}}}`},
 	}}
 
 	got, err := captureWorkspaceStatus(context.Background(), runner, "/repo", nil)
@@ -111,12 +181,13 @@ func TestCaptureWorkspaceStatusUsesUpstreamRepository(t *testing.T) {
 		"/repo: git branch --show-current":                                              {output: "feature/status"},
 		"/repo: git for-each-ref --format=%(push:remotename) refs/heads/feature/status": {output: "origin"},
 		"/repo: git remote get-url --push origin":                                       {output: "git@github.com:gjkim/kelos.git"},
-		"/repo: gh pr list --head feature/status --state all --json url,headRepositoryOwner,state,isDraft,statusCheckRollup --limit 100": {
+		"/repo: gh pr list --head feature/status --state all --json id,url,headRepositoryOwner,state,isDraft,statusCheckRollup --limit 100": {
 			output: "[]",
 		},
-		"/repo: gh pr list --head feature/status --state all --json url,headRepositoryOwner,state,isDraft,statusCheckRollup --limit 100 --repo kelos-dev/kelos": {
-			output: `[{"url":"https://github.com/kelos-dev/kelos/pull/41","state":"OPEN","isDraft":false,"headRepositoryOwner":{"login":"another-fork"}},{"url":"https://github.com/kelos-dev/kelos/pull/42","state":"OPEN","isDraft":true,"headRepositoryOwner":{"login":"gjkim"}}]`,
+		"/repo: gh pr list --head feature/status --state all --json id,url,headRepositoryOwner,state,isDraft,statusCheckRollup --limit 100 --repo kelos-dev/kelos": {
+			output: `[{"id":"PR_41","url":"https://github.com/kelos-dev/kelos/pull/41","state":"OPEN","isDraft":false,"headRepositoryOwner":{"login":"another-fork"}},{"id":"PR_42","url":"https://github.com/kelos-dev/kelos/pull/42","state":"OPEN","isDraft":true,"headRepositoryOwner":{"login":"gjkim"}}]`,
 		},
+		"/repo: gh api graphql -F id=PR_42 -f query=" + pullRequestMergeQueueQuery: {output: `{"data":{"node":{"mergeQueueEntry":null}}}`},
 	}}
 
 	got, err := captureWorkspaceStatus(context.Background(), runner, "/repo", []string{"KELOS_UPSTREAM_REPO=kelos-dev/kelos"})
@@ -215,7 +286,7 @@ func TestRefreshWorkspaceStatusClearsPullRequestAfterSuccessfulLookup(t *testing
 		"/repo: git branch --show-current":                                              {output: "feature/status"},
 		"/repo: git for-each-ref --format=%(push:remotename) refs/heads/feature/status": {output: "origin"},
 		"/repo: git remote get-url --push origin":                                       {output: "https://github.com/kelos-dev/kelos.git"},
-		"/repo: gh pr list --head feature/status --state all --json url,headRepositoryOwner,state,isDraft,statusCheckRollup --limit 100": {
+		"/repo: gh pr list --head feature/status --state all --json id,url,headRepositoryOwner,state,isDraft,statusCheckRollup --limit 100": {
 			output: "[]",
 		},
 	}}

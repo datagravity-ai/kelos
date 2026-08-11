@@ -88,6 +88,7 @@ button { color: inherit; }
 .pull-request-link::before { flex: none; width: 6px; height: 6px; border-radius: 50%; background: currentColor; content: ''; }
 .pull-request-link[data-state="draft"] { color: var(--faint); }
 .pull-request-link[data-state="open"] { color: var(--pr-open); }
+.pull-request-link[data-state="queued"] { color: var(--warning); }
 .pull-request-link[data-state="merged"] { color: var(--pr-merged); }
 .pull-request-link[data-state="closed"] { color: var(--pr-closed); }
 .pull-request-checks[data-state="pending"] { color: var(--warning); }

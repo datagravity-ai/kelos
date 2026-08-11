@@ -1192,6 +1192,7 @@ func TestSessionViewsIncludeRuntimeStatus(t *testing.T) {
 	for state, expected := range map[string]string{
 		"draft":  `.pull-request-link[data-state="draft"] { color: var(--faint); }`,
 		"open":   `.pull-request-link[data-state="open"] { color: var(--pr-open); }`,
+		"queued": `.pull-request-link[data-state="queued"] { color: var(--warning); }`,
 		"merged": `.pull-request-link[data-state="merged"] { color: var(--pr-merged); }`,
 		"closed": `.pull-request-link[data-state="closed"] { color: var(--pr-closed); }`,
 	} {
