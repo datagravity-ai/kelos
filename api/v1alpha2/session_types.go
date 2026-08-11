@@ -43,6 +43,33 @@ const (
 	SessionPullRequestStateClosed SessionPullRequestState = "Closed"
 )
 
+// SessionPullRequestChecksState summarizes the GitHub checks for a Session pull request.
+type SessionPullRequestChecksState string
+
+const (
+	// SessionPullRequestChecksStatePending means at least one check has not completed.
+	SessionPullRequestChecksStatePending SessionPullRequestChecksState = "Pending"
+	// SessionPullRequestChecksStateSuccess means all checks completed without a failure.
+	SessionPullRequestChecksStateSuccess SessionPullRequestChecksState = "Success"
+	// SessionPullRequestChecksStateFailure means at least one check failed or was cancelled.
+	SessionPullRequestChecksStateFailure SessionPullRequestChecksState = "Failure"
+)
+
+// SessionPullRequestChecks summarizes the GitHub checks for a pull request.
+type SessionPullRequestChecks struct {
+	// State is the aggregate state of the checks.
+	// +kubebuilder:validation:Enum=Pending;Success;Failure
+	State SessionPullRequestChecksState `json:"state"`
+
+	// Completed is the number of checks that have completed.
+	// +kubebuilder:validation:Minimum=0
+	Completed int32 `json:"completed"`
+
+	// Total is the total number of checks.
+	// +kubebuilder:validation:Minimum=1
+	Total int32 `json:"total"`
+}
+
 // SessionPullRequest describes the pull request associated with a Session branch.
 type SessionPullRequest struct {
 	// URL is the pull request web URL.
@@ -51,6 +78,10 @@ type SessionPullRequest struct {
 	// State is the pull request lifecycle state.
 	// +kubebuilder:validation:Enum=Draft;Open;Merged;Closed
 	State SessionPullRequestState `json:"state"`
+
+	// Checks summarizes the GitHub checks reported for the pull request.
+	// +optional
+	Checks *SessionPullRequestChecks `json:"checks,omitempty"`
 }
 
 // SessionSpec defines the desired state of a Session.

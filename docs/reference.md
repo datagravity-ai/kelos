@@ -230,6 +230,14 @@ the Session resource and is visible through the Kubernetes API.
 | `status.branch` | Currently checked-out git branch in the Session workspace | Output |
 | `status.pullRequest.url` | Web URL of the pull request associated with the current branch | Output |
 | `status.pullRequest.state` | Pull request lifecycle state: `Draft`, `Open`, `Merged`, or `Closed` | Output |
+| `status.pullRequest.checks.state` | Aggregate GitHub check state: `Pending`, `Success`, or `Failure`. Cancelled checks are failures | Output |
+| `status.pullRequest.checks.completed` | Number of GitHub checks that have completed | Output |
+| `status.pullRequest.checks.total` | Total number of GitHub checks reported for the pull request | Output |
+
+The Session runtime refreshes pull request and GitHub check status automatically.
+The Session web application's sidebar and selected Session header show the
+aggregate check state and pending progress. `status.pullRequest.checks` is
+omitted when GitHub reports no checks for the pull request.
 
 The web creation dialog can generate a new Session from an existing Session in
 the active namespace. This copies the complete `Session.spec` into an editable

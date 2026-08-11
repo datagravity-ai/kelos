@@ -36,8 +36,8 @@ func TestCaptureWorkspaceStatus(t *testing.T) {
 		"/repo: git branch --show-current":                                              {output: "feature/status"},
 		"/repo: git for-each-ref --format=%(push:remotename) refs/heads/feature/status": {output: ""},
 		"/repo: git remote get-url --push origin":                                       {output: "https://github.com/kelos-dev/kelos.git"},
-		"/repo: gh pr list --head feature/status --state all --json url,headRepositoryOwner,state,isDraft --limit 100": {
-			output: `[{"url":"https://github.com/kelos-dev/kelos/pull/42","state":"OPEN","isDraft":false,"headRepositoryOwner":{"login":"kelos-dev"}}]`,
+		"/repo: gh pr list --head feature/status --state all --json url,headRepositoryOwner,state,isDraft,statusCheckRollup --limit 100": {
+			output: `[{"url":"https://github.com/kelos-dev/kelos/pull/42","state":"OPEN","isDraft":false,"headRepositoryOwner":{"login":"kelos-dev"},"statusCheckRollup":[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"},{"__typename":"CheckRun","status":"IN_PROGRESS","conclusion":""},{"__typename":"StatusContext","state":"SUCCESS"}]}]`,
 		},
 	}}
 
@@ -50,6 +50,11 @@ func TestCaptureWorkspaceStatus(t *testing.T) {
 		PullRequest: &kelos.SessionPullRequest{
 			URL:   "https://github.com/kelos-dev/kelos/pull/42",
 			State: kelos.SessionPullRequestStateOpen,
+			Checks: &kelos.SessionPullRequestChecks{
+				State:     kelos.SessionPullRequestChecksStatePending,
+				Completed: 2,
+				Total:     3,
+			},
 		},
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -63,7 +68,7 @@ func TestCaptureWorkspaceStatusUsesBranchPushRemote(t *testing.T) {
 		"/repo: git branch --show-current":                                              {output: "feature/status"},
 		"/repo: git for-each-ref --format=%(push:remotename) refs/heads/feature/status": {output: "fork"},
 		"/repo: git remote get-url --push fork":                                         {output: "git@github.com:gjkim/kelos.git"},
-		"/repo: gh pr list --head feature/status --state all --json url,headRepositoryOwner,state,isDraft --limit 100": {
+		"/repo: gh pr list --head feature/status --state all --json url,headRepositoryOwner,state,isDraft,statusCheckRollup --limit 100": {
 			output: `[{"url":"https://github.com/kelos-dev/kelos/pull/42","state":"OPEN","isDraft":false,"headRepositoryOwner":{"login":"gjkim"}}]`,
 		},
 	}}
@@ -106,10 +111,10 @@ func TestCaptureWorkspaceStatusUsesUpstreamRepository(t *testing.T) {
 		"/repo: git branch --show-current":                                              {output: "feature/status"},
 		"/repo: git for-each-ref --format=%(push:remotename) refs/heads/feature/status": {output: "origin"},
 		"/repo: git remote get-url --push origin":                                       {output: "git@github.com:gjkim/kelos.git"},
-		"/repo: gh pr list --head feature/status --state all --json url,headRepositoryOwner,state,isDraft --limit 100": {
+		"/repo: gh pr list --head feature/status --state all --json url,headRepositoryOwner,state,isDraft,statusCheckRollup --limit 100": {
 			output: "[]",
 		},
-		"/repo: gh pr list --head feature/status --state all --json url,headRepositoryOwner,state,isDraft --limit 100 --repo kelos-dev/kelos": {
+		"/repo: gh pr list --head feature/status --state all --json url,headRepositoryOwner,state,isDraft,statusCheckRollup --limit 100 --repo kelos-dev/kelos": {
 			output: `[{"url":"https://github.com/kelos-dev/kelos/pull/41","state":"OPEN","isDraft":false,"headRepositoryOwner":{"login":"another-fork"}},{"url":"https://github.com/kelos-dev/kelos/pull/42","state":"OPEN","isDraft":true,"headRepositoryOwner":{"login":"gjkim"}}]`,
 		},
 	}}
@@ -210,7 +215,7 @@ func TestRefreshWorkspaceStatusClearsPullRequestAfterSuccessfulLookup(t *testing
 		"/repo: git branch --show-current":                                              {output: "feature/status"},
 		"/repo: git for-each-ref --format=%(push:remotename) refs/heads/feature/status": {output: "origin"},
 		"/repo: git remote get-url --push origin":                                       {output: "https://github.com/kelos-dev/kelos.git"},
-		"/repo: gh pr list --head feature/status --state all --json url,headRepositoryOwner,state,isDraft --limit 100": {
+		"/repo: gh pr list --head feature/status --state all --json url,headRepositoryOwner,state,isDraft,statusCheckRollup --limit 100": {
 			output: "[]",
 		},
 	}}
@@ -253,6 +258,60 @@ func TestSessionPullRequestState(t *testing.T) {
 	}
 	if _, err := sessionPullRequestState("UNKNOWN", false); err == nil {
 		t.Fatal("sessionPullRequestState() error = nil, want unsupported state error")
+	}
+}
+
+func TestSessionPullRequestChecks(t *testing.T) {
+	tests := []struct {
+		name   string
+		checks []githubStatusCheck
+		want   *kelos.SessionPullRequestChecks
+	}{
+		{name: "none"},
+		{
+			name: "successful",
+			checks: []githubStatusCheck{
+				{TypeName: "CheckRun", Status: "COMPLETED", Conclusion: "SUCCESS"},
+				{TypeName: "CheckRun", Status: "COMPLETED", Conclusion: "SKIPPED"},
+				{TypeName: "StatusContext", State: "SUCCESS"},
+			},
+			want: &kelos.SessionPullRequestChecks{State: kelos.SessionPullRequestChecksStateSuccess, Completed: 3, Total: 3},
+		},
+		{
+			name: "pending",
+			checks: []githubStatusCheck{
+				{TypeName: "CheckRun", Status: "COMPLETED", Conclusion: "NEUTRAL"},
+				{TypeName: "CheckRun", Status: "IN_PROGRESS"},
+				{TypeName: "StatusContext", State: "EXPECTED"},
+			},
+			want: &kelos.SessionPullRequestChecks{State: kelos.SessionPullRequestChecksStatePending, Completed: 1, Total: 3},
+		},
+		{
+			name: "failed while pending",
+			checks: []githubStatusCheck{
+				{TypeName: "CheckRun", Status: "COMPLETED", Conclusion: "FAILURE"},
+				{TypeName: "CheckRun", Status: "QUEUED"},
+			},
+			want: &kelos.SessionPullRequestChecks{State: kelos.SessionPullRequestChecksStateFailure, Completed: 1, Total: 2},
+		},
+		{
+			name:   "cancelled",
+			checks: []githubStatusCheck{{TypeName: "CheckRun", Status: "COMPLETED", Conclusion: "CANCELLED"}},
+			want:   &kelos.SessionPullRequestChecks{State: kelos.SessionPullRequestChecksStateFailure, Completed: 1, Total: 1},
+		},
+		{
+			name:   "unknown remains pending",
+			checks: []githubStatusCheck{{TypeName: "FutureCheck", Status: "COMPLETED", Conclusion: "SUCCESS"}},
+			want:   &kelos.SessionPullRequestChecks{State: kelos.SessionPullRequestChecksStatePending, Total: 1},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sessionPullRequestChecks(tt.checks)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("sessionPullRequestChecks() = %#v, want %#v", got, tt.want)
+			}
+		})
 	}
 }
 
