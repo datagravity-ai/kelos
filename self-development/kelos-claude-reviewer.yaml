@@ -50,8 +50,7 @@ spec:
           commentOn: PullRequest
           state: open
           author: gjkim42
-        # Allow the Kelos bot to request a Claude review on the PRs it opens, e.g.
-        # when a worker posts `/kelos claude-review` after pushing its changes.
+        # Allow Kelos bot comments to request a Claude review.
         - event: issue_comment
           action: created
           bodyPattern: '(?m)^/kelos claude-review[ \t]*\r?$'

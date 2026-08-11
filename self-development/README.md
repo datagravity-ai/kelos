@@ -48,20 +48,19 @@ TaskSpawner name in brackets, and its body includes both a
 Each run checks whether an unassigned slot is still valid against the current
 repository before retaining, replacing, or closing it. Assigned issues and PRs
 are treated as ongoing human or agent work and are not updated by autonomous
-discovery jobs. This cap does not apply to follow-up issues created while a
-worker or PR responder is handling an explicitly requested issue or PR.
+discovery jobs.
 
 ## Spawners
 
 | Spawner | Trigger | Agent | Description |
 |---|---|---|---|
-| **kelos-workers** | Webhook: issue comment `/kelos pick-up` | Codex | Picks up an open issue in a durable Session, creates or updates its PR, self-reviews, and ensures CI passes |
+| **kelos-workers** | Webhook: issue comment `/kelos pick-up` | Codex | Creates a durable Session with the open issue URL and a dedicated issue branch |
 | **kelos-planner** | Webhook: issue comment `/kelos plan` | Codex | Investigates an issue and posts a structured implementation plan — advisory only, no code changes |
 | **kelos-reviewer** | Webhook: PR comment `/kelos review` | Codex | Reviews PRs on demand — analyzes code, checks conventions, and updates a sticky review comment |
 | **kelos-claude-reviewer** | Webhook: PR comment `/kelos claude-review` | Claude Fable | Runs an additional code review path with Claude Code and updates a Claude-specific sticky review comment |
 | **kelos-api-reviewer** | Webhook: issue/PR comment `/kelos api-review` | Codex | Reviews Kubernetes API design on issues or PRs — naming, compatibility, CRD validation |
 | **kelos-claude-api-reviewer** | Webhook: issue/PR comment `/kelos claude-api-review` | Claude Fable | Runs an additional Kubernetes API design review path with Claude Code and updates Claude-specific sticky PR comments |
-| **kelos-pr-responder** | Webhook: PR comment/review `/kelos pick-up` | Codex | Picks up an open PR in a durable Session and updates its existing branch incrementally |
+| **kelos-pr-responder** | Webhook: PR comment/review `/kelos pick-up` | Codex | Creates a durable Session with the open PR URL on its existing branch |
 | **kelos-triage** | Webhook: issue opened/labeled/reopened (`needs-actor`) | Codex | Classifies issues by kind/priority, detects duplicates, and recommends an actor |
 | **kelos-fake-user** | Cron (daily 09:00 UTC) | Codex | Tests DX as a new user and maintains one unassigned issue slot for the highest-impact problem found |
 | **kelos-fake-strategist** | Cron (every 12 hours) | Codex | Explores new use cases, integrations, and API ideas while maintaining one unassigned strategic issue slot |
@@ -73,8 +72,9 @@ worker or PR responder is handling an explicitly requested issue or PR.
 ### kelos-workers.yaml
 
 Creates a durable Session when the maintainer posts `/kelos pick-up` on an open
-issue. Follow-ups continue through the Session's web or terminal clients after
-the initial turn.
+issue. The initial prompt supplies the issue URL and asks the agent to find the
+best way to address it. Follow-ups continue through the Session's web or
+terminal clients after the initial turn.
 
 | | |
 |---|---|
@@ -83,16 +83,11 @@ the initial turn.
 | **Storage** | 10 GiB persistent volume per created Session |
 
 **Key features:**
-- Automatically checks for existing PRs and updates them incrementally
+- Lets the agent choose how to address the linked issue
 - Uses `kelos-task-<number>` for the issue branch
-- Self-reviews PRs before requesting human review
-- Ensures CI passes before completion
 - Requires `/kelos pick-up` from the maintainer before starting work
 - Excludes comments from `kelos-bot[bot]` to prevent self-trigger loops
 - Keeps the Session available for later web or terminal follow-ups
-- Hands off PR review feedback to `kelos-pr-responder`
-- May create separate follow-up issues for out-of-scope discoveries; those
-  follow-ups are exempt from autonomous discovery issue slot caps
 
 **Deploy:**
 ```bash
@@ -127,11 +122,12 @@ kubectl apply -f self-development/kelos-planner.yaml
 
 ### kelos-reviewer.yaml
 
-Reviews open pull requests on demand when a maintainer posts `/kelos review` or when a Kelos worker posts `/kelos review` after pushing a generated PR and confirming CI passes.
+Reviews open pull requests on demand when a maintainer or `kelos-bot[bot]`
+posts `/kelos review`.
 
 | | |
 |---|---|
-| **Trigger** | GitHub PR comment webhook with `/kelos review` from a maintainer or Kelos worker handoff |
+| **Trigger** | GitHub PR comment webhook with `/kelos review` from a maintainer or `kelos-bot[bot]` |
 | **Agent** | Codex |
 | **Concurrency** | 3 |
 
@@ -145,9 +141,8 @@ Reviews open pull requests on demand when a maintainer posts `/kelos review` or 
 - Read-only agent — does not push code or modify files
 
 **Handoff flow:**
-1. `/kelos review` — maintainer requests a code review on the PR
-2. `/kelos review` — worker hands off a generated PR for review after pushing changes and confirming CI passes
-3. `/kelos review` — maintainer can retrigger review after changes are pushed
+1. `/kelos review` — a maintainer or `kelos-bot[bot]` requests a code review
+2. `/kelos review` — a maintainer can retrigger review after changes are pushed
 
 **Deploy:**
 ```bash
@@ -162,7 +157,7 @@ reviewer.
 
 | | |
 |---|---|
-| **Trigger** | GitHub PR comment webhook with `/kelos claude-review` from a maintainer or Kelos worker handoff |
+| **Trigger** | GitHub PR comment webhook with `/kelos claude-review` from a maintainer or `kelos-bot[bot]` |
 | **Agent** | Claude Fable via Claude Code |
 | **Concurrency** | 3 |
 
@@ -181,11 +176,13 @@ kubectl apply -f self-development/kelos-claude-reviewer.yaml
 
 ### kelos-api-reviewer.yaml
 
-Reviews issues and pull requests for Kubernetes API design conventions, compatibility, and best practices when a maintainer posts `/kelos api-review` or when a Kelos worker posts `/kelos api-review` after pushing generated API changes and confirming CI passes.
+Reviews issues and pull requests for Kubernetes API design conventions,
+compatibility, and best practices when a maintainer or `kelos-bot[bot]` posts
+`/kelos api-review`.
 
 | | |
 |---|---|
-| **Trigger** | GitHub issue/PR comment webhook with `/kelos api-review` from a maintainer or Kelos worker handoff |
+| **Trigger** | GitHub issue/PR comment webhook with `/kelos api-review` from a maintainer or `kelos-bot[bot]` |
 | **Agent** | Codex |
 | **Concurrency** | 3 |
 
@@ -201,9 +198,8 @@ Reviews issues and pull requests for Kubernetes API design conventions, compatib
 - Read-only agent — does not push code or modify files
 
 **Handoff flow:**
-1. `/kelos api-review` — maintainer requests an API design review on a PR or issue
-2. `/kelos api-review` — worker hands off a generated API PR for review after pushing changes and confirming CI passes
-3. `/kelos api-review` — maintainer can retrigger review after changes or further discussion
+1. `/kelos api-review` — a maintainer or `kelos-bot[bot]` requests an API design review
+2. `/kelos api-review` — a maintainer can retrigger review after changes or further discussion
 
 **Deploy:**
 ```bash
@@ -218,7 +214,7 @@ trigger from the Codex API reviewer.
 
 | | |
 |---|---|
-| **Trigger** | GitHub issue/PR comment webhook with `/kelos claude-api-review` from a maintainer or Kelos worker handoff |
+| **Trigger** | GitHub issue/PR comment webhook with `/kelos claude-api-review` from a maintainer or `kelos-bot[bot]` |
 | **Agent** | Claude Fable via Claude Code |
 | **Concurrency** | 3 |
 
@@ -241,7 +237,8 @@ kubectl apply -f self-development/kelos-claude-api-reviewer.yaml
 ### kelos-pr-responder.yaml
 
 Creates a durable Session when the maintainer posts an exact `/kelos pick-up`
-PR comment or review on an open pull request.
+PR comment or review on an open pull request. The initial prompt supplies the
+PR URL and asks the agent to find the best way to address it.
 
 | | |
 |---|---|
@@ -250,12 +247,10 @@ PR comment or review on an open pull request.
 | **Storage** | 10 GiB persistent volume per created Session |
 
 **Key features:**
-- Reuses the existing PR branch instead of starting over
-- Reads review comments and PR conversation before making incremental changes
+- Starts the Session on the existing PR branch
+- Lets the agent choose how to address the linked PR
 - Keeps the Session available for later web or terminal follow-ups
 - Requires `/kelos pick-up` PR comment or review body to be picked up
-- May create separate follow-up issues for out-of-scope discoveries; those
-  follow-ups are exempt from autonomous discovery issue slot caps
 
 **Deploy:**
 ```bash
@@ -654,19 +649,20 @@ To adapt these examples for your own repository:
 
 ## Feedback Loop Pattern
 
-The key pattern in these examples is webhook-triggered handoff plus runtime re-validation:
+The key pattern in these examples is webhook-triggered handoff with durable,
+agent-directed Sessions:
 
 1. GitHub delivers an `issue_comment`, `issues`, or `pull_request_review` webhook
 2. The matching TaskSpawner creates a Task, while the issue and PR pick-up spawners for Kelos, Agora, Kanon, and Open Actions create Sessions
-3. The agent re-reads the latest issue or PR state with `gh` before acting, so asynchronous label updates are respected
-4. If the agent needs human input, it posts a plain-English status comment describing what happened
+3. A pick-up Session receives the issue or PR URL and asks the agent to choose the best way to address it
+4. Issue Sessions start on a dedicated issue branch, while PR Sessions start on the existing PR branch
 5. An exact `/kelos pick-up` command creates a Session for an open issue or PR; explicit commands or relabel events retrigger the other matching automation
 
 Each matching webhook delivery creates a discrete Task or Session. A created
 Session remains available for interactive follow-ups through Session clients.
-Bot status and review replies should not include trigger commands accidentally,
-but explicit worker handoff comments can intentionally retrigger reviewer
-spawners when those spawners include a matching bot-author filter.
+Bot status and review replies should not include trigger commands accidentally.
+Explicit bot comments can trigger reviewer spawners when those spawners include
+a matching bot-author filter.
 
 ## Troubleshooting
 
@@ -694,7 +690,7 @@ spawners when those spawners include a matching bot-author filter.
   `*-session-agent` Workspace references it
 - For Tasks, check the credentials referenced by the regular project Workspace
 - Verify the token has `repo` permissions
-- Check if git user is configured in the agent prompt (see `kelos-workers.yaml` for example)
+- Check if the SessionSpawner configures the Git identity in `worker.podOverrides.env`
 
 ## Next Steps
 

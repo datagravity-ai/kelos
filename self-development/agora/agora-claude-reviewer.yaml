@@ -45,7 +45,7 @@ spec:
           commentOn: PullRequest
           state: open
           author: gjkim42
-        # Allow the Kelos bot to request a Claude review on PRs opened by Agora workers.
+        # Allow Kelos bot comments to request a Claude review.
         - event: issue_comment
           action: created
           bodyPattern: '(?m)^/kelos claude-review[ \t]*\r?$'

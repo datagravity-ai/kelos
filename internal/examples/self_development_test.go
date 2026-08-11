@@ -301,9 +301,6 @@ func TestDevelopmentSessionSpawnersUsePersistentWorkspace(t *testing.T) {
 			if sessionSpawner.Spec.SessionTemplate.InitialPrompt == "" {
 				t.Fatalf("%s sessionTemplate.initialPrompt is empty", tt.file)
 			}
-			if !strings.Contains(sessionSpawner.Spec.SessionTemplate.InitialPrompt, "Your workspace is backed by a PVC") {
-				t.Fatalf("%s initialPrompt does not describe its persistent workspace", tt.file)
-			}
 		})
 	}
 }
@@ -917,9 +914,7 @@ func TestAgoraIssueCreatorsUseTriageAcceptedLabel(t *testing.T) {
 	tests := []string{
 		"agora-fake-strategist.yaml",
 		"agora-fake-user.yaml",
-		"agora-pr-responder.yaml",
 		"agora-self-update.yaml",
-		"agora-workers.yaml",
 	}
 
 	for _, file := range tests {
@@ -927,13 +922,8 @@ func TestAgoraIssueCreatorsUseTriageAcceptedLabel(t *testing.T) {
 		t.Run(file, func(t *testing.T) {
 			t.Parallel()
 
-			taskSpawner, sessionSpawner := readSpawnerFromDir(t, "self-development/agora", file)
-			var prompt string
-			if taskSpawner != nil {
-				prompt = taskSpawner.Spec.TaskTemplate.PromptTemplate
-			} else {
-				prompt = sessionSpawner.Spec.SessionTemplate.InitialPrompt
-			}
+			taskSpawner := readTaskSpawnerFromDir(t, "self-development/agora", file)
+			prompt := taskSpawner.Spec.TaskTemplate.PromptTemplate
 			if !strings.Contains(prompt, "triage-accepted") {
 				t.Fatalf("%s prompt does not mention triage-accepted", file)
 			}

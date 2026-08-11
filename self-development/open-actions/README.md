@@ -27,8 +27,7 @@ TaskSpawner name in brackets, and its body includes both a
 Each run checks whether an unassigned slot is still valid against the current
 repository before retaining, replacing, or closing it. Assigned issues and PRs
 are treated as ongoing human or agent work and are not updated by autonomous
-discovery jobs. This cap does not apply to follow-up issues created while a
-worker or PR responder is handling an explicitly requested issue or PR.
+discovery jobs.
 
 The two SessionSpawners operate on the Open Actions repository through the
 `open-actions-session-agent` Workspace, which uses the personal Session token.
@@ -44,13 +43,13 @@ meta-maintenance spawners (`open-actions-config-update`,
 
 | Spawner | Trigger | Agent | Description |
 |---|---|---|---|
-| **open-actions-workers** | Webhook: issue comment `/kelos pick-up` | Codex | Creates durable Sessions for issue work, including PR creation or updates |
+| **open-actions-workers** | Webhook: issue comment `/kelos pick-up` | Codex | Creates a durable Session with the open issue URL and a dedicated issue branch |
 | **open-actions-planner** | Webhook: issue comment `/kelos plan` | Codex | Investigates an issue and posts a structured implementation plan — advisory only, no code changes |
 | **open-actions-reviewer** | Webhook: PR comment or review `/kelos review` | Codex | Reviews PRs on demand — analyzes code, checks conventions, and updates a sticky review comment |
 | **open-actions-api-reviewer** | Webhook: issue/PR comment or review `/kelos api-review` | Codex | Reviews Kubernetes API design on issues or PRs — naming, compatibility, CRD validation |
 | **open-actions-claude-reviewer** | Webhook: PR comment or review `/kelos claude-review` | Claude Fable | Runs an independent review path through Claude Code and updates a Claude-specific sticky review comment |
 | **open-actions-claude-api-reviewer** | Webhook: issue/PR comment or review `/kelos claude-api-review` | Claude Fable | Runs an independent API design review path through Claude Code and updates Claude-specific sticky PR comments |
-| **open-actions-pr-responder** | Webhook: PR review/comment with `/kelos pick-up` | Codex | Creates durable Sessions for PR review feedback on the existing branch |
+| **open-actions-pr-responder** | Webhook: PR review/comment with `/kelos pick-up` | Codex | Creates a durable Session with the open PR URL on its existing branch |
 | **open-actions-triage** | Webhook: issue opened/reopened (untriaged) | Codex | Classifies issues by kind/priority, detects duplicates, and recommends an actor |
 | **open-actions-fake-user** | Cron (daily 09:00 UTC) | Codex | Tests DX as a new user and maintains one unassigned issue slot for the highest-impact problem found |
 | **open-actions-fake-strategist** | Cron (every 12 hours) | Codex | Explores new use cases, integrations, and API extensions while maintaining one unassigned strategic issue slot |
@@ -80,7 +79,8 @@ individual spawner after `base-agent` is installed.
 ### open-actions-workers.yaml
 
 Picks up open GitHub issues when a maintainer posts `/kelos pick-up` and
-creates a durable Session to fix them.
+creates a durable Session. The initial prompt supplies the issue URL and asks
+the agent to find the best way to address it.
 
 | | |
 |---|---|
@@ -89,15 +89,11 @@ creates a durable Session to fix them.
 | **Storage** | 10 Gi PVC |
 
 **Key features:**
-- Automatically checks for existing PRs and updates them incrementally
-- Self-reviews PRs before requesting human review
-- Ensures CI passes before completion
+- Lets the agent choose how to address the linked issue
+- Uses `open-actions-task-<number>` for the issue branch
 - Requires a `/kelos pick-up` comment to pick up an issue (maintainer approval gate)
-- Hands off finished PRs to `/kelos review`, or `/kelos api-review` when the diff touches `api/`
 - Keeps the workspace across Session follow-ups and pod restarts
 - Supports routine follow-ups through the Session's web or terminal clients
-- May create separate follow-up issues for out-of-scope discoveries; those
-  follow-ups are exempt from autonomous discovery issue slot caps
 
 **Deploy:**
 ```bash
@@ -130,13 +126,12 @@ kubectl apply -f self-development/open-actions/open-actions-planner.yaml
 
 ### open-actions-reviewer.yaml
 
-Reviews open pull requests on demand when a maintainer posts `/kelos review` or
-when an Open Actions worker posts `/kelos review` after pushing a generated PR
-and confirming CI passes.
+Reviews open pull requests on demand when a maintainer or `kelos-bot[bot]`
+posts `/kelos review`.
 
 | | |
 |---|---|
-| **Trigger** | GitHub PR comment or review webhook with `/kelos review` from a maintainer or worker handoff (`kelos-bot[bot]`) |
+| **Trigger** | GitHub PR comment or review webhook with `/kelos review` from a maintainer or `kelos-bot[bot]` |
 | **Agent** | Codex |
 | **Concurrency** | 3 |
 
@@ -155,12 +150,12 @@ kubectl apply -f self-development/open-actions/open-actions-reviewer.yaml
 
 ### open-actions-claude-reviewer.yaml
 
-Runs a Claude Fable review when a maintainer posts `/kelos claude-review` or
-an Open Actions worker hands off a pull request with that command.
+Runs a Claude Fable review when a maintainer or `kelos-bot[bot]` posts
+`/kelos claude-review`.
 
 | | |
 |---|---|
-| **Trigger** | GitHub PR comment or review webhook with `/kelos claude-review` from a maintainer or worker handoff |
+| **Trigger** | GitHub PR comment or review webhook with `/kelos claude-review` from a maintainer or `kelos-bot[bot]` |
 | **Agent** | Claude Fable via Claude Code |
 | **Concurrency** | 3 |
 
@@ -180,12 +175,12 @@ kubectl apply -f self-development/open-actions/open-actions-claude-reviewer.yaml
 ### open-actions-api-reviewer.yaml
 
 Reviews issues and pull requests for Kubernetes API design conventions,
-compatibility, and best practices when a maintainer posts `/kelos api-review`
-or when an Open Actions worker hands off a generated API PR.
+compatibility, and best practices when a maintainer or `kelos-bot[bot]` posts
+`/kelos api-review`.
 
 | | |
 |---|---|
-| **Trigger** | GitHub issue/PR comment or review webhook with `/kelos api-review` from a maintainer or worker handoff (`kelos-bot[bot]`) |
+| **Trigger** | GitHub issue/PR comment or review webhook with `/kelos api-review` from a maintainer or `kelos-bot[bot]` |
 | **Agent** | Codex |
 | **Concurrency** | 3 |
 
@@ -205,13 +200,12 @@ kubectl apply -f self-development/open-actions/open-actions-api-reviewer.yaml
 
 ### open-actions-claude-api-reviewer.yaml
 
-Runs a Claude Fable API design review when a maintainer posts
-`/kelos claude-api-review` or an Open Actions worker hands off an API pull
-request with that command.
+Runs a Claude Fable API design review when a maintainer or `kelos-bot[bot]`
+posts `/kelos claude-api-review`.
 
 | | |
 |---|---|
-| **Trigger** | GitHub issue/PR comment or review webhook with `/kelos claude-api-review` from a maintainer or worker handoff |
+| **Trigger** | GitHub issue/PR comment or review webhook with `/kelos claude-api-review` from a maintainer or `kelos-bot[bot]` |
 | **Agent** | Claude Fable via Claude Code |
 | **Concurrency** | 3 |
 
@@ -233,7 +227,8 @@ kubectl apply -f self-development/open-actions/open-actions-claude-api-reviewer.
 ### open-actions-pr-responder.yaml
 
 Picks up open GitHub pull requests when a reviewer requests changes with
-`/kelos pick-up`.
+`/kelos pick-up`. The initial prompt supplies the PR URL and asks the agent to
+find the best way to address it.
 
 | | |
 |---|---|
@@ -242,14 +237,12 @@ Picks up open GitHub pull requests when a reviewer requests changes with
 | **Storage** | 10 Gi PVC |
 
 **Key features:**
-- Reuses the existing PR branch instead of starting over
-- Reads review comments and PR conversation before making incremental changes
+- Starts the Session on the existing PR branch
+- Lets the agent choose how to address the linked PR
 - Lets the maintainer stay on the PR page for the common review-feedback loop
 - Requires a `/kelos pick-up` PR comment or review body to be picked up
 - Keeps the workspace across Session follow-ups and pod restarts
 - Supports routine follow-ups through the Session's web or terminal clients
-- May create separate follow-up issues for out-of-scope discoveries; those
-  follow-ups are exempt from autonomous discovery issue slot caps
 
 **Deploy:**
 ```bash

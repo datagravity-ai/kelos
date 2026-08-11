@@ -47,7 +47,7 @@ spec:
           bodyPattern: '(?m)^/kelos claude-api-review[ \t]*\r?$'
           state: open
           author: gjkim42
-        # Allow the Kelos bot to request a Claude API review on PRs it opens.
+        # Allow Kelos bot comments to request a Claude API review.
         - event: issue_comment
           action: created
           bodyPattern: '(?m)^/kelos claude-api-review[ \t]*\r?$'
