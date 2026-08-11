@@ -29,7 +29,7 @@ const (
 	SessionReasonIdlePolicyTriggered = "IdlePolicyTriggered"
 )
 
-// SessionPullRequestState represents the lifecycle state of a Session pull request.
+// SessionPullRequestState represents the observed state of a Session pull request.
 type SessionPullRequestState string
 
 const (
@@ -37,6 +37,8 @@ const (
 	SessionPullRequestStateDraft SessionPullRequestState = "Draft"
 	// SessionPullRequestStateOpen means the pull request is open for review.
 	SessionPullRequestStateOpen SessionPullRequestState = "Open"
+	// SessionPullRequestStateQueued means the pull request is in a merge queue.
+	SessionPullRequestStateQueued SessionPullRequestState = "Queued"
 	// SessionPullRequestStateMerged means the pull request has been merged.
 	SessionPullRequestStateMerged SessionPullRequestState = "Merged"
 	// SessionPullRequestStateClosed means the pull request was closed without merging.
@@ -75,11 +77,11 @@ type SessionPullRequest struct {
 	// URL is the pull request web URL.
 	URL string `json:"url"`
 
-	// State is the pull request lifecycle state.
-	// +kubebuilder:validation:Enum=Draft;Open;Merged;Closed
+	// State is the observed pull request state.
+	// +kubebuilder:validation:Enum=Draft;Open;Queued;Merged;Closed
 	State SessionPullRequestState `json:"state"`
 
-	// Checks summarizes the GitHub checks reported for the pull request.
+	// Checks summarizes the GitHub checks for the pull request or its merge queue entry.
 	// +optional
 	Checks *SessionPullRequestChecks `json:"checks,omitempty"`
 }

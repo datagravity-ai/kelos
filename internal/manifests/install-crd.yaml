@@ -7984,8 +7984,8 @@ spec:
                   Branch, when one exists.
                 properties:
                   checks:
-                    description: Checks summarizes the GitHub checks reported for
-                      the pull request.
+                    description: Checks summarizes the GitHub checks for the pull
+                      request or its merge queue entry.
                     properties:
                       completed:
                         description: Completed is the number of checks that have completed.
@@ -8010,10 +8010,11 @@ spec:
                     - total
                     type: object
                   state:
-                    description: State is the pull request lifecycle state.
+                    description: State is the observed pull request state.
                     enum:
                     - Draft
                     - Open
+                    - Queued
                     - Merged
                     - Closed
                     type: string

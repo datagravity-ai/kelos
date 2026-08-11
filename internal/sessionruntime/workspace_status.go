@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/url"
 	"os"
 	"os/exec"
@@ -19,6 +20,7 @@ import (
 const (
 	workspaceStatusFileName       = "workspace-status.json"
 	workspaceStatusCommandTimeout = 5 * time.Second
+	pullRequestMergeQueueQuery    = `query($id:ID!){node(id:$id){... on PullRequest{mergeQueueEntry{headCommit{statusCheckRollup{contexts(first:100){nodes{__typename ... on CheckRun{status conclusion} ... on StatusContext{state}}}}}}}}}`
 )
 
 // WorkspaceStatus describes the git work currently visible in a Session.
@@ -36,6 +38,16 @@ type githubStatusCheck struct {
 	Status     string `json:"status"`
 	Conclusion string `json:"conclusion"`
 	State      string `json:"state"`
+}
+
+type githubMergeQueueEntry struct {
+	HeadCommit *struct {
+		StatusCheckRollup *struct {
+			Contexts struct {
+				Nodes []githubStatusCheck `json:"nodes"`
+			} `json:"contexts"`
+		} `json:"statusCheckRollup"`
+	} `json:"headCommit"`
 }
 
 type realWorkspaceStatusRunner struct{}
@@ -120,7 +132,7 @@ func repositoryOwnerFromRemoteURL(remoteURL string) (string, error) {
 }
 
 func findPullRequest(ctx context.Context, runner workspaceStatusRunner, workingDir, branch, repo, headOwner string) (*kelos.SessionPullRequest, error) {
-	args := []string{"pr", "list", "--head", branch, "--state", "all", "--json", "url,headRepositoryOwner,state,isDraft,statusCheckRollup", "--limit", "100"}
+	args := []string{"pr", "list", "--head", branch, "--state", "all", "--json", "id,url,headRepositoryOwner,state,isDraft,statusCheckRollup", "--limit", "100"}
 	if repo != "" {
 		args = append(args, "--repo", repo)
 	}
@@ -132,6 +144,7 @@ func findPullRequest(ctx context.Context, runner workspaceStatusRunner, workingD
 		return nil, nil
 	}
 	var pullRequests []struct {
+		ID                  string `json:"id"`
 		URL                 string `json:"url"`
 		State               string `json:"state"`
 		IsDraft             bool   `json:"isDraft"`
@@ -149,14 +162,43 @@ func findPullRequest(ctx context.Context, runner workspaceStatusRunner, workingD
 			if err != nil {
 				return nil, err
 			}
+			checks := pullRequest.StatusCheckRollup
+			mergeQueueEntry, err := findPullRequestMergeQueueEntry(ctx, runner, workingDir, pullRequest.ID)
+			if err != nil {
+				log.Printf("Unable to read pull request merge queue, using pull request checks error=%v", err)
+			} else if mergeQueueEntry != nil {
+				state = kelos.SessionPullRequestStateQueued
+				checks = nil
+				if mergeQueueEntry.HeadCommit != nil && mergeQueueEntry.HeadCommit.StatusCheckRollup != nil {
+					checks = mergeQueueEntry.HeadCommit.StatusCheckRollup.Contexts.Nodes
+				}
+			}
 			return &kelos.SessionPullRequest{
 				URL:    pullRequest.URL,
 				State:  state,
-				Checks: sessionPullRequestChecks(pullRequest.StatusCheckRollup),
+				Checks: sessionPullRequestChecks(checks),
 			}, nil
 		}
 	}
 	return nil, nil
+}
+
+func findPullRequestMergeQueueEntry(ctx context.Context, runner workspaceStatusRunner, workingDir, pullRequestID string) (*githubMergeQueueEntry, error) {
+	output, err := runner.run(ctx, workingDir, "gh", "api", "graphql", "-F", "id="+pullRequestID, "-f", "query="+pullRequestMergeQueueQuery)
+	if err != nil {
+		return nil, fmt.Errorf("reading pull request merge queue: %w", err)
+	}
+	var response struct {
+		Data struct {
+			Node struct {
+				MergeQueueEntry *githubMergeQueueEntry `json:"mergeQueueEntry"`
+			} `json:"node"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(output), &response); err != nil {
+		return nil, fmt.Errorf("decoding pull request merge queue: %w", err)
+	}
+	return response.Data.Node.MergeQueueEntry, nil
 }
 
 func sessionPullRequestChecks(checks []githubStatusCheck) *kelos.SessionPullRequestChecks {

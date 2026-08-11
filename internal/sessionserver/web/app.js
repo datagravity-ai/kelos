@@ -591,7 +591,7 @@ function pullRequestLabel(url) {
 }
 
 function sessionPRState(value) {
-  return ['Draft', 'Open', 'Merged', 'Closed'].includes(value) ? value : '';
+  return ['Draft', 'Open', 'Queued', 'Merged', 'Closed'].includes(value) ? value : '';
 }
 
 function sessionPRChecks(checks) {

@@ -229,8 +229,8 @@ the Session resource and is visible through the Kubernetes API.
 | `status.conditions[type=Active]` | Whether the runtime has an unfinished turn; `reason: WaitingForInput` means the turn is waiting for a user response, and `Unknown` means activity has not been reported | Output |
 | `status.branch` | Currently checked-out git branch in the Session workspace | Output |
 | `status.pullRequest.url` | Web URL of the pull request associated with the current branch | Output |
-| `status.pullRequest.state` | Pull request lifecycle state: `Draft`, `Open`, `Merged`, or `Closed` | Output |
-| `status.pullRequest.checks.state` | Aggregate GitHub check state: `Pending`, `Success`, or `Failure`. Cancelled checks are failures | Output |
+| `status.pullRequest.state` | Pull request state: `Draft`, `Open`, `Queued`, `Merged`, or `Closed`. `Queued` means the pull request is in a merge queue | Output |
+| `status.pullRequest.checks.state` | Aggregate GitHub check state: `Pending`, `Success`, or `Failure`. Queued pull requests use the merge queue commit's checks. Cancelled checks are failures | Output |
 | `status.pullRequest.checks.completed` | Number of GitHub checks that have completed | Output |
 | `status.pullRequest.checks.total` | Total number of GitHub checks reported for the pull request | Output |
 
