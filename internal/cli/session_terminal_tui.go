@@ -33,7 +33,7 @@ const (
 	sessionTUIComposerGap            = 1
 	sessionTUIComposerPrompt         = "> "
 	sessionTUIStatusBarHeight        = 1
-	sessionTUIQueueMaxHeight         = 8
+	sessionTUIPendingMaxHeight       = 8
 	sessionTUIIndent                 = 2
 	sessionTUIToolOutputMaxLines     = 5
 	sessionTUIFrameInterval          = time.Second / 30
@@ -130,8 +130,8 @@ type sessionTUIModel struct {
 	input              textarea.Model
 	styles             sessionTUIStyles
 	blocks             []sessionTUIBlock
-	queuedTurns        map[string]string
-	queuedTurnOrder    []string
+	pendingTurnID      string
+	pendingTurnText    string
 	toolNames          map[string]string
 	width              int
 	height             int
@@ -241,7 +241,6 @@ func newSessionTUIModel(events *json.Decoder, requests *json.Encoder, output io.
 		requests:           requests,
 		input:              input,
 		styles:             styles,
-		queuedTurns:        make(map[string]string),
 		toolNames:          make(map[string]string),
 		width:              sessionTUIDefaultWidth,
 		height:             sessionTUIDefaultHeight,
@@ -638,7 +637,11 @@ func (m *sessionTUIModel) applyEvent(event sessionruntime.Event) sessionTUIComma
 			m.finishStreaming()
 			m.appendBlock(sessionTUIBlockUser, sessionTerminalMessageText(event.Text, event.Attachments))
 		} else {
-			m.appendQueuedUser(event.TurnID, sessionTerminalMessageText(event.Text, event.Attachments))
+			m.setPendingUser(event.TurnID, sessionTerminalMessageText(event.Text, event.Attachments))
+		}
+	case sessionruntime.EventUserMessageUpdated:
+		if m.pendingTurnID == event.TurnID {
+			m.pendingTurnText = sessionTerminalMessageText(event.Text, event.Attachments)
 		}
 	case sessionTerminalEventAttachmentAdded:
 		m.pendingAttachments = append(m.pendingAttachments, event.Attachments...)
@@ -647,7 +650,7 @@ func (m *sessionTUIModel) applyEvent(event sessionruntime.Event) sessionTUIComma
 		}
 	case sessionruntime.EventTurnStarted:
 		m.turnActive = true
-		m.acceptQueuedTurn(event.TurnID)
+		m.acceptPendingTurn(event.TurnID)
 		if m.activeTurnID != event.TurnID {
 			m.activeTurnStarted = sessionTerminalTurnStartedAt(event, m.now(), m.replayingHistory)
 		}
@@ -695,7 +698,7 @@ func (m *sessionTUIModel) applyEvent(event sessionruntime.Event) sessionTUIComma
 		m.appendBlock(sessionTUIBlockDiff, event.Diff)
 	case sessionruntime.EventTurnCompleted:
 		m.turnActive = false
-		m.acceptQueuedTurn(event.TurnID)
+		m.acceptPendingTurn(event.TurnID)
 		m.finishStreaming()
 		elapsed, hasElapsed := sessionTerminalTurnElapsed(m.activeTurnID, m.activeTurnStarted, event, m.now(), m.replayingHistory, recoveredCompletion)
 		if event.TurnID == "" || event.TurnID == m.activeTurnID {
@@ -735,11 +738,11 @@ func (m *sessionTUIModel) applyHistoryState(state *sessionruntime.HistoryState) 
 	if state == nil {
 		return
 	}
-	m.queuedTurns = make(map[string]string, len(state.QueuedTurns))
-	m.queuedTurnOrder = make([]string, 0, len(state.QueuedTurns))
-	for _, turn := range state.QueuedTurns {
-		m.queuedTurns[turn.TurnID] = sessionTerminalMessageText(turn.Text, turn.Attachments)
-		m.queuedTurnOrder = append(m.queuedTurnOrder, turn.TurnID)
+	m.pendingTurnID = ""
+	m.pendingTurnText = ""
+	if state.PendingTurn != nil {
+		m.pendingTurnID = state.PendingTurn.TurnID
+		m.pendingTurnText = sessionTerminalMessageText(state.PendingTurn.Text, state.PendingTurn.Attachments)
 	}
 	m.activeTurnID = state.ActiveTurnID
 	m.turnActive = state.ActiveTurnID != ""
@@ -817,7 +820,6 @@ func (m *sessionTUIModel) cancelOlderHistoryPage() {
 func (m *sessionTUIModel) replayHistoryPage(events []sessionruntime.Event) []sessionTUIBlock {
 	replay := &sessionTUIModel{
 		styles:          m.styles,
-		queuedTurns:     make(map[string]string),
 		toolNames:       make(map[string]string),
 		width:           m.width,
 		height:          m.height,
@@ -983,27 +985,18 @@ func (m *sessionTUIModel) toolCompletionAttribution(event sessionruntime.Event) 
 	return name, true
 }
 
-func (m *sessionTUIModel) appendQueuedUser(turnID, text string) bool {
-	if _, exists := m.queuedTurns[turnID]; exists {
-		return false
-	}
-	m.queuedTurns[turnID] = text
-	m.queuedTurnOrder = append(m.queuedTurnOrder, turnID)
-	return true
+func (m *sessionTUIModel) setPendingUser(turnID, text string) {
+	m.pendingTurnID = turnID
+	m.pendingTurnText = text
 }
 
-func (m *sessionTUIModel) acceptQueuedTurn(turnID string) bool {
-	text, exists := m.queuedTurns[turnID]
-	if !exists {
+func (m *sessionTUIModel) acceptPendingTurn(turnID string) bool {
+	if m.pendingTurnID != turnID {
 		return false
 	}
-	delete(m.queuedTurns, turnID)
-	for index, queuedTurnID := range m.queuedTurnOrder {
-		if queuedTurnID == turnID {
-			m.queuedTurnOrder = append(m.queuedTurnOrder[:index], m.queuedTurnOrder[index+1:]...)
-			break
-		}
-	}
+	text := m.pendingTurnText
+	m.pendingTurnID = ""
+	m.pendingTurnText = ""
 	m.finishStreaming()
 	m.appendBlock(sessionTUIBlockUser, text)
 	return true
@@ -1292,8 +1285,8 @@ func (m *sessionTUIModel) renderUserBlock(text string) string {
 	return m.renderUserBlockWithStatus(text, "")
 }
 
-func (m *sessionTUIModel) renderQueuedUserBlock(text string) string {
-	return m.renderUserBlockWithStatus(text, "Queued")
+func (m *sessionTUIModel) renderPendingUserBlock(text string) string {
+	return m.renderUserBlockWithStatus(text, "Pending")
 }
 
 func (m *sessionTUIModel) renderUserBlockWithStatus(text, status string) string {
@@ -1443,9 +1436,9 @@ func (m *sessionTUIModel) footerView() string {
 	if progress := m.progressView(); progress != "" {
 		parts = append(parts, progress)
 	}
-	queue := m.queueView()
-	if queue != "" {
-		parts = append(parts, queue)
+	pending := m.pendingView()
+	if pending != "" {
+		parts = append(parts, pending)
 	}
 	parts = append(parts, "", m.composerView(), m.statusBarView())
 	return strings.Join(parts, "\n")
@@ -1503,8 +1496,8 @@ func (m *sessionTUIModel) statusBarFallback() string {
 		return "Connecting"
 	case m.turnActive:
 		return "Working"
-	case len(m.queuedTurnOrder) > 0:
-		return "Queued"
+	case m.pendingTurnID != "":
+		return "Pending"
 	default:
 		return "Ready"
 	}
@@ -1609,17 +1602,16 @@ func formatSessionTUITokens(value int64) string {
 	return formatted + suffix
 }
 
-func (m *sessionTUIModel) queueView() string {
-	blocks := make([]string, 0, len(m.queuedTurnOrder))
-	for _, turnID := range m.queuedTurnOrder {
-		blocks = append(blocks, m.renderQueuedUserBlock(m.queuedTurns[turnID]))
+func (m *sessionTUIModel) pendingView() string {
+	if m.pendingTurnID == "" {
+		return ""
 	}
-	lines := strings.Split(strings.Join(blocks, "\n"), "\n")
+	lines := strings.Split(m.renderPendingUserBlock(m.pendingTurnText), "\n")
 	progressHeight := 0
 	if m.progressVisible() {
 		progressHeight = 1
 	}
-	maxHeight := min(sessionTUIQueueMaxHeight, max(0, m.height-m.footerHeight()-progressHeight))
+	maxHeight := min(sessionTUIPendingMaxHeight, max(0, m.height-m.footerHeight()-progressHeight))
 	if len(lines) > maxHeight {
 		lines = lines[:maxHeight]
 	}

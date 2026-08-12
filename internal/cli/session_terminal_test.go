@@ -19,9 +19,10 @@ func TestSessionTerminalRendersANSIEvents(t *testing.T) {
 	var events bytes.Buffer
 	encoder := json.NewEncoder(&events)
 	for _, event := range []sessionruntime.Event{
-		{Type: sessionruntime.EventHistoryEnd, HistoryState: &sessionruntime.HistoryState{QueuedTurns: []sessionruntime.HistoryQueuedTurn{{TurnID: "turn-2", Text: "queued"}}}},
+		{Type: sessionruntime.EventHistoryEnd, HistoryState: &sessionruntime.HistoryState{PendingTurn: &sessionruntime.HistoryPendingTurn{TurnID: "turn-2", Text: "pending"}}},
 		{Type: sessionruntime.EventRuntimeRecovered, Text: "Session runtime restarted"},
 		{Type: sessionruntime.EventUserMessage, Text: "hello"},
+		{Type: sessionruntime.EventUserMessageUpdated, TurnID: "turn-2", Text: "pending\n\nwith more context"},
 		{Type: sessionruntime.EventAssistantDelta, Text: "working"},
 		{Type: sessionruntime.EventToolStarted, ToolName: "shell"},
 		{Type: sessionruntime.EventToolCompleted, Status: "completed"},
@@ -55,7 +56,8 @@ func TestSessionTerminalRendersANSIEvents(t *testing.T) {
 	got := output.String()
 	for _, want := range []string{
 		"\x1b[7m  hello  \x1b[0m",
-		"\x1b[7m  queued  \x1b[0m",
+		"\x1b[7m  pending  \x1b[0m",
+		"\x1b[7m  with more context  \x1b[0m",
 		"\x1b[1m\x1b[33mSession runtime restarted\x1b[0m",
 		"\x1b[1m\x1b[36m↳ shell\x1b[0m",
 		"\x1b[32mcompleted\x1b[0m",

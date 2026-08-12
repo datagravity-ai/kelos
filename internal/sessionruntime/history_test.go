@@ -25,8 +25,8 @@ func TestProjectHistoryNormalizesProviderEventsAndPreservesState(t *testing.T) {
 		{ID: 13, Type: EventAssistantDelta, TurnID: "turn-2", Text: "Open"},
 		{ID: 14, Type: EventAssistantDelta, TurnID: "turn-2", Text: "Code answer"},
 		{ID: 15, Type: EventInputRequested, TurnID: "turn-2", InputID: "input-2", Questions: []InputQuestion{{ID: "confirm", Question: "Continue?"}}, Status: "pending"},
-		{ID: 16, Type: EventUserMessage, TurnID: "turn-3", Text: "queued first", Attachments: []Attachment{{ID: "attachment-1", Name: "screen.png", MediaType: "image/png", SizeBytes: 7}}},
-		{ID: 17, Type: EventUserMessage, TurnID: "turn-4", Text: "queued second"},
+		{ID: 16, Type: EventUserMessage, TurnID: "turn-3", Text: "pending first", Revision: 1, Attachments: []Attachment{{ID: "attachment-1", Name: "screen.png", MediaType: "image/png", SizeBytes: 7}}},
+		{ID: 17, Type: EventUserMessageUpdated, TurnID: "turn-3", Text: "pending first\n\npending second", Revision: 2, Attachments: []Attachment{{ID: "attachment-1", Name: "screen.png", MediaType: "image/png", SizeBytes: 7}}},
 	}
 
 	items, state, essential := projectHistory(events)
@@ -36,11 +36,11 @@ func TestProjectHistoryNormalizesProviderEventsAndPreservesState(t *testing.T) {
 	if !state.WaitingForInput || state.TurnInterrupting {
 		t.Fatalf("history state = %#v, want waiting active turn", state)
 	}
-	if len(state.QueuedTurns) != 2 || state.QueuedTurns[0].TurnID != "turn-3" || state.QueuedTurns[1].TurnID != "turn-4" {
-		t.Fatalf("queued turns = %#v", state.QueuedTurns)
+	if state.PendingTurn == nil || state.PendingTurn.TurnID != "turn-3" || state.PendingTurn.Text != "pending first\n\npending second" || state.PendingTurn.Revision != 2 {
+		t.Fatalf("pending turn = %#v", state.PendingTurn)
 	}
-	if len(state.QueuedTurns[0].Attachments) != 1 || state.QueuedTurns[0].Attachments[0].Name != "screen.png" {
-		t.Fatalf("queued turn attachments = %#v", state.QueuedTurns[0].Attachments)
+	if len(state.PendingTurn.Attachments) != 1 || state.PendingTurn.Attachments[0].Name != "screen.png" {
+		t.Fatalf("pending turn attachments = %#v", state.PendingTurn.Attachments)
 	}
 	if len(essential) != 1 || essential[0].Type != EventInputRequested || essential[0].InputID != "input-2" || essential[0].TurnID != "" {
 		t.Fatalf("essential history events = %#v", essential)
@@ -138,19 +138,43 @@ func TestProjectHistoryBoundsLargeMessages(t *testing.T) {
 	}
 }
 
-func TestProjectHistoryBoundsQueuedMessages(t *testing.T) {
+func TestProjectHistoryBoundsPendingMessage(t *testing.T) {
 	_, state, _ := projectHistory([]Event{{
 		ID:     1,
 		Type:   EventUserMessage,
 		TurnID: "turn-1",
 		Text:   strings.Repeat("界", maxHistoryMessageBytes),
 	}})
-	if len(state.QueuedTurns) != 1 {
-		t.Fatalf("queued turns = %#v, want one turn", state.QueuedTurns)
+	if state.PendingTurn == nil {
+		t.Fatal("pending turn is nil")
 	}
-	text := state.QueuedTurns[0].Text
+	text := state.PendingTurn.Text
 	if len(text) > maxHistoryMessageBytes || !strings.Contains(text, historyTruncationMarker) || !utf8.ValidString(text) {
-		t.Fatalf("queued message preview is not a bounded UTF-8 string")
+		t.Fatalf("pending message preview is not a bounded UTF-8 string")
+	}
+}
+
+func TestProjectHistoryUsesLatestPendingMessageRevision(t *testing.T) {
+	events := []Event{
+		{ID: 1, Type: EventUserMessage, TurnID: "turn-1", Text: "original", Revision: 1},
+		{ID: 2, Type: EventUserMessageUpdated, TurnID: "turn-1", Text: "revised", Revision: 2},
+	}
+	items, state, _ := projectHistory(events)
+	if len(items) != 0 {
+		t.Fatalf("pending history items = %#v, want none", items)
+	}
+	if state.PendingTurn == nil || state.PendingTurn.Text != "revised" || state.PendingTurn.Revision != 2 {
+		t.Fatalf("pending turn = %#v, want revised turn", state.PendingTurn)
+	}
+
+	events = append(events,
+		Event{ID: 3, Type: EventTurnStarted, TurnID: "turn-1", Status: "running"},
+		Event{ID: 4, Type: EventTurnCompleted, TurnID: "turn-1", Status: "completed"},
+	)
+	items, _, _ = projectHistory(events)
+	page, cursor := historyItemsPage(items, 0, DefaultHistoryItemLimit, DefaultHistoryByteLimit)
+	if cursor != 0 || len(page) != 1 || page[0].Type != EventUserMessage || page[0].Text != "revised" || page[0].ID != 1 {
+		t.Fatalf("projected history = %#v cursor=%d", page, cursor)
 	}
 }
 

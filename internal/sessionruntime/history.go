@@ -33,6 +33,7 @@ type historyTurn struct {
 	activityEventID int64
 	startedAt       *time.Time
 	completed       bool
+	merged          bool
 	interrupting    bool
 }
 
@@ -76,6 +77,12 @@ func projectHistory(source []Event) ([]historyItem, HistoryState, []Event) {
 				copy := event
 				turn.user = &copy
 				turn.userEventID = event.ID
+			case EventUserMessageUpdated:
+				if turn.userEventID == 0 {
+					turn.userEventID = event.ID
+				}
+				copy := event
+				turn.user = &copy
 			case EventTurnStarted:
 				turn.started = true
 				turn.startedAt = event.Timestamp
@@ -83,9 +90,10 @@ func projectHistory(source []Event) ([]historyItem, HistoryState, []Event) {
 				turn.interrupting = true
 			case EventTurnCompleted:
 				turn.completed = true
+				turn.merged = event.Status == "merged"
 				turn.interrupting = false
 			}
-			if event.Type != EventUserMessage && event.Type != EventTurnCompleted {
+			if event.Type != EventUserMessage && event.Type != EventUserMessageUpdated && event.Type != EventTurnCompleted {
 				turn.activityEventID = event.ID
 				if turn.startedAt == nil {
 					turn.startedAt = event.Timestamp
@@ -105,8 +113,8 @@ func projectHistory(source []Event) ([]historyItem, HistoryState, []Event) {
 	}
 
 	state := HistoryState{FileDiff: fileDiff}
-	queued := make([]HistoryQueuedTurn, 0)
-	queuedEventIDs := make(map[string]int64)
+	var pending *HistoryPendingTurn
+	var pendingEventID int64
 	var activeEventID int64
 	for turnID, turn := range turns {
 		if turn.activityEventID > 0 && !turn.completed && turn.activityEventID >= activeEventID {
@@ -115,25 +123,18 @@ func projectHistory(source []Event) ([]historyItem, HistoryState, []Event) {
 			state.TurnInterrupting = turn.interrupting
 			activeEventID = turn.activityEventID
 		}
-		if turn.user != nil && !turn.started && turn.activityEventID == 0 && !turn.completed {
-			queued = append(queued, HistoryQueuedTurn{
+		if turn.user != nil && !turn.started && turn.activityEventID == 0 && !turn.completed && turn.userEventID >= pendingEventID {
+			pending = &HistoryPendingTurn{
 				TurnID:      turnID,
 				Text:        boundedHistoryText(turn.user.Text, maxHistoryMessageBytes),
+				Revision:    max(1, turn.user.Revision),
 				Attachments: turn.user.Attachments,
-			})
-			queuedEventIDs[turnID] = turn.userEventID
+			}
+			pendingEventID = turn.userEventID
 		}
 	}
-	sort.Slice(queued, func(i, j int) bool {
-		return queuedEventIDs[queued[i].TurnID] < queuedEventIDs[queued[j].TurnID]
-	})
-	state.QueuedTurns = queued
+	state.PendingTurn = pending
 	state.WaitingForInput = len(pendingInputs) > 0
-
-	queuedTurnIDs := make(map[string]struct{}, len(queued))
-	for _, turn := range queued {
-		queuedTurnIDs[turn.TurnID] = struct{}{}
-	}
 
 	items := make([]historyItem, 0)
 	assistants := make(map[string]historyAssistant)
@@ -167,7 +168,8 @@ func projectHistory(source []Event) ([]historyItem, HistoryState, []Event) {
 	}
 
 	for _, event := range events {
-		if _, queued := queuedTurnIDs[event.TurnID]; queued {
+		turn := turns[event.TurnID]
+		if (pending != nil && event.TurnID == pending.TurnID) || (turn != nil && turn.merged) {
 			continue
 		}
 		if event.Type != EventAssistantDelta && event.Type != EventAssistantMessage {
@@ -175,9 +177,24 @@ func projectHistory(source []Event) ([]historyItem, HistoryState, []Event) {
 		}
 
 		switch event.Type {
-		case EventUserMessage:
-			event.Text = boundedHistoryText(event.Text, maxHistoryMessageBytes)
-			addItem(event.ID, event.ID, normalizedHistoryEvent(event))
+		case EventUserMessage, EventUserMessageUpdated:
+			if event.TurnID == "" {
+				if event.Type == EventUserMessageUpdated {
+					continue
+				}
+				event.Text = boundedHistoryText(event.Text, maxHistoryMessageBytes)
+				addItem(event.ID, event.ID, normalizedHistoryEvent(event))
+				continue
+			}
+			turn := turns[event.TurnID]
+			if turn == nil || turn.userEventID != event.ID || turn.user == nil {
+				continue
+			}
+			latest := *turn.user
+			latest.ID = event.ID
+			latest.Type = EventUserMessage
+			latest.Text = boundedHistoryText(latest.Text, maxHistoryMessageBytes)
+			addItem(event.ID, event.ID, normalizedHistoryEvent(latest))
 		case EventAssistantDelta:
 			assistant := assistants[event.TurnID]
 			if assistant.firstEventID == 0 {

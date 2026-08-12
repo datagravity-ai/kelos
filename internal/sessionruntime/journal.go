@@ -35,12 +35,12 @@ type Journal struct {
 	path        string
 	file        *os.File
 	journalID   string
-	// pendingTurns keeps accepted prompts durable after they leave replay history.
-	pendingTurns map[string]Event
-	failure      chan struct{}
-	failureErr   error
-	failureOnce  sync.Once
-	closed       bool
+	// unstartedTurns keeps accepted prompts durable after they leave replay history.
+	unstartedTurns map[string]Event
+	failure        chan struct{}
+	failureErr     error
+	failureOnce    sync.Once
+	closed         bool
 }
 
 type journalSubscriber struct {
@@ -63,12 +63,12 @@ func NewJournal() *Journal {
 
 func newJournal(maxEvents int) *Journal {
 	return &Journal{
-		maxEvents:    maxEvents,
-		nextID:       1,
-		journalID:    uuid.New().String(),
-		pendingTurns: map[string]Event{},
-		subscribers:  map[int]*journalSubscriber{},
-		failure:      make(chan struct{}),
+		maxEvents:      maxEvents,
+		nextID:         1,
+		journalID:      uuid.New().String(),
+		unstartedTurns: map[string]Event{},
+		subscribers:    map[int]*journalSubscriber{},
+		failure:        make(chan struct{}),
 	}
 }
 
@@ -217,7 +217,7 @@ func (j *Journal) load() (string, bool, error) {
 			event.JournalID = ""
 		}
 		j.nextID = event.ID + 1
-		j.updatePendingTurns(event)
+		j.updateUnstartedTurns(event)
 		j.appendRetained(event)
 		offset += int64(len(line))
 		total++
@@ -263,7 +263,7 @@ func (j *Journal) Append(event Event) error {
 		}
 	}
 	j.nextID++
-	j.updatePendingTurns(event)
+	j.updateUnstartedTurns(event)
 	compacted := j.appendRetained(event)
 	if compacted && j.file != nil {
 		if err := j.rewrite(); err != nil {
@@ -283,15 +283,15 @@ func (j *Journal) Append(event Event) error {
 	return nil
 }
 
-func (j *Journal) updatePendingTurns(event Event) {
+func (j *Journal) updateUnstartedTurns(event Event) {
 	if event.TurnID == "" {
 		return
 	}
 	switch event.Type {
-	case EventUserMessage:
-		j.pendingTurns[event.TurnID] = event
+	case EventUserMessage, EventUserMessageUpdated:
+		j.unstartedTurns[event.TurnID] = event
 	case EventTurnStarted, EventTurnCompleted:
-		delete(j.pendingTurns, event.TurnID)
+		delete(j.unstartedTurns, event.TurnID)
 	}
 }
 
@@ -301,7 +301,7 @@ func (j *Journal) recoveryEvents() []Event {
 	for _, event := range events {
 		retained[event.ID] = struct{}{}
 	}
-	for _, event := range j.pendingTurns {
+	for _, event := range j.unstartedTurns {
 		if _, exists := retained[event.ID]; !exists {
 			events = append(events, event)
 		}

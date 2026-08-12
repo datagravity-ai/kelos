@@ -6,23 +6,24 @@ import (
 )
 
 const (
-	EventHistoryStart     = "history.start"
-	EventHistoryEnd       = "history.end"
-	EventRuntimeStatus    = "runtime.status"
-	EventRequestAccepted  = "request.accepted"
-	EventRuntimeRecovered = "runtime.recovered"
-	EventUserMessage      = "user.message"
-	EventTurnStarted      = "turn.started"
-	EventTurnInterrupting = "turn.interrupting"
-	EventAssistantDelta   = "assistant.delta"
-	EventAssistantMessage = "assistant.message"
-	EventToolStarted      = "tool.started"
-	EventToolCompleted    = "tool.completed"
-	EventInputRequested   = "input.requested"
-	EventInputResolved    = "input.resolved"
-	EventFileDiff         = "file.diff"
-	EventTurnCompleted    = "turn.completed"
-	EventError            = "error"
+	EventHistoryStart       = "history.start"
+	EventHistoryEnd         = "history.end"
+	EventRuntimeStatus      = "runtime.status"
+	EventRequestAccepted    = "request.accepted"
+	EventRuntimeRecovered   = "runtime.recovered"
+	EventUserMessage        = "user.message"
+	EventUserMessageUpdated = "user.message.updated"
+	EventTurnStarted        = "turn.started"
+	EventTurnInterrupting   = "turn.interrupting"
+	EventAssistantDelta     = "assistant.delta"
+	EventAssistantMessage   = "assistant.message"
+	EventToolStarted        = "tool.started"
+	EventToolCompleted      = "tool.completed"
+	EventInputRequested     = "input.requested"
+	EventInputResolved      = "input.resolved"
+	EventFileDiff           = "file.diff"
+	EventTurnCompleted      = "turn.completed"
+	EventError              = "error"
 
 	DefaultHistoryItemLimit = 20
 	DefaultHistoryByteLimit = 128 * 1024
@@ -37,6 +38,7 @@ type Event struct {
 	RequestID      string          `json:"requestId,omitempty"`
 	TurnID         string          `json:"turnId,omitempty"`
 	Text           string          `json:"text,omitempty"`
+	Revision       int64           `json:"revision,omitempty"`
 	ToolID         string          `json:"toolId,omitempty"`
 	ToolName       string          `json:"toolName,omitempty"`
 	Output         string          `json:"output,omitempty"`
@@ -62,14 +64,15 @@ type HistoryState struct {
 	ActiveTurnStarted *time.Time          `json:"activeTurnStarted,omitempty"`
 	TurnInterrupting  bool                `json:"turnInterrupting,omitempty"`
 	WaitingForInput   bool                `json:"waitingForInput,omitempty"`
-	QueuedTurns       []HistoryQueuedTurn `json:"queuedTurns,omitempty"`
+	PendingTurn       *HistoryPendingTurn `json:"pendingTurn,omitempty"`
 	FileDiff          string              `json:"fileDiff,omitempty"`
 }
 
-// HistoryQueuedTurn describes one user message waiting to run.
-type HistoryQueuedTurn struct {
+// HistoryPendingTurn describes the user message waiting to run.
+type HistoryPendingTurn struct {
 	TurnID      string       `json:"turnId"`
 	Text        string       `json:"text"`
+	Revision    int64        `json:"revision"`
 	Attachments []Attachment `json:"attachments,omitempty"`
 }
 
@@ -103,19 +106,21 @@ type RuntimeRateLimit struct {
 
 // ClientRequest is a command sent by a web or terminal client.
 type ClientRequest struct {
-	Type          string              `json:"type"`
-	RequestID     string              `json:"requestId,omitempty"`
-	Since         int64               `json:"since,omitempty"`
-	JournalID     string              `json:"journalId,omitempty"`
-	HistoryBounds bool                `json:"historyBounds,omitempty"`
-	HistoryItems  int                 `json:"historyItems,omitempty"`
-	HistoryBytes  int                 `json:"historyBytes,omitempty"`
-	HistoryCursor string              `json:"historyCursor,omitempty"`
-	Text          string              `json:"text,omitempty"`
-	AttachmentIDs []string            `json:"attachmentIds,omitempty"`
-	InputID       string              `json:"inputId,omitempty"`
-	Answers       map[string][]string `json:"answers,omitempty"`
-	Cancel        bool                `json:"cancel,omitempty"`
+	Type             string              `json:"type"`
+	RequestID        string              `json:"requestId,omitempty"`
+	Since            int64               `json:"since,omitempty"`
+	JournalID        string              `json:"journalId,omitempty"`
+	HistoryBounds    bool                `json:"historyBounds,omitempty"`
+	HistoryItems     int                 `json:"historyItems,omitempty"`
+	HistoryBytes     int                 `json:"historyBytes,omitempty"`
+	HistoryCursor    string              `json:"historyCursor,omitempty"`
+	TurnID           string              `json:"turnId,omitempty"`
+	Text             string              `json:"text,omitempty"`
+	ExpectedRevision int64               `json:"expectedRevision,omitempty"`
+	AttachmentIDs    []string            `json:"attachmentIds,omitempty"`
+	InputID          string              `json:"inputId,omitempty"`
+	Answers          map[string][]string `json:"answers,omitempty"`
+	Cancel           bool                `json:"cancel,omitempty"`
 }
 
 // InputOption describes one structured answer offered by a provider.
