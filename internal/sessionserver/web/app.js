@@ -2599,6 +2599,10 @@ function handleEvent(event) {
     case 'user.message.updated':
       renderPendingUser(event);
       break;
+    case 'user.message.removed':
+      discardPendingMessage(event.turnId);
+      if (!state.replayingHistory) showToast('Pending message removed');
+      break;
     case 'turn.started':
       endAssistantSegment(event.turnId);
       if (!state.activeTurn || state.activeTurnID !== event.turnId) {
@@ -2726,7 +2730,29 @@ function renderPendingMessageContent(pending) {
   edit.textContent = 'Edit';
   edit.setAttribute('aria-label', 'Edit pending message');
   edit.addEventListener('click', () => editPendingUser(pending.event.turnId));
-  pending.actions.append(status, edit);
+  const remove = document.createElement('button');
+  remove.type = 'button';
+  remove.className = 'pending-message-remove';
+  remove.textContent = 'Remove';
+  remove.setAttribute('aria-label', 'Remove pending message');
+  remove.addEventListener('click', () => removePendingUser(pending.event.turnId));
+  pending.actions.append(status, edit, remove);
+}
+
+function removePendingUser(turnID) {
+  const pending = state.pendingMessage;
+  if (!pending || pending.event.turnId !== turnID) return;
+  if (!window.confirm('Remove this pending message?')) return;
+  if (!state.socket || state.socket.readyState !== WebSocket.OPEN) {
+    showToast('Session is disconnected');
+    return;
+  }
+  state.socket.send(JSON.stringify({
+    type: 'message.remove',
+    requestId: sessionRequestID('message-remove'),
+    turnId: pending.event.turnId,
+    expectedRevision: pending.event.revision,
+  }));
 }
 
 function editPendingUser(turnID) {
@@ -2804,6 +2830,15 @@ function acceptPendingMessage(turnID) {
   state.pendingMessage = null;
   elements.pending.hidden = true;
   renderAcceptedUser(pending.event);
+}
+
+function discardPendingMessage(turnID) {
+  const pending = state.pendingMessage;
+  if (!pending || pending.event.turnId !== turnID) return;
+  pending.item.remove();
+  state.pendingMessage = null;
+  elements.pending.hidden = true;
+  updateComposerAction();
 }
 
 function assistantBubble(turnID) {

@@ -33,7 +33,7 @@ type historyTurn struct {
 	activityEventID int64
 	startedAt       *time.Time
 	completed       bool
-	merged          bool
+	hidden          bool
 	interrupting    bool
 }
 
@@ -83,6 +83,9 @@ func projectHistory(source []Event) ([]historyItem, HistoryState, []Event) {
 				}
 				copy := event
 				turn.user = &copy
+			case EventUserMessageRemoved:
+				turn.completed = true
+				turn.hidden = true
 			case EventTurnStarted:
 				turn.started = true
 				turn.startedAt = event.Timestamp
@@ -90,10 +93,10 @@ func projectHistory(source []Event) ([]historyItem, HistoryState, []Event) {
 				turn.interrupting = true
 			case EventTurnCompleted:
 				turn.completed = true
-				turn.merged = event.Status == "merged"
+				turn.hidden = event.Status == "merged"
 				turn.interrupting = false
 			}
-			if event.Type != EventUserMessage && event.Type != EventUserMessageUpdated && event.Type != EventTurnCompleted {
+			if event.Type != EventUserMessage && event.Type != EventUserMessageUpdated && event.Type != EventUserMessageRemoved && event.Type != EventTurnCompleted {
 				turn.activityEventID = event.ID
 				if turn.startedAt == nil {
 					turn.startedAt = event.Timestamp
@@ -169,7 +172,7 @@ func projectHistory(source []Event) ([]historyItem, HistoryState, []Event) {
 
 	for _, event := range events {
 		turn := turns[event.TurnID]
-		if (pending != nil && event.TurnID == pending.TurnID) || (turn != nil && turn.merged) {
+		if (pending != nil && event.TurnID == pending.TurnID) || (turn != nil && turn.hidden) {
 			continue
 		}
 		if event.Type != EventAssistantDelta && event.Type != EventAssistantMessage {

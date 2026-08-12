@@ -145,6 +145,7 @@ let toasts;
 
 global.window = {
   clearInterval: (timer) => progressTimers.delete(timer),
+  confirm: () => true,
   matchMedia: () => ({matches: false}),
   setInterval: (callback) => {
     const timer = progressTimers.size + 1;
@@ -834,6 +835,25 @@ function testPendingMessageEditing() {
   assert.doesNotMatch(pending.item.textContent, /original/);
 }
 
+function testPendingMessageRemoval() {
+  resetHarness();
+  const sent = [];
+  state.socket = {readyState: WebSocket.OPEN, send: (payload) => sent.push(JSON.parse(payload))};
+  renderPendingUser({type: 'user.message', turnId: 'turn-2', text: 'remove this', revision: 3});
+
+  state.pendingMessage.item.querySelector('.pending-message-remove').listeners.get('click')();
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].type, 'message.remove');
+  assert.equal(sent[0].turnId, 'turn-2');
+  assert.equal(sent[0].expectedRevision, 3);
+  handleEvent({type: 'user.message.removed', turnId: 'turn-2', revision: 4});
+  assert.equal(state.pendingMessage, null);
+  assert.equal(elements.pending.hidden, true);
+  assert.equal(elements.messages.hasChildNodes(), false);
+  assert.deepEqual(toasts, ['Pending message removed']);
+}
+
 function testPendingMessageSurvivesCompletedHistoryReplay() {
   resetHarness();
   renderPendingUser({type: 'user.message', turnId: 'turn-2', text: 'pending'});
@@ -871,6 +891,7 @@ testToolOutputRenderingNormalizesCarriageReturns();
 testHistoryToolCompletionRendersOutputWithoutStart();
 testUserAttachmentRendering();
 testPendingMessageEditing();
+testPendingMessageRemoval();
 testPendingMessageSurvivesCompletedHistoryReplay();
 testComposerIgnoresReentrantSubmission()
   .then(() => process.stdout.write('Session history tests passed\n'))

@@ -13,6 +13,7 @@ const (
 	EventRuntimeRecovered   = "runtime.recovered"
 	EventUserMessage        = "user.message"
 	EventUserMessageUpdated = "user.message.updated"
+	EventUserMessageRemoved = "user.message.removed"
 	EventTurnStarted        = "turn.started"
 	EventTurnInterrupting   = "turn.interrupting"
 	EventAssistantDelta     = "assistant.delta"

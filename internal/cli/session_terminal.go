@@ -322,6 +322,8 @@ func runSessionPlainTerminalWithWidth(ctx context.Context, input io.Reader, outp
 				if color {
 					write("\n")
 				}
+			case sessionruntime.EventUserMessageRemoved:
+				write("%s\n", formatter.muted("Pending message removed."))
 			case sessionTerminalEventAttachmentAdded:
 				attachmentMu.Lock()
 				pendingAttachments = append(pendingAttachments, event.Attachments...)

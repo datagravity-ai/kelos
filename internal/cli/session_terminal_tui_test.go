@@ -1180,11 +1180,68 @@ func TestSessionTUISubmittedTextRendersFromUserEventOnce(t *testing.T) {
 
 func TestSessionTUIUpdatesPendingMessage(t *testing.T) {
 	model, _ := newSessionTUITestModel()
-	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventUserMessage, TurnID: "turn-2", Text: "original"})
-	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventUserMessageUpdated, TurnID: "turn-2", Text: "revised"})
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventUserMessage, TurnID: "turn-2", Text: "original", Revision: 1})
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventUserMessageUpdated, TurnID: "turn-2", Text: "revised", Revision: 2})
 
-	if model.pendingTurnID != "turn-2" || model.pendingTurnText != "revised" {
-		t.Fatalf("pending message = ID %q text %q", model.pendingTurnID, model.pendingTurnText)
+	if model.pendingTurnID != "turn-2" || model.pendingTurnText != "revised" || model.pendingTurnInput != "revised" || model.pendingRevision != 2 {
+		t.Fatalf("pending message = ID %q text %q input %q revision %d", model.pendingTurnID, model.pendingTurnText, model.pendingTurnInput, model.pendingRevision)
+	}
+}
+
+func TestSessionTUIEditsPendingMessageWithUpArrow(t *testing.T) {
+	model, requests := newSessionTUITestModel()
+	model.ready = true
+	model.applyEvent(sessionruntime.Event{
+		Type:        sessionruntime.EventUserMessage,
+		TurnID:      "turn-2",
+		Text:        "original\nmessage",
+		Revision:    3,
+		Attachments: []sessionruntime.Attachment{{ID: "attachment-1", Name: "notes.txt"}},
+	})
+
+	model.Update(tea.KeyMsg{Type: tea.KeyUp})
+	if model.input.Value() != "original\nmessage" {
+		t.Fatalf("recalled input = %q", model.input.Value())
+	}
+	if model.pendingEditTurnID != "turn-2" || model.pendingEditRev != 3 {
+		t.Fatalf("pending edit = ID %q revision %d", model.pendingEditTurnID, model.pendingEditRev)
+	}
+	if !strings.Contains(model.pendingTurnText, "notes.txt") {
+		t.Fatalf("rendered pending message = %q", model.pendingTurnText)
+	}
+
+	model.input.SetValue("revised\nmessage")
+	if cmd := model.submitInput(); cmd != nil {
+		t.Fatal("submitInput() returned a command")
+	}
+	var request sessionruntime.ClientRequest
+	if err := json.NewDecoder(requests).Decode(&request); err != nil {
+		t.Fatal(err)
+	}
+	if request.Type != "message.edit" || request.TurnID != "turn-2" || request.Text != "revised\nmessage" || request.ExpectedRevision != 3 {
+		t.Fatalf("edit request = %#v", request)
+	}
+}
+
+func TestSessionTUIRemovesPendingMessageWithEmptyEdit(t *testing.T) {
+	model, requests := newSessionTUITestModel()
+	model.ready = true
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventUserMessage, TurnID: "turn-2", Text: "remove this", Revision: 3})
+	model.Update(tea.KeyMsg{Type: tea.KeyUp})
+	model.input.Reset()
+	if cmd := model.submitInput(); cmd != nil {
+		t.Fatal("submitInput() returned a command")
+	}
+	var request sessionruntime.ClientRequest
+	if err := json.NewDecoder(requests).Decode(&request); err != nil {
+		t.Fatal(err)
+	}
+	if request.Type != "message.remove" || request.TurnID != "turn-2" || request.ExpectedRevision != 3 {
+		t.Fatalf("remove request = %#v", request)
+	}
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventUserMessageRemoved, TurnID: "turn-2", Revision: 4})
+	if model.pendingTurnID != "" || model.pendingTurnText != "" || model.pendingTurnInput != "" || model.pendingRevision != 0 {
+		t.Fatalf("pending message remained after removal: ID %q text %q input %q revision %d", model.pendingTurnID, model.pendingTurnText, model.pendingTurnInput, model.pendingRevision)
 	}
 }
 

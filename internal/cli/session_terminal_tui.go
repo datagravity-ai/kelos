@@ -132,6 +132,10 @@ type sessionTUIModel struct {
 	blocks             []sessionTUIBlock
 	pendingTurnID      string
 	pendingTurnText    string
+	pendingTurnInput   string
+	pendingRevision    int64
+	pendingEditTurnID  string
+	pendingEditRev     int64
 	toolNames          map[string]string
 	width              int
 	height             int
@@ -409,11 +413,16 @@ func (m *sessionTUIModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case tea.KeyUp:
 			if m.ready && !strings.Contains(m.input.Value(), "\n") {
-				m.previousInput()
-				return m, nil
+				if m.recallPendingTurn() {
+					return m, nil
+				}
+				if m.pendingEditTurnID == "" {
+					m.previousInput()
+					return m, nil
+				}
 			}
 		case tea.KeyDown:
-			if m.ready && !strings.Contains(m.input.Value(), "\n") {
+			if m.ready && m.pendingEditTurnID == "" && !strings.Contains(m.input.Value(), "\n") {
 				m.nextInput()
 				return m, nil
 			}
@@ -450,6 +459,29 @@ func (m *sessionTUIModel) readEvent() tea.Cmd {
 
 func (m *sessionTUIModel) submitInput() tea.Cmd {
 	line := m.input.Value()
+	if m.pendingEditTurnID != "" {
+		request := sessionruntime.ClientRequest{
+			Type:             "message.edit",
+			TurnID:           m.pendingEditTurnID,
+			Text:             line,
+			ExpectedRevision: m.pendingEditRev,
+		}
+		if strings.TrimSpace(line) == "" {
+			request.Type = "message.remove"
+			request.Text = ""
+		}
+		if err := m.requests.Encode(request); err != nil {
+			m.err = err
+			return m.quit()
+		}
+		m.pendingEditTurnID = ""
+		m.pendingEditRev = 0
+		m.historyAt = -1
+		m.draft = ""
+		m.input.Reset()
+		m.resizeComposer()
+		return nil
+	}
 	if line == "/quit" || line == "/exit" {
 		return m.quit()
 	}
@@ -542,6 +574,18 @@ func (m *sessionTUIModel) previousInput() {
 	m.resizeComposer()
 }
 
+func (m *sessionTUIModel) recallPendingTurn() bool {
+	if m.pendingTurnID == "" || m.input.Value() != "" || m.historyAt != -1 || len(m.pendingAttachments) > 0 {
+		return false
+	}
+	m.pendingEditTurnID = m.pendingTurnID
+	m.pendingEditRev = m.pendingRevision
+	m.input.SetValue(m.pendingTurnInput)
+	m.input.CursorEnd()
+	m.resizeComposer()
+	return true
+}
+
 func (m *sessionTUIModel) nextInput() {
 	if m.historyAt == -1 {
 		return
@@ -610,7 +654,7 @@ func (m *sessionTUIModel) applyEvent(event sessionruntime.Event) sessionTUIComma
 		// A terminal-height transcript in both the managed view and native scrollback
 		// makes Bubble Tea move the smaller footer to the top when the copy is removed.
 		m.hideNextHistory = !m.ready
-		m.appendBlock(sessionTUIBlockNotice, "Connected. Enter sends, Ctrl+J inserts a newline, and Ctrl+C or Esc interrupts active work. Drag a file here or use /attach PATH. Use /history or Page Up for earlier history, /answer INPUT QUESTION VALUE, or /quit.")
+		m.appendBlock(sessionTUIBlockNotice, "Connected. Enter sends, Ctrl+J inserts a newline, and Ctrl+C or Esc interrupts active work. Drag a file here or use /attach PATH. Press Up on an empty composer to edit pending work; submit an empty edit to remove it. Use /history or Page Up for earlier history, /answer INPUT QUESTION VALUE, or /quit.")
 		m.ready = true
 		m.connectionStatus = ""
 		commands.ui = tea.Batch(m.input.Focus(), m.scheduleProgress())
@@ -637,11 +681,17 @@ func (m *sessionTUIModel) applyEvent(event sessionruntime.Event) sessionTUIComma
 			m.finishStreaming()
 			m.appendBlock(sessionTUIBlockUser, sessionTerminalMessageText(event.Text, event.Attachments))
 		} else {
-			m.setPendingUser(event.TurnID, sessionTerminalMessageText(event.Text, event.Attachments))
+			m.setPendingUser(event.TurnID, event.Text, event.Attachments, event.Revision)
 		}
 	case sessionruntime.EventUserMessageUpdated:
 		if m.pendingTurnID == event.TurnID {
 			m.pendingTurnText = sessionTerminalMessageText(event.Text, event.Attachments)
+			m.pendingTurnInput = event.Text
+			m.pendingRevision = max(1, event.Revision)
+		}
+	case sessionruntime.EventUserMessageRemoved:
+		if m.discardPendingTurn(event.TurnID) {
+			m.appendBlock(sessionTUIBlockNotice, "Pending message removed.")
 		}
 	case sessionTerminalEventAttachmentAdded:
 		m.pendingAttachments = append(m.pendingAttachments, event.Attachments...)
@@ -740,9 +790,16 @@ func (m *sessionTUIModel) applyHistoryState(state *sessionruntime.HistoryState) 
 	}
 	m.pendingTurnID = ""
 	m.pendingTurnText = ""
+	m.pendingTurnInput = ""
+	m.pendingRevision = 0
 	if state.PendingTurn != nil {
 		m.pendingTurnID = state.PendingTurn.TurnID
 		m.pendingTurnText = sessionTerminalMessageText(state.PendingTurn.Text, state.PendingTurn.Attachments)
+		m.pendingTurnInput = state.PendingTurn.Text
+		m.pendingRevision = max(1, state.PendingTurn.Revision)
+	}
+	if m.pendingEditTurnID != "" && m.pendingEditTurnID != m.pendingTurnID {
+		m.cancelPendingEdit(m.pendingEditTurnID)
 	}
 	m.activeTurnID = state.ActiveTurnID
 	m.turnActive = state.ActiveTurnID != ""
@@ -985,9 +1042,11 @@ func (m *sessionTUIModel) toolCompletionAttribution(event sessionruntime.Event) 
 	return name, true
 }
 
-func (m *sessionTUIModel) setPendingUser(turnID, text string) {
+func (m *sessionTUIModel) setPendingUser(turnID, text string, attachments []sessionruntime.Attachment, revision int64) {
 	m.pendingTurnID = turnID
-	m.pendingTurnText = text
+	m.pendingTurnText = sessionTerminalMessageText(text, attachments)
+	m.pendingTurnInput = text
+	m.pendingRevision = max(1, revision)
 }
 
 func (m *sessionTUIModel) acceptPendingTurn(turnID string) bool {
@@ -997,9 +1056,36 @@ func (m *sessionTUIModel) acceptPendingTurn(turnID string) bool {
 	text := m.pendingTurnText
 	m.pendingTurnID = ""
 	m.pendingTurnText = ""
+	m.pendingTurnInput = ""
+	m.pendingRevision = 0
+	m.cancelPendingEdit(turnID)
 	m.finishStreaming()
 	m.appendBlock(sessionTUIBlockUser, text)
 	return true
+}
+
+func (m *sessionTUIModel) discardPendingTurn(turnID string) bool {
+	if m.pendingTurnID != turnID {
+		return false
+	}
+	m.pendingTurnID = ""
+	m.pendingTurnText = ""
+	m.pendingTurnInput = ""
+	m.pendingRevision = 0
+	m.cancelPendingEdit(turnID)
+	return true
+}
+
+func (m *sessionTUIModel) cancelPendingEdit(turnID string) {
+	if m.pendingEditTurnID != turnID {
+		return
+	}
+	m.pendingEditTurnID = ""
+	m.pendingEditRev = 0
+	m.historyAt = -1
+	m.draft = ""
+	m.input.Reset()
+	m.resizeComposer()
 }
 
 func (m *sessionTUIModel) resize(width, height int) tea.Cmd {

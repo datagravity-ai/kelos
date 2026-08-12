@@ -274,15 +274,16 @@ button { color: inherit; }
 .pending-message[hidden] { display: none; }
 .pending-message-card { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 11px; background: var(--accent-soft); }
 .pending-message-card.editing { align-items: start; }
-.pending-message-text { overflow: hidden; color: var(--ink); font-size: 11.5px; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
+.pending-message-text { overflow: hidden; overflow-wrap: anywhere; color: var(--ink); font-size: 11.5px; line-height: 1.4; white-space: pre-wrap; }
 .pending-message-card.editing .pending-message-text { overflow: visible; white-space: normal; }
 .pending-message-input { width: 100%; min-height: 58px; resize: vertical; padding: 7px 8px; border: 1px solid var(--line); border-radius: 8px; outline: 0; background: var(--card); color: var(--ink); font-size: 12px; line-height: 1.4; }
 .pending-message-input:focus { border-color: #779b88; box-shadow: 0 0 0 3px rgba(56,114,88,.08); }
 .pending-message-actions { display: flex; align-items: center; gap: 7px; }
 .pending-message-status { color: var(--accent-2); font-size: 9px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
-.pending-message-edit, .pending-message-save { padding: 3px 6px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font-size: 9.5px; font-weight: 700; cursor: pointer; }
+.pending-message-edit, .pending-message-save, .pending-message-remove { padding: 3px 6px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font-size: 9.5px; font-weight: 700; cursor: pointer; }
 .pending-message-edit:hover { background: var(--line-soft); color: var(--ink); }
 .pending-message-save { background: var(--accent); color: white; }
+.pending-message-remove:hover { background: rgba(167,63,63,.08); color: var(--danger); }
 .pending-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 4px 8px; }
 .pending-attachments[hidden] { display: none; }
 .pending-attachment { display: inline-flex; max-width: 220px; align-items: center; gap: 5px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--accent-soft); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -281,7 +281,10 @@ provider conversation. Both clients can stream agent and tool activity, answer
 user-input requests, and interrupt active work without ending the provider
 conversation. While a turn is active, new submissions are combined into one
 pending message that runs next. In the web client, use **Edit** to revise its
-text before it starts; existing attachments remain on the message. Kelos first
+text before it starts or **Remove** to discard it; existing attachments remain
+on the message when it is edited. In the terminal UI, press **Up** on an empty
+composer to edit the pending message. Submitting the edit with no text removes
+the pending message. Kelos first
 asks the provider to interrupt gracefully, including
 while the runtime is draining. If the request fails or the turn does not finish
 within 10 seconds, Kelos marks the turn interrupted and restarts the provider.
