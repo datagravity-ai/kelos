@@ -595,8 +595,8 @@ func TestSessionComposerUsesOneSendAndInterruptAction(t *testing.T) {
 	if !strings.Contains(body, `id="send-message" type="submit" aria-label="Send message" data-action="send"`) {
 		t.Error("Session composer does not contain the send action")
 	}
-	if !strings.Contains(body, `id="queued-prompts"`) {
-		t.Error("Session composer does not contain the queued prompts region")
+	if !strings.Contains(body, `id="pending-message"`) {
+		t.Error("Session composer does not contain the pending message region")
 	}
 	if !strings.Contains(body, `id="session-progress"`) {
 		t.Error("Session composer does not contain the agent progress region")
@@ -723,7 +723,7 @@ func TestSessionUIAdaptsToPhoneViewport(t *testing.T) {
 		"two-row phone header":       `grid-template-areas: "menu heading reset delete" "tabs tabs connection connection"`,
 		"48-pixel touch targets":     `.icon-button { width: 48px; height: 48px; }`,
 		"phone safe-area padding":    `env(safe-area-inset-bottom)`,
-		"non-zooming form fields":    `.composer textarea, .yaml-panel textarea, .form-grid input`,
+		"non-zooming form fields":    `.composer textarea, .pending-message-input, .yaml-panel textarea, .form-grid input`,
 		"desktop composer alignment": `.composer textarea { flex: 1; min-height: 36px;`,
 		"mobile composer alignment":  `.composer textarea { min-height: 48px; padding: 12px 0; line-height: 24px; }`,
 		"phone-sized dialog":         `max-height: calc(100dvh - 16px`,

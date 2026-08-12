@@ -40,7 +40,7 @@ const elements = {
   progress: document.querySelector('#session-progress'),
   progressLabel: document.querySelector('#session-progress-label'),
   progressElapsed: document.querySelector('#session-progress-elapsed'),
-  queue: document.querySelector('#queued-prompts'),
+  pending: document.querySelector('#pending-message'),
   connection: document.querySelector('#connection-pill'),
   dialog: document.querySelector('#session-dialog'),
   form: document.querySelector('#session-form'),
@@ -94,7 +94,7 @@ const state = {
   inputs: new Map(),
   diffs: new Map(),
   fileChanges: new Map(),
-  queuedMessages: new Map(),
+  pendingMessage: null,
   promptDrafts: new Map(),
   attachmentDrafts: new Map(),
   sendingMessage: false,
@@ -185,7 +185,7 @@ function moveChildren(element) {
 function createSessionView() {
   return {
     messages: document.createDocumentFragment(),
-    queue: document.createDocumentFragment(),
+    pending: document.createDocumentFragment(),
     changes: document.createDocumentFragment(),
     lastEventID: 0,
     journalID: '',
@@ -195,7 +195,7 @@ function createSessionView() {
     inputs: new Map(),
     diffs: new Map(),
     fileChanges: new Map(),
-    queuedMessages: new Map(),
+    pendingMessage: null,
     activeTurn: false,
     activeTurnID: '',
     activeTurnStartedAt: 0,
@@ -216,7 +216,7 @@ function saveCurrentSessionView() {
   const view = state.currentView;
   if (!view) return;
   view.messages = moveChildren(elements.messages);
-  view.queue = moveChildren(elements.queue);
+  view.pending = moveChildren(elements.pending);
   view.changes = moveChildren(elements.changesList);
   view.lastEventID = state.lastEventID;
   view.assistantSegmentByTurn = state.assistantSegmentByTurn;
@@ -225,7 +225,7 @@ function saveCurrentSessionView() {
   view.inputs = state.inputs;
   view.diffs = state.diffs;
   view.fileChanges = state.fileChanges;
-  view.queuedMessages = state.queuedMessages;
+  view.pendingMessage = state.pendingMessage;
   view.activeTurn = state.activeTurn;
   view.activeTurnID = state.activeTurnID;
   view.activeTurnStartedAt = state.activeTurnStartedAt;
@@ -254,7 +254,7 @@ function activateSessionView(view) {
   state.inputs = view.inputs;
   state.diffs = view.diffs;
   state.fileChanges = view.fileChanges;
-  state.queuedMessages = view.queuedMessages;
+  state.pendingMessage = view.pendingMessage;
   state.activeTurn = view.activeTurn;
   state.activeTurnID = view.activeTurnID;
   state.activeTurnStartedAt = view.activeTurnStartedAt;
@@ -274,9 +274,9 @@ function activateSessionView(view) {
   state.fileChangesDirty = view.fileChangesDirty;
   const hasChanges = view.changes.hasChildNodes();
   elements.messages.replaceChildren(view.messages);
-  elements.queue.replaceChildren(view.queue);
+  elements.pending.replaceChildren(view.pending);
   elements.changesList.replaceChildren(view.changes);
-  elements.queue.hidden = state.queuedMessages.size === 0;
+  elements.pending.hidden = !state.pendingMessage;
   updateFileChangesHeader();
   if (!hasChanges) renderFileChanges();
   refreshSessionProgress();
@@ -309,7 +309,7 @@ function resetCurrentSessionView() {
   state.inputs = new Map();
   state.diffs = new Map();
   state.fileChanges = new Map();
-  state.queuedMessages = new Map();
+  state.pendingMessage = null;
   state.activeTurn = false;
   state.activeTurnID = '';
   state.activeTurnStartedAt = 0;
@@ -328,8 +328,8 @@ function resetCurrentSessionView() {
   state.pinHistoryToBottom = true;
   state.fileChangesDirty = false;
   elements.messages.replaceChildren();
-  elements.queue.replaceChildren();
-  elements.queue.hidden = true;
+  elements.pending.replaceChildren();
+  elements.pending.hidden = true;
   renderFileChanges();
   if (view) {
     view.historyLoaded = false;
@@ -343,7 +343,7 @@ function resetCurrentSessionView() {
     view.inputs = state.inputs;
     view.diffs = state.diffs;
     view.fileChanges = state.fileChanges;
-    view.queuedMessages = state.queuedMessages;
+    view.pendingMessage = state.pendingMessage;
     view.activeTurn = false;
     view.activeTurnID = '';
     view.activeTurnStartedAt = 0;
@@ -1485,7 +1485,7 @@ function selectSession(session, resumeIdle = false) {
   restorePromptDraft(session);
   renderPendingAttachments();
   elements.messages.replaceChildren();
-  elements.queue.replaceChildren();
+  elements.pending.replaceChildren();
   elements.changesList.replaceChildren();
   renderSessions();
   renderHeader();
@@ -1626,7 +1626,7 @@ function composerInterruptAction() {
 function updateComposerAction() {
   const connected = state.socket && state.socket.readyState === WebSocket.OPEN;
   const interrupt = composerInterruptAction();
-  const action = interrupt ? 'interrupt' : (state.activeTurn ? 'queue' : 'send');
+  const action = interrupt ? 'interrupt' : ((state.activeTurn || state.pendingMessage) ? 'add to pending' : 'send');
   const actionSymbol = interrupt ? '■' : '↑';
   elements.send.dataset.action = interrupt ? 'interrupt' : 'send';
   elements.send.textContent = actionSymbol;
@@ -2359,9 +2359,13 @@ function completedAssistantText(eventText, streamedText) {
   return eventText || streamedText || '';
 }
 
-function sessionHistoryRequestID() {
+function sessionRequestID(prefix) {
   if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
-  return `history-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function sessionHistoryRequestID() {
+  return sessionRequestID('history');
 }
 
 function renderHistoryControl() {
@@ -2425,10 +2429,18 @@ function applyHistoryState(historyState) {
   state.waitingForInput = Boolean(historyState.waitingForInput);
   state.interrupting = Boolean(historyState.turnInterrupting);
   if (historyState.fileDiff) updateFileChanges(parseFileDiffs(historyState.fileDiff));
-  elements.queue.replaceChildren();
-  state.queuedMessages = new Map();
-  for (const turn of historyState.queuedTurns || []) {
-    renderQueuedUser({type: 'user.message', turnId: turn.turnId, text: turn.text});
+  elements.pending.replaceChildren();
+  elements.pending.hidden = true;
+  state.pendingMessage = null;
+  if (historyState.pendingTurn) {
+    const turn = historyState.pendingTurn;
+    renderPendingUser({
+      type: 'user.message',
+      turnId: turn.turnId,
+      text: turn.text,
+      revision: turn.revision,
+      attachments: turn.attachments || [],
+    });
   }
   refreshSessionProgress();
   updateComposerAction();
@@ -2584,6 +2596,9 @@ function handleEvent(event) {
     case 'user.message':
       renderUser(event);
       break;
+    case 'user.message.updated':
+      renderPendingUser(event);
+      break;
     case 'turn.started':
       endAssistantSegment(event.turnId);
       if (!state.activeTurn || state.activeTurnID !== event.turnId) {
@@ -2594,7 +2609,7 @@ function handleEvent(event) {
       state.activeTurnID = event.turnId || '';
       state.waitingForInput = false;
       state.interrupting = false;
-      acceptQueuedMessage(event.turnId);
+      acceptPendingMessage(event.turnId);
       updateComposerAction();
       refreshSessionProgress();
       break;
@@ -2646,7 +2661,7 @@ function handleEvent(event) {
 
 function renderUser(event) {
   if (event.turnId) {
-    renderQueuedUser(event);
+    renderPendingUser(event);
     return;
   }
   renderAcceptedUser(event);
@@ -2668,21 +2683,88 @@ function renderAcceptedUser(event) {
   scrollToBottom();
 }
 
-function renderQueuedUser(event) {
-  if (state.queuedMessages.has(event.turnId)) return;
+function renderPendingUser(event) {
+  const existing = state.pendingMessage;
+  if (existing) {
+    if (existing.event.turnId !== event.turnId) {
+      renderAcceptedUser(event);
+      return;
+    }
+    existing.event = {...event, revision: event.revision || 1};
+    renderPendingMessageContent(existing);
+    return;
+  }
   const item = document.createElement('div');
-  item.className = 'queued-prompt';
+  item.className = 'pending-message-card';
   const text = document.createElement('div');
-  text.className = 'queued-prompt-text';
+  text.className = 'pending-message-text';
+  const actions = document.createElement('div');
+  actions.className = 'pending-message-actions';
+  item.append(text, actions);
+  elements.pending.append(item);
+  elements.pending.hidden = false;
+  const pending = {event: {...event, revision: event.revision || 1}, item, text, actions};
+  state.pendingMessage = pending;
+  renderPendingMessageContent(pending);
+}
+
+function pendingMessageText(event) {
   const names = (event.attachments || []).map(attachment => attachment.name);
-  text.textContent = [event.text, names.length ? `Attachments: ${names.join(', ')}` : ''].filter(Boolean).join(' · ');
+  return [event.text, names.length ? `Attachments: ${names.join(', ')}` : ''].filter(Boolean).join(' · ');
+}
+
+function renderPendingMessageContent(pending) {
+  pending.item.classList.remove('editing');
+  pending.text.textContent = pendingMessageText(pending.event);
+  pending.actions.replaceChildren();
   const status = document.createElement('span');
-  status.className = 'queued-prompt-status';
-  status.textContent = 'Queued';
-  item.append(text, status);
-  elements.queue.append(item);
-  elements.queue.hidden = false;
-  state.queuedMessages.set(event.turnId, {event, item});
+  status.className = 'pending-message-status';
+  status.textContent = 'Pending';
+  const edit = document.createElement('button');
+  edit.type = 'button';
+  edit.className = 'pending-message-edit';
+  edit.textContent = 'Edit';
+  edit.setAttribute('aria-label', 'Edit pending message');
+  edit.addEventListener('click', () => editPendingUser(pending.event.turnId));
+  pending.actions.append(status, edit);
+}
+
+function editPendingUser(turnID) {
+  const pending = state.pendingMessage;
+  if (!pending || pending.event.turnId !== turnID) return;
+  pending.item.classList.add('editing');
+  const input = document.createElement('textarea');
+  input.className = 'pending-message-input';
+  input.value = pending.event.text || '';
+  input.setAttribute('aria-label', 'Pending message');
+  pending.text.replaceChildren(input);
+  const cancel = document.createElement('button');
+  cancel.type = 'button';
+  cancel.className = 'pending-message-edit';
+  cancel.textContent = 'Cancel';
+  cancel.addEventListener('click', () => renderPendingMessageContent(pending));
+  const save = document.createElement('button');
+  save.type = 'button';
+  save.className = 'pending-message-save';
+  save.textContent = 'Save';
+  save.addEventListener('click', () => {
+    const text = input.value.trim();
+    if (!text && !(pending.event.attachments || []).length) return;
+    if (!state.socket || state.socket.readyState !== WebSocket.OPEN) {
+      showToast('Session is disconnected');
+      return;
+    }
+    state.socket.send(JSON.stringify({
+      type: 'message.edit',
+      requestId: sessionRequestID('message-edit'),
+      turnId: pending.event.turnId,
+      text,
+      expectedRevision: pending.event.revision,
+    }));
+    renderPendingMessageContent(pending);
+  });
+  pending.actions.replaceChildren(cancel, save);
+  if (typeof input.focus === 'function') input.focus();
 }
 
 function attachmentURL(attachment) {
@@ -2715,13 +2797,13 @@ function appendMessageAttachments(parent, attachments) {
   parent.append(list);
 }
 
-function acceptQueuedMessage(turnID) {
-  const queued = state.queuedMessages.get(turnID);
-  if (!queued) return;
-  queued.item.remove();
-  state.queuedMessages.delete(turnID);
-  elements.queue.hidden = state.queuedMessages.size === 0;
-  renderAcceptedUser(queued.event);
+function acceptPendingMessage(turnID) {
+  const pending = state.pendingMessage;
+  if (!pending || pending.event.turnId !== turnID) return;
+  pending.item.remove();
+  state.pendingMessage = null;
+  elements.pending.hidden = true;
+  renderAcceptedUser(pending.event);
 }
 
 function assistantBubble(turnID) {
@@ -3231,7 +3313,7 @@ function renderTurnEnd(event, recoveredCompletion = false) {
   state.activeTurnStartedAt = 0;
   state.waitingForInput = false;
   state.interrupting = false;
-  acceptQueuedMessage(event.turnId);
+  acceptPendingMessage(event.turnId);
   updateComposerAction();
   refreshSessionProgress();
   if (event.status === 'interrupted' && !state.replayingHistory) showToast('Active work interrupted');

@@ -270,11 +270,19 @@ button { color: inherit; }
 .session-progress[data-state="waiting"] .session-progress-dot { color: var(--warning); animation: none; }
 .session-progress[data-state="interrupting"] { color: var(--warning); }
 .session-progress[data-state="interrupting"] .session-progress-dot { color: var(--warning); }
-.queued-prompts { max-height: 150px; display: grid; gap: 6px; margin-bottom: 8px; overflow-y: auto; }
-.queued-prompts[hidden] { display: none; }
-.queued-prompt { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 11px; background: var(--accent-soft); }
-.queued-prompt-text { overflow: hidden; color: var(--ink); font-size: 11.5px; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
-.queued-prompt-status { color: var(--accent-2); font-size: 9px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
+.pending-message { max-height: 150px; display: grid; margin-bottom: 8px; overflow-y: auto; }
+.pending-message[hidden] { display: none; }
+.pending-message-card { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 11px; background: var(--accent-soft); }
+.pending-message-card.editing { align-items: start; }
+.pending-message-text { overflow: hidden; color: var(--ink); font-size: 11.5px; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
+.pending-message-card.editing .pending-message-text { overflow: visible; white-space: normal; }
+.pending-message-input { width: 100%; min-height: 58px; resize: vertical; padding: 7px 8px; border: 1px solid var(--line); border-radius: 8px; outline: 0; background: var(--card); color: var(--ink); font-size: 12px; line-height: 1.4; }
+.pending-message-input:focus { border-color: #779b88; box-shadow: 0 0 0 3px rgba(56,114,88,.08); }
+.pending-message-actions { display: flex; align-items: center; gap: 7px; }
+.pending-message-status { color: var(--accent-2); font-size: 9px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
+.pending-message-edit, .pending-message-save { padding: 3px 6px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font-size: 9.5px; font-weight: 700; cursor: pointer; }
+.pending-message-edit:hover { background: var(--line-soft); color: var(--ink); }
+.pending-message-save { background: var(--accent); color: white; }
 .pending-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 4px 8px; }
 .pending-attachments[hidden] { display: none; }
 .pending-attachment { display: inline-flex; max-width: 220px; align-items: center; gap: 5px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--accent-soft); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -380,7 +388,7 @@ button { color: inherit; }
   .changes-view { padding: 22px calc(14px + env(safe-area-inset-right)) 32px calc(14px + env(safe-area-inset-left)); overscroll-behavior: contain; }
   .composer-wrap { padding: 9px calc(10px + env(safe-area-inset-right)) calc(10px + env(safe-area-inset-bottom)) calc(10px + env(safe-area-inset-left)); }
   .composer { padding-left: 13px; }
-  .composer textarea, .yaml-panel textarea, .form-grid input, .form-grid select, .source-picker select, .section-field input, .section-field select, .namespace-form input, .input-other { font-size: 16px; }
+  .composer textarea, .pending-message-input, .yaml-panel textarea, .form-grid input, .form-grid select, .source-picker select, .section-field input, .section-field select, .namespace-form input, .input-other { font-size: 16px; }
   .composer textarea { min-height: 48px; padding: 12px 0; line-height: 24px; }
   .send-button { width: 48px; height: 48px; }
   .message-bubble, .user-message { max-width: 90%; }

@@ -157,7 +157,7 @@ global.WebSocket = {OPEN: 1};
 function resetHarness() {
   global.elements = {
     messages: new TestNode('div'),
-    queue: new TestNode('div'),
+    pending: new TestNode('div'),
     changesList: new TestNode('div'),
     changesCount: new TestNode('span'),
     changesSummary: new TestNode('span'),
@@ -188,7 +188,7 @@ function resetHarness() {
     inputs: new Map(),
     diffs: new Map(),
     fileChanges: new Map(),
-    queuedMessages: new Map(),
+    pendingMessage: null,
     activeTurn: false,
     activeTurnID: '',
     activeTurnStartedAt: 0,
@@ -232,7 +232,7 @@ global.connectSocket = () => { socketConnections++; };
 global.updateComposerAction = () => {};
 global.updateFileChangesHeader = () => {};
 global.endAssistantSegment = () => {};
-global.acceptQueuedMessage = () => {};
+global.acceptPendingMessage = () => {};
 global.renderInputRequest = () => {};
 global.resolveInputCard = () => {};
 global.scrollToBottom = () => {};
@@ -377,6 +377,17 @@ function testComposerInterruptsWhileInputIsDisabled() {
   state.interrupting = true;
   updateComposerAction();
   assert.equal(elements.send.disabled, true);
+}
+
+function testComposerLabelsPendingSubmission() {
+  resetHarness();
+  state.socket = {readyState: WebSocket.OPEN};
+  state.pendingMessage = {event: {turnId: 'turn-2'}};
+  elements.input.value = 'another detail';
+
+  updateComposerAction();
+
+  assert.equal(elements.composerHint.textContent, 'Enter to add to pending · Shift+Enter for a new line');
 }
 
 async function testComposerIgnoresReentrantSubmission() {
@@ -575,7 +586,7 @@ function testProjectedHistoryRestoresStateAndReconnectHighWater() {
       activeTurnStarted: '2026-08-08T12:00:00Z',
       waitingForInput: true,
       turnInterrupting: true,
-      queuedTurns: [{turnId: 'turn-2', text: 'queued request'}],
+      pendingTurn: {turnId: 'turn-2', text: 'pending request'},
       fileDiff,
     },
   });
@@ -591,12 +602,24 @@ function testProjectedHistoryRestoresStateAndReconnectHighWater() {
   assert.equal(state.interrupting, true);
   assert.equal(state.assistantTextByTurn.get('turn-1'), 'working');
   assert.equal(state.assistantTextByTurn.has('current'), false);
-  assert.equal(state.queuedMessages.get('turn-2').event.text, 'queued request');
+  assert.equal(state.pendingMessage.event.text, 'pending request');
   assert.equal(state.fileChanges.get('old.txt'), fileDiff);
   assert.equal(elements.messages.querySelector('.history-page-control').textContent, 'Load earlier messages');
 
   handleEvent({type: 'assistant.message', id: 13, turnId: 'turn-1', text: 'working done'});
   assert.equal(elements.messages.textContent.match(/working done/g).length, 1);
+}
+
+function testProjectedHistoryHidesEmptyPendingRegion() {
+  resetHarness();
+  renderPendingUser({type: 'user.message', turnId: 'turn-2', text: 'pending request'});
+  assert.equal(elements.pending.hidden, false);
+
+  applyHistoryState({});
+
+  assert.equal(state.pendingMessage, null);
+  assert.equal(elements.pending.hidden, true);
+  assert.equal(elements.pending.hasChildNodes(), false);
 }
 
 function testOlderHistoryPageIsPrependedWithoutChangingLiveState() {
@@ -788,10 +811,45 @@ function testUserAttachmentRendering() {
   assert.match(link.textContent, /screen\.png/);
 }
 
+function testPendingMessageEditing() {
+  resetHarness();
+  const sent = [];
+  state.socket = {readyState: WebSocket.OPEN, send: (payload) => sent.push(JSON.parse(payload))};
+  renderPendingUser({type: 'user.message', turnId: 'turn-2', text: 'original', revision: 1});
+
+  editPendingUser('turn-2');
+  const pending = state.pendingMessage;
+  const input = pending.item.querySelector('.pending-message-input');
+  input.value = 'revised';
+  pending.item.querySelector('.pending-message-save').listeners.get('click')();
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].type, 'message.edit');
+  assert.equal(sent[0].turnId, 'turn-2');
+  assert.equal(sent[0].text, 'revised');
+  assert.equal(sent[0].expectedRevision, 1);
+  handleEvent({type: 'user.message.updated', turnId: 'turn-2', text: 'revised', revision: 2});
+  assert.equal(state.pendingMessage.event.revision, 2);
+  assert.match(pending.item.textContent, /revised/);
+  assert.doesNotMatch(pending.item.textContent, /original/);
+}
+
+function testPendingMessageSurvivesCompletedHistoryReplay() {
+  resetHarness();
+  renderPendingUser({type: 'user.message', turnId: 'turn-2', text: 'pending'});
+
+  renderPendingUser({type: 'user.message', turnId: 'turn-1', text: 'completed'});
+
+  assert.equal(state.pendingMessage.event.turnId, 'turn-2');
+  assert.equal(state.pendingMessage.event.text, 'pending');
+  assert.match(elements.messages.textContent, /completed/);
+}
+
 testSessionViewSaveAndRestore();
 testSessionViewReset();
 testSessionProgressLifecycle();
 testComposerInterruptsWhileInputIsDisabled();
+testComposerLabelsPendingSubmission();
 testSessionProgressSurvivesCachedViewSwitch();
 testSessionProgressElapsedFormatting();
 testRuntimeStatusLifecycle();
@@ -803,6 +861,7 @@ testRuntimeRecoveryDividerOmitsDuration();
 testSessionResetClearsPromptDraft();
 testHistoryReplayCompletion();
 testProjectedHistoryRestoresStateAndReconnectHighWater();
+testProjectedHistoryHidesEmptyPendingRegion();
 testOlderHistoryPageIsPrependedWithoutChangingLiveState();
 testReselectRefreshesStatusPlaceholder();
 testSessionTimestampFormatting();
@@ -811,6 +870,8 @@ testToolOutputRendering();
 testToolOutputRenderingNormalizesCarriageReturns();
 testHistoryToolCompletionRendersOutputWithoutStart();
 testUserAttachmentRendering();
+testPendingMessageEditing();
+testPendingMessageSurvivesCompletedHistoryReplay();
 testComposerIgnoresReentrantSubmission()
   .then(() => process.stdout.write('Session history tests passed\n'))
   .catch(error => {

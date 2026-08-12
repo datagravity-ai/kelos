@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -57,6 +58,7 @@ type Config struct {
 type turnRequest struct {
 	id          string
 	text        string
+	revision    int64
 	attachments []Attachment
 	accepted    chan struct{}
 }
@@ -96,6 +98,7 @@ type Server struct {
 	submitMu      sync.Mutex
 	appendMessage func(Event) error
 	turns         chan turnRequest
+	pendingTurn   *turnRequest
 	nextTurnID    atomic.Int64
 	outstanding   int
 	// completedTurnID is the highest turn ID that has finished running (completed,
@@ -148,7 +151,7 @@ func NewServer(config Config, journal *Journal, provider Provider) *Server {
 		journal:                      journal,
 		provider:                     provider,
 		appendMessage:                journal.Append,
-		turns:                        make(chan turnRequest, 32),
+		turns:                        make(chan turnRequest, 1),
 		updateReport:                 make(chan struct{}, 1),
 		runtimeStatus:                newRuntimeStatus(config),
 		runtimeStatusSubscribers:     map[int]chan RuntimeStatus{},
@@ -233,7 +236,7 @@ func Run(ctx context.Context, config Config) error {
 	server.nextTurnID.Store(recovery.nextTurnID)
 	server.nextInputID.Store(recovery.nextInputID)
 	server.completedTurnID.Store(recovery.completedTurnID)
-	if err := server.restoreTurns(recovery.queuedTurns); err != nil {
+	if err := server.restoreTurn(recovery.pendingTurn); err != nil {
 		_ = provider.Close()
 		journal.Close()
 		return err
@@ -248,7 +251,7 @@ func Run(ctx context.Context, config Config) error {
 		server.settledTurnID.Store(settledTurnID)
 	}
 	// Republish activity when the journal holds locally accepted turns that were
-	// never durably settled to a published idle status. This covers queued or
+	// never durably settled to a published idle status. This covers pending or
 	// interrupted turns and turns that completed while their ordered Active status
 	// publications were still retrying: a container restart drops the in-memory
 	// publish queue, so without this a surviving idle-drain request could be
@@ -410,17 +413,17 @@ func (s *Server) runTurns(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-s.providerStop:
-				// Leave accepted but unstarted work queued for journal recovery.
+				// Leave accepted but unstarted work pending for journal recovery.
 				s.turns <- turn
 				return
 			}
 			if s.providerStopping.Load() {
-				// Leave accepted but unstarted work queued for journal recovery.
+				// Leave accepted but unstarted work pending for journal recovery.
 				s.turns <- turn
 				return
 			}
-			s.runTurn(ctx, turn)
-			// Keep the next queued turn out of reach of an interrupt call that is
+			s.runTurn(ctx, s.takePendingTurn(turn))
+			// Keep the pending turn out of reach of an interrupt call that is
 			// still settling after this turn returned.
 			s.interruptMu.Lock()
 			s.interruptMu.Unlock()
@@ -791,24 +794,101 @@ func (s *Server) submitMessage(text, requestID string, attachmentIDs ...string) 
 	if err := s.journal.Err(); err != nil {
 		return fmt.Errorf("recording Session message: %w", err)
 	}
+	if s.pendingTurn != nil {
+		turn := *s.pendingTurn
+		turn.text = mergePendingMessageText(turn.text, text)
+		turn.attachments = append(turn.attachments, attachments...)
+		turn.revision = max(1, turn.revision) + 1
+		if err := s.appendMessage(Event{
+			Type:        EventUserMessageUpdated,
+			RequestID:   requestID,
+			TurnID:      turn.id,
+			Text:        turn.text,
+			Revision:    turn.revision,
+			Attachments: turn.attachments,
+		}); err != nil {
+			return fmt.Errorf("recording pending Session message: %w", err)
+		}
+		s.pendingTurn = &turn
+		return nil
+	}
 	turn := turnRequest{
 		id:          fmt.Sprintf("turn-%d", s.nextTurnID.Add(1)),
 		text:        text,
+		revision:    1,
 		attachments: attachments,
 		accepted:    make(chan struct{}),
 	}
 	select {
 	case s.turns <- turn:
+		s.pendingTurn = &turn
 		s.outstanding++
-		if err := s.appendMessage(Event{Type: EventUserMessage, RequestID: requestID, TurnID: turn.id, Text: turn.text, Attachments: turn.attachments}); err != nil {
+		if err := s.appendMessage(Event{Type: EventUserMessage, RequestID: requestID, TurnID: turn.id, Text: turn.text, Revision: turn.revision, Attachments: turn.attachments}); err != nil {
+			s.pendingTurn = nil
 			s.outstanding--
 			return fmt.Errorf("recording Session message: %w", err)
 		}
 		close(turn.accepted)
 		return nil
 	default:
-		return errors.New("Session message queue is full")
+		return errors.New("Session already has a pending message")
 	}
+}
+
+func mergePendingMessageText(current, addition string) string {
+	if strings.TrimSpace(current) == "" {
+		return addition
+	}
+	if strings.TrimSpace(addition) == "" {
+		return current
+	}
+	return current + "\n\n" + addition
+}
+
+func (s *Server) editMessage(turnID, text string, expectedRevision int64, requestID string) error {
+	s.submitMu.Lock()
+	defer s.submitMu.Unlock()
+	if s.pendingTurn == nil || s.pendingTurn.id != turnID {
+		return fmt.Errorf("Session turn %q is no longer pending", turnID)
+	}
+	turn := *s.pendingTurn
+	if expectedRevision <= 0 {
+		return fmt.Errorf("editing Session turn %q: expectedRevision must be positive", turnID)
+	}
+	if turn.revision == 0 {
+		turn.revision = 1
+	}
+	if expectedRevision != turn.revision {
+		return fmt.Errorf("editing Session turn %q: revision is %d, not %d", turnID, turn.revision, expectedRevision)
+	}
+	if strings.TrimSpace(text) == "" && len(turn.attachments) == 0 {
+		return fmt.Errorf("editing Session turn %q: message must not be empty", turnID)
+	}
+	turn.text = text
+	turn.revision++
+	if err := s.appendMessage(Event{
+		Type:        EventUserMessageUpdated,
+		RequestID:   requestID,
+		TurnID:      turn.id,
+		Text:        turn.text,
+		Revision:    turn.revision,
+		Attachments: turn.attachments,
+	}); err != nil {
+		return fmt.Errorf("recording edited Session turn %q: %w", turnID, err)
+	}
+	s.pendingTurn = &turn
+	return nil
+}
+
+func (s *Server) takePendingTurn(turn turnRequest) turnRequest {
+	s.submitMu.Lock()
+	defer s.submitMu.Unlock()
+	if s.pendingTurn == nil || s.pendingTurn.id != turn.id {
+		return turn
+	}
+	pending := *s.pendingTurn
+	s.pendingTurn = nil
+	return pending
 }
 
 func (s *Server) resolveAttachmentIDs(ids []string) ([]ResolvedAttachment, error) {
@@ -833,12 +913,13 @@ type journalRecovery struct {
 	nextTurnID      int64
 	nextInputID     int64
 	completedTurnID int64
-	queuedTurns     []turnRequest
+	pendingTurn     *turnRequest
 }
 
 type journalTurnRecovery struct {
 	id          string
 	text        string
+	revision    int64
 	attachments []Attachment
 	started     bool
 	completed   bool
@@ -846,7 +927,7 @@ type journalTurnRecovery struct {
 
 // hasUnsettledActivity reports whether the journal holds locally accepted turns
 // beyond the given durably-settled high-water mark. nextTurnID is the highest
-// turn ID observed in the journal, so any queued, interrupted, or completed turn
+// turn ID observed in the journal, so any pending, interrupted, or completed turn
 // whose idle status was never durably published leaves nextTurnID above
 // settledTurnID.
 func (r journalRecovery) hasUnsettledActivity(settledTurnID int64) bool {
@@ -879,10 +960,14 @@ func recoverJournal(journal *Journal) (journalRecovery, error) {
 			turn = turns[event.TurnID]
 		}
 		switch event.Type {
-		case EventUserMessage:
+		case EventUserMessage, EventUserMessageUpdated:
 			if turn != nil {
 				turn.text = event.Text
 				turn.attachments = event.Attachments
+				turn.revision = event.Revision
+				if turn.revision == 0 {
+					turn.revision = 1
+				}
 			}
 		case EventTurnCompleted:
 			if turn != nil {
@@ -927,6 +1012,7 @@ func recoverJournal(journal *Journal) (journalRecovery, error) {
 			}
 		}
 	}
+	unstartedTurns := make([]turnRequest, 0, 1)
 	for _, turnID := range turnOrder {
 		turn := turns[turnID]
 		if turn.completed {
@@ -935,7 +1021,7 @@ func recoverJournal(journal *Journal) (journalRecovery, error) {
 		if !turn.started {
 			accepted := make(chan struct{})
 			close(accepted)
-			recovery.queuedTurns = append(recovery.queuedTurns, turnRequest{id: turn.id, text: turn.text, attachments: turn.attachments, accepted: accepted})
+			unstartedTurns = append(unstartedTurns, turnRequest{id: turn.id, text: turn.text, revision: turn.revision, attachments: turn.attachments, accepted: accepted})
 			continue
 		}
 		if err := journal.Append(Event{Type: EventTurnCompleted, TurnID: turnID, Status: "interrupted"}); err != nil {
@@ -945,19 +1031,55 @@ func recoverJournal(journal *Journal) (journalRecovery, error) {
 			recovery.completedTurnID = value
 		}
 	}
+	if len(unstartedTurns) > 0 {
+		sort.SliceStable(unstartedTurns, func(i, j int) bool {
+			left := numericEventID(unstartedTurns[i].id, "turn-")
+			right := numericEventID(unstartedTurns[j].id, "turn-")
+			if left > 0 && right > 0 {
+				return left < right
+			}
+			if (left > 0) != (right > 0) {
+				return left > 0
+			}
+			return unstartedTurns[i].id < unstartedTurns[j].id
+		})
+		pending := unstartedTurns[0]
+		if len(unstartedTurns) > 1 {
+			for _, turn := range unstartedTurns[1:] {
+				pending.text = mergePendingMessageText(pending.text, turn.text)
+				pending.attachments = append(pending.attachments, turn.attachments...)
+				if err := journal.Append(Event{Type: EventTurnCompleted, TurnID: turn.id, Status: "merged"}); err != nil {
+					return recovery, fmt.Errorf("recording merged Session turn: %w", err)
+				}
+				if value := numericEventID(turn.id, "turn-"); value > recovery.completedTurnID {
+					recovery.completedTurnID = value
+				}
+			}
+			pending.revision = max(1, pending.revision) + 1
+			if err := journal.Append(Event{
+				Type:        EventUserMessageUpdated,
+				TurnID:      pending.id,
+				Text:        pending.text,
+				Revision:    pending.revision,
+				Attachments: pending.attachments,
+			}); err != nil {
+				return recovery, fmt.Errorf("recording pending Session message: %w", err)
+			}
+		}
+		recovery.pendingTurn = &pending
+	}
 	return recovery, nil
 }
 
-func (s *Server) restoreTurns(turns []turnRequest) error {
-	if len(turns) > cap(s.turns) {
-		return fmt.Errorf("restoring %d queued Session turns: queue capacity is %d", len(turns), cap(s.turns))
+func (s *Server) restoreTurn(turn *turnRequest) error {
+	if turn == nil {
+		return nil
 	}
 	s.submitMu.Lock()
 	defer s.submitMu.Unlock()
-	for _, turn := range turns {
-		s.turns <- turn
-		s.outstanding++
-	}
+	s.turns <- *turn
+	s.pendingTurn = turn
+	s.outstanding++
 	return nil
 }
 
@@ -1231,6 +1353,11 @@ func (s *Server) handleConnection(ctx context.Context, connection net.Conn) {
 			subscribe(0, "", false, 0, 0)
 			if err := s.submitMessage(request.Text, request.RequestID, request.AttachmentIDs...); err != nil {
 				out <- Event{Type: EventError, RequestID: request.RequestID, Text: err.Error(), Status: "rejected"}
+			}
+		case "message.edit":
+			subscribe(0, "", false, 0, 0)
+			if err := s.editMessage(request.TurnID, request.Text, request.ExpectedRevision, request.RequestID); err != nil {
+				out <- Event{Type: EventError, RequestID: request.RequestID, TurnID: request.TurnID, Text: err.Error(), Status: "rejected"}
 			}
 		case "input":
 			subscribe(0, "", false, 0, 0)

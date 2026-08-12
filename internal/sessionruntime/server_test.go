@@ -260,6 +260,84 @@ func TestServerSubmitsAttachmentToProviderAndJournal(t *testing.T) {
 	}
 }
 
+func TestServerEditsPendingMessage(t *testing.T) {
+	journal := NewJournal()
+	t.Cleanup(journal.Close)
+	provider := &fakeProvider{}
+	server := NewServer(Config{StateDir: t.TempDir()}, journal, provider)
+	attachment, err := server.attachmentStore.Put("notes.txt", strings.NewReader("context"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.submitMessage("original", "request-message", attachment.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.editMessage("turn-1", "revised", 1, "request-edit"); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.editMessage("turn-1", "stale", 1, "request-stale"); err == nil || !strings.Contains(err.Error(), "revision is 2, not 1") {
+		t.Fatalf("stale edit error = %v", err)
+	}
+
+	turn := <-server.turns
+	<-turn.accepted
+	server.runTurn(t.Context(), server.takePendingTurn(turn))
+
+	provider.mu.Lock()
+	prompts := append([]string(nil), provider.prompts...)
+	inputs := append([]TurnInput(nil), provider.inputs...)
+	provider.mu.Unlock()
+	if !reflect.DeepEqual(prompts, []string{"revised"}) {
+		t.Fatalf("provider prompts = %v, want revised message", prompts)
+	}
+	if len(inputs) != 1 || len(inputs[0].Attachments) != 1 || inputs[0].Attachments[0].ID != attachment.ID {
+		t.Fatalf("provider inputs = %#v, want retained attachment", inputs)
+	}
+	if err := server.editMessage("turn-1", "too late", 2, "request-late"); err == nil || !strings.Contains(err.Error(), `turn "turn-1" is no longer pending`) {
+		t.Fatalf("late edit error = %v", err)
+	}
+
+	events := journal.Snapshot()
+	assertEventTypes(t, events, EventUserMessage, EventUserMessageUpdated, EventTurnStarted, EventAssistantDelta, EventAssistantDelta, EventTurnCompleted)
+	if events[1].Text != "revised" || events[1].Revision != 2 || events[1].RequestID != "request-edit" || !reflect.DeepEqual(events[1].Attachments, []Attachment{attachment}) {
+		t.Fatalf("message update = %#v", events[1])
+	}
+}
+
+func TestServerCombinesSubmissionsIntoPendingMessage(t *testing.T) {
+	journal := NewJournal()
+	t.Cleanup(journal.Close)
+	server := NewServer(Config{StateDir: t.TempDir()}, journal, &fakeProvider{})
+	firstAttachment, err := server.attachmentStore.Put("first.txt", strings.NewReader("first"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondAttachment, err := server.attachmentStore.Put("second.txt", strings.NewReader("second"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.submitMessage("first follow-up", "request-first", firstAttachment.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.submitMessage("second follow-up", "request-second", secondAttachment.ID); err != nil {
+		t.Fatal(err)
+	}
+	if len(server.turns) != 1 || server.outstanding != 1 {
+		t.Fatalf("pending runtime state = turns %d outstanding %d", len(server.turns), server.outstanding)
+	}
+	if server.pendingTurn == nil || server.pendingTurn.id != "turn-1" || server.pendingTurn.text != "first follow-up\n\nsecond follow-up" || server.pendingTurn.revision != 2 {
+		t.Fatalf("pending turn = %#v", server.pendingTurn)
+	}
+	if !reflect.DeepEqual(server.pendingTurn.attachments, []Attachment{firstAttachment, secondAttachment}) {
+		t.Fatalf("pending attachments = %#v", server.pendingTurn.attachments)
+	}
+	events := journal.Snapshot()
+	assertEventTypes(t, events, EventUserMessage, EventUserMessageUpdated)
+	if events[1].RequestID != "request-second" || events[1].TurnID != "turn-1" || events[1].Text != "first follow-up\n\nsecond follow-up" {
+		t.Fatalf("combined pending message = %#v", events[1])
+	}
+}
+
 func TestSessionSetupEnvironmentKeepsWorkspaceSetupCommand(t *testing.T) {
 	setupCommand := `KELOS_SETUP_COMMAND=["sh","-c","pip install --user some-tool"]`
 	environment := sessionSetupEnvironment([]string{setupCommand, "KELOS_SESSION_SETUP_ONLY=0"})
@@ -1152,9 +1230,6 @@ func TestServerDoesNotInterruptNextTurnWhenCompletionRacesWithInterrupt(t *testi
 	if err := server.submitMessage("first", "request-first"); err != nil {
 		t.Fatal(err)
 	}
-	if err := server.submitMessage("second", "request-second"); err != nil {
-		t.Fatal(err)
-	}
 	ctx, cancel := context.WithCancel(context.Background())
 	runDone := make(chan struct{})
 	go func() {
@@ -1165,6 +1240,9 @@ func TestServerDoesNotInterruptNextTurnWhenCompletionRacesWithInterrupt(t *testi
 	case <-provider.firstStarted:
 	case <-time.After(time.Second):
 		t.Fatal("first provider turn did not start")
+	}
+	if err := server.submitMessage("second", "request-second"); err != nil {
+		t.Fatal(err)
 	}
 	interruptDone := make(chan error, 1)
 	go func() {
@@ -1194,10 +1272,10 @@ func TestServerDoesNotInterruptNextTurnWhenCompletionRacesWithInterrupt(t *testi
 	<-runDone
 }
 
-func TestServerPreservesQueuedTurnAcrossForcedProviderRestart(t *testing.T) {
+func TestServerPreservesPendingTurnAcrossForcedProviderRestart(t *testing.T) {
 	server, provider, turnDone := startStuckInterruptServer(t, false)
 	server.interruptTimeout = 20 * time.Millisecond
-	if err := server.submitMessage("queued work", "request-queued"); err != nil {
+	if err := server.submitMessage("pending work", "request-pending"); err != nil {
 		t.Fatal(err)
 	}
 	podUID := server.config.PodUID
@@ -1216,19 +1294,19 @@ func TestServerPreservesQueuedTurnAcrossForcedProviderRestart(t *testing.T) {
 	}
 	assertStuckTurnInterrupted(t, server, provider, turnDone)
 	if report, _ := server.sessionDrainReports(); report == nil || report.Phase != sessionupdate.PhaseDraining {
-		t.Fatalf("runtime update report = %#v, want Draining while queued work remains", report)
+		t.Fatalf("runtime update report = %#v, want Draining while pending work remains", report)
 	}
 
 	recovery, err := recoverJournal(server.journal)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(recovery.queuedTurns) != 1 || recovery.queuedTurns[0].id != "turn-2" || recovery.queuedTurns[0].text != "queued work" {
-		t.Fatalf("recovered queued turns = %#v", recovery.queuedTurns)
+	if recovery.pendingTurn == nil || recovery.pendingTurn.id != "turn-2" || recovery.pendingTurn.text != "pending work" {
+		t.Fatalf("recovered pending turn = %#v", recovery.pendingTurn)
 	}
 	restartedProvider := &fakeProvider{}
 	restarted := NewServer(Config{}, server.journal, restartedProvider)
-	if err := restarted.restoreTurns(recovery.queuedTurns); err != nil {
+	if err := restarted.restoreTurn(recovery.pendingTurn); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1242,11 +1320,11 @@ func TestServerPreservesQueuedTurnAcrossForcedProviderRestart(t *testing.T) {
 		restartedProvider.mu.Lock()
 		prompts := append([]string(nil), restartedProvider.prompts...)
 		restartedProvider.mu.Unlock()
-		if reflect.DeepEqual(prompts, []string{"queued work"}) {
+		if reflect.DeepEqual(prompts, []string{"pending work"}) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("provider prompts = %v, want queued work", prompts)
+			t.Fatalf("provider prompts = %v, want pending work", prompts)
 		}
 		time.Sleep(time.Millisecond)
 	}
@@ -1261,7 +1339,7 @@ func TestServerStopsAcceptingAndDispatchingTurnsWhileProviderRestarts(t *testing
 	server := NewServer(Config{}, journal, provider)
 	accepted := make(chan struct{})
 	close(accepted)
-	server.turns <- turnRequest{id: "turn-1", text: "queued work", accepted: accepted}
+	server.turns <- turnRequest{id: "turn-1", text: "pending work", accepted: accepted}
 	server.providerStopping.Store(true)
 
 	runDone := make(chan struct{})
@@ -1275,7 +1353,7 @@ func TestServerStopsAcceptingAndDispatchingTurnsWhileProviderRestarts(t *testing
 		t.Fatal("turn dispatcher did not stop")
 	}
 	if len(server.turns) != 1 {
-		t.Fatalf("queued turns = %d, want 1", len(server.turns))
+		t.Fatalf("pending turns = %d, want 1", len(server.turns))
 	}
 	if err := server.submitMessage("late work", "request-late"); err == nil || !strings.Contains(err.Error(), "restarting") {
 		t.Fatalf("submitMessage() error = %v, want provider restart rejection", err)
@@ -1427,7 +1505,7 @@ func TestSubmitMessageDoesNotStartProviderWhenJournalWriteFails(t *testing.T) {
 	}
 }
 
-func TestServerSerializesConcurrentMessageAcceptance(t *testing.T) {
+func TestServerSerializesConcurrentPendingMessageUpdates(t *testing.T) {
 	journal := NewJournal()
 	defer journal.Close()
 	server := NewServer(Config{}, journal, &fakeProvider{})
@@ -1436,11 +1514,11 @@ func TestServerSerializesConcurrentMessageAcceptance(t *testing.T) {
 	secondAppending := make(chan struct{})
 	appendMessage := server.appendMessage
 	server.appendMessage = func(event Event) error {
-		switch event.Text {
-		case "first":
+		switch event.RequestID {
+		case "request-first":
 			close(firstAppending)
 			<-releaseFirst
-		case "second":
+		case "request-second":
 			close(secondAppending)
 		}
 		return appendMessage(event)
@@ -1478,14 +1556,13 @@ func TestServerSerializesConcurrentMessageAcceptance(t *testing.T) {
 	}
 
 	events := journal.Snapshot()
-	assertEventTypes(t, events, EventUserMessage, EventUserMessage)
-	if events[0].Text != "first" || events[1].Text != "second" {
+	assertEventTypes(t, events, EventUserMessage, EventUserMessageUpdated)
+	if events[0].Text != "first" || events[1].Text != "first\n\nsecond" {
 		t.Fatalf("message order = %q, %q", events[0].Text, events[1].Text)
 	}
-	firstTurn := <-server.turns
-	secondTurn := <-server.turns
-	if firstTurn.text != "first" || secondTurn.text != "second" {
-		t.Fatalf("turn order = %q, %q", firstTurn.text, secondTurn.text)
+	pending := server.takePendingTurn(<-server.turns)
+	if pending.text != "first\n\nsecond" || len(server.turns) != 0 {
+		t.Fatalf("pending turn = %#v, remaining turns %d", pending, len(server.turns))
 	}
 }
 
@@ -2071,14 +2148,14 @@ func TestServerPreservesStateOutsideProjectedHistoryPage(t *testing.T) {
 	journal := NewJournal()
 	defer journal.Close()
 	startedAt := time.Date(2026, time.August, 8, 12, 0, 0, 0, time.UTC)
-	queuedText := strings.Repeat("queued ", maxHistoryMessageBytes)
+	pendingText := strings.Repeat("pending ", maxHistoryMessageBytes)
 	for _, event := range []Event{
 		{Type: EventFileDiff, Diff: "diff --git a/old.txt b/old.txt\n-old\n+new"},
 		{Type: EventUserMessage, TurnID: "turn-1", Text: "active request"},
 		{Type: EventTurnStarted, TurnID: "turn-1", Timestamp: &startedAt, Status: "running"},
 		{Type: EventAssistantDelta, TurnID: "turn-1", Text: "partial answer"},
 		{Type: EventInputRequested, TurnID: "turn-1", InputID: "input-1", Questions: []InputQuestion{{ID: "confirm", Question: "Continue?"}}, Status: "pending"},
-		{Type: EventUserMessage, TurnID: "turn-2", Text: queuedText},
+		{Type: EventUserMessage, TurnID: "turn-2", Text: pendingText},
 	} {
 		if err := journal.Append(event); err != nil {
 			t.Fatal(err)
@@ -2133,14 +2210,14 @@ func TestServerPreservesStateOutsideProjectedHistoryPage(t *testing.T) {
 	if state.ActiveTurnID != "turn-1" || state.ActiveTurnStarted == nil || !state.ActiveTurnStarted.Equal(startedAt) || !state.WaitingForInput {
 		t.Fatalf("history state = %#v, want active turn waiting for input", state)
 	}
-	if len(state.QueuedTurns) != 1 || state.QueuedTurns[0].TurnID != "turn-2" {
-		t.Fatalf("queued turns = %#v, want turn-2", state.QueuedTurns)
+	if state.PendingTurn == nil || state.PendingTurn.TurnID != "turn-2" {
+		t.Fatalf("pending turn = %#v, want turn-2", state.PendingTurn)
 	}
 	if state.FileDiff != "diff --git a/old.txt b/old.txt\n-old\n+new" {
 		t.Fatalf("file diff = %q, want state outside projected history page", state.FileDiff)
 	}
-	if text := state.QueuedTurns[0].Text; len(text) > maxHistoryMessageBytes || !strings.Contains(text, historyTruncationMarker) {
-		t.Fatalf("queued message preview has %d bytes", len(text))
+	if text := state.PendingTurn.Text; len(text) > maxHistoryMessageBytes || !strings.Contains(text, historyTruncationMarker) {
+		t.Fatalf("pending message preview has %d bytes", len(text))
 	}
 }
 

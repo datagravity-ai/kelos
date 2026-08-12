@@ -101,8 +101,8 @@ func TestJournalRecoveryHandlesEventsWithoutTurnIDs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(recovery.queuedTurns) != 0 {
-		t.Fatalf("recovered queued turns = %#v", recovery.queuedTurns)
+	if recovery.pendingTurn != nil {
+		t.Fatalf("recovered pending turn = %#v", recovery.pendingTurn)
 	}
 	events := journal.Snapshot()
 	assertEventTypes(t, events,
@@ -117,7 +117,7 @@ func TestJournalRecoveryHandlesEventsWithoutTurnIDs(t *testing.T) {
 	}
 }
 
-func TestJournalCompactionPreservesQueuedTurnForRecovery(t *testing.T) {
+func TestJournalCompactionPreservesPendingTurnForRecovery(t *testing.T) {
 	path := filepath.Join(t.TempDir(), journalFileName)
 	journal, err := openJournal(path, 3)
 	if err != nil {
@@ -131,13 +131,13 @@ func TestJournalCompactionPreservesQueuedTurnForRecovery(t *testing.T) {
 	}
 	appendEvent(Event{Type: EventUserMessage, TurnID: "turn-1", Text: "active work"})
 	appendEvent(Event{Type: EventTurnStarted, TurnID: "turn-1", Status: "running"})
-	appendEvent(Event{Type: EventUserMessage, TurnID: "turn-2", Text: "queued work"})
+	appendEvent(Event{Type: EventUserMessage, TurnID: "turn-2", Text: "pending work"})
 	for i := 0; i < 3; i++ {
 		appendEvent(Event{Type: EventAssistantDelta, TurnID: "turn-1", Text: fmt.Sprintf("event-%d", i+1)})
 	}
 	for _, event := range journal.Snapshot() {
 		if event.TurnID == "turn-2" {
-			t.Fatalf("queued turn remained in replay history after compaction: %#v", event)
+			t.Fatalf("pending turn remained in replay history after compaction: %#v", event)
 		}
 	}
 	journal.Close()
@@ -151,8 +151,46 @@ func TestJournalCompactionPreservesQueuedTurnForRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(recovery.queuedTurns) != 1 || recovery.queuedTurns[0].id != "turn-2" || recovery.queuedTurns[0].text != "queued work" {
-		t.Fatalf("recovered queued turns = %#v", recovery.queuedTurns)
+	if recovery.pendingTurn == nil || recovery.pendingTurn.id != "turn-2" || recovery.pendingTurn.text != "pending work" {
+		t.Fatalf("recovered pending turn = %#v", recovery.pendingTurn)
+	}
+}
+
+func TestJournalRecoveryCombinesPendingTurns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), journalFileName)
+	journal, err := openJournal(path, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range []Event{
+		{Type: EventUserMessage, TurnID: "turn-1", Text: "active work", Revision: 1},
+		{Type: EventTurnStarted, TurnID: "turn-1", Status: "running"},
+		{Type: EventUserMessage, TurnID: "turn-2", Text: "original", Revision: 1},
+		{Type: EventUserMessage, TurnID: "turn-3", Text: "later", Revision: 1},
+		{Type: EventUserMessageUpdated, TurnID: "turn-2", Text: "revised", Revision: 2},
+		{Type: EventAssistantDelta, TurnID: "turn-1", Text: "working"},
+	} {
+		if err := journal.Append(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	journal.Close()
+
+	reopened, err := openJournal(path, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	recovery, err := recoverJournal(reopened)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovery.pendingTurn == nil || recovery.pendingTurn.id != "turn-2" || recovery.pendingTurn.text != "revised\n\nlater" || recovery.pendingTurn.revision != 3 {
+		t.Fatalf("recovered pending turn = %#v", recovery.pendingTurn)
+	}
+	items, state, _ := projectHistory(reopened.Snapshot())
+	if len(items) != 0 || state.PendingTurn == nil || state.PendingTurn.TurnID != "turn-2" || state.PendingTurn.Text != "revised\n\nlater" {
+		t.Fatalf("projected pending state = items %#v state %#v", items, state)
 	}
 }
 

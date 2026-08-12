@@ -211,7 +211,7 @@ func TestSessionTUIContextUsedPercent(t *testing.T) {
 	}
 }
 
-func TestSessionTUIQueueStaysAboveComposerUntilAccepted(t *testing.T) {
+func TestSessionTUIPendingMessageStaysAboveComposerUntilAccepted(t *testing.T) {
 	model, _ := newSessionTUITestModel()
 	history := captureSessionTUIHistory(model)
 	model.ready = true
@@ -219,8 +219,8 @@ func TestSessionTUIQueueStaysAboveComposerUntilAccepted(t *testing.T) {
 
 	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventUserMessage, TurnID: "turn-1", Text: "waiting"})
 	view := stripSessionTUIANSI(model.View())
-	if !strings.Contains(view, "Queued") || !strings.Contains(view, "> waiting") {
-		t.Fatalf("terminal view = %q, want queued user block", view)
+	if !strings.Contains(view, "Pending") || !strings.Contains(view, "> waiting") {
+		t.Fatalf("terminal view = %q, want pending user block", view)
 	}
 
 	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventTurnStarted, TurnID: "turn-1"})
@@ -717,17 +717,15 @@ func TestSessionTUIAppliesStateFromProjectedHistory(t *testing.T) {
 			ActiveTurnID:      "turn-2",
 			ActiveTurnStarted: &startedAt,
 			WaitingForInput:   true,
-			QueuedTurns: []sessionruntime.HistoryQueuedTurn{
-				{TurnID: "turn-3", Text: "queued request"},
-			},
+			PendingTurn:       &sessionruntime.HistoryPendingTurn{TurnID: "turn-3", Text: "pending request"},
 		},
 	})
 
 	if !model.turnActive || model.activeTurnID != "turn-2" || !model.activeTurnStarted.Equal(startedAt) || !model.waitingForInput {
 		t.Fatalf("active state = active %t ID %q started %v waiting %t", model.turnActive, model.activeTurnID, model.activeTurnStarted, model.waitingForInput)
 	}
-	if len(model.queuedTurnOrder) != 1 || model.queuedTurns["turn-3"] != "queued request" {
-		t.Fatalf("queued state = order %#v turns %#v", model.queuedTurnOrder, model.queuedTurns)
+	if model.pendingTurnID != "turn-3" || model.pendingTurnText != "pending request" {
+		t.Fatalf("pending state = ID %q text %q", model.pendingTurnID, model.pendingTurnText)
 	}
 	if transcript := stripSessionTUIANSI(model.renderTranscript()); !strings.Contains(transcript, "active request") || !strings.Contains(transcript, "Continue?") {
 		t.Fatalf("projected transcript = %q", transcript)
@@ -920,7 +918,7 @@ func TestSessionTUIReconnectNoticesKeepStreamingResponseTogether(t *testing.T) {
 	}
 }
 
-func TestSessionTUIQueuedUserMessagePreservesActiveResponse(t *testing.T) {
+func TestSessionTUIPendingUserMessagePreservesActiveResponse(t *testing.T) {
 	model, _ := newSessionTUITestModel()
 	model.ready = true
 	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventAssistantDelta, Text: "active"})
@@ -931,13 +929,13 @@ func TestSessionTUIQueuedUserMessagePreservesActiveResponse(t *testing.T) {
 		t.Fatalf("active assistant block = %q, want active response", got)
 	}
 	transcript := stripSessionTUIANSI(model.renderTranscript())
-	if strings.Contains(transcript, "follow up") || strings.Contains(transcript, "Queued") {
-		t.Fatalf("queued message rendered in transcript: %q", transcript)
+	if strings.Contains(transcript, "follow up") || strings.Contains(transcript, "Pending") {
+		t.Fatalf("pending message rendered in transcript: %q", transcript)
 	}
-	queue := stripSessionTUIANSI(model.queueView())
-	for _, want := range []string{"> follow up", "Queued"} {
-		if !strings.Contains(queue, want) {
-			t.Fatalf("queue = %q, want %q", queue, want)
+	pending := stripSessionTUIANSI(model.pendingView())
+	for _, want := range []string{"> follow up", "Pending"} {
+		if !strings.Contains(pending, want) {
+			t.Fatalf("pending = %q, want %q", pending, want)
 		}
 	}
 
@@ -945,8 +943,8 @@ func TestSessionTUIQueuedUserMessagePreservesActiveResponse(t *testing.T) {
 	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventTurnCompleted, TurnID: "turn-1", Status: "completed"})
 	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventTurnStarted, TurnID: "turn-2"})
 	accepted := stripSessionTUIANSI(model.renderTranscript())
-	if strings.Contains(accepted, "Queued") {
-		t.Fatalf("accepted transcript still marks message queued: %q", accepted)
+	if strings.Contains(accepted, "Pending") {
+		t.Fatalf("accepted transcript still marks message pending: %q", accepted)
 	}
 	if got := strings.Count(accepted, "follow up"); got != 1 {
 		t.Fatalf("accepted message rendered %d times, want once: %q", got, accepted)
@@ -954,27 +952,27 @@ func TestSessionTUIQueuedUserMessagePreservesActiveResponse(t *testing.T) {
 	if strings.Index(accepted, "search") > strings.Index(accepted, "follow up") {
 		t.Fatalf("accepted message appears before prior turn output: %q", accepted)
 	}
-	if queue := stripSessionTUIANSI(model.queueView()); queue != "" {
-		t.Fatalf("accepted message remains queued: %q", queue)
+	if pending := stripSessionTUIANSI(model.pendingView()); pending != "" {
+		t.Fatalf("accepted message remains pending: %q", pending)
 	}
 }
 
-func TestSessionTUICompletedQueuedTurnLoadsAsAccepted(t *testing.T) {
+func TestSessionTUICompletedPendingTurnLoadsAsAccepted(t *testing.T) {
 	model, _ := newSessionTUITestModel()
 	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventUserMessage, TurnID: "turn-1", Text: "loaded message"})
 	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventTurnCompleted, TurnID: "turn-1", Status: "completed"})
 	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventHistoryEnd})
 
 	rendered := stripSessionTUIANSI(model.renderTranscript())
-	if strings.Contains(rendered, "Queued") {
-		t.Fatalf("completed history still marks message queued: %q", rendered)
+	if strings.Contains(rendered, "Pending") {
+		t.Fatalf("completed history still marks message pending: %q", rendered)
 	}
 	if !strings.Contains(rendered, "> loaded message") {
 		t.Fatalf("completed history = %q, want accepted user message", rendered)
 	}
 }
 
-func TestSessionTUIUnstartedTurnRemainsQueuedAfterHistory(t *testing.T) {
+func TestSessionTUIUnstartedTurnRemainsPendingAfterHistory(t *testing.T) {
 	model, _ := newSessionTUITestModel()
 	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventUserMessage, TurnID: "turn-2", Text: "still waiting"})
 	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventHistoryEnd})
@@ -982,31 +980,11 @@ func TestSessionTUIUnstartedTurnRemainsQueuedAfterHistory(t *testing.T) {
 	if transcript := stripSessionTUIANSI(model.renderTranscript()); strings.Contains(transcript, "still waiting") {
 		t.Fatalf("unstarted message rendered in transcript: %q", transcript)
 	}
-	queue := stripSessionTUIANSI(model.queueView())
-	for _, want := range []string{"> still waiting", "Queued"} {
-		if !strings.Contains(queue, want) {
-			t.Fatalf("queue = %q, want %q", queue, want)
+	pending := stripSessionTUIANSI(model.pendingView())
+	for _, want := range []string{"> still waiting", "Pending"} {
+		if !strings.Contains(pending, want) {
+			t.Fatalf("pending = %q, want %q", pending, want)
 		}
-	}
-}
-
-func TestSessionTUIQueuedMessagesKeepSubmissionOrder(t *testing.T) {
-	model, _ := newSessionTUITestModel()
-	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventUserMessage, TurnID: "turn-2", Text: "first queued"})
-	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventUserMessage, TurnID: "turn-3", Text: "second queued"})
-
-	queue := stripSessionTUIANSI(model.queueView())
-	if strings.Index(queue, "first queued") > strings.Index(queue, "second queued") {
-		t.Fatalf("queued messages are out of order: %q", queue)
-	}
-
-	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventTurnStarted, TurnID: "turn-2"})
-	if transcript := stripSessionTUIANSI(model.renderTranscript()); !strings.Contains(transcript, "> first queued") {
-		t.Fatalf("accepted message missing from transcript: %q", transcript)
-	}
-	queue = stripSessionTUIANSI(model.queueView())
-	if strings.Contains(queue, "first queued") || !strings.Contains(queue, "second queued") {
-		t.Fatalf("remaining queue = %q, want only second message", queue)
 	}
 }
 
@@ -1197,6 +1175,16 @@ func TestSessionTUISubmittedTextRendersFromUserEventOnce(t *testing.T) {
 	}
 	if view := stripSessionTUIANSI(model.View()); strings.Contains(view, "hello") {
 		t.Fatalf("submitted text remains in inline view after commit: %q", view)
+	}
+}
+
+func TestSessionTUIUpdatesPendingMessage(t *testing.T) {
+	model, _ := newSessionTUITestModel()
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventUserMessage, TurnID: "turn-2", Text: "original"})
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventUserMessageUpdated, TurnID: "turn-2", Text: "revised"})
+
+	if model.pendingTurnID != "turn-2" || model.pendingTurnText != "revised" {
+		t.Fatalf("pending message = ID %q text %q", model.pendingTurnID, model.pendingTurnText)
 	}
 }
 

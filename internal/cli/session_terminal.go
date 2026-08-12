@@ -298,11 +298,10 @@ func runSessionPlainTerminalWithWidth(ctx context.Context, input io.Reader, outp
 				}
 				closeAssistantLine(&liveAssistant)
 				liveAssistant.streaming = liveAssistant.streaming && activeTurnID != ""
-				if event.HistoryState != nil && len(event.HistoryState.QueuedTurns) > 0 {
-					write("\n%s\n", formatter.muted("Queued messages:"))
-					for _, turn := range event.HistoryState.QueuedTurns {
-						write("%s\n", formatter.userMessage(sessionTerminalMessageText(turn.Text, turn.Attachments)))
-					}
+				if event.HistoryState != nil && event.HistoryState.PendingTurn != nil {
+					write("\n%s\n", formatter.muted("Pending message:"))
+					turn := event.HistoryState.PendingTurn
+					write("%s\n", formatter.userMessage(sessionTerminalMessageText(turn.Text, turn.Attachments)))
 				}
 				historyMu.Lock()
 				hasEarlierHistory := historyCursor != ""
@@ -317,7 +316,7 @@ func runSessionPlainTerminalWithWidth(ctx context.Context, input io.Reader, outp
 				}
 				finishAssistant(assistant)
 				write("%s\n", formatter.warning(event.Text))
-			case sessionruntime.EventUserMessage:
+			case sessionruntime.EventUserMessage, sessionruntime.EventUserMessageUpdated:
 				finishAssistant(assistant)
 				write("%s\n", formatter.userMessage(sessionTerminalMessageText(event.Text, event.Attachments)))
 				if color {
