@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/go-logr/logr"
+	"github.com/go-logr/logr/funcr"
 	apiMeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -1679,6 +1680,122 @@ func TestGenericServeHTTP_SkipsNonMatchingFilters(t *testing.T) {
 
 	if len(taskList.Items) != 0 {
 		t.Errorf("Expected 0 tasks for non-matching filter, got %d", len(taskList.Items))
+	}
+}
+
+func TestGenericServeHTTP_ExcludeFilters(t *testing.T) {
+	tests := []struct {
+		name           string
+		excludeFilters []kelos.GenericWebhookFilter
+		wantTasks      int
+		// wantLogContains asserts the delivery was skipped for the stated
+		// reason. Without it, a malformed expression treated as a plain match
+		// would be indistinguishable from a successful exclusion.
+		wantLogContains string
+	}{
+		{
+			name: "matching exclude filter skips the delivery",
+			excludeFilters: []kelos.GenericWebhookFilter{
+				{Field: "$.data.properties.Status.select.name", Value: strPtr("Ready for AI")},
+			},
+			wantTasks: 0,
+		},
+		{
+			name: "matching exclude pattern skips the delivery",
+			excludeFilters: []kelos.GenericWebhookFilter{
+				{Field: "$.type", Pattern: `^page\.`},
+			},
+			wantTasks: 0,
+		},
+		{
+			name: "non-matching exclude filter still creates a task",
+			excludeFilters: []kelos.GenericWebhookFilter{
+				{Field: "$.data.properties.Status.select.name", Value: strPtr("Done")},
+			},
+			wantTasks: 1,
+		},
+		{
+			name: "exclude filter on missing field still creates a task",
+			excludeFilters: []kelos.GenericWebhookFilter{
+				{Field: "$.data.properties.Author.select.name", Value: strPtr("bot")},
+			},
+			wantTasks: 1,
+		},
+		{
+			// A malformed exclude expression must fail closed: the spawner is
+			// skipped rather than spawning a Task the exclusion was meant to stop.
+			name: "malformed exclude JSONPath skips the spawner",
+			excludeFilters: []kelos.GenericWebhookFilter{
+				{Field: "$.[", Value: strPtr("Ready for AI")},
+			},
+			wantTasks:       0,
+			wantLogContains: "invalid JSONPath expression",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			spawner := &kelos.TaskSpawner{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "notion-handler",
+					Namespace: "default",
+					UID:       "notion-uid-exclude",
+				},
+				Spec: kelos.TaskSpawnerSpec{
+					When: kelos.When{
+						GenericWebhook: &kelos.GenericWebhook{
+							Source: "notion",
+							FieldMapping: map[string]string{
+								"id":    "$.data.id",
+								"title": "$.data.properties.Name.title[0].plain_text",
+							},
+							Filters: []kelos.GenericWebhookFilter{
+								{Field: "$.type", Value: strPtr("page.updated")},
+							},
+							ExcludeFilters: tt.excludeFilters,
+						},
+					},
+					TaskTemplate: kelos.TaskTemplate{
+						Type: "claude-code",
+						Credentials: &kelos.Credentials{
+							Type: "api-key",
+						},
+						PromptTemplate: "{{.title}}",
+					},
+				},
+			}
+
+			handler := newGenericTestHandler(t, spawner)
+			var logs bytes.Buffer
+			handler.log = funcr.New(func(prefix, args string) {
+				logs.WriteString(prefix + args + "\n")
+			}, funcr.Options{})
+
+			req := httptest.NewRequest(http.MethodPost, "/webhook/notion", bytes.NewReader([]byte(genericNotionPayload)))
+			rr := httptest.NewRecorder()
+			handler.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusOK {
+				t.Fatalf("Expected %d, got %d", http.StatusOK, rr.Code)
+			}
+
+			var taskList kelos.TaskList
+			if err := handler.client.List(context.Background(), &taskList); err != nil {
+				t.Fatal(err)
+			}
+			if len(taskList.Items) != tt.wantTasks {
+				t.Fatalf("Expected %d tasks, got %d", tt.wantTasks, len(taskList.Items))
+			}
+
+			switch {
+			case tt.wantLogContains != "":
+				if !strings.Contains(logs.String(), tt.wantLogContains) {
+					t.Errorf("Expected logs to contain %q, got: %s", tt.wantLogContains, logs.String())
+				}
+			case strings.Contains(logs.String(), "invalid JSONPath expression"):
+				t.Errorf("Unexpected JSONPath error logged for a well-formed filter: %s", logs.String())
+			}
+		})
 	}
 }
 

@@ -592,6 +592,14 @@ type GenericWebhook struct {
 	// pattern. If empty, all deliveries trigger tasks.
 	// +optional
 	Filters []GenericWebhookFilter `json:"filters,omitempty"`
+
+	// ExcludeFilters reject a webhook delivery when ANY of them matches (OR
+	// semantics across exclude filters). They are evaluated after Filters, so
+	// a delivery triggers a task only when it matches every entry in Filters
+	// and no entry here. A filter whose field is absent from the payload does
+	// not match and therefore does not exclude the delivery.
+	// +optional
+	ExcludeFilters []GenericWebhookFilter `json:"excludeFilters,omitempty"`
 }
 
 // GenericWebhookFilter defines a condition for filtering generic webhook payloads.
