@@ -281,7 +281,11 @@ func TestServerEditsPendingMessage(t *testing.T) {
 
 	turn := <-server.turns
 	<-turn.accepted
-	server.runTurn(t.Context(), server.takePendingTurn(turn))
+	pending, exists := server.takePendingTurn(turn)
+	if !exists {
+		t.Fatal("pending turn was not available")
+	}
+	server.runTurn(t.Context(), pending)
 
 	provider.mu.Lock()
 	prompts := append([]string(nil), provider.prompts...)
@@ -335,6 +339,59 @@ func TestServerCombinesSubmissionsIntoPendingMessage(t *testing.T) {
 	assertEventTypes(t, events, EventUserMessage, EventUserMessageUpdated)
 	if events[1].RequestID != "request-second" || events[1].TurnID != "turn-1" || events[1].Text != "first follow-up\n\nsecond follow-up" {
 		t.Fatalf("combined pending message = %#v", events[1])
+	}
+}
+
+func TestServerRemovesPendingMessage(t *testing.T) {
+	journal := NewJournal()
+	t.Cleanup(journal.Close)
+	server := NewServer(Config{}, journal, &fakeProvider{})
+	if err := server.submitMessage("pending work", "request-message"); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.removePendingMessage("turn-1", 2, "request-stale"); err == nil || !strings.Contains(err.Error(), "revision is 1, not 2") {
+		t.Fatalf("stale removal error = %v", err)
+	}
+	if err := server.removePendingMessage("turn-1", 1, "request-remove"); err != nil {
+		t.Fatal(err)
+	}
+	if server.pendingTurn != nil || server.outstanding != 0 || len(server.turns) != 0 {
+		t.Fatalf("pending runtime state = turn %#v outstanding %d buffered %d", server.pendingTurn, server.outstanding, len(server.turns))
+	}
+	if server.completedTurnID.Load() != 1 {
+		t.Fatalf("completed turn ID = %d, want 1", server.completedTurnID.Load())
+	}
+	events := journal.Snapshot()
+	assertEventTypes(t, events, EventUserMessage, EventUserMessageRemoved)
+	if events[1].RequestID != "request-remove" || events[1].TurnID != "turn-1" || events[1].Revision != 2 || events[1].Status != "removed" {
+		t.Fatalf("removed message event = %#v", events[1])
+	}
+	items, state, _ := projectHistory(events)
+	if len(items) != 0 || state.PendingTurn != nil {
+		t.Fatalf("removed pending history = items %#v state %#v", items, state)
+	}
+	if err := server.submitMessage("replacement", "request-replacement"); err != nil {
+		t.Fatalf("submitting replacement: %v", err)
+	}
+	if server.pendingTurn == nil || server.pendingTurn.id != "turn-2" || len(server.turns) != 1 {
+		t.Fatalf("replacement pending turn = %#v buffered %d", server.pendingTurn, len(server.turns))
+	}
+}
+
+func TestServerDoesNotRunPendingMessageRemovedAfterDispatch(t *testing.T) {
+	journal := NewJournal()
+	t.Cleanup(journal.Close)
+	server := NewServer(Config{}, journal, &fakeProvider{})
+	if err := server.submitMessage("pending work", "request-message"); err != nil {
+		t.Fatal(err)
+	}
+	turn := <-server.turns
+	<-turn.accepted
+	if err := server.removePendingMessage("turn-1", 1, "request-remove"); err != nil {
+		t.Fatal(err)
+	}
+	if pending, exists := server.takePendingTurn(turn); exists {
+		t.Fatalf("removed pending turn remained runnable: %#v", pending)
 	}
 }
 
@@ -1560,7 +1617,10 @@ func TestServerSerializesConcurrentPendingMessageUpdates(t *testing.T) {
 	if events[0].Text != "first" || events[1].Text != "first\n\nsecond" {
 		t.Fatalf("message order = %q, %q", events[0].Text, events[1].Text)
 	}
-	pending := server.takePendingTurn(<-server.turns)
+	pending, exists := server.takePendingTurn(<-server.turns)
+	if !exists {
+		t.Fatal("pending turn was not available")
+	}
 	if pending.text != "first\n\nsecond" || len(server.turns) != 0 {
 		t.Fatalf("pending turn = %#v, remaining turns %d", pending, len(server.turns))
 	}

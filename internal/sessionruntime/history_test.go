@@ -178,6 +178,17 @@ func TestProjectHistoryUsesLatestPendingMessageRevision(t *testing.T) {
 	}
 }
 
+func TestProjectHistoryHidesRemovedPendingMessage(t *testing.T) {
+	events := []Event{
+		{ID: 1, Type: EventUserMessage, TurnID: "turn-1", Text: "remove this", Revision: 1},
+		{ID: 2, Type: EventUserMessageRemoved, TurnID: "turn-1", Revision: 2, Status: "removed"},
+	}
+	items, state, _ := projectHistory(events)
+	if len(items) != 0 || state.PendingTurn != nil {
+		t.Fatalf("removed pending history = items %#v state %#v", items, state)
+	}
+}
+
 func assertHistoryEventIDs(t *testing.T, events []Event, want ...int64) {
 	t.Helper()
 	if len(events) != len(want) {

@@ -290,7 +290,7 @@ func (j *Journal) updateUnstartedTurns(event Event) {
 	switch event.Type {
 	case EventUserMessage, EventUserMessageUpdated:
 		j.unstartedTurns[event.TurnID] = event
-	case EventTurnStarted, EventTurnCompleted:
+	case EventUserMessageRemoved, EventTurnStarted, EventTurnCompleted:
 		delete(j.unstartedTurns, event.TurnID)
 	}
 }

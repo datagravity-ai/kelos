@@ -422,7 +422,11 @@ func (s *Server) runTurns(ctx context.Context) {
 				s.turns <- turn
 				return
 			}
-			s.runTurn(ctx, s.takePendingTurn(turn))
+			pending, exists := s.takePendingTurn(turn)
+			if !exists {
+				continue
+			}
+			s.runTurn(ctx, pending)
 			// Keep the pending turn out of reach of an interrupt call that is
 			// still settling after this turn returned.
 			s.interruptMu.Lock()
@@ -880,15 +884,65 @@ func (s *Server) editMessage(turnID, text string, expectedRevision int64, reques
 	return nil
 }
 
-func (s *Server) takePendingTurn(turn turnRequest) turnRequest {
+func (s *Server) removePendingMessage(turnID string, expectedRevision int64, requestID string) error {
+	s.submitMu.Lock()
+	if s.pendingTurn == nil || s.pendingTurn.id != turnID {
+		s.submitMu.Unlock()
+		return fmt.Errorf("Session turn %q is no longer pending", turnID)
+	}
+	turn := *s.pendingTurn
+	if expectedRevision <= 0 {
+		s.submitMu.Unlock()
+		return fmt.Errorf("removing Session turn %q: expectedRevision must be positive", turnID)
+	}
+	if turn.revision == 0 {
+		turn.revision = 1
+	}
+	if expectedRevision != turn.revision {
+		s.submitMu.Unlock()
+		return fmt.Errorf("removing Session turn %q: revision is %d, not %d", turnID, turn.revision, expectedRevision)
+	}
+	if err := s.appendMessage(Event{
+		Type:      EventUserMessageRemoved,
+		RequestID: requestID,
+		TurnID:    turn.id,
+		Revision:  turn.revision + 1,
+		Status:    "removed",
+	}); err != nil {
+		s.submitMu.Unlock()
+		return fmt.Errorf("recording removed Session turn %q: %w", turnID, err)
+	}
+	s.pendingTurn = nil
+	select {
+	case buffered := <-s.turns:
+		if buffered.id != turn.id {
+			s.turns <- buffered
+		}
+	default:
+	}
+	if s.outstanding > 0 {
+		s.outstanding--
+	}
+	shouldReport := (s.updateRequest != nil || s.idleDrainRequest != nil) && s.outstanding == 0
+	s.submitMu.Unlock()
+
+	s.markTurnCompleted(turn.id)
+	s.requestSessionStatusPublish()
+	if shouldReport {
+		s.signalSessionUpdateReport()
+	}
+	return nil
+}
+
+func (s *Server) takePendingTurn(turn turnRequest) (turnRequest, bool) {
 	s.submitMu.Lock()
 	defer s.submitMu.Unlock()
 	if s.pendingTurn == nil || s.pendingTurn.id != turn.id {
-		return turn
+		return turnRequest{}, false
 	}
 	pending := *s.pendingTurn
 	s.pendingTurn = nil
-	return pending
+	return pending, true
 }
 
 func (s *Server) resolveAttachmentIDs(ids []string) ([]ResolvedAttachment, error) {
@@ -969,7 +1023,7 @@ func recoverJournal(journal *Journal) (journalRecovery, error) {
 					turn.revision = 1
 				}
 			}
-		case EventTurnCompleted:
+		case EventUserMessageRemoved, EventTurnCompleted:
 			if turn != nil {
 				turn.completed = true
 			}
@@ -1357,6 +1411,11 @@ func (s *Server) handleConnection(ctx context.Context, connection net.Conn) {
 		case "message.edit":
 			subscribe(0, "", false, 0, 0)
 			if err := s.editMessage(request.TurnID, request.Text, request.ExpectedRevision, request.RequestID); err != nil {
+				out <- Event{Type: EventError, RequestID: request.RequestID, TurnID: request.TurnID, Text: err.Error(), Status: "rejected"}
+			}
+		case "message.remove":
+			subscribe(0, "", false, 0, 0)
+			if err := s.removePendingMessage(request.TurnID, request.ExpectedRevision, request.RequestID); err != nil {
 				out <- Event{Type: EventError, RequestID: request.RequestID, TurnID: request.TurnID, Text: err.Error(), Status: "rejected"}
 			}
 		case "input":

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os/exec"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -608,6 +609,40 @@ func TestSessionComposerUsesOneSendAndInterruptAction(t *testing.T) {
 	}
 	if strings.Contains(body, `id="stop-session"`) {
 		t.Error("Session header contains a separate interrupt action")
+	}
+}
+
+func TestSessionPendingMessagePreservesLineBreaks(t *testing.T) {
+	styles, err := webFiles.ReadFile("web/styles.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules := regexp.MustCompile(`(?s)\.pending-message-text\s*\{([^}]*)\}`).FindAllStringSubmatch(string(styles), -1)
+	if len(rules) == 0 {
+		t.Fatal("Session pending message style is missing")
+	}
+	hasDeclaration := func(property, value string) bool {
+		pattern := regexp.MustCompile(`(?:^|;)\s*` + regexp.QuoteMeta(property) + `\s*:\s*` + regexp.QuoteMeta(value) + `\s*(?:;|$)`)
+		for _, rule := range rules {
+			if pattern.MatchString(rule[1]) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, declaration := range []struct {
+		property string
+		value    string
+		want     bool
+	}{
+		{property: "overflow-wrap", value: "anywhere", want: true},
+		{property: "white-space", value: "pre-wrap", want: true},
+		{property: "text-overflow", value: "ellipsis", want: false},
+		{property: "white-space", value: "nowrap", want: false},
+	} {
+		if got := hasDeclaration(declaration.property, declaration.value); got != declaration.want {
+			t.Errorf("Session pending message style contains %s: %s = %t, want %t", declaration.property, declaration.value, got, declaration.want)
+		}
 	}
 }
 

@@ -420,3 +420,17 @@ func TestRecoverJournalKeepsCompletedTurnCompleted(t *testing.T) {
 		t.Fatalf("events = %#v", events)
 	}
 }
+
+func TestRecoverJournalDoesNotRestoreRemovedPendingTurn(t *testing.T) {
+	journal := NewJournal()
+	defer journal.Close()
+	journal.Append(Event{Type: EventUserMessage, TurnID: "turn-2", Text: "remove this", Revision: 1})
+	journal.Append(Event{Type: EventUserMessageRemoved, TurnID: "turn-2", Revision: 2, Status: "removed"})
+	recovery, err := recoverJournal(journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovery.pendingTurn != nil || recovery.completedTurnID != 2 {
+		t.Fatalf("recovery = %#v, want removed turn completed", recovery)
+	}
+}
