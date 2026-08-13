@@ -1252,11 +1252,11 @@ func TestSessionUISections(t *testing.T) {
 		t.Fatal(err)
 	}
 	for description, expected := range map[string]string{
-		"selected Session section control": `id="session-section" type="button"`,
-		"new Session section chooser":      `name="section" id="session-section-select"`,
-		"new section creation field":       `name="sectionCustom" id="session-section-custom" maxlength="64"`,
-		"section assignment dialog":        `id="section-dialog"`,
-		"assignment section chooser":       `name="sectionChoice" id="section-choice"`,
+		"selected Session section control":       `id="session-section-form"`,
+		"selected Session section chooser":       `id="session-section-choice" aria-label="Section"`,
+		"selected Session new section field":     `id="session-section-choice-custom" maxlength="64"`,
+		"new Session section chooser":            `name="section" id="session-section-select"`,
+		"new Session new section creation field": `name="sectionCustom" id="session-section-custom" maxlength="64"`,
 	} {
 		if !strings.Contains(string(index), expected) {
 			t.Errorf("Session page is missing %s: %s", description, expected)
@@ -1287,9 +1287,7 @@ func TestSessionUISections(t *testing.T) {
 	}
 	for description, expected := range map[string]string{
 		"section headings":       `.session-section-heading {`,
-		"section control":        `.session-section-button {`,
-		"section dialog":         `.section-dialog {`,
-		"section field":          `.section-field {`,
+		"inline section control": `.session-section-control {`,
 		"Session drop target":    `.session-section-group.session-drop-target {`,
 		"section order controls": `.session-section-order-button { width: 28px; height: 28px;`,
 	} {

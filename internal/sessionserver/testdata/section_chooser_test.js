@@ -124,10 +124,8 @@ class TestNode {
   }
 }
 
-let closeButtons;
 global.document = {
   createElement: tag => new TestNode(tag),
-  querySelectorAll: selector => selector === '.close-section-dialog' ? closeButtons : [],
 };
 const storage = new Map();
 global.window = {
@@ -153,25 +151,15 @@ vm.runInThisContext(applicationSlice('function renderSessions', 'function sectio
 global.sectionOrderStoragePrefix = 'kelos-session-section-order:';
 vm.runInThisContext(applicationSlice('function sectionLabel', 'function sessionSectionNames'), {filename: 'app.js'});
 vm.runInThisContext(applicationSlice('function sessionSectionNames', 'async function loadSessions'), {filename: 'app.js'});
-vm.runInThisContext(applicationSlice('function openSectionDialog', 'function setSectionSaving'), {filename: 'app.js'});
-vm.runInThisContext(applicationSlice('function setSectionSaving', "elements.sectionButton.addEventListener"), {filename: 'app.js'});
+vm.runInThisContext(applicationSlice('function updateSelectedSectionField', "elements.sectionChoice.addEventListener"), {filename: 'app.js'});
 
 function resetHarness() {
   focusedNode = null;
-  closeButtons = [new TestNode('button'), new TestNode('button')];
-  const sectionDialog = new TestNode('dialog');
-  sectionDialog.closeCount = 0;
-  sectionDialog.showModalCount = 0;
-  sectionDialog.close = () => { sectionDialog.closeCount++; };
-  sectionDialog.showModal = () => { sectionDialog.showModalCount++; };
   global.elements = {
     sectionSelect: new TestNode('select'),
     sectionCustom: new TestNode('input'),
     sectionChoice: new TestNode('select'),
     sectionChoiceCustom: new TestNode('input'),
-    sectionDialog,
-    sectionDialogDescription: new TestNode('p'),
-    sectionDialogError: new TestNode('div'),
     sectionForm: new TestNode('form'),
     saveSectionButton: new TestNode('button'),
   };
@@ -186,6 +174,7 @@ function resetHarness() {
     namespace: 'default',
     namespaceGeneration: 0,
   };
+  global.sessionKey = session => `${session.namespace}/${session.name}`;
   storage.clear();
 }
 
@@ -283,6 +272,42 @@ function testNamespaceResetClearsSectionInput() {
   assert.equal(elements.sectionCustom.value, '');
 }
 
+function testSelectedSessionUsesInlineChooser() {
+  resetHarness();
+  const planning = {namespace: 'default', name: 'demo', section: 'Planning'};
+  const reviews = {namespace: 'default', name: 'other', section: 'Reviews'};
+  state.sessions = [planning, reviews];
+  state.selected = planning;
+
+  renderSelectedSessionSection(planning);
+
+  assert.equal(elements.sectionForm.hidden, false);
+  assert.equal(elements.sectionChoice.value, 'Planning');
+  assert.equal(elements.sectionChoice.disabled, false);
+  assert.equal(elements.sectionChoiceCustom.hidden, true);
+  assert.equal(elements.saveSectionButton.hidden, true);
+
+  option(group(elements.sectionChoice, 'Actions'), '＋ Create new section…').selected = true;
+  updateSelectedSectionField();
+  elements.sectionChoiceCustom.value = 'Backlog';
+  renderSelectedSessionSection(planning);
+
+  assert.equal(elements.sectionChoiceCustom.hidden, false);
+  assert.equal(elements.sectionChoiceCustom.required, true);
+  assert.equal(elements.sectionChoiceCustom.value, 'Backlog');
+  assert.equal(elements.saveSectionButton.hidden, false);
+
+  state.selected = reviews;
+  renderSelectedSessionSection(reviews);
+  assert.equal(elements.sectionChoice.value, 'Reviews');
+  assert.equal(elements.sectionChoiceCustom.hidden, true);
+
+  state.selected = null;
+  renderSelectedSessionSection(null);
+  assert.equal(elements.sectionForm.hidden, true);
+  assert.equal(elements.sectionChoice.disabled, true);
+}
+
 function testSectionOrderingIncludesUnsectioned() {
   resetHarness();
   state.sessions = [
@@ -366,45 +391,37 @@ async function testDragAssignmentMovesSession() {
   assert.deepEqual(toasts, ['Moved Session to Reviews']);
 }
 
-async function testPendingSaveCannotDismissOrReopenChooser() {
+async function testPendingInlineSaveDisablesChooser() {
   resetHarness();
   state.sessions = [
     {namespace: 'default', name: 'demo', section: 'Planning'},
     {namespace: 'default', name: 'other', section: 'Reviews'},
   ];
   state.selected = state.sessions[0];
-  populateSectionSelect(elements.sectionChoice, 'Reviews', 'Unsectioned (remove assignment)');
+  renderSelectedSessionSection(state.selected);
+  elements.sectionChoice.value = 'Reviews';
 
   let resolveRequest;
   let request;
+  let requestCount = 0;
   global.api = (path, options) => {
+    requestCount++;
     request = {path, options};
     return new Promise(resolve => { resolveRequest = resolve; });
   };
-  global.sessionKey = session => `${session.namespace}/${session.name}`;
   global.renderSessions = () => {};
-  global.renderHeader = () => {};
+  global.renderHeader = () => renderSelectedSessionSection(state.selected);
   global.showToast = () => {};
 
-  vm.runInThisContext(
-    applicationSlice("elements.sectionForm.addEventListener('submit'", "elements.deleteButton.addEventListener"),
-    {filename: 'app.js'},
-  );
-
-  const submission = elements.sectionForm.dispatch('submit', {preventDefault() {}});
+  const submission = saveSelectedSessionSection('Reviews');
   assert.equal(state.sectionSaving, true);
   assert.equal(elements.sectionChoice.disabled, true);
+  assert.equal(elements.sectionChoiceCustom.disabled, true);
   assert.equal(elements.saveSectionButton.disabled, true);
-  assert.ok(closeButtons.every(button => button.disabled));
-  assert.equal(elements.sectionDialog.attributes.get('aria-busy'), 'true');
+  assert.equal(elements.sectionForm.attributes.get('aria-busy'), 'true');
 
-  closeSectionDialog();
-  assert.equal(elements.sectionDialog.closeCount, 0);
-  openSectionDialog();
-  assert.equal(elements.sectionDialog.showModalCount, 0);
-  let cancelPrevented = false;
-  handleSectionDialogCancel({preventDefault() { cancelPrevented = true; }});
-  assert.equal(cancelPrevented, true);
+  await saveSelectedSessionSection('Reviews');
+  assert.equal(requestCount, 1);
 
   assert.equal(request.path, '/api/sessions/default/demo/section');
   assert.deepEqual(JSON.parse(request.options.body), {section: 'Reviews'});
@@ -412,18 +429,59 @@ async function testPendingSaveCannotDismissOrReopenChooser() {
   await submission;
 
   assert.equal(state.sectionSaving, false);
-  assert.equal(elements.sectionDialog.closeCount, 1);
-  assert.ok(closeButtons.every(button => !button.disabled));
-  assert.equal(elements.sectionDialog.attributes.get('aria-busy'), 'false');
+  assert.equal(elements.sectionChoice.disabled, false);
+  assert.equal(elements.sectionChoice.value, 'Reviews');
+  assert.equal(elements.sectionForm.attributes.get('aria-busy'), 'false');
+}
+
+async function testInlineNewSectionSubmission() {
+  resetHarness();
+  const session = {namespace: 'default', name: 'demo', section: 'Planning'};
+  state.sessions = [session];
+  state.selected = session;
+  let request;
+  global.api = async (path, options) => {
+    request = {path, options};
+    return {...session, section: JSON.parse(options.body).section};
+  };
+  global.renderSessions = () => {};
+  global.renderHeader = () => renderSelectedSessionSection(state.selected);
+  global.showToast = () => {};
+
+  vm.runInThisContext(
+    applicationSlice("elements.sectionChoice.addEventListener", "elements.deleteButton.addEventListener"),
+    {filename: 'app.js'},
+  );
+  renderSelectedSessionSection(session);
+  option(group(elements.sectionChoice, 'Actions'), '＋ Create new section…').selected = true;
+  await elements.sectionChoice.dispatch('change');
+
+  assert.equal(elements.sectionChoiceCustom.hidden, false);
+  assert.equal(elements.saveSectionButton.hidden, false);
+  assert.equal(focusedNode, elements.sectionChoiceCustom);
+
+  elements.sectionChoiceCustom.value = '  Backlog  ';
+  await elements.sectionChoiceCustom.dispatch('input');
+  await elements.sectionForm.dispatch('submit', {preventDefault() {}});
+
+  assert.equal(request.path, '/api/sessions/default/demo/section');
+  assert.deepEqual(JSON.parse(request.options.body), {section: 'Backlog'});
+  assert.equal(state.selected.section, 'Backlog');
+  assert.equal(elements.sectionChoice.value, 'Backlog');
+  assert.equal(elements.sectionChoiceCustom.hidden, true);
 }
 
 testSectionOptionsDistinguishActionsFromValidNames();
 testSectionPayloadsAndValidation();
 testRefreshPreservesCustomInput();
 testNamespaceResetClearsSectionInput();
+testSelectedSessionUsesInlineChooser();
 testSectionOrderingIncludesUnsectioned();
 testUnsectionedCanMoveLikeNamedSections();
 testSectionOrderFocusFollowsMovedSection();
-testDragAssignmentMovesSession().then(testPendingSaveCannotDismissOrReopenChooser).then(() => {
-  process.stdout.write('Section chooser tests passed\n');
-});
+testDragAssignmentMovesSession()
+  .then(testPendingInlineSaveDisablesChooser)
+  .then(testInlineNewSectionSubmission)
+  .then(() => {
+    process.stdout.write('Section chooser tests passed\n');
+  });

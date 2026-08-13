@@ -320,17 +320,15 @@ same annotation directly. Values are trimmed and limited to 64 characters when
 set through the web chat.
 
 Sessions can be categorized into sections from the creation form or from the
-section control beneath the selected Session's name. Both controls list the
-existing sections in the active namespace and include a **Create new section**
-choice, so a section name is entered only when the section is first created.
-Choosing **Unsectioned (remove assignment)** from the selected Session's control
-removes its section assignment. Named sections are sorted alphabetically in the
-sidebar until they are reordered. Drag a Session onto a section heading to move
-it, or drag a heading to reorder sections. The arrow controls beside a heading
-provide the same ordering action without drag and drop. **Unsectioned** can be
-reordered like any named section and accepts dropped Sessions. Section order is
-stored in the browser separately for each namespace, while Sessions retain their
-activity order within a section. Assignments are stored in the
+selector beneath the selected Session's name. The selector applies an existing
+section or **Unsectioned** immediately. Choosing **Create new section** reveals
+an inline name field. Named sections are sorted alphabetically in the sidebar
+until they are reordered. Drag a Session onto a section heading to move it, or
+drag a heading to reorder sections. The arrow controls beside a heading provide
+the same ordering action without drag and drop. **Unsectioned** can be reordered
+like any named section and accepts dropped Sessions. Section order is stored in
+the browser separately for each namespace, while Sessions retain their activity
+order within a section. Assignments are stored in the
 `kelos.dev/session-section` annotation, so Session manifests can set the same
 annotation directly. New section names are trimmed and limited to 64 characters.
 
