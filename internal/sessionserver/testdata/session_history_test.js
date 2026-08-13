@@ -367,7 +367,7 @@ function testComposerInterruptsWhileInputIsDisabled() {
   assert.equal(elements.input.value, 'preserved draft');
   window.matchMedia = () => ({matches: true});
   updateComposerAction();
-  assert.equal(elements.composerHint.textContent, 'Tap ■ to interrupt · Return for a new line');
+  assert.equal(elements.composerHint.textContent, 'Tap ■ to interrupt · Return for a new line · !COMMAND · /goal');
   window.matchMedia = () => ({matches: false});
 
   submitComposer();
@@ -383,12 +383,17 @@ function testComposerInterruptsWhileInputIsDisabled() {
 function testComposerLabelsPendingSubmission() {
   resetHarness();
   state.socket = {readyState: WebSocket.OPEN};
+  state.activeTurn = true;
   state.pendingMessage = {event: {turnId: 'turn-2'}};
   elements.input.value = 'another detail';
 
   updateComposerAction();
 
-  assert.equal(elements.composerHint.textContent, 'Enter to add to pending · Shift+Enter for a new line');
+  assert.equal(elements.composerHint.textContent, 'Enter to add to pending · Shift+Enter for a new line · !COMMAND · /goal');
+
+  elements.input.value = '/goal pause';
+  updateComposerAction();
+  assert.equal(elements.composerHint.textContent, 'Enter to run goal command · Shift+Enter for a new line · !COMMAND · /goal');
 }
 
 async function testComposerIgnoresReentrantSubmission() {
@@ -758,6 +763,32 @@ function testToolOutputRendering() {
   );
 }
 
+function testToolOutputStreamsBeforeCompletion() {
+  resetHarness();
+  renderTool({type: 'tool.started', toolId: 'tool-1', toolName: 'make test', status: 'running'});
+  appendToolDelta({type: 'tool.delta', toolId: 'tool-1', output: 'first\n'});
+  appendToolDelta({type: 'tool.delta', toolId: 'tool-1', output: 'second\n'});
+
+  const card = state.tools.get('tool-1');
+  assert.equal(card.querySelector('.tool-output-preview').textContent, 'first\nsecond');
+
+  completeTool({type: 'tool.completed', toolId: 'tool-1', status: 'completed', output: 'first\nsecond\n'});
+  assert.equal(card.querySelector('.tool-output-preview').textContent, 'first\nsecond');
+}
+
+function testGoalRendering() {
+  resetHarness();
+  renderGoal({
+    type: 'goal.updated',
+    goal: {objective: 'Improve coverage', status: 'active', tokenBudget: 1000, tokensUsed: 125},
+  });
+  assert.equal(elements.messages.querySelector('.goal-card').textContent, 'Goal active · 125/1000 tokensImprove coverage');
+
+  renderGoal({type: 'goal.updated', status: 'cleared'});
+  const cards = elements.messages.querySelectorAll('.goal-card');
+  assert.equal(cards[1].textContent, 'Goal cleared.');
+}
+
 function testToolOutputRenderingNormalizesCarriageReturns() {
   resetHarness();
   state.replayingHistory = true;
@@ -887,6 +918,8 @@ testReselectRefreshesStatusPlaceholder();
 testSessionTimestampFormatting();
 testSessionTimestampElement();
 testToolOutputRendering();
+testToolOutputStreamsBeforeCompletion();
+testGoalRendering();
 testToolOutputRenderingNormalizesCarriageReturns();
 testHistoryToolCompletionRendersOutputWithoutStart();
 testUserAttachmentRendering();

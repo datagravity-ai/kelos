@@ -1619,7 +1619,11 @@ function composerInterruptAction() {
 function updateComposerAction() {
   const connected = state.socket && state.socket.readyState === WebSocket.OPEN;
   const interrupt = composerInterruptAction();
-  const action = interrupt ? 'interrupt' : ((state.activeTurn || state.pendingMessage) ? 'add to pending' : 'send');
+  const goalControl = state.activeTurn && /^\/goal(?:\s|$)/.test(elements.input.value.trim());
+  let action = 'send';
+  if (interrupt) action = 'interrupt';
+  else if (goalControl) action = 'run goal command';
+  else if (state.activeTurn || state.pendingMessage) action = 'add to pending';
   const actionSymbol = interrupt ? '■' : '↑';
   elements.send.dataset.action = interrupt ? 'interrupt' : 'send';
   elements.send.textContent = actionSymbol;
@@ -1627,10 +1631,10 @@ function updateComposerAction() {
   elements.send.title = interrupt ? 'Interrupt active work' : 'Send message';
   elements.send.disabled = !connected || state.sendingMessage || (interrupt ? state.interrupting : elements.input.disabled);
   elements.composerHint.textContent = usesTouchComposer()
-    ? `Tap ${actionSymbol} to ${action} · Return for a new line`
+    ? `Tap ${actionSymbol} to ${action} · Return for a new line · !COMMAND · /goal`
     : (interrupt && elements.input.disabled
       ? `Click ${actionSymbol} to interrupt`
-      : `Enter to ${action} · Shift+Enter for a new line`);
+      : `Enter to ${action} · Shift+Enter for a new line · !COMMAND · /goal`);
 }
 
 function closeSocket() {
@@ -2625,9 +2629,16 @@ function handleEvent(event) {
       endAssistantSegment(event.turnId);
       renderTool(event);
       break;
+    case 'tool.delta':
+      appendToolDelta(event);
+      break;
     case 'tool.completed':
       endAssistantSegment(event.turnId);
       completeTool(event);
+      break;
+    case 'goal.updated':
+      endAssistantSegment(event.turnId);
+      renderGoal(event);
       break;
     case 'input.requested':
       endAssistantSegment(event.turnId);
@@ -2908,6 +2919,18 @@ function renderTool(event) {
   scrollToBottom();
 }
 
+function appendToolDelta(event) {
+  let card = state.tools.get(event.toolId);
+  if (!card) {
+    renderTool({...event, status: 'running'});
+    card = state.tools.get(event.toolId);
+  }
+  if (!card) return;
+  card.toolOutput = (card.toolOutput || '') + (event.output || '');
+  renderToolOutput(card, card.toolOutput);
+  scrollToBottom();
+}
+
 function toolOutputPreview(output, maxLines = 5) {
   const text = String(output || '').replace(/\r\n?/g, '\n').replace(/\n+$/, '');
   if (!text) return {text: '', fullText: '', totalLines: 0, omittedLines: 0};
@@ -2963,7 +2986,30 @@ function completeTool(event) {
   card.dataset.status = event.status || 'completed';
   card.querySelector('.tool-status').textContent = event.status || 'completed';
   card.querySelector('.tool-icon').textContent = event.status === 'failed' ? '!' : '✓';
-  renderToolOutput(card, event.output);
+  card.toolOutput = event.output || card.toolOutput || '';
+  renderToolOutput(card, card.toolOutput);
+  scrollToBottom();
+}
+
+function renderGoal(event) {
+  ensureConversation();
+  const card = document.createElement('div');
+  card.className = 'goal-card';
+  if (!event.goal) {
+    card.textContent = event.status === 'cleared' ? 'Goal cleared.' : 'No goal is currently set.';
+  } else {
+    const goal = event.goal;
+    let usage = '';
+    if (goal.tokenBudget != null) usage = ` · ${goal.tokensUsed || 0}/${goal.tokenBudget} tokens`;
+    else if (goal.tokensUsed) usage = ` · ${goal.tokensUsed} tokens`;
+    const status = document.createElement('strong');
+    status.textContent = `Goal ${goal.status}${usage}`;
+    const objective = document.createElement('div');
+    objective.textContent = goal.objective || '';
+    card.append(status, objective);
+  }
+  elements.messages.append(card);
+  scrollToBottom();
 }
 
 function bindOtherAnswer(controls, other, multiSelect) {

@@ -46,6 +46,11 @@ type sessionPlainAssistantState struct {
 	lineOpen  bool
 }
 
+type sessionPlainToolState struct {
+	streamed bool
+	lineOpen bool
+}
+
 func (f sessionTerminalFormatter) style(style, text string) string {
 	if !f.color || style == "" || text == "" {
 		return text
@@ -221,6 +226,7 @@ func runSessionPlainTerminalWithWidth(ctx context.Context, input io.Reader, outp
 		historyPageReading := false
 		recoveryActive := false
 		activeTurnID := ""
+		streamedTools := make(map[string]sessionPlainToolState)
 		var activeTurnStarted time.Time
 		for {
 			var event sessionruntime.Event
@@ -309,7 +315,7 @@ func runSessionPlainTerminalWithWidth(ctx context.Context, input io.Reader, outp
 				if hasEarlierHistory {
 					write("\n%s\n", formatter.muted("Earlier Session history is available. Use /history to load the previous page."))
 				}
-				write("\n%s\n\n", formatter.muted("Connected. Type a message, /attach PATH, /history, /interrupt, /answer INPUT QUESTION VALUE, or /quit."))
+				write("\n%s\n\n", formatter.muted("Connected. Type a message, !COMMAND, /goal, /attach PATH, /history, /interrupt, /answer INPUT QUESTION VALUE, or /quit."))
 			case sessionruntime.EventRuntimeRecovered:
 				if !pageEvent {
 					recoveryActive = true
@@ -354,9 +360,26 @@ func runSessionPlainTerminalWithWidth(ctx context.Context, input io.Reader, outp
 				}
 			case sessionruntime.EventToolStarted:
 				finishAssistant(assistant)
-				write("%s\n", formatter.tool(event.ToolName))
+				write("%s\n", formatter.tool(sanitizeSessionTUIToolOutput(event.ToolName)))
+			case sessionruntime.EventToolDelta:
+				output := sanitizeSessionTUIToolOutput(event.Output)
+				if output != "" {
+					streamedTools[event.ToolID] = sessionPlainToolState{streamed: true, lineOpen: !strings.HasSuffix(output, "\n")}
+				}
+				write("%s", output)
 			case sessionruntime.EventToolCompleted:
+				if state := streamedTools[event.ToolID]; state.streamed {
+					if state.lineOpen {
+						write("\n")
+					}
+					delete(streamedTools, event.ToolID)
+				} else if event.Output != "" {
+					write("%s\n", sanitizeSessionTUIToolOutput(event.Output))
+				}
 				write("%s\n", formatter.toolStatus(event.Status))
+			case sessionruntime.EventGoalUpdated:
+				finishAssistant(assistant)
+				write("%s\n", formatter.muted(sessionGoalText(event.Goal, event.Status)))
 			case sessionruntime.EventInputRequested:
 				finishAssistant(assistant)
 				write("\n%s\n", formatter.inputHeading(fmt.Sprintf("Input %s requested:", event.InputID)))
@@ -574,6 +597,22 @@ func sessionTerminalRequest(line string) sessionruntime.ClientRequest {
 		return sessionruntime.ClientRequest{}
 	}
 	return sessionruntime.ClientRequest{Type: "message", Text: line}
+}
+
+func sessionGoalText(goal *sessionruntime.Goal, status string) string {
+	if goal == nil {
+		if status == "cleared" {
+			return "Goal cleared."
+		}
+		return "No goal is currently set."
+	}
+	usage := ""
+	if goal.TokenBudget != nil {
+		usage = fmt.Sprintf(" (%d/%d tokens)", goal.TokensUsed, *goal.TokenBudget)
+	} else if goal.TokensUsed > 0 {
+		usage = fmt.Sprintf(" (%d tokens)", goal.TokensUsed)
+	}
+	return fmt.Sprintf("Goal %s%s: %s", goal.Status, usage, goal.Objective)
 }
 
 func sessionTerminalMessageText(text string, attachments []sessionruntime.Attachment) string {

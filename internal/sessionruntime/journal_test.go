@@ -194,6 +194,38 @@ func TestJournalRecoveryCombinesPendingTurns(t *testing.T) {
 	}
 }
 
+func TestJournalRecoveryPreservesSessionCommandIdentity(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		text        string
+		command     bool
+		wantKind    sessionCommandKind
+		wantCommand string
+	}{
+		{name: "shell command", text: "!pwd", command: true, wantKind: sessionCommandShell, wantCommand: "pwd"},
+		{name: "ordinary command-like prompt", text: "!", wantKind: sessionCommandMessage, wantCommand: "!"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			journal := NewJournal()
+			t.Cleanup(journal.Close)
+			if err := journal.Append(Event{Type: EventUserMessage, TurnID: "turn-1", Text: test.text, Revision: 1, SessionCommand: test.command}); err != nil {
+				t.Fatal(err)
+			}
+
+			recovery, err := recoverJournal(journal)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if recovery.pendingTurn == nil {
+				t.Fatal("pending turn was not recovered")
+			}
+			if recovery.pendingTurn.command.kind != test.wantKind || recovery.pendingTurn.command.text != test.wantCommand {
+				t.Fatalf("recovered command = %#v", recovery.pendingTurn.command)
+			}
+		})
+	}
+}
+
 func TestJournalIdentityPersistsUntilJournalIsReplaced(t *testing.T) {
 	path := filepath.Join(t.TempDir(), journalFileName)
 	journal, err := OpenJournal(path)

@@ -116,6 +116,38 @@ func TestSessionTerminalSeparatesStreamedTextBlocks(t *testing.T) {
 	}
 }
 
+func TestSessionPlainTerminalDoesNotRepeatStreamedToolOutput(t *testing.T) {
+	var events bytes.Buffer
+	encoder := json.NewEncoder(&events)
+	for _, event := range []sessionruntime.Event{
+		{Type: sessionruntime.EventHistoryEnd},
+		{Type: sessionruntime.EventToolStarted, ToolID: "tool-1", ToolName: "make test"},
+		{Type: sessionruntime.EventToolDelta, ToolID: "tool-1", Output: "first\n"},
+		{Type: sessionruntime.EventToolDelta, ToolID: "tool-1", Output: "second\n"},
+		{Type: sessionruntime.EventToolCompleted, ToolID: "tool-1", Output: "first\nsecond\n", Status: "completed"},
+	} {
+		if err := encoder.Encode(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	input, inputWriter := io.Pipe()
+	defer input.Close()
+	defer inputWriter.Close()
+	var output bytes.Buffer
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	if err := runSessionTerminal(ctx, input, &output, &events, io.Discard, false); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, line := range []string{"first", "second"} {
+		if count := strings.Count(output.String(), line); count != 1 {
+			t.Fatalf("terminal output contains %q %d times, want 1: %q", line, count, output.String())
+		}
+	}
+}
+
 func TestSessionPlainTerminalIsolatesHistoryPagesFromLiveStream(t *testing.T) {
 	var events bytes.Buffer
 	encoder := json.NewEncoder(&events)

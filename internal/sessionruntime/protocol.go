@@ -19,7 +19,9 @@ const (
 	EventAssistantDelta     = "assistant.delta"
 	EventAssistantMessage   = "assistant.message"
 	EventToolStarted        = "tool.started"
+	EventToolDelta          = "tool.delta"
 	EventToolCompleted      = "tool.completed"
+	EventGoalUpdated        = "goal.updated"
 	EventInputRequested     = "input.requested"
 	EventInputResolved      = "input.resolved"
 	EventFileDiff           = "file.diff"
@@ -40,6 +42,7 @@ type Event struct {
 	TurnID         string          `json:"turnId,omitempty"`
 	Text           string          `json:"text,omitempty"`
 	Revision       int64           `json:"revision,omitempty"`
+	SessionCommand bool            `json:"sessionCommand,omitempty"`
 	ToolID         string          `json:"toolId,omitempty"`
 	ToolName       string          `json:"toolName,omitempty"`
 	Output         string          `json:"output,omitempty"`
@@ -56,7 +59,17 @@ type Event struct {
 	HistoryCursor  string          `json:"historyCursor,omitempty"`
 	HistoryState   *HistoryState   `json:"historyState,omitempty"`
 	Runtime        *RuntimeStatus  `json:"runtime,omitempty"`
+	Goal           *Goal           `json:"goal,omitempty"`
 	Attachments    []Attachment    `json:"attachments,omitempty"`
+}
+
+// Goal describes the persisted objective owned by a Codex Session.
+type Goal struct {
+	Objective       string `json:"objective"`
+	Status          string `json:"status"`
+	TokenBudget     *int64 `json:"tokenBudget,omitempty"`
+	TokensUsed      int64  `json:"tokensUsed,omitempty"`
+	TimeUsedSeconds int64  `json:"timeUsedSeconds,omitempty"`
 }
 
 // HistoryState describes conversation state that is independent of transcript paging.

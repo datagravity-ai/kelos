@@ -34,6 +34,12 @@ type Provider interface {
 	Close() error
 }
 
+type goalProvider interface {
+	RunGoal(context.Context, goalCommand, EventSink) error
+	ControlGoal(context.Context, goalCommand, EventSink) error
+	ActiveGoal() *Goal
+}
+
 // NewProvider creates the configured conversation adapter.
 func NewProvider(ctx context.Context, config ProviderConfig) (Provider, error) {
 	switch config.AgentType {

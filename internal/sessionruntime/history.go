@@ -231,6 +231,8 @@ func projectHistory(source []Event) ([]historyItem, HistoryState, []Event) {
 				continue
 			}
 			tools[historyToolKey(event)] = historyPendingEvent{event: event, firstEventID: event.ID}
+		case EventToolDelta:
+			// The completed tool event carries the bounded retained output.
 		case EventToolCompleted:
 			completion := normalizedHistoryEvent(event)
 			completion.Output = boundedHistoryText(completion.Output, maxHistoryToolOutputBytes)
@@ -264,6 +266,12 @@ func projectHistory(source []Event) ([]historyItem, HistoryState, []Event) {
 			delete(inputs, event.InputID)
 		case EventFileDiff:
 			event.Diff = boundedHistoryText(event.Diff, maxHistoryDiffBytes)
+			addItem(event.ID, event.ID, normalizedHistoryEvent(event))
+		case EventGoalUpdated:
+			if event.Goal != nil {
+				event.Goal = cloneGoal(event.Goal)
+				event.Goal.Objective = boundedHistoryText(event.Goal.Objective, maxHistoryMessageBytes)
+			}
 			addItem(event.ID, event.ID, normalizedHistoryEvent(event))
 		case EventRuntimeRecovered, EventError, EventTurnInterrupting:
 			event.Text = boundedHistoryText(event.Text, maxHistoryNoticeBytes)
@@ -424,6 +432,10 @@ func normalizedHistoryEvent(event Event) Event {
 	event.HistoryCursor = ""
 	event.HistoryState = nil
 	event.Runtime = nil
+	event.SessionCommand = false
+	if event.Goal != nil {
+		event.Goal = cloneGoal(event.Goal)
+	}
 	event.ToolID = boundedHistoryText(event.ToolID, maxHistoryIdentifierBytes)
 	event.ToolName = boundedHistoryText(event.ToolName, maxHistoryIdentifierBytes)
 	event.InputID = boundedHistoryText(event.InputID, maxHistoryIdentifierBytes)

@@ -137,6 +137,7 @@ type sessionTUIModel struct {
 	pendingEditTurnID  string
 	pendingEditRev     int64
 	toolNames          map[string]string
+	toolOutputAt       map[string]int
 	width              int
 	height             int
 	ready              bool
@@ -246,6 +247,7 @@ func newSessionTUIModel(events *json.Decoder, requests *json.Encoder, output io.
 		input:              input,
 		styles:             styles,
 		toolNames:          make(map[string]string),
+		toolOutputAt:       make(map[string]int),
 		width:              sessionTUIDefaultWidth,
 		height:             sessionTUIDefaultHeight,
 		connectionStatus:   sessionTerminalStatusConnecting,
@@ -654,7 +656,7 @@ func (m *sessionTUIModel) applyEvent(event sessionruntime.Event) sessionTUIComma
 		// A terminal-height transcript in both the managed view and native scrollback
 		// makes Bubble Tea move the smaller footer to the top when the copy is removed.
 		m.hideNextHistory = !m.ready
-		m.appendBlock(sessionTUIBlockNotice, "Connected. Enter sends, Ctrl+J inserts a newline, and Ctrl+C or Esc interrupts active work. Drag a file here or use /attach PATH. Press Up on an empty composer to edit pending work; submit an empty edit to remove it. Use /history or Page Up for earlier history, /answer INPUT QUESTION VALUE, or /quit.")
+		m.appendBlock(sessionTUIBlockNotice, "Connected. Enter sends, Ctrl+J inserts a newline, Ctrl+C or Esc interrupts active work, Page Up loads earlier history, and dragging a file attaches it (or use /attach PATH). Press Up on an empty composer to edit pending work. Use !COMMAND, /goal, /answer INPUT QUESTION VALUE, or /quit.")
 		m.ready = true
 		m.connectionStatus = ""
 		commands.ui = tea.Batch(m.input.Focus(), m.scheduleProgress())
@@ -719,10 +721,13 @@ func (m *sessionTUIModel) applyEvent(event sessionruntime.Event) sessionTUIComma
 	case sessionruntime.EventToolStarted:
 		m.finishStreaming()
 		m.appendToolStart(event)
+	case sessionruntime.EventToolDelta:
+		m.appendToolDelta(event)
 	case sessionruntime.EventToolCompleted:
+		streamed := m.completeToolOutput(event)
 		toolName, needsAttribution := m.toolCompletionAttribution(event)
 		output := strings.TrimRight(sanitizeSessionTUIToolOutput(event.Output), "\n")
-		if output != "" {
+		if output != "" && !streamed {
 			m.appendToolOutput(event.ToolID, toolName, output)
 		}
 		if output == "" || !sessionTUIToolSucceeded(event.Status) {
@@ -732,6 +737,9 @@ func (m *sessionTUIModel) applyEvent(event sessionruntime.Event) sessionTUIComma
 			}
 			m.appendBlock(sessionTUIBlockToolStatus, status)
 		}
+	case sessionruntime.EventGoalUpdated:
+		m.finishStreaming()
+		m.appendBlock(sessionTUIBlockNotice, sessionGoalText(event.Goal, event.Status))
 	case sessionruntime.EventInputRequested:
 		m.finishStreaming()
 		m.waitingForInput = true
@@ -878,6 +886,7 @@ func (m *sessionTUIModel) replayHistoryPage(events []sessionruntime.Event) []ses
 	replay := &sessionTUIModel{
 		styles:          m.styles,
 		toolNames:       make(map[string]string),
+		toolOutputAt:    make(map[string]int),
 		width:           m.width,
 		height:          m.height,
 		streamingAt:     -1,
@@ -902,6 +911,9 @@ func (m *sessionTUIModel) prependHistoryBlocks(blocks []sessionTUIBlock) tea.Cmd
 	}
 	if m.historyNoticeAt >= 0 {
 		m.historyNoticeAt += count
+	}
+	for toolID, index := range m.toolOutputAt {
+		m.toolOutputAt[toolID] = index + count
 	}
 	m.committed += count
 	m.historyQueued += count
@@ -1018,6 +1030,51 @@ func (m *sessionTUIModel) appendToolOutput(toolID, toolName, output string) {
 		toolID:   toolID,
 		toolName: toolName,
 	})
+}
+
+func (m *sessionTUIModel) appendToolDelta(event sessionruntime.Event) {
+	if event.Output == "" {
+		return
+	}
+	index, exists := m.toolOutputAt[event.ToolID]
+	if !exists {
+		m.blocks = append(m.blocks, sessionTUIBlock{
+			kind:     sessionTUIBlockToolOutput,
+			stream:   &strings.Builder{},
+			dirty:    true,
+			toolID:   event.ToolID,
+			toolName: "",
+		})
+		index = len(m.blocks) - 1
+		m.toolOutputAt[event.ToolID] = index
+		m.streamingAt = index
+	}
+	block := &m.blocks[index]
+	if block.stream == nil {
+		block.stream = &strings.Builder{}
+		block.stream.WriteString(block.text)
+		block.text = ""
+	}
+	block.stream.WriteString(sanitizeSessionTUIToolOutput(event.Output))
+	block.dirty = true
+}
+
+func (m *sessionTUIModel) completeToolOutput(event sessionruntime.Event) bool {
+	index, exists := m.toolOutputAt[event.ToolID]
+	if !exists {
+		return false
+	}
+	if m.streamingAt == index {
+		m.finishStreaming()
+	}
+	block := &m.blocks[index]
+	if event.Output != "" {
+		block.text = strings.TrimRight(sanitizeSessionTUIToolOutput(event.Output), "\n")
+	}
+	block.stream = nil
+	block.dirty = true
+	delete(m.toolOutputAt, event.ToolID)
+	return true
 }
 
 func (m *sessionTUIModel) toolCompletionAttribution(event sessionruntime.Event) (string, bool) {

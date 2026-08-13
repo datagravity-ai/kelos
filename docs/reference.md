@@ -247,8 +247,9 @@ metadata, conversation, or persistent-volume data.
 Use `kelos session connect NAME` for terminal chat. In an interactive terminal,
 press Enter to send a message, Ctrl+J to insert a newline, and Ctrl+C or Esc to
 interrupt an active turn. Ctrl+C exits the terminal client when no turn is
-active. The terminal initially loads a bounded page of recent transcript items.
-Use `/history` or Page Up to load the previous page.
+active. `/quit` and `/exit` detach the terminal client without interrupting work
+that is still running. The terminal initially loads a bounded page of recent
+transcript items. Use `/history` or Page Up to load the previous page.
 Attach a local file with `/attach PATH`; the next message includes all staged
 files. In the interactive terminal UI, dragging a file into a terminal that
 supports bracketed paste stages the file directly. Use `/send` in the plain
@@ -260,6 +261,33 @@ they survive Pod replacement only when `spec.volumeClaimTemplate` is configured
 and are removed by Session reset or deletion. Retained messages show attachment
 names, and the web client provides authenticated previews or downloads while
 the Session is ready.
+
+Both terminal and web chat recognize `!COMMAND` and `/goal` before ordinary
+messages are submitted. `!COMMAND` runs `/bin/sh -lc COMMAND` directly in the
+Session working directory with the Session environment. It does not ask the
+agent for approval or send the command to the model. Its live and retained
+output appears as tool activity, and interrupting the Session turn stops the
+command.
+
+`/goal` is available only in Codex Sessions and uses the persisted goal owned by
+the Codex conversation:
+
+| Command | Behavior |
+|---------|----------|
+| `/goal` | Show the current goal |
+| `/goal OBJECTIVE` | Start an objective when no unfinished goal exists |
+| `/goal edit OBJECTIVE` | Replace the current objective while preserving its status |
+| `/goal pause` | Finish the current Codex turn, then stop automatic continuation |
+| `/goal resume` | Resume automatic continuation |
+| `/goal clear` | Remove the current goal |
+
+An active goal keeps starting Codex turns until Codex marks it complete,
+blocked, usage-limited, or budget-limited, or until it is paused or cleared.
+Interrupting active goal work pauses the goal before interrupting its current
+turn; detaching with `/quit` or `/exit` leaves it running. The goal and its
+accounting survive client reconnection and runtime container restart. They
+survive Pod replacement only when the Session workspace is persistent.
+
 The terminal client shows live connecting, reconnecting, working,
 waiting-for-input, and interrupting progress with elapsed time. After a
 completed turn, both interactive and plain terminal output show a `Worked for
