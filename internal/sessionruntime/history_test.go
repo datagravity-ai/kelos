@@ -10,7 +10,7 @@ import (
 func TestProjectHistoryNormalizesProviderEventsAndPreservesState(t *testing.T) {
 	startedAt := time.Date(2026, time.August, 8, 12, 0, 0, 0, time.UTC)
 	events := []Event{
-		{ID: 1, Type: EventUserMessage, TurnID: "turn-1", Text: "first request"},
+		{ID: 1, Type: EventUserMessage, TurnID: "turn-1", Text: "first request", SessionCommand: true},
 		{ID: 2, Type: EventTurnStarted, TurnID: "turn-1", Timestamp: &startedAt, Status: "running"},
 		{ID: 3, Type: EventAssistantDelta, TurnID: "turn-1", Text: "Claude "},
 		{ID: 4, Type: EventAssistantDelta, TurnID: "turn-1", Text: "answer"},
@@ -61,7 +61,7 @@ func TestProjectHistoryNormalizesProviderEventsAndPreservesState(t *testing.T) {
 		EventAssistantMessage,
 	)
 	for _, event := range projected {
-		if event.TurnID != "" || event.RequestID != "" {
+		if event.TurnID != "" || event.RequestID != "" || event.SessionCommand {
 			t.Fatalf("projected event retains transient state: %#v", event)
 		}
 	}
@@ -120,6 +120,28 @@ func TestProjectHistoryKeepsActiveAssistantStreaming(t *testing.T) {
 	assertEventTypes(t, page, EventUserMessage, EventAssistantDelta)
 	if page[1].Text != "partial answer" {
 		t.Fatalf("active assistant text = %q", page[1].Text)
+	}
+}
+
+func TestProjectHistoryRetainsShellCompletionAndGoal(t *testing.T) {
+	budget := int64(1000)
+	items, _, _ := projectHistory([]Event{
+		{ID: 1, Type: EventToolStarted, TurnID: "turn-1", ToolID: "turn-1-shell", ToolName: "make test", Status: "running"},
+		{ID: 2, Type: EventToolDelta, TurnID: "turn-1", ToolID: "turn-1-shell", Output: "partial"},
+		{ID: 3, Type: EventToolCompleted, TurnID: "turn-1", ToolID: "turn-1-shell", ToolName: "make test", Output: "final", Status: "completed"},
+		{ID: 4, Type: EventGoalUpdated, Goal: &Goal{Objective: "Improve coverage", Status: "active", TokenBudget: &budget, TokensUsed: 125}, Status: "active"},
+	})
+
+	page, cursor := historyItemsPage(items, 0, DefaultHistoryItemLimit, DefaultHistoryByteLimit)
+	if cursor != 0 {
+		t.Fatalf("history cursor = %d, want all items", cursor)
+	}
+	assertEventTypes(t, page, EventToolStarted, EventToolCompleted, EventGoalUpdated)
+	if page[1].Output != "final" {
+		t.Fatalf("retained shell output = %q, want final", page[1].Output)
+	}
+	if page[2].Goal == nil || page[2].Goal.Objective != "Improve coverage" || page[2].Goal.TokenBudget == nil || *page[2].Goal.TokenBudget != budget {
+		t.Fatalf("retained goal = %#v", page[2].Goal)
 	}
 }
 

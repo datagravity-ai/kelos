@@ -18,7 +18,10 @@ kelos session connect interactive-review
 
 The terminal client prints commands when interaction is required. Use
 `/interrupt` to stop active work and `/answer INPUT_ID QUESTION_ID VALUE` for a
-provider question.
+provider question. Both terminal and web chat accept `!COMMAND` to run a shell
+command in the Session workspace. Codex Sessions also accept `/goal OBJECTIVE`;
+use `/goal` to inspect it and `/goal pause`, `/goal resume`, or `/goal clear` to
+control it.
 
 The same conversation is available in the Session web application when the
 shared Session server is enabled. Disconnecting either client does not stop the

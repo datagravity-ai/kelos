@@ -334,6 +334,42 @@ func TestSessionTUIToolOutputStripsTerminalControlSequences(t *testing.T) {
 	}
 }
 
+func TestSessionTUIStreamsToolOutputIntoCompletion(t *testing.T) {
+	model, _ := newSessionTUITestModel()
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventToolStarted, ToolID: "tool-1", ToolName: "make test"})
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventToolDelta, ToolID: "tool-1", Output: "first\n"})
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventToolDelta, ToolID: "tool-1", Output: "second\n"})
+
+	if rendered := stripSessionTUIANSI(model.renderTranscript()); !strings.Contains(rendered, "first") || !strings.Contains(rendered, "second") {
+		t.Fatalf("streamed tool output = %q", rendered)
+	}
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventToolCompleted, ToolID: "tool-1", Output: "first\nsecond\n", Status: "completed"})
+	rendered := stripSessionTUIANSI(model.renderTranscript())
+	if strings.Count(rendered, "first") != 1 || strings.Count(rendered, "second") != 1 {
+		t.Fatalf("completed streamed tool output = %q", rendered)
+	}
+}
+
+func TestSessionTUIRendersGoalStatus(t *testing.T) {
+	model, _ := newSessionTUITestModel()
+	budget := int64(1000)
+	model.applyEvent(sessionruntime.Event{
+		Type:   sessionruntime.EventGoalUpdated,
+		Status: "active",
+		Goal: &sessionruntime.Goal{
+			Objective:   "Improve coverage",
+			Status:      "active",
+			TokenBudget: &budget,
+			TokensUsed:  125,
+		},
+	})
+
+	rendered := stripSessionTUIANSI(model.renderTranscript())
+	if !strings.Contains(rendered, "Goal active (125/1000 tokens): Improve coverage") {
+		t.Fatalf("goal status = %q", rendered)
+	}
+}
+
 func TestSessionTUIAttributesParallelToolCompletion(t *testing.T) {
 	model, _ := newSessionTUITestModel()
 	model.Update(tea.WindowSizeMsg{Width: 40, Height: 12})

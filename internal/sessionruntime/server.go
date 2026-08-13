@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"k8s.io/apimachinery/pkg/types"
@@ -34,6 +35,7 @@ const (
 	activityPublishedFile               = "activity-published"
 	initializedFile                     = "initialized"
 	defaultInterruptTimeout             = 10 * time.Second
+	shellCommandWaitDelay               = 250 * time.Millisecond
 	defaultSessionStatusPublishInterval = 30 * time.Second
 	defaultSessionStatusRetryInterval   = 2 * time.Second
 )
@@ -60,6 +62,7 @@ type turnRequest struct {
 	text        string
 	revision    int64
 	attachments []Attachment
+	command     sessionCommand
 	accepted    chan struct{}
 }
 
@@ -118,11 +121,13 @@ type Server struct {
 	interruptMu        sync.Mutex
 	activeMu           sync.Mutex
 	activeTurn         string
+	activeKind         sessionCommandKind
 	activeTurnCancel   context.CancelCauseFunc
 	activeTurnDone     chan struct{}
 	providerStopping   atomic.Bool
 	providerStopOnce   sync.Once
 	providerStop       chan struct{}
+	recoveredGoalTurn  *turnRequest
 	interruptTimeout   time.Duration
 	pendingInputCount  atomic.Int64
 
@@ -240,6 +245,16 @@ func Run(ctx context.Context, config Config) error {
 		_ = provider.Close()
 		journal.Close()
 		return err
+	}
+	if goalManager, ok := provider.(goalProvider); ok && goalManager.ActiveGoal() != nil {
+		turn := turnRequest{
+			id:       fmt.Sprintf("turn-%d", server.nextTurnID.Add(1)),
+			text:     "/goal resume",
+			revision: 1,
+			command:  sessionCommand{kind: sessionCommandGoal, goal: goalCommand{action: goalCommandResume}},
+		}
+		server.recoveredGoalTurn = &turn
+		server.outstanding++
 	}
 	if server.activityMarkerPath != "" {
 		settledTurnID, err := loadSettledTurnID(server.activityMarkerPath)
@@ -401,6 +416,20 @@ func (s *Server) deliverInitialPrompt() error {
 }
 
 func (s *Server) runTurns(ctx context.Context) {
+	if s.recoveredGoalTurn != nil {
+		turn := s.recoveredGoalTurn
+		s.recoveredGoalTurn = nil
+		select {
+		case <-ctx.Done():
+			return
+		case <-s.providerStop:
+			return
+		default:
+			s.runTurn(ctx, *turn)
+			s.interruptMu.Lock()
+			s.interruptMu.Unlock()
+		}
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -694,8 +723,13 @@ func (s *Server) runTurn(ctx context.Context, turn turnRequest) {
 	defer s.requestWorkspaceStatusRefresh()
 	turnCtx, cancelTurn := context.WithCancelCause(ctx)
 	turnDone := make(chan struct{})
+	command := turn.command
+	if command.kind == "" {
+		command = sessionCommand{kind: sessionCommandMessage, text: turn.text}
+	}
 	s.activeMu.Lock()
 	s.activeTurn = turn.id
+	s.activeKind = command.kind
 	s.activeTurnCancel = cancelTurn
 	s.activeTurnDone = turnDone
 	s.activeMu.Unlock()
@@ -705,6 +739,7 @@ func (s *Server) runTurn(ctx context.Context, turn turnRequest) {
 		s.activeMu.Lock()
 		if s.activeTurn == turn.id {
 			s.activeTurn = ""
+			s.activeKind = ""
 			s.activeTurnCancel = nil
 			s.activeTurnDone = nil
 		}
@@ -721,6 +756,43 @@ func (s *Server) runTurn(ctx context.Context, turn turnRequest) {
 		return
 	}
 	sink := &turnSink{server: s, turnID: turn.id}
+	if command.kind == sessionCommandShell {
+		runErr := s.runShellCommand(turnCtx, turn.id, command.text, sink)
+		sink.stop()
+		if errors.Is(runErr, ErrTurnInterrupted) || errors.Is(context.Cause(turnCtx), ErrTurnInterrupted) {
+			_ = s.journal.Append(Event{Type: EventTurnCompleted, TurnID: turn.id, Status: "interrupted"})
+			return
+		}
+		if runErr != nil && turnCtx.Err() != nil {
+			return
+		}
+		_ = s.journal.Append(Event{Type: EventTurnCompleted, TurnID: turn.id, Status: "completed"})
+		return
+	}
+	if command.kind == sessionCommandGoal {
+		provider, ok := s.provider.(goalProvider)
+		if !ok {
+			_ = s.journal.Append(Event{Type: EventError, TurnID: turn.id, Text: "/goal is available only in Codex Sessions", Status: "failed"})
+			_ = s.journal.Append(Event{Type: EventTurnCompleted, TurnID: turn.id, Status: "failed"})
+			return
+		}
+		runErr := provider.RunGoal(turnCtx, command.goal, sink)
+		sink.stop()
+		if errors.Is(runErr, ErrTurnInterrupted) || errors.Is(context.Cause(turnCtx), ErrTurnInterrupted) {
+			_ = s.journal.Append(Event{Type: EventTurnCompleted, TurnID: turn.id, Status: "interrupted"})
+			return
+		}
+		if runErr != nil {
+			if turnCtx.Err() != nil {
+				return
+			}
+			_ = s.journal.Append(Event{Type: EventError, TurnID: turn.id, Text: runErr.Error(), Status: "failed"})
+			_ = s.journal.Append(Event{Type: EventTurnCompleted, TurnID: turn.id, Status: "failed"})
+			return
+		}
+		_ = s.journal.Append(Event{Type: EventTurnCompleted, TurnID: turn.id, Status: "completed"})
+		return
+	}
 	resolvedAttachments, err := s.resolveAttachments(turn.attachments)
 	if err != nil {
 		_ = s.journal.Append(Event{Type: EventError, TurnID: turn.id, Text: err.Error(), Status: "failed"})
@@ -758,6 +830,86 @@ func (s *Server) runTurn(ctx context.Context, turn turnRequest) {
 	_ = s.journal.Append(Event{Type: EventTurnCompleted, TurnID: turn.id, Status: "completed"})
 }
 
+func (s *Server) runShellCommand(ctx context.Context, turnID, script string, sink EventSink) error {
+	toolID := turnID + "-shell"
+	sink.Emit(Event{Type: EventToolStarted, ToolID: toolID, ToolName: script, Status: "running"})
+	command := exec.CommandContext(ctx, "/bin/sh", "-lc", script)
+	command.Dir = s.config.WorkingDir
+	command.Env = s.config.Environment
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	command.WaitDelay = shellCommandWaitDelay
+	command.Cancel = func() error {
+		if command.Process == nil {
+			return os.ErrProcessDone
+		}
+		err := syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
+		if errors.Is(err, syscall.ESRCH) {
+			return os.ErrProcessDone
+		}
+		return err
+	}
+	outputReader, outputWriter := io.Pipe()
+	command.Stdout = outputWriter
+	command.Stderr = outputWriter
+	if err := command.Start(); err != nil {
+		_ = outputReader.Close()
+		_ = outputWriter.Close()
+		sink.Emit(Event{Type: EventToolCompleted, ToolID: toolID, ToolName: script, Output: err.Error(), Status: "failed"})
+		return nil
+	}
+
+	output := newBoundedToolOutput(maxToolOutputBytes)
+	readDone := make(chan error, 1)
+	go func() {
+		defer outputReader.Close()
+		buffer := make([]byte, 32*1024)
+		streamed := 0
+		for {
+			count, err := outputReader.Read(buffer)
+			if count > 0 {
+				chunk := string(buffer[:count])
+				output.WriteString(chunk)
+				if streamed < maxToolOutputBytes {
+					remaining := maxToolOutputBytes - streamed
+					if len(chunk) > remaining {
+						chunk = chunk[:remaining]
+					}
+					streamed += len(chunk)
+					sink.Emit(Event{Type: EventToolDelta, ToolID: toolID, ToolName: script, Output: chunk, Status: "running"})
+				}
+			}
+			if err != nil {
+				if errors.Is(err, io.EOF) {
+					readDone <- nil
+				} else {
+					readDone <- err
+				}
+				return
+			}
+		}
+	}()
+	waitErr := command.Wait()
+	_ = outputWriter.Close()
+	readErr := <-readDone
+	if readErr != nil && waitErr == nil {
+		waitErr = readErr
+	}
+	status := "completed"
+	if ctx.Err() != nil {
+		status = "interrupted"
+	} else if waitErr != nil && !errors.Is(waitErr, exec.ErrWaitDelay) {
+		status = "failed"
+		if output.String() == "" {
+			output.WriteString(waitErr.Error())
+		}
+	}
+	sink.Emit(Event{Type: EventToolCompleted, ToolID: toolID, ToolName: script, Output: output.String(), Status: status})
+	if ctx.Err() != nil {
+		return context.Cause(ctx)
+	}
+	return nil
+}
+
 func workspaceDiff(ctx context.Context, workingDir string) string {
 	command := exec.CommandContext(ctx, "git", "diff", "--no-ext-diff", "--no-color")
 	command.Dir = workingDir
@@ -773,6 +925,10 @@ func workspaceDiff(ctx context.Context, workingDir string) string {
 }
 
 func (s *Server) submitMessage(text, requestID string, attachmentIDs ...string) error {
+	return s.submitParsedMessage(text, requestID, sessionCommand{kind: sessionCommandMessage, text: text}, attachmentIDs...)
+}
+
+func (s *Server) submitParsedMessage(text, requestID string, command sessionCommand, attachmentIDs ...string) error {
 	if strings.TrimSpace(text) == "" && len(attachmentIDs) == 0 {
 		return errors.New("message must not be empty")
 	}
@@ -783,6 +939,14 @@ func (s *Server) submitMessage(text, requestID string, attachmentIDs ...string) 
 	attachments := make([]Attachment, len(resolvedAttachments))
 	for index := range resolvedAttachments {
 		attachments[index] = resolvedAttachments[index].Attachment
+	}
+	if command.kind != sessionCommandMessage && len(attachments) > 0 {
+		return errors.New("Session commands do not accept attachments")
+	}
+	if command.kind == sessionCommandGoal {
+		if _, ok := s.provider.(goalProvider); !ok {
+			return errors.New("/goal is available only in Codex Sessions")
+		}
 	}
 	s.submitMu.Lock()
 	defer s.submitMu.Unlock()
@@ -800,16 +964,24 @@ func (s *Server) submitMessage(text, requestID string, attachmentIDs ...string) 
 	}
 	if s.pendingTurn != nil {
 		turn := *s.pendingTurn
+		pendingKind := turn.command.kind
+		if pendingKind == "" {
+			pendingKind = sessionCommandMessage
+		}
+		if command.kind != sessionCommandMessage || pendingKind != sessionCommandMessage {
+			return errors.New("Session already has a pending command or message")
+		}
 		turn.text = mergePendingMessageText(turn.text, text)
 		turn.attachments = append(turn.attachments, attachments...)
 		turn.revision = max(1, turn.revision) + 1
 		if err := s.appendMessage(Event{
-			Type:        EventUserMessageUpdated,
-			RequestID:   requestID,
-			TurnID:      turn.id,
-			Text:        turn.text,
-			Revision:    turn.revision,
-			Attachments: turn.attachments,
+			Type:           EventUserMessageUpdated,
+			RequestID:      requestID,
+			TurnID:         turn.id,
+			Text:           turn.text,
+			Revision:       turn.revision,
+			SessionCommand: false,
+			Attachments:    turn.attachments,
 		}); err != nil {
 			return fmt.Errorf("recording pending Session message: %w", err)
 		}
@@ -821,13 +993,14 @@ func (s *Server) submitMessage(text, requestID string, attachmentIDs ...string) 
 		text:        text,
 		revision:    1,
 		attachments: attachments,
+		command:     command,
 		accepted:    make(chan struct{}),
 	}
 	select {
 	case s.turns <- turn:
 		s.pendingTurn = &turn
 		s.outstanding++
-		if err := s.appendMessage(Event{Type: EventUserMessage, RequestID: requestID, TurnID: turn.id, Text: turn.text, Revision: turn.revision, Attachments: turn.attachments}); err != nil {
+		if err := s.appendMessage(Event{Type: EventUserMessage, RequestID: requestID, TurnID: turn.id, Text: turn.text, Revision: turn.revision, SessionCommand: command.kind != sessionCommandMessage, Attachments: turn.attachments}); err != nil {
 			s.pendingTurn = nil
 			s.outstanding--
 			return fmt.Errorf("recording Session message: %w", err)
@@ -837,6 +1010,38 @@ func (s *Server) submitMessage(text, requestID string, attachmentIDs ...string) 
 	default:
 		return errors.New("Session already has a pending message")
 	}
+}
+
+func (s *Server) submitClientMessage(ctx context.Context, text, requestID string, attachmentIDs ...string) error {
+	command, err := parseSessionCommand(text)
+	if err != nil {
+		return err
+	}
+	if command.kind != sessionCommandMessage && len(attachmentIDs) > 0 {
+		return errors.New("Session commands do not accept attachments")
+	}
+	if command.kind == sessionCommandGoal {
+		if _, ok := s.provider.(goalProvider); !ok {
+			return errors.New("/goal is available only in Codex Sessions")
+		}
+	}
+	if command.kind == sessionCommandGoal {
+		s.activeMu.Lock()
+		turnID := s.activeTurn
+		activeKind := s.activeKind
+		s.activeMu.Unlock()
+		if turnID != "" && activeKind == sessionCommandGoal {
+			provider, ok := s.provider.(goalProvider)
+			if !ok {
+				return errors.New("/goal is available only in Codex Sessions")
+			}
+			if err := s.journal.Append(Event{Type: EventUserMessage, RequestID: requestID, Text: text, SessionCommand: true}); err != nil {
+				return fmt.Errorf("recording Session goal command: %w", err)
+			}
+			return provider.ControlGoal(ctx, command.goal, &turnSink{server: s})
+		}
+	}
+	return s.submitParsedMessage(text, requestID, command, attachmentIDs...)
 }
 
 func mergePendingMessageText(current, addition string) string {
@@ -868,15 +1073,29 @@ func (s *Server) editMessage(turnID, text string, expectedRevision int64, reques
 	if strings.TrimSpace(text) == "" && len(turn.attachments) == 0 {
 		return fmt.Errorf("editing Session turn %q: message must not be empty", turnID)
 	}
+	command, err := parseSessionCommand(text)
+	if err != nil {
+		return err
+	}
+	if command.kind != sessionCommandMessage && len(turn.attachments) > 0 {
+		return errors.New("Session commands do not accept attachments")
+	}
+	if command.kind == sessionCommandGoal {
+		if _, ok := s.provider.(goalProvider); !ok {
+			return errors.New("/goal is available only in Codex Sessions")
+		}
+	}
 	turn.text = text
+	turn.command = command
 	turn.revision++
 	if err := s.appendMessage(Event{
-		Type:        EventUserMessageUpdated,
-		RequestID:   requestID,
-		TurnID:      turn.id,
-		Text:        turn.text,
-		Revision:    turn.revision,
-		Attachments: turn.attachments,
+		Type:           EventUserMessageUpdated,
+		RequestID:      requestID,
+		TurnID:         turn.id,
+		Text:           turn.text,
+		Revision:       turn.revision,
+		SessionCommand: command.kind != sessionCommandMessage,
+		Attachments:    turn.attachments,
 	}); err != nil {
 		return fmt.Errorf("recording edited Session turn %q: %w", turnID, err)
 	}
@@ -975,6 +1194,7 @@ type journalTurnRecovery struct {
 	text        string
 	revision    int64
 	attachments []Attachment
+	command     bool
 	started     bool
 	completed   bool
 }
@@ -1018,6 +1238,7 @@ func recoverJournal(journal *Journal) (journalRecovery, error) {
 			if turn != nil {
 				turn.text = event.Text
 				turn.attachments = event.Attachments
+				turn.command = event.SessionCommand
 				turn.revision = event.Revision
 				if turn.revision == 0 {
 					turn.revision = 1
@@ -1075,7 +1296,15 @@ func recoverJournal(journal *Journal) (journalRecovery, error) {
 		if !turn.started {
 			accepted := make(chan struct{})
 			close(accepted)
-			unstartedTurns = append(unstartedTurns, turnRequest{id: turn.id, text: turn.text, revision: turn.revision, attachments: turn.attachments, accepted: accepted})
+			command := sessionCommand{kind: sessionCommandMessage, text: turn.text}
+			if turn.command {
+				var err error
+				command, err = parseSessionCommand(turn.text)
+				if err != nil {
+					return recovery, fmt.Errorf("recovering Session command %q: %w", turn.id, err)
+				}
+			}
+			unstartedTurns = append(unstartedTurns, turnRequest{id: turn.id, text: turn.text, revision: turn.revision, attachments: turn.attachments, command: command, accepted: accepted})
 			continue
 		}
 		if err := journal.Append(Event{Type: EventTurnCompleted, TurnID: turnID, Status: "interrupted"}); err != nil {
@@ -1111,11 +1340,12 @@ func recoverJournal(journal *Journal) (journalRecovery, error) {
 			}
 			pending.revision = max(1, pending.revision) + 1
 			if err := journal.Append(Event{
-				Type:        EventUserMessageUpdated,
-				TurnID:      pending.id,
-				Text:        pending.text,
-				Revision:    pending.revision,
-				Attachments: pending.attachments,
+				Type:           EventUserMessageUpdated,
+				TurnID:         pending.id,
+				Text:           pending.text,
+				Revision:       pending.revision,
+				SessionCommand: pending.command.kind != sessionCommandMessage,
+				Attachments:    pending.attachments,
 			}); err != nil {
 				return recovery, fmt.Errorf("recording pending Session message: %w", err)
 			}
@@ -1161,6 +1391,7 @@ func (s *Server) interruptTurn(runtimeCtx context.Context, requestID string) err
 	defer s.interruptMu.Unlock()
 	s.activeMu.Lock()
 	activeTurn := s.activeTurn
+	activeKind := s.activeKind
 	s.activeMu.Unlock()
 	if activeTurn != turnID {
 		return nil
@@ -1170,6 +1401,18 @@ func (s *Server) interruptTurn(runtimeCtx context.Context, requestID string) err
 	}
 	interruptCtx, cancel := context.WithTimeout(runtimeCtx, s.interruptTimeout)
 	defer cancel()
+	if activeKind == sessionCommandShell {
+		if turnCancel == nil || turnDone == nil {
+			return errors.New("Session active shell command cannot be stopped")
+		}
+		turnCancel(ErrTurnInterrupted)
+		select {
+		case <-turnDone:
+			return nil
+		case <-interruptCtx.Done():
+			return interruptCtx.Err()
+		}
+	}
 	interruptResult := make(chan error, 1)
 	go func() {
 		interruptResult <- s.provider.Interrupt(interruptCtx)
@@ -1405,7 +1648,7 @@ func (s *Server) handleConnection(ctx context.Context, connection net.Conn) {
 			}
 		case "message":
 			subscribe(0, "", false, 0, 0)
-			if err := s.submitMessage(request.Text, request.RequestID, request.AttachmentIDs...); err != nil {
+			if err := s.submitClientMessage(ctx, request.Text, request.RequestID, request.AttachmentIDs...); err != nil {
 				out <- Event{Type: EventError, RequestID: request.RequestID, Text: err.Error(), Status: "rejected"}
 			}
 		case "message.edit":
