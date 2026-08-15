@@ -474,13 +474,16 @@ func TestRunTurnQueuesWorkspaceStatusRefresh(t *testing.T) {
 	server := NewServer(Config{}, journal, &fakeProvider{})
 	refreshStarted := make(chan struct{})
 	releaseRefresh := make(chan struct{})
-	server.refreshWorkspaceStatus = func(ctx context.Context) error {
+	server.refreshWorkspaceStatus = func(ctx context.Context, forceDiscovery bool) (WorkspaceStatus, error) {
+		if !forceDiscovery {
+			t.Error("turn completion did not force pull request discovery")
+		}
 		close(refreshStarted)
 		select {
 		case <-releaseRefresh:
-			return nil
+			return WorkspaceStatus{}, nil
 		case <-ctx.Done():
-			return ctx.Err()
+			return WorkspaceStatus{}, ctx.Err()
 		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -868,9 +871,9 @@ func TestServerQueuesStatusPublicationAfterWorkspaceRefresh(t *testing.T) {
 	defer journal.Close()
 	server := NewServer(Config{}, journal, &fakeProvider{})
 	refreshed := make(chan struct{})
-	server.refreshWorkspaceStatus = func(context.Context) error {
+	server.refreshWorkspaceStatus = func(context.Context, bool) (WorkspaceStatus, error) {
 		close(refreshed)
-		return nil
+		return WorkspaceStatus{}, nil
 	}
 	server.publishSessionStatus = func(context.Context, bool, bool) error { return nil }
 	ctx, cancel := context.WithCancel(context.Background())
@@ -883,7 +886,7 @@ func TestServerQueuesStatusPublicationAfterWorkspaceRefresh(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("initial Session status publication was not requested")
 	}
-	server.requestWorkspaceStatusRefresh()
+	server.requestWorkspaceStatusRefresh(true)
 	select {
 	case <-refreshed:
 	case <-time.After(time.Second):
@@ -971,22 +974,105 @@ func TestServerRetriesSessionStatusPublicationInOrder(t *testing.T) {
 	assertActivity(t, activity, false)
 }
 
-func TestServerRefreshesWorkspaceStatusAfterPeriodicPublication(t *testing.T) {
+func TestServerRefreshesWorkspaceStatusPeriodically(t *testing.T) {
 	journal := NewJournal()
 	defer journal.Close()
 	server := NewServer(Config{}, journal, &fakeProvider{})
-	server.sessionStatusRetryInterval = time.Hour
+	server.workspaceStatusRefreshInterval = 10 * time.Millisecond
+	refreshed := make(chan bool, 1)
+	server.refreshWorkspaceStatus = func(_ context.Context, forceDiscovery bool) (WorkspaceStatus, error) {
+		select {
+		case refreshed <- forceDiscovery:
+		default:
+		}
+		return WorkspaceStatus{}, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go server.runWorkspaceStatusRefreshes(ctx)
+
+	select {
+	case forceDiscovery := <-refreshed:
+		if forceDiscovery {
+			t.Fatal("periodic workspace status refresh forced pull request discovery")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("workspace status was not refreshed periodically")
+	}
+}
+
+func TestPeriodicSessionStatusPublicationDoesNotRefreshWorkspace(t *testing.T) {
+	journal := NewJournal()
+	defer journal.Close()
+	server := NewServer(Config{}, journal, &fakeProvider{})
 	server.sessionStatusPublishInterval = 10 * time.Millisecond
-	server.publishSessionStatus = func(context.Context, bool, bool) error { return nil }
-	server.refreshWorkspaceStatus = func(context.Context) error { return nil }
+	published := make(chan struct{}, 1)
+	server.publishSessionStatus = func(context.Context, bool, bool) error {
+		published <- struct{}{}
+		return nil
+	}
+	server.refreshWorkspaceStatus = func(context.Context, bool) (WorkspaceStatus, error) {
+		t.Fatal("periodic Session status publication refreshed workspace status")
+		return WorkspaceStatus{}, nil
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go server.runSessionStatusPublishes(ctx)
 
 	select {
-	case <-server.workspaceStatusRefreshes:
+	case <-published:
 	case <-time.After(time.Second):
-		t.Fatal("periodic workspace status publication did not request a refresh")
+		t.Fatal("Session status was not published periodically")
+	}
+	select {
+	case <-server.workspaceStatusRefreshes:
+		t.Fatal("periodic Session status publication queued a workspace refresh")
+	default:
+	}
+}
+
+func TestWorkspaceStatusRefreshDelay(t *testing.T) {
+	server := NewServer(Config{}, NewJournal(), &fakeProvider{})
+	t.Cleanup(server.journal.Close)
+	server.workspaceStatusRefreshInterval = 5 * time.Minute
+	server.activeWorkspaceStatusRefreshInterval = 30 * time.Second
+
+	tests := []struct {
+		name   string
+		status WorkspaceStatus
+		want   time.Duration
+	}{
+		{name: "no pull request", want: 5 * time.Minute},
+		{
+			name: "queued pull request",
+			status: WorkspaceStatus{PullRequest: &kelos.SessionPullRequest{
+				State: kelos.SessionPullRequestStateQueued,
+			}},
+			want: 30 * time.Second,
+		},
+		{
+			name: "pending checks",
+			status: WorkspaceStatus{PullRequest: &kelos.SessionPullRequest{
+				State:  kelos.SessionPullRequestStateOpen,
+				Checks: &kelos.SessionPullRequestChecks{State: kelos.SessionPullRequestChecksStatePending, Total: 1},
+			}},
+			want: 30 * time.Second,
+		},
+		{
+			name: "successful checks",
+			status: WorkspaceStatus{PullRequest: &kelos.SessionPullRequest{
+				State:  kelos.SessionPullRequestStateOpen,
+				Checks: &kelos.SessionPullRequestChecks{State: kelos.SessionPullRequestChecksStateSuccess, Completed: 1, Total: 1},
+			}},
+			want: 5 * time.Minute,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := server.workspaceStatusRefreshDelay(tt.status); got != tt.want {
+				t.Fatalf("workspaceStatusRefreshDelay() = %s, want %s", got, tt.want)
+			}
+		})
 	}
 }
 
