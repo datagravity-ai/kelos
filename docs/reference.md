@@ -234,10 +234,13 @@ the Session resource and is visible through the Kubernetes API.
 | `status.pullRequest.checks.completed` | Number of GitHub checks that have completed | Output |
 | `status.pullRequest.checks.total` | Total number of GitHub checks reported for the pull request | Output |
 
-The Session runtime refreshes pull request and GitHub check status automatically.
-The Session web application's sidebar and selected Session header show the
-aggregate check state and pending progress. `status.pullRequest.checks` is
-omitted when GitHub reports no checks for the pull request.
+The Session runtime refreshes pull request and GitHub check status at startup,
+after each turn, every 30 seconds while checks are pending or the pull request
+is queued, and every five minutes otherwise. The Session web application's
+sidebar and selected Session header show the aggregate check state and pending
+progress. `status.pullRequest.checks` is omitted when GitHub reports no checks
+for the pull request. Failed GitHub refreshes use exponential retry delays from
+one minute up to 15 minutes.
 
 The web creation dialog can generate a new Session from an existing Session in
 the active namespace. This copies the complete `Session.spec` into an editable

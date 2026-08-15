@@ -23,21 +23,26 @@ import (
 
 	"k8s.io/apimachinery/pkg/types"
 
+	kelos "github.com/kelos-dev/kelos/api/v1alpha2"
 	"github.com/kelos-dev/kelos/internal/sessionupdate"
 	clientv1alpha2 "github.com/kelos-dev/kelos/pkg/generated/clientset/versioned/typed/api/v1alpha2"
 )
 
 const (
-	DefaultSocketPath                   = "/tmp/kelos-session/runtime.sock"
-	DefaultStateDir                     = "/workspace/.kelos/session"
-	DefaultWorkingDir                   = "/workspace/repo"
-	journalFileName                     = "events.jsonl"
-	activityPublishedFile               = "activity-published"
-	initializedFile                     = "initialized"
-	defaultInterruptTimeout             = 10 * time.Second
-	shellCommandWaitDelay               = 250 * time.Millisecond
-	defaultSessionStatusPublishInterval = 30 * time.Second
-	defaultSessionStatusRetryInterval   = 2 * time.Second
+	DefaultSocketPath                           = "/tmp/kelos-session/runtime.sock"
+	DefaultStateDir                             = "/workspace/.kelos/session"
+	DefaultWorkingDir                           = "/workspace/repo"
+	journalFileName                             = "events.jsonl"
+	activityPublishedFile                       = "activity-published"
+	initializedFile                             = "initialized"
+	defaultInterruptTimeout                     = 10 * time.Second
+	shellCommandWaitDelay                       = 250 * time.Millisecond
+	defaultSessionStatusPublishInterval         = 30 * time.Second
+	defaultSessionStatusRetryInterval           = 2 * time.Second
+	defaultWorkspaceStatusRefreshInterval       = 5 * time.Minute
+	defaultActiveWorkspaceStatusRefreshInterval = 30 * time.Second
+	defaultWorkspaceStatusRetryInterval         = time.Minute
+	defaultWorkspaceStatusMaxRetryInterval      = 15 * time.Minute
 )
 
 // Config configures the resident Session runtime.
@@ -67,9 +72,8 @@ type turnRequest struct {
 }
 
 type sessionStatusPublishRequest struct {
-	active                       bool
-	waitingForInput              bool
-	refreshWorkspaceAfterPublish bool
+	active          bool
+	waitingForInput bool
 	// settledTurnID is the completed-turn high-water mark captured when this
 	// request was enqueued. It becomes the persisted activity mark only after an
 	// idle (active == false) publication of this request succeeds, so a stale
@@ -136,37 +140,47 @@ type Server struct {
 	runtimeStatusSubscribers    map[int]chan RuntimeStatus
 	nextRuntimeStatusSubscriber int
 
-	inputMu                      sync.Mutex
-	pendingInputs                map[string]*pendingInput
-	nextInputID                  atomic.Int64
-	refreshWorkspaceStatus       func(context.Context) error
-	publishSessionStatus         func(context.Context, bool, bool) error
-	workspaceStatusRefreshes     chan struct{}
-	sessionStatusMu              sync.Mutex
-	sessionStatusPublishQueue    []sessionStatusPublishRequest
-	sessionStatusPublishWakeups  chan struct{}
-	sessionStatusPublishInterval time.Duration
-	sessionStatusRetryInterval   time.Duration
+	inputMu                              sync.Mutex
+	pendingInputs                        map[string]*pendingInput
+	nextInputID                          atomic.Int64
+	refreshWorkspaceStatus               func(context.Context, bool) (WorkspaceStatus, error)
+	publishSessionStatus                 func(context.Context, bool, bool) error
+	workspaceStatusMu                    sync.Mutex
+	workspaceStatusForceDiscovery        bool
+	workspaceStatusRefreshes             chan struct{}
+	workspaceStatusRefreshInterval       time.Duration
+	activeWorkspaceStatusRefreshInterval time.Duration
+	workspaceStatusRetryInterval         time.Duration
+	workspaceStatusMaxRetryInterval      time.Duration
+	sessionStatusMu                      sync.Mutex
+	sessionStatusPublishQueue            []sessionStatusPublishRequest
+	sessionStatusPublishWakeups          chan struct{}
+	sessionStatusPublishInterval         time.Duration
+	sessionStatusRetryInterval           time.Duration
 }
 
 // NewServer constructs a Session server around injected provider and journal implementations.
 func NewServer(config Config, journal *Journal, provider Provider) *Server {
 	server := &Server{
-		config:                       config,
-		journal:                      journal,
-		provider:                     provider,
-		appendMessage:                journal.Append,
-		turns:                        make(chan turnRequest, 1),
-		updateReport:                 make(chan struct{}, 1),
-		runtimeStatus:                newRuntimeStatus(config),
-		runtimeStatusSubscribers:     map[int]chan RuntimeStatus{},
-		pendingInputs:                map[string]*pendingInput{},
-		workspaceStatusRefreshes:     make(chan struct{}, 1),
-		sessionStatusPublishWakeups:  make(chan struct{}, 1),
-		providerStop:                 make(chan struct{}),
-		interruptTimeout:             defaultInterruptTimeout,
-		sessionStatusPublishInterval: defaultSessionStatusPublishInterval,
-		sessionStatusRetryInterval:   defaultSessionStatusRetryInterval,
+		config:                               config,
+		journal:                              journal,
+		provider:                             provider,
+		appendMessage:                        journal.Append,
+		turns:                                make(chan turnRequest, 1),
+		updateReport:                         make(chan struct{}, 1),
+		runtimeStatus:                        newRuntimeStatus(config),
+		runtimeStatusSubscribers:             map[int]chan RuntimeStatus{},
+		pendingInputs:                        map[string]*pendingInput{},
+		workspaceStatusRefreshes:             make(chan struct{}, 1),
+		sessionStatusPublishWakeups:          make(chan struct{}, 1),
+		providerStop:                         make(chan struct{}),
+		interruptTimeout:                     defaultInterruptTimeout,
+		workspaceStatusRefreshInterval:       defaultWorkspaceStatusRefreshInterval,
+		activeWorkspaceStatusRefreshInterval: defaultActiveWorkspaceStatusRefreshInterval,
+		workspaceStatusRetryInterval:         defaultWorkspaceStatusRetryInterval,
+		workspaceStatusMaxRetryInterval:      defaultWorkspaceStatusMaxRetryInterval,
+		sessionStatusPublishInterval:         defaultSessionStatusPublishInterval,
+		sessionStatusRetryInterval:           defaultSessionStatusRetryInterval,
 	}
 	if config.StateDir != "" {
 		server.activityMarkerPath = filepath.Join(config.StateDir, activityPublishedFile)
@@ -230,10 +244,10 @@ func Run(ctx context.Context, config Config) error {
 			return readWorkspaceStatus(ctx, realWorkspaceStatusRunner{}, config.StateDir, config.WorkingDir)
 		})
 	}
-	server.refreshWorkspaceStatus = func(ctx context.Context) error {
-		status, err := refreshWorkspaceStatus(ctx, config.StateDir, config.WorkingDir, config.Environment)
+	server.refreshWorkspaceStatus = func(ctx context.Context, forceDiscovery bool) (WorkspaceStatus, error) {
+		status, err := refreshWorkspaceStatus(ctx, config.StateDir, config.WorkingDir, config.Environment, forceDiscovery)
 		server.updateWorkspaceRuntimeStatus(status)
-		return err
+		return status, err
 	}
 	if config.PublishSessionStatus != nil {
 		server.publishSessionStatus = publishSessionStatus
@@ -373,7 +387,7 @@ func (s *Server) Serve(ctx context.Context) error {
 	if s.publishSessionStatus != nil {
 		go s.runSessionStatusPublishes(serveCtx)
 	}
-	s.requestWorkspaceStatusRefresh()
+	s.requestWorkspaceStatusRefresh(true)
 	s.requestSessionStatusPublish()
 	go func() {
 		select {
@@ -464,44 +478,88 @@ func (s *Server) runTurns(ctx context.Context) {
 	}
 }
 
-func (s *Server) requestWorkspaceStatusRefresh() {
+func (s *Server) requestWorkspaceStatusRefresh(forceDiscovery bool) {
 	if s.refreshWorkspaceStatus == nil {
 		return
+	}
+	s.workspaceStatusMu.Lock()
+	if forceDiscovery {
+		s.workspaceStatusForceDiscovery = true
 	}
 	select {
 	case s.workspaceStatusRefreshes <- struct{}{}:
 	default:
 	}
+	s.workspaceStatusMu.Unlock()
 }
 
 func (s *Server) runWorkspaceStatusRefreshes(ctx context.Context) {
+	if s.refreshWorkspaceStatus == nil {
+		return
+	}
+	timer := time.NewTimer(s.workspaceStatusRefreshInterval)
+	defer timer.Stop()
+	retryDelay := s.workspaceStatusRetryInterval
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-s.workspaceStatusRefreshes:
-			err := s.refreshWorkspaceStatus(ctx)
-			s.requestSessionStatusPublishAfterWorkspaceRefresh()
-			if err != nil {
-				log.Printf("Unable to refresh Session workspace status error=%v", err)
+		case <-timer.C:
+		}
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
 			}
 		}
+		s.workspaceStatusMu.Lock()
+		forceDiscovery := s.workspaceStatusForceDiscovery
+		s.workspaceStatusForceDiscovery = false
+		select {
+		case <-s.workspaceStatusRefreshes:
+		default:
+		}
+		s.workspaceStatusMu.Unlock()
+
+		status, err := s.refreshWorkspaceStatus(ctx, forceDiscovery)
+		s.requestSessionStatusPublishAfterWorkspaceRefresh()
+		next := s.workspaceStatusRefreshDelay(status)
+		if err != nil {
+			log.Printf("Unable to refresh Session workspace status error=%v", err)
+			next = retryDelay
+			retryDelay = min(retryDelay*2, s.workspaceStatusMaxRetryInterval)
+		} else {
+			retryDelay = s.workspaceStatusRetryInterval
+		}
+		timer.Reset(next)
 	}
 }
 
+func (s *Server) workspaceStatusRefreshDelay(status WorkspaceStatus) time.Duration {
+	if status.PullRequest == nil {
+		return s.workspaceStatusRefreshInterval
+	}
+	if status.PullRequest.State == kelos.SessionPullRequestStateQueued ||
+		(status.PullRequest.Checks != nil && status.PullRequest.Checks.State == kelos.SessionPullRequestChecksStatePending) {
+		return s.activeWorkspaceStatusRefreshInterval
+	}
+	return s.workspaceStatusRefreshInterval
+}
+
 func (s *Server) requestSessionStatusPublish() {
-	s.queueSessionStatusPublish(false, false)
+	s.queueSessionStatusPublish(false)
 }
 
 func (s *Server) requestSessionStatusPublishAfterWorkspaceRefresh() {
-	s.queueSessionStatusPublish(true, false)
+	s.queueSessionStatusPublish(true)
 }
 
 func (s *Server) requestPeriodicSessionStatusPublish() {
-	s.queueSessionStatusPublish(true, true)
+	s.queueSessionStatusPublish(true)
 }
 
-func (s *Server) queueSessionStatusPublish(force, refreshWorkspaceAfterPublish bool) {
+func (s *Server) queueSessionStatusPublish(force bool) {
 	if s.publishSessionStatus == nil {
 		return
 	}
@@ -515,10 +573,9 @@ func (s *Server) queueSessionStatusPublish(force, refreshWorkspaceAfterPublish b
 		s.sessionStatusPublishQueue[len(s.sessionStatusPublishQueue)-1].waitingForInput != waitingForInput
 	if queued {
 		s.sessionStatusPublishQueue = append(s.sessionStatusPublishQueue, sessionStatusPublishRequest{
-			active:                       active,
-			waitingForInput:              waitingForInput,
-			refreshWorkspaceAfterPublish: refreshWorkspaceAfterPublish,
-			settledTurnID:                settledTurnID,
+			active:          active,
+			waitingForInput: waitingForInput,
+			settledTurnID:   settledTurnID,
 		})
 	}
 	s.sessionStatusMu.Unlock()
@@ -692,9 +749,6 @@ func (s *Server) runSessionStatusPublishes(ctx context.Context) {
 		} else {
 			s.completeSessionStatusPublish()
 			s.recordSettledActivity(request)
-			if request.refreshWorkspaceAfterPublish {
-				s.requestWorkspaceStatusRefresh()
-			}
 			// A drain report may have been withheld until in-flight activity was
 			// durably published; re-evaluate now that the queue has advanced.
 			if s.drainReportPending() {
@@ -720,7 +774,7 @@ func (s *Server) runSessionStatusPublishes(ctx context.Context) {
 }
 
 func (s *Server) runTurn(ctx context.Context, turn turnRequest) {
-	defer s.requestWorkspaceStatusRefresh()
+	defer s.requestWorkspaceStatusRefresh(true)
 	turnCtx, cancelTurn := context.WithCancelCause(ctx)
 	turnDone := make(chan struct{})
 	command := turn.command
