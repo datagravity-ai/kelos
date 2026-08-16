@@ -419,6 +419,13 @@ must retain a conversation across Pod recovery.
 
 A WorkerPool manages a fleet of persistent worker pods backed by a StatefulSet. Tasks reference a WorkerPool via `spec.workerPoolRef` to execute on pre-warmed infrastructure instead of creating per-task Jobs.
 
+When a pooled Task is cancelled, the worker kills the Task's agent process
+tree and repeatedly sweeps for survivors before accepting another Task, so a
+cancelled Task's processes do not keep consuming the worker's resources. The
+sweep is bounded: if processes still remain after 10 seconds, the worker logs
+the remaining count and accepts the next Task anyway, so cleanup is
+best-effort rather than guaranteed.
+
 A WorkerPool's Workspace may use either a PAT-style or a GitHub App secret.
 GitHub App credentials are refreshed before they expire, so long-lived workers
 keep repository access without restarting (see [Workspace authentication](#workspace-authentication)).
