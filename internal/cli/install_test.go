@@ -3,6 +3,12 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/pem"
+	"math/big"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -906,14 +912,16 @@ func TestRequireCertManager(t *testing.T) {
 }
 
 func TestInstallReadinessPredicates(t *testing.T) {
+	currentCA := testCertificatePEM(t, 1)
+	encodedCurrentCA := base64.StdEncoding.EncodeToString(currentCA)
 	secret := &unstructured.Unstructured{Object: map[string]interface{}{
-		"data": map[string]interface{}{"tls.crt": "crt", "tls.key": "key", "ca.crt": "current-ca"},
+		"data": map[string]interface{}{"tls.crt": "crt", "tls.key": "key", "ca.crt": encodedCurrentCA},
 	}}
 	if !secretHasTLSData(secret) {
 		t.Fatal("expected TLS secret data to be ready")
 	}
 	caBundle, ok := webhookCertificateCABundle(secret)
-	if !ok || caBundle != "current-ca" {
+	if !ok || caBundle != encodedCurrentCA {
 		t.Fatalf("expected current certificate CA bundle, got %q, %t", caBundle, ok)
 	}
 
@@ -951,14 +959,80 @@ func TestInstallReadinessPredicates(t *testing.T) {
 
 	crd := &unstructured.Unstructured{Object: map[string]interface{}{}}
 	_ = unstructured.SetNestedField(crd.Object, "Webhook", "spec", "conversion", "strategy")
-	_ = unstructured.SetNestedField(crd.Object, "current-ca", "spec", "conversion", "webhook", "clientConfig", "caBundle")
+	_ = unstructured.SetNestedField(crd.Object, encodedCurrentCA, "spec", "conversion", "webhook", "clientConfig", "caBundle")
 	if !crdConversionCABundleMatches(crd, caBundle) {
 		t.Fatal("expected CRD conversion CA bundle to match current certificate CA")
 	}
-	_ = unstructured.SetNestedField(crd.Object, "stale-ca", "spec", "conversion", "webhook", "clientConfig", "caBundle")
+	staleCA := testCertificatePEM(t, 2)
+	_ = unstructured.SetNestedField(crd.Object, base64.StdEncoding.EncodeToString(staleCA), "spec", "conversion", "webhook", "clientConfig", "caBundle")
 	if crdConversionCABundleMatches(crd, caBundle) {
 		t.Fatal("expected stale CRD conversion CA bundle to be rejected")
 	}
+}
+
+func TestCRDConversionCABundleMatchesRotationBundle(t *testing.T) {
+	currentCA := testCertificatePEM(t, 1)
+	staleCA := testCertificatePEM(t, 2)
+	rotationBundle := append(append([]byte{}, staleCA...), currentCA...)
+	expectedCABundle := base64.StdEncoding.EncodeToString(currentCA)
+
+	crd := &unstructured.Unstructured{Object: map[string]interface{}{}}
+	_ = unstructured.SetNestedField(crd.Object, "Webhook", "spec", "conversion", "strategy")
+	_ = unstructured.SetNestedField(crd.Object, base64.StdEncoding.EncodeToString(rotationBundle), "spec", "conversion", "webhook", "clientConfig", "caBundle")
+
+	if !crdConversionCABundleMatches(crd, expectedCABundle) {
+		t.Fatal("expected rotation bundle containing the current CA to match")
+	}
+
+	requiredChainCA := testCertificatePEM(t, 3)
+	requiredChain := append(append([]byte{}, currentCA...), requiredChainCA...)
+	if crdConversionCABundleMatches(crd, base64.StdEncoding.EncodeToString(requiredChain)) {
+		t.Fatal("expected bundle missing a required chain certificate to be rejected")
+	}
+	completeRotationBundle := append(append([]byte{}, rotationBundle...), requiredChainCA...)
+	_ = unstructured.SetNestedField(crd.Object, base64.StdEncoding.EncodeToString(completeRotationBundle), "spec", "conversion", "webhook", "clientConfig", "caBundle")
+	if !crdConversionCABundleMatches(crd, base64.StdEncoding.EncodeToString(requiredChain)) {
+		t.Fatal("expected bundle containing every required chain certificate to match")
+	}
+
+	nonCertificateBlock := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: []byte("not a key")})
+	malformedBundle := append(append([]byte{}, rotationBundle...), nonCertificateBlock...)
+	_ = unstructured.SetNestedField(crd.Object, base64.StdEncoding.EncodeToString(malformedBundle), "spec", "conversion", "webhook", "clientConfig", "caBundle")
+	if crdConversionCABundleMatches(crd, expectedCABundle) {
+		t.Fatal("expected bundle containing a non-certificate PEM block to be rejected")
+	}
+
+	rawBundleCRD := &unstructured.Unstructured{Object: map[string]interface{}{
+		"spec": map[string]interface{}{
+			"conversion": map[string]interface{}{
+				"strategy": "Webhook",
+				"webhook": map[string]interface{}{
+					"clientConfig": map[string]interface{}{"caBundle": rotationBundle},
+				},
+			},
+		},
+	}}
+	if !crdConversionCABundleMatches(rawBundleCRD, expectedCABundle) {
+		t.Fatal("expected raw PEM rotation bundle containing the current CA to match")
+	}
+
+	if crdConversionCABundleMatches(rawBundleCRD, base64.StdEncoding.EncodeToString([]byte("not a certificate"))) {
+		t.Fatal("expected malformed current CA bundle to be rejected")
+	}
+}
+
+func testCertificatePEM(t *testing.T, serialNumber int64) []byte {
+	t.Helper()
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generating test certificate key: %v", err)
+	}
+	template := &x509.Certificate{SerialNumber: big.NewInt(serialNumber)}
+	certificate, err := x509.CreateCertificate(rand.Reader, template, template, publicKey, privateKey)
+	if err != nil {
+		t.Fatalf("creating test certificate: %v", err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificate})
 }
 
 func TestKelosCRDsExist(t *testing.T) {

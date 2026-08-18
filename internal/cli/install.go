@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/x509"
 	"encoding/base64"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"os"
@@ -715,14 +717,67 @@ func crdConversionCABundleMatches(crd *unstructured.Unstructured, expectedCABund
 	if err != nil || !ok {
 		return false
 	}
-	switch v := caBundle.(type) {
-	case string:
-		return v == expectedCABundle
-	case []byte:
-		return string(v) == expectedCABundle || base64.StdEncoding.EncodeToString(v) == expectedCABundle
-	default:
+	injectedCertificates, ok := certificateBundle(caBundle)
+	if !ok {
 		return false
 	}
+	requiredCertificates, ok := certificateBundle(expectedCABundle)
+	if !ok {
+		return false
+	}
+
+	// CA injection can retain a retiring certificate during rotation.
+	injectedCertificateSet := make(map[string]struct{}, len(injectedCertificates))
+	for _, certificate := range injectedCertificates {
+		injectedCertificateSet[string(certificate.Raw)] = struct{}{}
+	}
+	for _, certificate := range requiredCertificates {
+		if _, ok := injectedCertificateSet[string(certificate.Raw)]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func certificateBundle(value interface{}) ([]*x509.Certificate, bool) {
+	var data []byte
+	switch v := value.(type) {
+	case string:
+		data = []byte(v)
+	case []byte:
+		data = v
+	default:
+		return nil, false
+	}
+
+	if certificates, ok := parsePEMCertificates(data); ok {
+		return certificates, true
+	}
+	decoded, err := base64.StdEncoding.DecodeString(string(data))
+	if err != nil {
+		return nil, false
+	}
+	return parsePEMCertificates(decoded)
+}
+
+func parsePEMCertificates(data []byte) ([]*x509.Certificate, bool) {
+	var certificates []*x509.Certificate
+	for len(bytes.TrimSpace(data)) > 0 {
+		block, rest := pem.Decode(data)
+		if block == nil {
+			return nil, false
+		}
+		data = rest
+		if block.Type != "CERTIFICATE" {
+			return nil, false
+		}
+		certificate, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			return nil, false
+		}
+		certificates = append(certificates, certificate)
+	}
+	return certificates, len(certificates) > 0
 }
 
 func secretDataValue(secret *unstructured.Unstructured, key string) (string, bool) {
