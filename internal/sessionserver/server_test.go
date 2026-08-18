@@ -461,6 +461,94 @@ func TestSessionFormAPICreatesPersistentSession(t *testing.T) {
 	}
 }
 
+func TestSessionFormAPISetsIdlePolicy(t *testing.T) {
+	server := testServer(t)
+	payload := `{
+		"name":"idle-chat",
+		"namespace":"default",
+		"worker":{"type":"codex","credentials":{"type":"none"},"workspaceRef":{"name":"workspace"}},
+		"idlePolicy":{"suspendAfterSeconds":1800,"deleteAfterSeconds":604800}
+	}`
+	request := httptest.NewRequest(http.MethodPost, "/api/sessions", strings.NewReader(payload))
+	request.Header.Set("Authorization", "Bearer secret-token")
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create status = %d body = %s", response.Code, response.Body.String())
+	}
+
+	var session kelos.Session
+	if err := server.client.Get(t.Context(), client.ObjectKey{Namespace: "default", Name: "idle-chat"}, &session); err != nil {
+		t.Fatal(err)
+	}
+	policy := session.Spec.IdlePolicy
+	if policy == nil {
+		t.Fatal("idlePolicy is nil")
+	}
+	if policy.SuspendAfterSeconds == nil || *policy.SuspendAfterSeconds != 1800 {
+		t.Fatalf("suspendAfterSeconds = %v, want 1800", policy.SuspendAfterSeconds)
+	}
+	if policy.DeleteAfterSeconds == nil || *policy.DeleteAfterSeconds != 604800 {
+		t.Fatalf("deleteAfterSeconds = %v, want 604800", policy.DeleteAfterSeconds)
+	}
+}
+
+func TestSessionFormAPIWithoutIdlePolicy(t *testing.T) {
+	server := testServer(t)
+	payload := `{
+		"name":"no-idle-chat",
+		"namespace":"default",
+		"worker":{"type":"codex","credentials":{"type":"none"},"workspaceRef":{"name":"workspace"}}
+	}`
+	request := httptest.NewRequest(http.MethodPost, "/api/sessions", strings.NewReader(payload))
+	request.Header.Set("Authorization", "Bearer secret-token")
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create status = %d body = %s", response.Code, response.Body.String())
+	}
+
+	var session kelos.Session
+	if err := server.client.Get(t.Context(), client.ObjectKey{Namespace: "default", Name: "no-idle-chat"}, &session); err != nil {
+		t.Fatal(err)
+	}
+	if session.Spec.IdlePolicy != nil {
+		t.Fatalf("idlePolicy = %#v, want nil", session.Spec.IdlePolicy)
+	}
+}
+
+func TestSessionFormAPIPartialIdlePolicy(t *testing.T) {
+	server := testServer(t)
+	payload := `{
+		"name":"delete-only-chat",
+		"namespace":"default",
+		"worker":{"type":"codex","credentials":{"type":"none"},"workspaceRef":{"name":"workspace"}},
+		"idlePolicy":{"deleteAfterSeconds":3600}
+	}`
+	request := httptest.NewRequest(http.MethodPost, "/api/sessions", strings.NewReader(payload))
+	request.Header.Set("Authorization", "Bearer secret-token")
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create status = %d body = %s", response.Code, response.Body.String())
+	}
+
+	var session kelos.Session
+	if err := server.client.Get(t.Context(), client.ObjectKey{Namespace: "default", Name: "delete-only-chat"}, &session); err != nil {
+		t.Fatal(err)
+	}
+	policy := session.Spec.IdlePolicy
+	if policy == nil {
+		t.Fatal("idlePolicy is nil")
+	}
+	if policy.SuspendAfterSeconds != nil {
+		t.Fatalf("suspendAfterSeconds = %v, want nil", *policy.SuspendAfterSeconds)
+	}
+	if policy.DeleteAfterSeconds == nil || *policy.DeleteAfterSeconds != 3600 {
+		t.Fatalf("deleteAfterSeconds = %v, want 3600", policy.DeleteAfterSeconds)
+	}
+}
+
 func TestSessionYAMLApplyAPI(t *testing.T) {
 	server := testServer(t)
 	manifest := `apiVersion: kelos.dev/v1alpha2

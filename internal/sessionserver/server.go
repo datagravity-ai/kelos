@@ -149,6 +149,7 @@ type createSessionRequest struct {
 	InitialPrompt       string                            `json:"initialPrompt,omitempty"`
 	Section             string                            `json:"section,omitempty"`
 	VolumeClaimTemplate *corev1.PersistentVolumeClaimSpec `json:"volumeClaimTemplate,omitempty"`
+	IdlePolicy          *kelos.SessionIdlePolicy          `json:"idlePolicy,omitempty"`
 }
 
 type updateSessionSectionRequest struct {
@@ -540,6 +541,7 @@ func (s *Server) createSession(writer http.ResponseWriter, request *http.Request
 			InitialBranch:       payload.InitialBranch,
 			InitialPrompt:       payload.InitialPrompt,
 			VolumeClaimTemplate: payload.VolumeClaimTemplate,
+			IdlePolicy:          payload.IdlePolicy,
 		},
 	}
 	if section != "" {
