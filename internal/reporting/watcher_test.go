@@ -1495,6 +1495,93 @@ func TestSlackTaskReporter_PostsThreadReply(t *testing.T) {
 	}
 }
 
+func TestSlackTaskReporter_DoesNotRetryPermanentSlackError(t *testing.T) {
+	task := &kelos.Task{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-task",
+			Namespace: "default",
+			Annotations: map[string]string{
+				AnnotationSlackReporting: "enabled",
+				AnnotationSlackChannel:   "C123ABC",
+				AnnotationSlackThreadTS:  "1234567890.123456",
+			},
+		},
+		Status: kelos.TaskStatus{
+			Phase: kelos.TaskPhasePending,
+		},
+	}
+
+	cl := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(task).Build()
+
+	var attempts int
+	reporter := &fakeSlackReporter{
+		postFn: func(ctx context.Context, channel, threadTS string, msg SlackMessage) (string, error) {
+			attempts++
+			return "", slack.SlackErrorResponse{Err: "cannot_reply_to_message"}
+		},
+	}
+
+	tr := &SlackTaskReporter{Client: cl, Reporter: reporter}
+
+	if err := tr.ReportTaskStatus(context.Background(), task); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if attempts != 1 {
+		t.Errorf("post attempts = %d, want 1 (must not retry)", attempts)
+	}
+
+	// The phase must be persisted so the reconcile loop stops retrying.
+	var updated kelos.Task
+	if err := cl.Get(context.Background(), client.ObjectKeyFromObject(task), &updated); err != nil {
+		t.Fatalf("getting updated task: %v", err)
+	}
+	if updated.Annotations[AnnotationSlackReportPhase] != "accepted" {
+		t.Errorf("report phase = %q, want accepted", updated.Annotations[AnnotationSlackReportPhase])
+	}
+}
+
+func TestSlackTaskReporter_RetriesTransientSlackError(t *testing.T) {
+	task := &kelos.Task{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-task",
+			Namespace: "default",
+			Annotations: map[string]string{
+				AnnotationSlackReporting: "enabled",
+				AnnotationSlackChannel:   "C123ABC",
+				AnnotationSlackThreadTS:  "1234567890.123456",
+			},
+		},
+		Status: kelos.TaskStatus{
+			Phase: kelos.TaskPhasePending,
+		},
+	}
+
+	cl := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(task).Build()
+
+	reporter := &fakeSlackReporter{
+		postFn: func(ctx context.Context, channel, threadTS string, msg SlackMessage) (string, error) {
+			return "", errors.New("network error")
+		},
+	}
+
+	tr := &SlackTaskReporter{Client: cl, Reporter: reporter}
+
+	if err := tr.ReportTaskStatus(context.Background(), task); err == nil {
+		t.Fatal("expected error for transient failure, got nil")
+	}
+
+	// The phase must NOT be persisted — the error must bubble up so the
+	// reconcile loop retries.
+	var updated kelos.Task
+	if err := cl.Get(context.Background(), client.ObjectKeyFromObject(task), &updated); err != nil {
+		t.Fatalf("getting updated task: %v", err)
+	}
+	if updated.Annotations[AnnotationSlackReportPhase] != "" {
+		t.Errorf("report phase = %q, want empty (must not persist before retry)", updated.Annotations[AnnotationSlackReportPhase])
+	}
+}
+
 func TestSlackTaskReporter_PostsNewReplyOnPhaseChange(t *testing.T) {
 	task := &kelos.Task{
 		ObjectMeta: metav1.ObjectMeta{

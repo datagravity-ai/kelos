@@ -580,6 +580,14 @@ func (tr *SlackTaskReporter) ReportTaskStatus(ctx context.Context, task *kelos.T
 		log.Info("Posting Slack thread reply", "task", task.Name, "channel", channel, "phase", desiredPhase, "part", i+1, "total", len(msgs))
 		replyTS, err := tr.Reporter.PostThreadReply(ctx, channel, threadTS, msg)
 		if err != nil {
+			if isPermanentSlackError(err) {
+				// The thread will never accept a reply (e.g.
+				// cannot_reply_to_message), so retrying cannot succeed.
+				// Persist the phase as reported anyway so the reconcile
+				// loop stops retrying this post on every tick.
+				log.Error(err, "Permanent Slack error posting thread reply, not retrying", "task", task.Name, "channel", channel, "phase", desiredPhase, "part", i+1, "total", len(msgs))
+				return tr.persistSlackReportingState(ctx, task, desiredPhase)
+			}
 			return fmt.Errorf("posting Slack reply for task %s (part %d/%d): %w", task.Name, i+1, len(msgs), err)
 		}
 		if i == 0 {
