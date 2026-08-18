@@ -3,6 +3,7 @@ package reporting
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"sync"
 	"unicode/utf8"
@@ -76,6 +77,23 @@ func (r *SlackReporter) UpdateMessage(ctx context.Context, channel, messageTS st
 		return fmt.Errorf("updating Slack message: %w", err)
 	}
 	return nil
+}
+
+// isPermanentSlackError reports whether err is a Slack API error that
+// retrying can never fix. Slack rejects some chat.postMessage and
+// chat.update calls permanently — cannot_reply_to_message means the target
+// thread or message can never accept a reply — so retrying the same call
+// just burns reconcile cycles without a chance of success.
+//
+// slack-go v0.20.0 returns SlackErrorResponse by value from SlackResponse.Err()
+// (older releases returned a pointer), so both shapes are matched.
+func isPermanentSlackError(err error) bool {
+	var resp slack.SlackErrorResponse
+	if errors.As(err, &resp) {
+		return resp.Err == "cannot_reply_to_message"
+	}
+	var respPtr *slack.SlackErrorResponse
+	return errors.As(err, &respPtr) && respPtr.Err == "cannot_reply_to_message"
 }
 
 // contextBlock returns a context block displaying the task name.
