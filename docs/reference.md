@@ -303,7 +303,9 @@ Less important status-bar items are omitted as the terminal narrows. The
 model is the same runtime-reported value persisted in
 `status.model`. Web chat is served by the optional shared
 `kelos-session-server`; it shows the same live runtime details beneath its
-composer. It shows connection status separately from working, waiting-for-input,
+composer. The composer accepts prompt drafts while a selected Session is still
+Pending and enables sending after the runtime connects. It shows connection
+status separately from working, waiting-for-input,
 and interrupting progress, including elapsed time for active work, and adds the
 duration to its separator after a completed turn. Duration labels are omitted
 from retained history that does not contain event timestamps and from turns
