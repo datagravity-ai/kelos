@@ -197,8 +197,8 @@ the refreshed value on their next sync and are not supported.
 A Session is one interactive Claude Code, Codex, or OpenCode conversation that
 web and terminal clients can share and reconnect to. The spec is immutable
 except for `spec.worker.credentials`, `spec.worker.model`,
-fields under `spec.worker.podOverrides` other than `serviceAccountName`, and
-`spec.suspend`.
+`spec.suspend`, `spec.idlePolicy`, and fields under `spec.worker.podOverrides`
+other than `serviceAccountName`.
 Conversation events and history are retained on the Session workspace rather
 than in the Kubernetes API. If configured, `spec.initialPrompt` also remains in
 the Session resource and is visible through the Kubernetes API.

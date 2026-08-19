@@ -659,6 +659,33 @@ spec:
 		}
 	})
 
+	It("allows adding and removing the Session idle policy", func() {
+		session := validSession(namespace, "mutable-idle-policy", "codex")
+		Expect(k8sClient.Create(ctx, session)).To(Succeed())
+
+		session.Spec.IdlePolicy = &kelos.SessionIdlePolicy{SuspendAfterSeconds: ptr.To(int32(3600))}
+		Expect(k8sClient.Update(ctx, session)).To(Succeed())
+
+		session.Spec.IdlePolicy = nil
+		Expect(k8sClient.Update(ctx, session)).To(Succeed())
+
+		var current kelos.Session
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(session), &current)).To(Succeed())
+		Expect(current.Spec.IdlePolicy).To(BeNil())
+	})
+
+	It("rejects invalid Session idle policy updates", func() {
+		session := validSession(namespace, "invalid-idle-policy-update", "codex")
+		session.Spec.IdlePolicy = &kelos.SessionIdlePolicy{
+			SuspendAfterSeconds: ptr.To(int32(3600)),
+			DeleteAfterSeconds:  ptr.To(int32(7200)),
+		}
+		Expect(k8sClient.Create(ctx, session)).To(Succeed())
+
+		session.Spec.IdlePolicy.SuspendAfterSeconds = ptr.To(int32(7200))
+		Expect(k8sClient.Update(ctx, session)).NotTo(Succeed())
+	})
+
 	It("keeps Session configuration immutable", func() {
 		mutations := []struct {
 			name   string
@@ -690,9 +717,6 @@ spec:
 			}},
 			{name: "volume-claim-template", mutate: func(session *kelos.Session) {
 				session.Spec.VolumeClaimTemplate = nil
-			}},
-			{name: "idle-policy", mutate: func(session *kelos.Session) {
-				session.Spec.IdlePolicy = &kelos.SessionIdlePolicy{SuspendAfterSeconds: ptr.To(int32(60))}
 			}},
 		}
 		for _, mutation := range mutations {
