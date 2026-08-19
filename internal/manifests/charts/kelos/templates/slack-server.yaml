@@ -51,6 +51,10 @@ spec:
             - name: SLACK_JOIN_MESSAGE_FILE
               value: /etc/kelos/join-message.txt
             {{- end }}
+            {{- /* Rendered unconditionally so the chart owns this field under
+            server-side apply and can reconcile away a hand-set value. */}}
+            - name: SLACK_SOCKET_DEBUG
+              value: {{ if .Values.slackServer.socketDebug }}"1"{{ else }}"0"{{ end }}
           ports:
             - name: metrics
               containerPort: 8080

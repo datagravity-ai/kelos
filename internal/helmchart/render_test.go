@@ -332,6 +332,39 @@ func TestRender_SessionServerRequiresSecret(t *testing.T) {
 	}
 }
 
+func TestRender_SlackServerSocketDebug(t *testing.T) {
+	tests := []struct {
+		name        string
+		socketDebug interface{}
+		want        string
+	}{
+		{name: "default", socketDebug: nil, want: "- name: SLACK_SOCKET_DEBUG\n              value: \"0\""},
+		{name: "disabled", socketDebug: false, want: "- name: SLACK_SOCKET_DEBUG\n              value: \"0\""},
+		{name: "enabled", socketDebug: true, want: "- name: SLACK_SOCKET_DEBUG\n              value: \"1\""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			slack := map[string]interface{}{
+				"enabled":    true,
+				"secretName": "slack-auth",
+			}
+			if tt.socketDebug != nil {
+				slack["socketDebug"] = tt.socketDebug
+			}
+			data, err := Render(manifests.ChartFS, map[string]interface{}{"slackServer": slack})
+			if err != nil {
+				t.Fatalf("rendering chart: %v", err)
+			}
+			// The env var is always rendered so server-side apply keeps the
+			// field owned by the chart and drift reconciles away.
+			if !strings.Contains(string(data), tt.want) {
+				t.Errorf("expected Slack server render to contain %q", tt.want)
+			}
+		})
+	}
+}
+
 func TestRender_TaskSpawnerTemplatePlaceholdersRemainLiteral(t *testing.T) {
 	vals := map[string]interface{}{
 		"crds": map[string]interface{}{

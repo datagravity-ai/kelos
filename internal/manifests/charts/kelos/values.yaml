@@ -168,6 +168,9 @@ slackServer:
   joinMessage: ""
   # Deny service to externally shared (Slack Connect) channels.
   denySlackConnectChannels: false
+  # Enable verbose Socket Mode WebSocket frame logging. Frames are logged in
+  # full, including Slack tokens, so keep this off outside of debugging.
+  socketDebug: false
   resources:
     limits:
       cpu: 500m
