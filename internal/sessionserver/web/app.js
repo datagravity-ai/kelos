@@ -1048,9 +1048,10 @@ async function loadSessions({quiet = false} = {}) {
         } else {
           const beganReset = !state.selected.resetting && current.resetting;
           const becameReady = (state.selected.phase !== 'Ready' || state.selected.resetting) && current.phase === 'Ready' && !current.resetting;
+          const becameNotReady = state.selected.phase === 'Ready' && current.phase !== 'Ready';
           state.selected = current;
+          if (beganReset || becameNotReady) closeSocket();
           if (beganReset) {
-            closeSocket();
             resetCurrentSessionView();
           }
           renderHeader();
@@ -1591,7 +1592,7 @@ function renderHeader() {
     setComposer(false);
   } else if (session.phase !== 'Ready') {
     setConnection(session.phase === 'Failed' ? 'error' : 'connecting', session.phase || 'Pending');
-    setComposer(false);
+    setComposer(!session.phase || session.phase === 'Pending');
   }
   renderRuntimeStatus();
 }

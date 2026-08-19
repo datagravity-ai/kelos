@@ -142,6 +142,7 @@ let interruptRequests;
 let socketConnections;
 let progressTimers;
 let toasts;
+let closeSocketRequests;
 
 global.window = {
   clearInterval: (timer) => progressTimers.delete(timer),
@@ -172,9 +173,19 @@ function resetHarness() {
     progressElapsed: new TestNode('span'),
     runtimeStatus: new TestNode('div'),
     sidebar: new TestNode('aside'),
+    displayNameButton: new TestNode('button'),
+    resetButton: new TestNode('button'),
+    deleteButton: new TestNode('button'),
+    conversationTab: new TestNode('button'),
+    changesTab: new TestNode('button'),
+    title: new TestNode('h1'),
+    meta: new TestNode('div'),
+    connection: new TestNode('div'),
     welcome: null,
   };
+  elements.connection.append(new TestNode('span'), new TestNode('span'));
   global.state = {
+    sessions: [],
     selected: null,
     currentView: null,
     sessionViews: new Map(),
@@ -208,10 +219,13 @@ function resetHarness() {
     runtimeRecoveryActive: false,
     pinHistoryToBottom: false,
     fileChangesDirty: false,
+    namespace: 'default',
+    namespaceGeneration: 0,
   };
   bottomAnchors = 0;
   interruptRequests = 0;
   socketConnections = 0;
+  closeSocketRequests = 0;
   progressTimers = new Map();
   toasts = [];
 }
@@ -223,10 +237,16 @@ global.renderMessageMarkdown = (element, text) => { element.textContent = text |
 global.providerInitials = () => 'A';
 global.savePromptDraft = () => {};
 global.restorePromptDraft = () => {};
-global.closeSocket = () => {};
+global.closeSocket = () => {
+  closeSocketRequests++;
+  state.socket = null;
+};
 global.setActiveView = () => {};
 global.renderSessions = () => {};
 global.renderHeader = () => {};
+global.renderSectionOptions = () => {};
+global.renderSelectedSessionSection = () => {};
+global.createPullRequestLink = () => null;
 global.resizeComposer = () => {};
 global.scheduleBottomAnchor = () => { bottomAnchors++; };
 global.connectSocket = () => { socketConnections++; };
@@ -252,9 +272,15 @@ function applicationSlice(start, end) {
 
 vm.runInThisContext(applicationSlice('function sessionKey', 'function savePromptDraft'), {filename: 'app.js'});
 vm.runInThisContext(applicationSlice('function savePromptDraft', 'function providerLabel'), {filename: 'app.js'});
+vm.runInThisContext(applicationSlice('function providerLabel', 'function parseSessionTimestamp'), {filename: 'app.js'});
 vm.runInThisContext(applicationSlice('function parseSessionTimestamp', 'function safeHTTPURL'), {filename: 'app.js'});
 vm.runInThisContext(applicationSlice('function selectSession', 'function renderHeader'), {filename: 'app.js'});
+vm.runInThisContext(applicationSlice('async function loadSessions', 'async function loadConfig'), {filename: 'app.js'});
 vm.runInThisContext(applicationSlice('function usesTouchComposer', 'function closeSocket'), {filename: 'app.js'});
+const renderSessionHeader = vm.runInThisContext(
+  `(() => {${applicationSlice('function renderHeader', 'function usesTouchComposer')} return renderHeader;})()`,
+  {filename: 'app.js'},
+);
 vm.runInThisContext(applicationSlice('function ensureConversation', 'function trimURLSuffix'), {filename: 'app.js'});
 vm.runInThisContext(applicationSlice('function completedAssistantText', 'function handleEvent'), {filename: 'app.js'});
 vm.runInThisContext(applicationSlice('function handleEvent', 'function renderUser'), {filename: 'app.js'});
@@ -394,6 +420,50 @@ function testComposerLabelsPendingSubmission() {
   elements.input.value = '/goal pause';
   updateComposerAction();
   assert.equal(elements.composerHint.textContent, 'Enter to run goal command · Shift+Enter for a new line · !COMMAND · /goal');
+}
+
+function testPendingSessionComposerAllowsDraft() {
+  resetHarness();
+  const session = {namespace: 'default', name: 'one', uid: 'uid-one', provider: 'codex', phase: 'Pending'};
+  state.selected = session;
+
+  renderSessionHeader();
+
+  assert.equal(elements.input.disabled, false);
+  assert.equal(elements.attachFiles.disabled, false);
+  assert.equal(elements.send.disabled, true);
+  elements.input.value = 'Start by reviewing the failing tests';
+  savePromptDraft(session);
+  assert.equal(state.promptDrafts.get(sessionKey(session)), 'Start by reviewing the failing tests');
+}
+
+function testFailedSessionComposerRejectsDraft() {
+  resetHarness();
+  state.selected = {namespace: 'default', name: 'one', uid: 'uid-one', provider: 'codex', phase: 'Failed'};
+
+  renderSessionHeader();
+
+  assert.equal(elements.input.disabled, true);
+  assert.equal(elements.attachFiles.disabled, true);
+  assert.equal(elements.send.disabled, true);
+}
+
+async function testReadySessionDisconnectsWhenItBecomesPending() {
+  resetHarness();
+  const session = {namespace: 'default', name: 'one', uid: 'uid-one', provider: 'codex', phase: 'Ready'};
+  state.selected = session;
+  state.sessions = [session];
+  state.socket = {readyState: WebSocket.OPEN};
+  global.api = async () => [{...session, phase: 'Pending'}];
+  global.renderHeader = renderSessionHeader;
+
+  await loadSessions({quiet: true});
+
+  assert.equal(closeSocketRequests, 1);
+  assert.equal(state.socket, null);
+  assert.equal(state.selected.phase, 'Pending');
+  assert.equal(elements.input.disabled, false);
+  assert.equal(elements.send.disabled, true);
 }
 
 async function testComposerIgnoresReentrantSubmission() {
@@ -901,6 +971,8 @@ testSessionViewReset();
 testSessionProgressLifecycle();
 testComposerInterruptsWhileInputIsDisabled();
 testComposerLabelsPendingSubmission();
+testPendingSessionComposerAllowsDraft();
+testFailedSessionComposerRejectsDraft();
 testSessionProgressSurvivesCachedViewSwitch();
 testSessionProgressElapsedFormatting();
 testRuntimeStatusLifecycle();
@@ -926,7 +998,8 @@ testUserAttachmentRendering();
 testPendingMessageEditing();
 testPendingMessageRemoval();
 testPendingMessageSurvivesCompletedHistoryReplay();
-testComposerIgnoresReentrantSubmission()
+testReadySessionDisconnectsWhenItBecomesPending()
+  .then(testComposerIgnoresReentrantSubmission)
   .then(() => process.stdout.write('Session history tests passed\n'))
   .catch(error => {
     process.stderr.write(`${error.stack}\n`);
