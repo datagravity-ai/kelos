@@ -152,13 +152,11 @@ type credentialOption struct {
 }
 
 type createSessionRequest struct {
-	Name                string                            `json:"name"`
-	Namespace           string                            `json:"namespace"`
-	Worker              kelos.WorkerSpec                  `json:"worker"`
-	InitialBranch       string                            `json:"initialBranch,omitempty"`
-	InitialPrompt       string                            `json:"initialPrompt,omitempty"`
-	Section             string                            `json:"section,omitempty"`
-	VolumeClaimTemplate *corev1.PersistentVolumeClaimSpec `json:"volumeClaimTemplate,omitempty"`
+	Name      string `json:"name"`
+	Namespace string `json:"namespace"`
+	Section   string `json:"section,omitempty"`
+
+	kelos.SessionSpec `json:",inline"`
 }
 
 type updateSessionSectionRequest struct {
@@ -926,12 +924,7 @@ func (s *Server) createSession(writer http.ResponseWriter, request *http.Request
 			Name:      payload.Name,
 			Namespace: payload.Namespace,
 		},
-		Spec: kelos.SessionSpec{
-			Worker:              payload.Worker,
-			InitialBranch:       payload.InitialBranch,
-			InitialPrompt:       payload.InitialPrompt,
-			VolumeClaimTemplate: payload.VolumeClaimTemplate,
-		},
+		Spec: payload.SessionSpec,
 	}
 	if section != "" {
 		session.Annotations = map[string]string{sessionSectionAnnotation: section}
