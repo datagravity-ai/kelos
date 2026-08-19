@@ -9,6 +9,11 @@ const elements = {
   displayNameInput: document.querySelector('#session-display-name-input'),
   displayNameDialogError: document.querySelector('#display-name-dialog-error'),
   saveDisplayNameButton: document.querySelector('#save-session-display-name'),
+  sessionActionsMenu: document.querySelector('#session-actions-menu'),
+  sessionActionRename: document.querySelector('#session-action-rename'),
+  sessionActionReset: document.querySelector('#session-action-reset'),
+  sessionActionDelete: document.querySelector('#session-action-delete'),
+  newSessionButton: document.querySelector('#new-session'),
   sectionSelect: document.querySelector('#session-section-select'),
   sectionCustom: document.querySelector('#session-section-custom'),
   sectionForm: document.querySelector('#session-section-form'),
@@ -124,6 +129,9 @@ const state = {
   sourceStorageClassNamePresent: false,
   loadedSource: null,
   displayNameSaving: false,
+  displayNameSession: null,
+  sessionActionKey: '',
+  sessionActionTrigger: null,
   sectionSaving: false,
   sectionAssignments: new Set(),
   sectionOrders: new Map(),
@@ -626,18 +634,21 @@ function createPullRequestLink(pullRequest, className) {
 }
 
 function renderSessions() {
+  if (state.sessionActionKey) state.sessionActionTrigger = null;
   elements.list.replaceChildren();
   if (!state.sessions.length) {
     const empty = document.createElement('div');
     empty.className = 'sidebar-empty';
     empty.textContent = `No Sessions in ${state.namespace}.`;
     elements.list.append(empty);
+    syncSessionActionsMenu();
     return;
   }
 
   const sections = orderedSessionSections();
   if (!sections.length) {
     for (const session of state.sessions) elements.list.append(createSessionListItem(session));
+    syncSessionActionsMenu();
     return;
   }
 
@@ -691,6 +702,7 @@ function renderSessions() {
     configureSectionDrag(group, heading, title, section);
     elements.list.append(group);
   }
+  syncSessionActionsMenu();
 }
 
 function createSessionListItem(session, draggable = false) {
@@ -743,6 +755,23 @@ function createSessionListItem(session, draggable = false) {
   button.append(dot, text);
   button.addEventListener('click', () => selectSession(session, true));
   item.append(button);
+  const actions = document.createElement('button');
+  actions.className = 'session-item-actions';
+  actions.type = 'button';
+  actions.textContent = '…';
+  actions.title = `Actions for ${sessionDisplayName(session)}`;
+  actions.setAttribute('aria-label', actions.title);
+  actions.setAttribute('aria-haspopup', 'menu');
+  actions.setAttribute('aria-controls', 'session-actions-menu');
+  actions.setAttribute('aria-expanded', 'false');
+  actions.dataset.sessionKey = key;
+  actions.draggable = false;
+  actions.addEventListener('click', event => {
+    event.stopPropagation();
+    toggleSessionActionsMenu(session, actions);
+  });
+  item.append(actions);
+  if (state.sessionActionKey === key) state.sessionActionTrigger = actions;
   const link = createPullRequestLink(session.pullRequest, 'session-item-pull-request');
   if (link) {
     item.classList.add('has-pull-request');
@@ -751,6 +780,96 @@ function createSessionListItem(session, draggable = false) {
   }
   if (item.draggable) configureSessionDrag(item, session);
   return item;
+}
+
+function sessionActionsTarget() {
+  return state.sessions.find(session => sessionKey(session) === state.sessionActionKey) || null;
+}
+
+function sessionActionButtons() {
+  return Array.from(elements.list.querySelectorAll('.session-item-actions'));
+}
+
+function restoreSessionActionFocus(session, fallbackIndex) {
+  const buttons = sessionActionButtons();
+  const target = buttons.find(button => button.dataset.sessionKey === sessionKey(session));
+  const fallback = buttons[Math.min(Math.max(fallbackIndex, 0), buttons.length - 1)];
+  (target || fallback || elements.newSessionButton).focus();
+}
+
+async function runSessionMenuAction(event, action) {
+  const session = sessionActionsTarget();
+  if (!session) return;
+  const restoreFocus = event.detail === 0;
+  const fallbackIndex = sessionActionButtons().indexOf(state.sessionActionTrigger);
+  closeSessionActionsMenu();
+  await action(session);
+  if (restoreFocus) restoreSessionActionFocus(session, fallbackIndex);
+}
+
+function positionSessionActionsMenu(trigger) {
+  const triggerBounds = trigger.getBoundingClientRect();
+  const menuBounds = elements.sessionActionsMenu.getBoundingClientRect();
+  const margin = 8;
+  const gap = 4;
+  const left = Math.max(margin, Math.min(
+    triggerBounds.right - menuBounds.width,
+    window.innerWidth - menuBounds.width - margin,
+  ));
+  let top = triggerBounds.bottom + gap;
+  if (top + menuBounds.height > window.innerHeight - margin) {
+    top = Math.max(margin, triggerBounds.top - menuBounds.height - gap);
+  }
+  elements.sessionActionsMenu.style.left = `${left}px`;
+  elements.sessionActionsMenu.style.top = `${top}px`;
+}
+
+function closeSessionActionsMenu(restoreFocus = false) {
+  const trigger = state.sessionActionTrigger;
+  if (trigger) trigger.setAttribute('aria-expanded', 'false');
+  elements.sessionActionsMenu.hidden = true;
+  elements.sessionActionsMenu.removeAttribute('aria-label');
+  state.sessionActionKey = '';
+  state.sessionActionTrigger = null;
+  if (restoreFocus && trigger) trigger.focus();
+}
+
+function openSessionActionsMenu(session, trigger) {
+  closeSessionActionsMenu();
+  state.sessionActionKey = sessionKey(session);
+  state.sessionActionTrigger = trigger;
+  trigger.setAttribute('aria-expanded', 'true');
+  elements.sessionActionReset.disabled = session.resetting;
+  elements.sessionActionsMenu.setAttribute('aria-label', `Actions for ${sessionDisplayName(session)}`);
+  elements.sessionActionsMenu.hidden = false;
+  positionSessionActionsMenu(trigger);
+  elements.sessionActionRename.focus();
+}
+
+function toggleSessionActionsMenu(session, trigger) {
+  if (!elements.sessionActionsMenu.hidden && state.sessionActionKey === sessionKey(session)) {
+    closeSessionActionsMenu(true);
+    return;
+  }
+  openSessionActionsMenu(session, trigger);
+}
+
+function syncSessionActionsMenu() {
+  if (!state.sessionActionKey) return;
+  const session = sessionActionsTarget();
+  if (!session || !state.sessionActionTrigger) {
+    closeSessionActionsMenu();
+    return;
+  }
+  state.sessionActionTrigger.setAttribute('aria-expanded', 'true');
+  elements.sessionActionReset.disabled = session.resetting;
+  elements.sessionActionsMenu.setAttribute('aria-label', `Actions for ${sessionDisplayName(session)}`);
+  positionSessionActionsMenu(state.sessionActionTrigger);
+}
+
+function handleSessionActionsFocusOut(event) {
+  if (elements.sessionActionsMenu.contains(event.relatedTarget) || state.sessionActionTrigger?.contains(event.relatedTarget)) return;
+  closeSessionActionsMenu();
 }
 
 function sectionLabel(section) {
@@ -3592,7 +3711,7 @@ async function openDialog() {
   window.setTimeout(() => (state.creationMode === 'yaml' ? elements.yaml : elements.form.elements.name).focus(), 0);
 }
 
-document.querySelector('#new-session').addEventListener('click', openDialog);
+elements.newSessionButton.addEventListener('click', openDialog);
 document.querySelector('#welcome-new').addEventListener('click', openDialog);
 document.querySelectorAll('.close-dialog').forEach(button => button.addEventListener('click', () => elements.dialog.close()));
 elements.namespaceForm.addEventListener('submit', async event => {
@@ -3729,9 +3848,9 @@ elements.form.addEventListener('submit', async event => {
   }
 });
 
-function openDisplayNameDialog() {
-  const session = state.selected;
+function openDisplayNameDialog(session = state.selected) {
   if (!session || state.displayNameSaving) return;
+  state.displayNameSession = session;
   elements.displayNameDialogError.textContent = '';
   elements.displayNameDialogDescription.textContent = `Set a display name for Session ${session.namespace}/${session.name} without changing its Kubernetes resource name.`;
   elements.displayNameInput.value = sessionDisplayName(session) === session.name ? '' : sessionDisplayName(session);
@@ -3751,14 +3870,20 @@ function setDisplayNameSaving(saving) {
 }
 
 function closeDisplayNameDialog() {
-  if (!state.displayNameSaving) elements.displayNameDialog.close();
+  if (state.displayNameSaving) return;
+  state.displayNameSession = null;
+  elements.displayNameDialog.close();
 }
 
 function handleDisplayNameDialogCancel(event) {
-  if (state.displayNameSaving) event.preventDefault();
+  if (state.displayNameSaving) {
+    event.preventDefault();
+    return;
+  }
+  state.displayNameSession = null;
 }
 
-elements.displayNameButton.addEventListener('click', openDisplayNameDialog);
+elements.displayNameButton.addEventListener('click', () => openDisplayNameDialog());
 document.querySelectorAll('.close-display-name-dialog').forEach(button => {
   button.addEventListener('click', closeDisplayNameDialog);
 });
@@ -3767,13 +3892,15 @@ elements.displayNameDialog.addEventListener('cancel', handleDisplayNameDialogCan
 elements.displayNameForm.addEventListener('submit', async event => {
   event.preventDefault();
   if (state.displayNameSaving) return;
-  const session = state.selected;
+  const session = state.displayNameSession;
   if (!session) {
+    state.displayNameSession = null;
     elements.displayNameDialog.close();
     return;
   }
   const displayName = elements.displayNameInput.value.trim();
   if ((displayName || session.name) === sessionDisplayName(session)) {
+    state.displayNameSession = null;
     elements.displayNameDialog.close();
     return;
   }
@@ -3782,6 +3909,7 @@ elements.displayNameForm.addEventListener('submit', async event => {
   try {
     await saveSessionDisplayName(session, displayName);
     elements.displayNameDialog.close();
+    state.displayNameSession = null;
     showToast(displayName ? 'Session renamed' : 'Session name reset');
   } catch (error) {
     elements.displayNameDialogError.textContent = error.message;
@@ -3875,39 +4003,68 @@ elements.sectionForm.addEventListener('submit', async event => {
   await saveSelectedSessionSection(elements.sectionChoiceCustom.value.trim());
 });
 
-elements.deleteButton.addEventListener('click', async () => {
-  const session = state.selected;
+async function deleteSession(session) {
   if (!session || !window.confirm(`Delete Session ${session.namespace}/${session.name}? The live conversation will end.`)) return;
   try {
     await api(`/api/sessions/${encodeURIComponent(session.namespace)}/${encodeURIComponent(session.name)}`, {method: 'DELETE'});
     discardSessionView(session);
-    selectSession(null);
     clearPromptDraft(session);
     clearAttachmentDraft(session);
+    if (state.selected && sessionKey(state.selected) === sessionKey(session)) selectSession(null);
     await loadSessions();
     showToast('Session deleted');
   } catch (error) {
     showToast(error.message);
   }
-});
-elements.resetButton.addEventListener('click', async () => {
-  const session = state.selected;
+}
+
+async function resetSession(session) {
   if (!session || session.resetting || !window.confirm(`Reset Session ${session.namespace}/${session.name}? This permanently deletes its conversation history and all workspace changes.`)) return;
   try {
     const resetting = await api(`/api/sessions/${encodeURIComponent(session.namespace)}/${encodeURIComponent(session.name)}/reset`, {method: 'POST'});
-    closeSocket();
-    resetCurrentSessionView();
     discardSessionView(session);
-    state.currentView = null;
     clearPromptDraft(session);
     clearAttachmentDraft(session);
-    selectSession(resetting);
+    if (state.selected && sessionKey(state.selected) === sessionKey(session)) {
+      closeSocket();
+      resetCurrentSessionView();
+      state.currentView = null;
+      selectSession(resetting);
+    }
     await loadSessions();
     showToast('Session reset requested');
   } catch (error) {
     showToast(error.message);
   }
+}
+
+elements.deleteButton.addEventListener('click', () => deleteSession(state.selected));
+elements.resetButton.addEventListener('click', () => resetSession(state.selected));
+elements.sessionActionRename.addEventListener('click', () => {
+  const session = sessionActionsTarget();
+  closeSessionActionsMenu();
+  openDisplayNameDialog(session);
 });
+elements.sessionActionReset.addEventListener('click', event => {
+  void runSessionMenuAction(event, resetSession);
+});
+elements.sessionActionDelete.addEventListener('click', event => {
+  void runSessionMenuAction(event, deleteSession);
+});
+elements.sessionActionsMenu.addEventListener('keydown', event => {
+  const items = Array.from(elements.sessionActionsMenu.querySelectorAll('[role="menuitem"]'))
+    .filter(item => !item.disabled);
+  if (!items.length) return;
+  let index = items.indexOf(document.activeElement);
+  if (event.key === 'ArrowDown') index = (index + 1) % items.length;
+  else if (event.key === 'ArrowUp') index = (index - 1 + items.length) % items.length;
+  else if (event.key === 'Home') index = 0;
+  else if (event.key === 'End') index = items.length - 1;
+  else return;
+  event.preventDefault();
+  items[index].focus();
+});
+elements.sessionActionsMenu.addEventListener('focusout', handleSessionActionsFocusOut);
 elements.conversationTab.addEventListener('click', () => setActiveView('conversation'));
 elements.changesTab.addEventListener('click', () => setActiveView('changes'));
 elements.viewTabs.addEventListener('keydown', handleViewTabKeydown);
@@ -3933,7 +4090,19 @@ function setSidebarOpen(open) {
 elements.openSidebar.addEventListener('click', () => setSidebarOpen(true));
 elements.closeSidebar.addEventListener('click', () => setSidebarOpen(false));
 elements.sidebarScrim.addEventListener('click', () => setSidebarOpen(false));
+elements.list.addEventListener('scroll', () => closeSessionActionsMenu());
+window.addEventListener('resize', () => closeSessionActionsMenu());
+document.addEventListener('pointerdown', event => {
+  if (elements.sessionActionsMenu.hidden) return;
+  if (elements.sessionActionsMenu.contains(event.target) || state.sessionActionTrigger?.contains(event.target)) return;
+  closeSessionActionsMenu();
+});
 document.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && !elements.sessionActionsMenu.hidden) {
+    event.preventDefault();
+    closeSessionActionsMenu(true);
+    return;
+  }
   if (event.key === 'Escape' && elements.sidebar.classList.contains('open')) setSidebarOpen(false);
 });
 

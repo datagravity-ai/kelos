@@ -414,6 +414,17 @@ func TestApplicationInputRequestBehavior(t *testing.T) {
 	}
 }
 
+func TestApplicationSessionActionsBehavior(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("Node.js is not installed")
+	}
+	command := exec.Command(node, "testdata/session_actions_test.js")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("running Session actions tests: %v\n%s", err, output)
+	}
+}
+
 func TestSessionFormAPICreatesPersistentSession(t *testing.T) {
 	server := testServer(t)
 	payload := `{
@@ -660,10 +671,11 @@ func TestSessionResetControlWarnsAndUsesResetEndpoint(t *testing.T) {
 		t.Fatal(err)
 	}
 	for description, expected := range map[string]string{
-		"destructive warning":       "This permanently deletes its conversation history and all workspace changes.",
-		"reset API request":         "/reset`, {method: 'POST'}",
-		"reset history clearing":    "resetCurrentSessionView();\n    discardSessionView(session);",
-		"reset connection blocking": "state.selected.resetting",
+		"destructive warning":        "This permanently deletes its conversation history and all workspace changes.",
+		"reset API request":          "/reset`, {method: 'POST'}",
+		"reset history clearing":     "resetCurrentSessionView();",
+		"reset cached view clearing": "discardSessionView(session);",
+		"reset connection blocking":  "state.selected.resetting",
 	} {
 		if !strings.Contains(string(javascript), expected) {
 			t.Errorf("Session reset control is missing %s: %s", description, expected)
@@ -683,7 +695,7 @@ func TestSessionComposerKeepsDraftsPerSession(t *testing.T) {
 		"Session selection save":  "function selectSession(session, resumeIdle = false) {\n  savePromptDraft(state.selected);",
 		"Session draft restore":   `state.promptDrafts.get(sessionKey(session))`,
 		"prompt submission clear": "state.socket.send(JSON.stringify({type: 'message', text, attachmentIds: attachments.map(attachment => attachment.id)}));\n    clearPromptDraft(session);",
-		"Session deletion clear":  "selectSession(null);\n    clearPromptDraft(session);",
+		"Session deletion clear":  "{method: 'DELETE'});\n    discardSessionView(session);\n    clearPromptDraft(session);\n    clearAttachmentDraft(session);",
 		"composer input save":     "elements.input.addEventListener('input', () => {\n  savePromptDraft(state.selected);",
 	} {
 		if !strings.Contains(string(source), expected) {
