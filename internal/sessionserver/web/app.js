@@ -69,6 +69,7 @@ const elements = {
   persistentVolume: document.querySelector('#volume-claim-enabled'),
   volumeClaimFields: document.querySelector('#volume-claim-fields'),
   createButton: document.querySelector('#create-session'),
+  resumeButton: document.querySelector('#resume-session'),
   resetButton: document.querySelector('#reset-session'),
   deleteButton: document.querySelector('#delete-session'),
   sidebar: document.querySelector('#sidebar'),
@@ -120,12 +121,14 @@ const state = {
   defaultNamespace: 'default',
   namespace: 'default',
   namespaceGeneration: 0,
+  sessionListGeneration: 0,
   options: {credentials: [], workspaces: [], agentConfigs: [], sessions: []},
   selectedAgentConfigs: [],
   creationMode: 'form',
   sourceGeneration: 0,
   sourceLoading: false,
   creatingSession: false,
+  resumingSession: false,
   sourceStorageClassNamePresent: false,
   loadedSource: null,
   displayNameSaving: false,
@@ -1153,9 +1156,10 @@ function resetSectionSelection() {
 async function loadSessions({quiet = false} = {}) {
   const namespace = state.namespace;
   const generation = state.namespaceGeneration;
+  const listGeneration = ++state.sessionListGeneration;
   try {
     const sessions = await api(`/api/sessions?namespace=${encodeURIComponent(namespace)}`);
-    if (generation !== state.namespaceGeneration) return;
+    if (generation !== state.namespaceGeneration || listGeneration !== state.sessionListGeneration) return;
     state.sessions = sessions;
     renderSectionOptions();
     if (state.selected) {
@@ -1183,7 +1187,7 @@ async function loadSessions({quiet = false} = {}) {
     }
     renderSessions();
   } catch (error) {
-    if (!quiet && generation === state.namespaceGeneration) showToast(error.message);
+    if (!quiet && generation === state.namespaceGeneration && listGeneration === state.sessionListGeneration) showToast(error.message);
   }
 }
 
@@ -1646,10 +1650,40 @@ function selectSession(session, resumeIdle = false) {
 
 async function resumeIdleSession(session) {
   try {
-    await api(`/api/sessions/${encodeURIComponent(session.namespace)}/${encodeURIComponent(session.name)}/resume`, {method: 'POST'});
-    await loadSessions({quiet: true});
+    await requestSessionResume(session);
   } catch (error) {
     showToast(error.message);
+  }
+}
+
+async function requestSessionResume(session) {
+  const generation = state.namespaceGeneration;
+  const updated = await api(
+    `/api/sessions/${encodeURIComponent(session.namespace)}/${encodeURIComponent(session.name)}/resume`,
+    {method: 'POST'},
+  );
+  if (generation !== state.namespaceGeneration) return updated;
+  state.sessionListGeneration += 1;
+  state.sessions = state.sessions.map(item => sessionKey(item) === sessionKey(updated) ? updated : item);
+  if (state.selected && sessionKey(state.selected) === sessionKey(updated)) state.selected = updated;
+  renderSessions();
+  renderHeader();
+  return updated;
+}
+
+async function resumeSelectedSession() {
+  const session = state.selected;
+  if (!session?.userSuspended || state.resumingSession) return;
+  state.resumingSession = true;
+  renderHeader();
+  try {
+    await requestSessionResume(session);
+    showToast('Session resume requested');
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    state.resumingSession = false;
+    renderHeader();
   }
 }
 
@@ -1669,6 +1703,8 @@ function renderHeader() {
   elements.displayNameButton.hidden = !session;
   elements.displayNameButton.disabled = !session;
   renderSelectedSessionSection(session);
+  elements.resumeButton.hidden = !session?.userSuspended;
+  elements.resumeButton.disabled = !session?.userSuspended || state.resumingSession;
   elements.resetButton.disabled = !session || session.resetting;
   elements.deleteButton.disabled = !session;
   elements.conversationTab.disabled = !session;
@@ -4039,6 +4075,7 @@ async function resetSession(session) {
   }
 }
 
+elements.resumeButton.addEventListener('click', resumeSelectedSession);
 elements.deleteButton.addEventListener('click', () => deleteSession(state.selected));
 elements.resetButton.addEventListener('click', () => resetSession(state.selected));
 elements.sessionActionRename.addEventListener('click', () => {

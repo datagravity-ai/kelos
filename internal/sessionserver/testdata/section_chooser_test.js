@@ -449,7 +449,7 @@ async function testInlineNewSectionSubmission() {
   global.showToast = () => {};
 
   vm.runInThisContext(
-    applicationSlice("elements.sectionChoice.addEventListener", "elements.deleteButton.addEventListener"),
+    applicationSlice("elements.sectionChoice.addEventListener", "elements.resumeButton.addEventListener"),
     {filename: 'app.js'},
   );
   renderSelectedSessionSection(session);

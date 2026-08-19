@@ -174,6 +174,7 @@ function resetHarness() {
     runtimeStatus: new TestNode('div'),
     sidebar: new TestNode('aside'),
     displayNameButton: new TestNode('button'),
+    resumeButton: new TestNode('button'),
     resetButton: new TestNode('button'),
     deleteButton: new TestNode('button'),
     conversationTab: new TestNode('button'),
@@ -221,6 +222,7 @@ function resetHarness() {
     fileChangesDirty: false,
     namespace: 'default',
     namespaceGeneration: 0,
+    sessionListGeneration: 0,
   };
   bottomAnchors = 0;
   interruptRequests = 0;
