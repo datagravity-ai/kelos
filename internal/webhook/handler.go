@@ -545,7 +545,15 @@ func (h *WebhookHandler) matchesSpawner(ctx context.Context, spawner *kelos.Task
 		}
 		parsed.ID = parsed.Generic.Fields["id"]
 		parsed.Title = parsed.Generic.Fields["title"]
-		return MatchesGenericFilters(spawner.Spec.When.GenericWebhook.Filters, parsed.Generic.Payload)
+		matched, err := MatchesGenericFilters(spawner.Spec.When.GenericWebhook.Filters, parsed.Generic.Payload)
+		if err != nil || !matched {
+			return false, err
+		}
+		excluded, err := MatchesGenericExcludeFilters(spawner.Spec.When.GenericWebhook.ExcludeFilters, parsed.Generic.Payload)
+		if err != nil {
+			return false, err
+		}
+		return !excluded, nil
 
 	default:
 		return false, fmt.Errorf("unsupported source: %s", h.source)

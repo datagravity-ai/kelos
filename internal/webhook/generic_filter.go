@@ -79,28 +79,62 @@ func (e *GenericEventData) ExtractFields(fieldMapping map[string]string) error {
 // MatchesGenericFilters checks if the payload matches all filters (AND semantics).
 func MatchesGenericFilters(filters []kelos.GenericWebhookFilter, payload interface{}) (bool, error) {
 	for _, filter := range filters {
-		val, err := jsonpath.Get(filter.Field, payload)
+		matched, err := matchesGenericFilter(filter, payload)
 		if err != nil {
-			return false, nil // Field doesn't exist → filter fails
+			return false, err
 		}
-
-		strVal := fmt.Sprintf("%v", val)
-
-		if filter.Value != nil {
-			if strVal != *filter.Value {
-				return false, nil
-			}
-		} else if filter.Pattern != "" {
-			re, err := getOrCompileRegexp(filter.Pattern)
-			if err != nil {
-				return false, fmt.Errorf("invalid regex pattern %q: %w", filter.Pattern, err)
-			}
-			if !re.MatchString(strVal) {
-				return false, nil
-			}
+		if !matched {
+			return false, nil
 		}
 	}
 	return true, nil
+}
+
+// MatchesGenericExcludeFilters reports whether the payload matches any exclude
+// filter (OR semantics). A true result means the delivery must be rejected.
+func MatchesGenericExcludeFilters(filters []kelos.GenericWebhookFilter, payload interface{}) (bool, error) {
+	for _, filter := range filters {
+		matched, err := matchesGenericFilter(filter, payload)
+		if err != nil {
+			return false, err
+		}
+		if matched {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// matchesGenericFilter evaluates a single filter against the payload. A field
+// absent from the payload does not match. A malformed JSONPath expression
+// (syntax error) returns an error instead so that a broken spec is surfaced
+// rather than failing open: silently treating it as "does not match" would
+// drop an exclude filter and let a delivery through that should be rejected.
+func matchesGenericFilter(filter kelos.GenericWebhookFilter, payload interface{}) (bool, error) {
+	val, err := jsonpath.Get(filter.Field, payload)
+	if err != nil {
+		if strings.HasPrefix(err.Error(), "parsing error:") {
+			return false, fmt.Errorf("invalid JSONPath expression %q: %w", filter.Field, err)
+		}
+		return false, nil // Field doesn't exist → filter does not match
+	}
+
+	strVal := fmt.Sprintf("%v", val)
+
+	switch {
+	case filter.Value != nil:
+		return strVal == *filter.Value, nil
+	case filter.Pattern != "":
+		re, err := getOrCompileRegexp(filter.Pattern)
+		if err != nil {
+			return false, fmt.Errorf("invalid regex pattern %q: %w", filter.Pattern, err)
+		}
+		return re.MatchString(strVal), nil
+	default:
+		// Neither value nor pattern set — CEL validation rejects this, but treat
+		// it as a presence check on the field rather than silently matching all.
+		return true, nil
+	}
 }
 
 // canonicalFieldNames maps documented lowercase fieldMapping keys to the

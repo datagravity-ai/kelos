@@ -331,6 +331,9 @@ spec:
           value: "error"
         - field: "$.data.event.platform"
           pattern: "^(python|go|node)"
+      excludeFilters:                   # any match skips the delivery
+        - field: "$.data.event.environment"
+          value: "staging"
   taskTemplate:
     type: claude-code
     workspaceRef:
@@ -381,6 +384,9 @@ The webhook URL is `https://your-webhook-domain/webhook/<source>` (e.g., `/webho
   - `pattern` — Go [regexp](https://pkg.go.dev/regexp/syntax) match against the extracted value
   
   When `filters` is empty, every delivery triggers a Task. A filter whose `field` is missing in the payload fails (the delivery is skipped).
+- **`excludeFilters[]`** *(optional)* — list of conditions that reject a delivery when ANY of them matches (OR semantics across exclude filters). Entries have the same shape as `filters` — a `field` (JSONPath) and exactly one of `value` or `pattern`. They are evaluated after `filters`, so a delivery triggers a Task only when it matches every entry in `filters` and no entry in `excludeFilters`. An exclude filter whose `field` is missing in the payload does not match, so it never excludes the delivery.
+
+A malformed JSONPath expression in either list is a configuration error: the spawner is skipped for that delivery and the error is logged.
 
 **Generic-webhook variables:** `{{.Kind}}` is always `"GenericWebhook"`, `{{.Payload}}` is the full parsed JSON body (use it for advanced templating like `{{.Payload.data.event.platform}}`), and every key from `fieldMapping` becomes a top-level variable. Standard fields `{{.ID}}`, `{{.Title}}`, `{{.Body}}`, and `{{.URL}}` always exist (empty if not mapped).
 
