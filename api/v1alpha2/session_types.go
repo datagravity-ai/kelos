@@ -228,7 +228,6 @@ type Session struct {
 	// +kubebuilder:validation:XValidation:rule="(!has(self.initialBranch) ? '' : self.initialBranch) == (!has(oldSelf.initialBranch) ? '' : oldSelf.initialBranch)",message="initialBranch is immutable"
 	// +kubebuilder:validation:XValidation:rule="(!has(self.initialPrompt) ? '' : self.initialPrompt) == (!has(oldSelf.initialPrompt) ? '' : oldSelf.initialPrompt)",message="initialPrompt is immutable"
 	// +kubebuilder:validation:XValidation:rule="has(self.volumeClaimTemplate) == has(oldSelf.volumeClaimTemplate) && (!has(self.volumeClaimTemplate) || self.volumeClaimTemplate == oldSelf.volumeClaimTemplate)",message="volumeClaimTemplate is immutable"
-	// +kubebuilder:validation:XValidation:rule="has(self.idlePolicy) == has(oldSelf.idlePolicy) && (!has(self.idlePolicy) || self.idlePolicy == oldSelf.idlePolicy)",message="idlePolicy is immutable"
 	Spec   SessionSpec   `json:"spec"`
 	Status SessionStatus `json:"status,omitempty"`
 }

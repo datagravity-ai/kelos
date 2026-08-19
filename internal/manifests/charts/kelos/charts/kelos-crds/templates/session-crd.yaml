@@ -7232,9 +7232,6 @@ spec:
               rule: has(self.volumeClaimTemplate) == has(oldSelf.volumeClaimTemplate)
                 && (!has(self.volumeClaimTemplate) || self.volumeClaimTemplate ==
                 oldSelf.volumeClaimTemplate)
-            - message: idlePolicy is immutable
-              rule: has(self.idlePolicy) == has(oldSelf.idlePolicy) && (!has(self.idlePolicy)
-                || self.idlePolicy == oldSelf.idlePolicy)
             - message: worker.type must be claude-code, codex, or opencode
               rule: has(self.worker.type) && self.worker.type in ['claude-code', 'codex',
                 'opencode']
