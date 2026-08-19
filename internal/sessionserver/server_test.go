@@ -209,6 +209,19 @@ func TestSessionSummaryReportsIdleSuspension(t *testing.T) {
 	if !summary.IdleSuspended {
 		t.Fatal("Session summary idleSuspended = false, want true")
 	}
+	if summary.UserSuspended {
+		t.Fatal("Session summary userSuspended = true for idle suspension")
+	}
+}
+
+func TestSessionSummaryReportsUserSuspension(t *testing.T) {
+	summary := summarize(&kelos.Session{Spec: kelos.SessionSpec{Suspend: ptr.To(true)}})
+	if !summary.UserSuspended {
+		t.Fatal("Session summary userSuspended = false, want true")
+	}
+	if summary.IdleSuspended {
+		t.Fatal("Session summary idleSuspended = true for user suspension")
+	}
 }
 
 func TestSessionJavaScriptResumesIdleSuspension(t *testing.T) {
@@ -220,10 +233,33 @@ func TestSessionJavaScriptResumesIdleSuspension(t *testing.T) {
 	for _, expected := range []string{
 		"selectSession(session, true)",
 		"if (resumeIdle && session.idleSuspended) resumeIdleSession(session);",
-		"/resume`, {method: 'POST'}",
+		"await requestSessionResume(session);",
 	} {
 		if !strings.Contains(javascript, expected) {
 			t.Errorf("Session JavaScript is missing idle resume behavior %q", expected)
+		}
+	}
+}
+
+func TestSessionPageOffersUserSuspensionResume(t *testing.T) {
+	index, err := webFiles.ReadFile("web/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if expected := `id="resume-session" aria-label="Resume session"`; !strings.Contains(string(index), expected) {
+		t.Errorf("Session page is missing resume control %q", expected)
+	}
+
+	source, err := webFiles.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		"elements.resumeButton.hidden = !session?.userSuspended;",
+		"elements.resumeButton.addEventListener('click', resumeSelectedSession);",
+	} {
+		if !strings.Contains(string(source), expected) {
+			t.Errorf("Session JavaScript is missing user suspension resume behavior %q", expected)
 		}
 	}
 }
@@ -400,6 +436,17 @@ func TestApplicationDisplayNameBehavior(t *testing.T) {
 	command := exec.Command(node, "testdata/display_name_test.js")
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("running display name tests: %v\n%s", err, output)
+	}
+}
+
+func TestApplicationSessionResumeBehavior(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("Node.js is not installed")
+	}
+	command := exec.Command(node, "testdata/session_resume_test.js")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("running Session resume tests: %v\n%s", err, output)
 	}
 }
 
@@ -768,6 +815,7 @@ func TestSessionUIAdaptsToPhoneViewport(t *testing.T) {
 		"dynamic viewport height":    `height: 100dvh`,
 		"landscape phone breakpoint": `(max-height: 500px) and (pointer: coarse)`,
 		"two-row phone header":       `grid-template-areas: "menu heading reset delete" "tabs tabs connection connection"`,
+		"phone header resume slot":   `.conversation-header:has(#resume-session:not([hidden])) { grid-template-areas: "menu heading resume reset delete"`,
 		"48-pixel touch targets":     `.icon-button { width: 48px; height: 48px; }`,
 		"phone safe-area padding":    `env(safe-area-inset-bottom)`,
 		"non-zooming form fields":    `.composer textarea, .pending-message-input, .yaml-panel textarea, .form-grid input`,
@@ -1008,6 +1056,99 @@ func TestSessionResumeAPIRequestsIdleResume(t *testing.T) {
 	}
 	if !sessionsuspend.ResumeRequested(&updated) {
 		t.Fatalf("resume endpoint did not record a wake request: %#v", updated.Annotations)
+	}
+}
+
+func TestSessionResumeAPIUnsuspendsUserSuspendedSession(t *testing.T) {
+	server := testServer(t)
+	session := &kelos.Session{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "chat",
+			Namespace:   "team-a",
+			Annotations: map[string]string{"owner": "platform"},
+		},
+		Spec: kelos.SessionSpec{
+			Worker: kelos.WorkerSpec{
+				Type:        "codex",
+				Model:       "gpt-5",
+				Credentials: &kelos.Credentials{Type: kelos.CredentialTypeNone},
+			},
+			Suspend: ptr.To(true),
+		},
+		Status: kelos.SessionStatus{Phase: kelos.SessionPhaseSuspended},
+	}
+	if err := server.client.Create(t.Context(), session); err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/sessions/team-a/chat/resume", nil)
+	request.Header.Set("Authorization", "Bearer secret-token")
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("resume status = %d body = %s", response.Code, response.Body.String())
+	}
+	var summary sessionSummary
+	if err := json.Unmarshal(response.Body.Bytes(), &summary); err != nil {
+		t.Fatal(err)
+	}
+	if summary.UserSuspended {
+		t.Fatal("resume response userSuspended = true, want false")
+	}
+
+	var updated kelos.Session
+	if err := server.client.Get(t.Context(), client.ObjectKeyFromObject(session), &updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.Spec.Suspend == nil || *updated.Spec.Suspend {
+		t.Fatalf("resumed Session suspend = %v, want false", updated.Spec.Suspend)
+	}
+	if updated.Spec.Worker.Model != "gpt-5" || updated.Annotations["owner"] != "platform" {
+		t.Fatalf("resumed Session lost unrelated fields: %#v", updated)
+	}
+}
+
+func TestSessionResumeAPIRequestsIdleResumeAfterUserSuspension(t *testing.T) {
+	server := testServer(t)
+	session := &kelos.Session{
+		ObjectMeta: metav1.ObjectMeta{Name: "chat", Namespace: "team-a"},
+		Spec: kelos.SessionSpec{
+			Worker: kelos.WorkerSpec{
+				Type:        "codex",
+				Credentials: &kelos.Credentials{Type: kelos.CredentialTypeNone},
+			},
+			Suspend: ptr.To(true),
+		},
+		Status: kelos.SessionStatus{
+			Phase: kelos.SessionPhaseSuspended,
+			Conditions: []metav1.Condition{{
+				Type:   kelos.SessionConditionReady,
+				Status: metav1.ConditionFalse,
+				Reason: sessionsuspend.IdlePolicyReason,
+			}},
+		},
+	}
+	if err := server.client.Create(t.Context(), session); err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/sessions/team-a/chat/resume", nil)
+	request.Header.Set("Authorization", "Bearer secret-token")
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("resume status = %d body = %s", response.Code, response.Body.String())
+	}
+
+	var updated kelos.Session
+	if err := server.client.Get(t.Context(), client.ObjectKeyFromObject(session), &updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.Spec.Suspend == nil || *updated.Spec.Suspend {
+		t.Fatalf("resumed Session suspend = %v, want false", updated.Spec.Suspend)
+	}
+	if !sessionsuspend.ResumeRequested(&updated) {
+		t.Fatalf("resume endpoint did not record an idle wake request: %#v", updated.Annotations)
 	}
 }
 

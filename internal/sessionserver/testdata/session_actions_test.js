@@ -114,7 +114,7 @@ function applicationSlice(start, end) {
 
 vm.runInThisContext(applicationSlice('function sessionKey', 'function sessionViewKey'), {filename: 'app.js'});
 vm.runInThisContext(applicationSlice('function createSessionListItem', 'function sectionLabel'), {filename: 'app.js'});
-vm.runInThisContext(applicationSlice('async function deleteSession', 'elements.deleteButton.addEventListener'), {filename: 'app.js'});
+vm.runInThisContext(applicationSlice('async function deleteSession', 'elements.resumeButton.addEventListener'), {filename: 'app.js'});
 
 global.sessionDisplayStatus = () => 'Ready';
 global.createSessionTimestamp = () => null;

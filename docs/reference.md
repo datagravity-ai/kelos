@@ -452,11 +452,11 @@ field is omitted, the workspace uses `emptyDir`, which is primarily useful for
 development because its history and changes do not survive Pod replacement.
 
 Set `spec.suspend` to `true` to suspend a Session without deleting it, then set
-it back to `false` to resume. A suspended Session rejects web connection
-attempts and the terminal client waits for it to resume. Configured persistent
-workspace and conversation data remain available across suspension. An
-`emptyDir` workspace is deleted with the scaled-down Pod and starts empty after
-resuming.
+it back to `false` or use the Resume action in the shared web client to resume.
+A suspended Session rejects web connection attempts and the terminal client
+waits for it to resume. Configured persistent workspace and conversation data
+remain available across suspension. An `emptyDir` workspace is deleted with the
+scaled-down Pod and starts empty after resuming.
 
 Reset a Session with `kelos session reset NAME` or the reset action in the
 shared web client's Session-row overflow menu. The same menu can rename or

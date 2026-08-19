@@ -125,6 +125,7 @@ type sessionSummary struct {
 	PullRequest     *kelos.SessionPullRequest `json:"pullRequest,omitempty"`
 	Section         string                    `json:"section,omitempty"`
 	Resetting       bool                      `json:"resetting,omitempty"`
+	UserSuspended   bool                      `json:"userSuspended,omitempty"`
 	IdleSuspended   bool                      `json:"idleSuspended,omitempty"`
 }
 
@@ -666,9 +667,47 @@ func (s *Server) resumeSession(writer http.ResponseWriter, request *http.Request
 		writeError(writer, status, err.Error())
 		return
 	}
-	if session.Status.Phase == kelos.SessionPhaseSuspended && !sessionsuspend.IsIdlePolicySuspended(session) {
-		writeError(writer, http.StatusConflict, fmt.Sprintf("Session %q is suspended by user request", name))
-		return
+	if session.Spec.Suspend != nil && *session.Spec.Suspend {
+		original := session.DeepCopy()
+		suspend := false
+		session.Spec.Suspend = &suspend
+		if err := s.client.Patch(
+			request.Context(),
+			session,
+			client.MergeFromWithOptions(original, client.MergeFromWithOptimisticLock{}),
+		); err != nil {
+			status := http.StatusInternalServerError
+			switch {
+			case apierrors.IsNotFound(err):
+				status = http.StatusNotFound
+			case apierrors.IsInvalid(err):
+				status = http.StatusBadRequest
+			case apierrors.IsForbidden(err):
+				status = http.StatusForbidden
+			case apierrors.IsConflict(err):
+				status = http.StatusConflict
+			}
+			writeError(writer, status, fmt.Sprintf("resuming Session %q: %v", name, err))
+			return
+		}
+		session, _, err = sessionsuspend.RequestResume(
+			request.Context(),
+			s.client,
+			client.ObjectKey{Namespace: namespace, Name: name},
+		)
+		if err != nil {
+			status := http.StatusInternalServerError
+			switch {
+			case apierrors.IsNotFound(err):
+				status = http.StatusNotFound
+			case apierrors.IsForbidden(err):
+				status = http.StatusForbidden
+			case apierrors.IsConflict(err):
+				status = http.StatusConflict
+			}
+			writeError(writer, status, err.Error())
+			return
+		}
 	}
 	writeJSON(writer, http.StatusAccepted, summarize(session))
 }
@@ -810,6 +849,7 @@ func summarize(session *kelos.Session) sessionSummary {
 		PullRequest:    session.Status.PullRequest,
 		Section:        session.Annotations[sessionSectionAnnotation],
 		Resetting:      session.Annotations[sessionreset.RequestAnnotation] != "",
+		UserSuspended:  session.Spec.Suspend != nil && *session.Spec.Suspend,
 		IdleSuspended:  sessionsuspend.IsIdlePolicySuspended(session),
 	}
 	if !session.CreationTimestamp.IsZero() {
