@@ -342,9 +342,10 @@ exact value is also available to assistive technology. A Session waiting for a
 user response is labeled **Waiting for input** in the sidebar and header, with a
 distinct red indicator in the sidebar.
 
-Use **Rename** beside the selected Session's title to set a display name for the
-web chat. The display name appears in the sidebar, conversation header, and web
-runtime status without changing the Session's Kubernetes resource name. An empty
+Use **Rename** beside the selected Session's title or in a Session row's overflow
+menu to set a display name for the web chat. The display name appears in the
+sidebar, conversation header, and web runtime status without changing the
+Session's Kubernetes resource name. An empty
 display name restores the resource name. Display names are stored in the
 `kelos.dev/session-display-name` annotation, so Session manifests can set the
 same annotation directly. Values are trimmed and limited to 64 characters when
@@ -456,8 +457,10 @@ workspace and conversation data remain available across suspension. An
 resuming.
 
 Reset a Session with `kelos session reset NAME` or the reset action in the
-shared web client. Reset preserves the Session resource and its immutable spec
-fields but permanently deletes retained conversation history and workspace changes.
+shared web client's Session-row overflow menu. The same menu can rename or
+delete that Session without selecting it first. Reset preserves the Session
+resource and its immutable spec fields but permanently deletes retained
+conversation history and workspace changes.
 The controller stops the Session Pod before deleting its PersistentVolumeClaim,
 then creates a fresh claim and replacement Pod. An `emptyDir` Session resets by
 replacing only its Pod. Workspace initialization and
