@@ -308,7 +308,7 @@ func TestRender_ConsoleServer(t *testing.T) {
 	for _, expected := range []string{
 		"name: kelos-console-server",
 		"secretName: console-auth",
-		"resources:\n      - pods/exec",
+		"resources:\n      - pods\n    verbs:\n      - get\n  - apiGroups:\n      - \"\"\n    resources:\n      - pods/log\n    verbs:\n      - get\n  - apiGroups:\n      - \"\"\n    resources:\n      - pods/exec",
 		"resources:\n      - agentconfigs\n      - sessions\n      - sessionspawners\n      - taskbudgets\n      - taskrecords\n      - tasks\n      - taskspawners\n      - workerpools\n      - workspaces\n    verbs:\n      - get\n      - list",
 		"resources:\n      - sessions\n    verbs:\n      - create\n      - delete\n      - patch\n      - watch",
 		"--token-file=/var/run/secrets/kelos-console/token",

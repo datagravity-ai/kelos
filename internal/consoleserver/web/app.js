@@ -27,6 +27,13 @@ const elements = {
   resourceDetailDialog: document.querySelector('#resource-detail-dialog'),
   resourceDetailTitle: document.querySelector('#resource-detail-title'),
   resourceDetailSubtitle: document.querySelector('#resource-detail-subtitle'),
+  resourceDetailTabs: document.querySelector('#resource-detail-tabs'),
+  resourceDetailLogsTab: document.querySelector('#resource-detail-logs-tab'),
+  resourceDetailManifestTab: document.querySelector('#resource-detail-manifest-tab'),
+  resourceDetailLogsPanel: document.querySelector('#resource-detail-logs-panel'),
+  resourceDetailManifestPanel: document.querySelector('#resource-detail-manifest-panel'),
+  refreshResourceLogs: document.querySelector('#refresh-resource-logs'),
+  resourceDetailLogs: document.querySelector('#resource-detail-logs'),
   resourceDetailYAML: document.querySelector('#resource-detail-yaml'),
   namespaceLabels: document.querySelectorAll('.console-namespace'),
   newSessionButton: document.querySelector('#new-session'),
@@ -149,6 +156,8 @@ const state = {
   resourceGroups: [],
   resourceListGeneration: 0,
   resourceDetailGeneration: 0,
+  resourceDetailLogGeneration: 0,
+  resourceDetailTask: null,
   sourceStorageClassNamePresent: false,
   loadedSource: null,
   displayNameSaving: false,
@@ -182,6 +191,25 @@ async function api(path, options = {}) {
   }
   if (response.status === 204) return null;
   return response.json();
+}
+
+async function apiText(path) {
+  const response = await fetch(path);
+  if (response.status === 401) {
+    window.location.replace('/login');
+    throw new Error('Authentication required');
+  }
+  const body = await response.text();
+  if (!response.ok) {
+    let message = `${response.status} ${response.statusText}`;
+    try {
+      message = JSON.parse(body).error || message;
+    } catch (_) {
+      // Keep the HTTP status when the response is not a JSON API error.
+    }
+    throw new Error(message);
+  }
+  return body;
 }
 
 function showToast(message) {
@@ -353,20 +381,80 @@ async function refreshConsole() {
   }
 }
 
+function setResourceDetailView(view) {
+  const showLogs = view === 'logs' && !elements.resourceDetailTabs.hidden;
+  elements.resourceDetailLogsPanel.hidden = !showLogs;
+  elements.resourceDetailManifestPanel.hidden = showLogs;
+  elements.resourceDetailLogsTab.setAttribute('aria-selected', String(showLogs));
+  elements.resourceDetailLogsTab.tabIndex = showLogs ? 0 : -1;
+  elements.resourceDetailManifestTab.setAttribute('aria-selected', String(!showLogs));
+  elements.resourceDetailManifestTab.tabIndex = showLogs ? -1 : 0;
+}
+
+function handleResourceDetailTabKeydown(event) {
+  const tabs = [elements.resourceDetailLogsTab, elements.resourceDetailManifestTab];
+  const current = tabs.indexOf(event.target);
+  if (current < 0) return;
+
+  let target;
+  if (event.key === 'ArrowLeft') target = tabs[(current - 1 + tabs.length) % tabs.length];
+  if (event.key === 'ArrowRight') target = tabs[(current + 1) % tabs.length];
+  if (event.key === 'Home') target = tabs[0];
+  if (event.key === 'End') target = tabs[tabs.length - 1];
+  if (!target) return;
+
+  event.preventDefault();
+  target.click();
+  target.focus();
+}
+
+async function loadResourceTaskLogs(item, detailGeneration) {
+  const logGeneration = ++state.resourceDetailLogGeneration;
+  elements.refreshResourceLogs.disabled = true;
+  elements.resourceDetailLogs.textContent = 'Loading logs…';
+  try {
+    const logs = await apiText(`/api/resources/tasks/${encodeURIComponent(item.namespace)}/${encodeURIComponent(item.name)}/logs`);
+    if (detailGeneration !== state.resourceDetailGeneration || logGeneration !== state.resourceDetailLogGeneration) return;
+    elements.resourceDetailLogs.textContent = logs || 'No logs yet.';
+  } catch (error) {
+    if (detailGeneration !== state.resourceDetailGeneration || logGeneration !== state.resourceDetailLogGeneration) return;
+    elements.resourceDetailLogs.textContent = error.message;
+  } finally {
+    if (detailGeneration === state.resourceDetailGeneration && logGeneration === state.resourceDetailLogGeneration) {
+      elements.refreshResourceLogs.disabled = false;
+    }
+  }
+}
+
 async function openResourceDetail(collection, item) {
   const generation = ++state.resourceDetailGeneration;
+  const showTaskLogs = collection.resource === 'tasks';
   elements.resourceDetailTitle.textContent = `${collection.kind} ${item.name}`;
   elements.resourceDetailSubtitle.textContent = `${item.namespace}/${item.name}`;
-  elements.resourceDetailYAML.textContent = 'Loading manifest…';
-  elements.resourceDetailDialog.showModal();
-  try {
-    const detail = await api(`/api/resources/${encodeURIComponent(collection.resource)}/${encodeURIComponent(item.namespace)}/${encodeURIComponent(item.name)}`);
-    if (generation !== state.resourceDetailGeneration) return;
-    elements.resourceDetailYAML.textContent = detail.yaml;
-  } catch (error) {
-    if (generation !== state.resourceDetailGeneration) return;
-    elements.resourceDetailYAML.textContent = error.message;
+  elements.resourceDetailTabs.hidden = !showTaskLogs;
+  state.resourceDetailTask = showTaskLogs ? {namespace: item.namespace, name: item.name} : null;
+  if (!showTaskLogs) {
+    state.resourceDetailLogGeneration++;
+    elements.refreshResourceLogs.disabled = true;
+    elements.resourceDetailLogs.textContent = '';
   }
+  elements.resourceDetailYAML.textContent = 'Loading manifest…';
+  setResourceDetailView(showTaskLogs ? 'logs' : 'manifest');
+  elements.resourceDetailDialog.showModal();
+
+  const manifestRequest = (async () => {
+    try {
+      const detail = await api(`/api/resources/${encodeURIComponent(collection.resource)}/${encodeURIComponent(item.namespace)}/${encodeURIComponent(item.name)}`);
+      if (generation !== state.resourceDetailGeneration) return;
+      elements.resourceDetailYAML.textContent = detail.yaml;
+    } catch (error) {
+      if (generation !== state.resourceDetailGeneration) return;
+      elements.resourceDetailYAML.textContent = error.message;
+    }
+  })();
+  const logsRequest = showTaskLogs ? loadResourceTaskLogs(state.resourceDetailTask, generation) : Promise.resolve();
+
+  await Promise.all([manifestRequest, logsRequest]);
 }
 
 function sessionKey(session) {
@@ -4325,6 +4413,12 @@ elements.resourcesButton.addEventListener('click', () => setConsoleView('resourc
 elements.resourceKind.addEventListener('change', renderResources);
 document.querySelectorAll('.close-resource-detail').forEach(button => {
   button.addEventListener('click', () => elements.resourceDetailDialog.close());
+});
+elements.resourceDetailLogsTab.addEventListener('click', () => setResourceDetailView('logs'));
+elements.resourceDetailManifestTab.addEventListener('click', () => setResourceDetailView('manifest'));
+elements.resourceDetailTabs.addEventListener('keydown', handleResourceDetailTabKeydown);
+elements.refreshResourceLogs.addEventListener('click', () => {
+  if (state.resourceDetailTask) void loadResourceTaskLogs(state.resourceDetailTask, state.resourceDetailGeneration);
 });
 document.querySelector('#refresh-console').addEventListener('click', () => {
   void refreshConsole();
