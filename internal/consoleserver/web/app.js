@@ -911,10 +911,10 @@ function createSessionListItem(session, draggable = false) {
   const key = sessionKey(session);
   const assigningSection = state.sectionAssignments.has(key);
   item.className = `session-item${state.selected && sessionKey(state.selected) === key ? ' active' : ''}${assigningSection ? ' section-saving' : ''}`;
-  item.draggable = draggable && !assigningSection;
   const button = document.createElement('button');
   button.className = 'session-item-select';
   button.type = 'button';
+  button.draggable = draggable && !assigningSection;
   const dot = document.createElement('span');
   const displayStatus = sessionDisplayStatus(session);
   dot.className = `phase-dot ${String(displayStatus).toLowerCase().replaceAll(' ', '-')}`;
@@ -979,7 +979,7 @@ function createSessionListItem(session, draggable = false) {
     link.draggable = false;
     item.append(link);
   }
-  if (item.draggable) configureSessionDrag(item, session);
+  if (button.draggable) configureSessionDrag(item, button, session);
   return item;
 }
 
@@ -1175,14 +1175,14 @@ function finishSidebarDrag() {
   clearSidebarDropIndicators();
 }
 
-function configureSessionDrag(item, session) {
-  item.addEventListener('dragstart', event => {
+function configureSessionDrag(item, handle, session) {
+  handle.addEventListener('dragstart', event => {
     state.sidebarDrag = {kind: 'session', session};
     item.classList.add('dragging');
     event.dataTransfer.effectAllowed = 'move';
     event.dataTransfer.setData('text/plain', sessionKey(session));
   });
-  item.addEventListener('dragend', () => {
+  handle.addEventListener('dragend', () => {
     item.classList.remove('dragging');
     finishSidebarDrag();
   });
