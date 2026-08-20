@@ -1189,13 +1189,17 @@ func TestDeleteAllCustomResources_DeletesExistingResources(t *testing.T) {
 	}
 }
 
-func TestDeleteSessionServerRBACAcrossNamespaces(t *testing.T) {
+func TestDeleteConsoleServerRBACAcrossNamespaces(t *testing.T) {
 	scheme := runtime.NewScheme()
 	objects := []runtime.Object{
+		rbacObject("ClusterRole", "kelos-console-server-role", ""),
+		rbacObject("ClusterRoleBinding", "kelos-console-server-rolebinding", ""),
+		rbacObject("Role", "kelos-console-server-role", "team-a"),
+		rbacObject("RoleBinding", "kelos-console-server-rolebinding", "team-a"),
 		rbacObject("ClusterRole", "kelos-session-server-role", ""),
 		rbacObject("ClusterRoleBinding", "kelos-session-server-rolebinding", ""),
-		rbacObject("Role", "kelos-session-server-role", "team-a"),
-		rbacObject("RoleBinding", "kelos-session-server-rolebinding", "team-a"),
+		rbacObject("Role", "kelos-session-server-role", "team-b"),
+		rbacObject("RoleBinding", "kelos-session-server-rolebinding", "team-b"),
 		rbacObject("ClusterRole", "unrelated-cluster-role", ""),
 		rbacObject("ClusterRoleBinding", "unrelated-cluster-rolebinding", ""),
 		rbacObject("Role", "unrelated-role", "team-a"),
@@ -1208,8 +1212,8 @@ func TestDeleteSessionServerRBACAcrossNamespaces(t *testing.T) {
 		roleBindingGVR:        "RoleBindingList",
 	}
 	client := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(scheme, listKinds, objects...)
-	if err := deleteSessionServerRBAC(context.Background(), client); err != nil {
-		t.Fatalf("deleteSessionServerRBAC() error = %v", err)
+	if err := deleteConsoleServerRBAC(context.Background(), client); err != nil {
+		t.Fatalf("deleteConsoleServerRBAC() error = %v", err)
 	}
 
 	for _, resource := range []struct {
@@ -1217,10 +1221,14 @@ func TestDeleteSessionServerRBACAcrossNamespaces(t *testing.T) {
 		name      string
 		namespace string
 	}{
+		{gvr: clusterRoleGVR, name: "kelos-console-server-role"},
+		{gvr: clusterRoleBindingGVR, name: "kelos-console-server-rolebinding"},
+		{gvr: roleGVR, name: "kelos-console-server-role", namespace: "team-a"},
+		{gvr: roleBindingGVR, name: "kelos-console-server-rolebinding", namespace: "team-a"},
 		{gvr: clusterRoleGVR, name: "kelos-session-server-role"},
 		{gvr: clusterRoleBindingGVR, name: "kelos-session-server-rolebinding"},
-		{gvr: roleGVR, name: "kelos-session-server-role", namespace: "team-a"},
-		{gvr: roleBindingGVR, name: "kelos-session-server-rolebinding", namespace: "team-a"},
+		{gvr: roleGVR, name: "kelos-session-server-role", namespace: "team-b"},
+		{gvr: roleBindingGVR, name: "kelos-session-server-rolebinding", namespace: "team-b"},
 	} {
 		var err error
 		if resource.namespace == "" {

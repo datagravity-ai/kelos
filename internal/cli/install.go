@@ -914,8 +914,8 @@ func newUninstallCommand(cfg *ClientConfig) *cobra.Command {
 			}
 
 			fmt.Fprintf(os.Stdout, "Removing kelos controller\n")
-			if err := deleteSessionServerRBAC(ctx, dyn); err != nil {
-				return fmt.Errorf("removing Session server RBAC: %w", err)
+			if err := deleteConsoleServerRBAC(ctx, dyn); err != nil {
+				return fmt.Errorf("removing Console server RBAC: %w", err)
 			}
 			if err := deleteManifests(ctx, dc, dyn, controllerManifest); err != nil {
 				return fmt.Errorf("removing controller: %w", err)
@@ -934,16 +934,20 @@ func newUninstallCommand(cfg *ClientConfig) *cobra.Command {
 	return cmd
 }
 
-func deleteSessionServerRBAC(ctx context.Context, dyn dynamic.Interface) error {
+func deleteConsoleServerRBAC(ctx context.Context, dyn dynamic.Interface) error {
 	resources := []struct {
 		gvr        schema.GroupVersionResource
 		name       string
 		kind       string
 		namespaced bool
 	}{
+		{gvr: clusterRoleBindingGVR, name: "kelos-console-server-rolebinding", kind: "ClusterRoleBinding"},
 		{gvr: clusterRoleBindingGVR, name: "kelos-session-server-rolebinding", kind: "ClusterRoleBinding"},
+		{gvr: clusterRoleGVR, name: "kelos-console-server-role", kind: "ClusterRole"},
 		{gvr: clusterRoleGVR, name: "kelos-session-server-role", kind: "ClusterRole"},
+		{gvr: roleBindingGVR, name: "kelos-console-server-rolebinding", kind: "RoleBinding", namespaced: true},
 		{gvr: roleBindingGVR, name: "kelos-session-server-rolebinding", kind: "RoleBinding", namespaced: true},
+		{gvr: roleGVR, name: "kelos-console-server-role", kind: "Role", namespaced: true},
 		{gvr: roleGVR, name: "kelos-session-server-role", kind: "Role", namespaced: true},
 	}
 	for _, resource := range resources {
@@ -952,7 +956,7 @@ func deleteSessionServerRBAC(ctx context.Context, dyn dynamic.Interface) error {
 			if errors.IsNotFound(err) {
 				continue
 			}
-			return fmt.Errorf("listing Session server %s resources: %w", resource.kind, err)
+			return fmt.Errorf("listing Console server %s resources: %w", resource.kind, err)
 		}
 		for i := range list.Items {
 			item := &list.Items[i]
@@ -966,7 +970,7 @@ func deleteSessionServerRBAC(ctx context.Context, dyn dynamic.Interface) error {
 				err = dyn.Resource(resource.gvr).Delete(ctx, item.GetName(), metav1.DeleteOptions{})
 			}
 			if err != nil && !errors.IsNotFound(err) {
-				return fmt.Errorf("deleting Session server %s %s: %w", resource.kind, item.GetName(), err)
+				return fmt.Errorf("deleting Console server %s %s: %w", resource.kind, item.GetName(), err)
 			}
 		}
 	}

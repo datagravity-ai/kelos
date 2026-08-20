@@ -159,7 +159,7 @@ type Server struct {
 	sessionStatusRetryInterval           time.Duration
 }
 
-// NewServer constructs a Session server around injected provider and journal implementations.
+// NewServer constructs a Session runtime server around injected provider and journal implementations.
 func NewServer(config Config, journal *Journal, provider Provider) *Server {
 	server := &Server{
 		config:                               config,

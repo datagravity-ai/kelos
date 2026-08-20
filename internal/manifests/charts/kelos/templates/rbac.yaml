@@ -259,13 +259,28 @@ subjects:
   - kind: ServiceAccount
     name: kelos-controller
     namespace: kelos-system
-{{- if .Values.sessionServer.enabled }}
+{{- if .Values.consoleServer.enabled }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: kelos-session-server-role
+  name: kelos-console-server-role
 rules:
+  - apiGroups:
+      - kelos.dev
+    resources:
+      - agentconfigs
+      - sessions
+      - sessionspawners
+      - taskbudgets
+      - taskrecords
+      - tasks
+      - taskspawners
+      - workerpools
+      - workspaces
+    verbs:
+      - get
+      - list
   - apiGroups:
       - kelos.dev
     resources:
@@ -273,17 +288,8 @@ rules:
     verbs:
       - create
       - delete
-      - get
-      - list
       - patch
       - watch
-  - apiGroups:
-      - kelos.dev
-    resources:
-      - agentconfigs
-      - workspaces
-    verbs:
-      - list
   - apiGroups:
       - ""
     resources:
@@ -300,14 +306,14 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: kelos-session-server-rolebinding
+  name: kelos-console-server-rolebinding
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: kelos-session-server-role
+  name: kelos-console-server-role
 subjects:
   - kind: ServiceAccount
-    name: kelos-session-server
+    name: kelos-console-server
     namespace: {{ .Release.Namespace }}
 {{- end }}
 ---

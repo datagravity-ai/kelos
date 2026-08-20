@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
   <meta name="color-scheme" content="light dark">
-  <title>Kelos Sessions</title>
+  <title>Kelos Console</title>
   <link rel="stylesheet" href="/assets/styles.css">
 </head>
 <body>
@@ -14,13 +14,10 @@
         <div class="brand-mark" aria-hidden="true">K</div>
         <div>
           <div class="brand">Kelos</div>
-          <div class="brand-subtitle">Sessions</div>
+          <div class="brand-subtitle">Console</div>
         </div>
-        <button class="icon-button mobile-only" id="close-sidebar" aria-label="Close sessions">×</button>
+        <button class="icon-button mobile-only" id="close-sidebar" aria-label="Close navigation">×</button>
       </div>
-      <button class="new-session-button" id="new-session">
-        <span aria-hidden="true">＋</span> New session
-      </button>
       <form class="namespace-form" id="namespace-form">
         <label for="active-namespace">Namespace</label>
         <div>
@@ -28,18 +25,69 @@
           <button type="submit">Switch</button>
         </div>
       </form>
-      <div class="sidebar-label">Conversations</div>
-      <div class="session-list" id="session-list" aria-live="polite"></div>
+      <nav class="console-nav" aria-label="Console">
+        <button id="console-overview" type="button" aria-current="page"><span aria-hidden="true">⌂</span> Overview</button>
+        <button id="console-sessions" type="button"><span aria-hidden="true">◌</span> Sessions</button>
+        <button id="console-resources" type="button"><span aria-hidden="true">◇</span> Resources</button>
+      </nav>
+      <div class="session-sidebar" id="session-sidebar" hidden>
+        <button class="new-session-button" id="new-session">
+          <span aria-hidden="true">＋</span> New session
+        </button>
+        <div class="sidebar-label">Conversations</div>
+        <div class="session-list" id="session-list" aria-live="polite"></div>
+      </div>
       <div class="sidebar-footer">
-        <button class="quiet-button" id="refresh-sessions">Refresh</button>
+        <button class="quiet-button" id="refresh-console">Refresh</button>
         <button class="quiet-button" id="logout">Sign out</button>
       </div>
     </aside>
-    <button class="sidebar-scrim" id="sidebar-scrim" type="button" aria-label="Close sessions" tabindex="-1"></button>
+    <button class="sidebar-scrim" id="sidebar-scrim" type="button" aria-label="Close navigation" tabindex="-1"></button>
 
-    <main class="conversation">
+    <main class="console-page" id="overview-view">
+      <header class="console-page-header">
+        <button class="icon-button mobile-only open-sidebar-button" type="button" aria-label="Open navigation" aria-controls="sidebar" aria-expanded="false">☰</button>
+        <div>
+          <div class="console-eyebrow">Kelos Console</div>
+          <h1>Overview</h1>
+          <p>Resources in <span class="console-namespace">default</span></p>
+        </div>
+      </header>
+      <section class="console-page-body">
+        <div class="resource-summary-grid" id="resource-summary-grid" aria-live="polite"></div>
+        <section class="console-section">
+          <div class="console-section-heading">
+            <div>
+              <h2>Recent resources</h2>
+              <p>The latest Kelos objects in this namespace.</p>
+            </div>
+          </div>
+          <div class="resource-table-wrap" id="recent-resources"></div>
+        </section>
+      </section>
+    </main>
+
+    <main class="console-page" id="resources-view" hidden>
+      <header class="console-page-header">
+        <button class="icon-button mobile-only open-sidebar-button" type="button" aria-label="Open navigation" aria-controls="sidebar" aria-expanded="false">☰</button>
+        <div>
+          <div class="console-eyebrow">Kelos Console</div>
+          <h1>Resources</h1>
+          <p>Inspect Kelos manifests in <span class="console-namespace">default</span></p>
+        </div>
+      </header>
+      <section class="console-page-body">
+        <div class="resource-toolbar">
+          <label for="resource-kind">Resource type</label>
+          <select id="resource-kind"></select>
+        </div>
+        <div class="resource-table-wrap" id="resource-list" aria-live="polite"></div>
+      </section>
+    </main>
+
+    <main class="conversation" id="sessions-view" hidden>
       <header class="conversation-header">
-        <button class="icon-button mobile-only" id="open-sidebar" aria-label="Open sessions" aria-controls="sidebar" aria-expanded="false">☰</button>
+        <button class="icon-button mobile-only open-sidebar-button" id="open-sidebar" aria-label="Open navigation" aria-controls="sidebar" aria-expanded="false">☰</button>
         <div class="session-heading">
           <div class="session-title-row">
             <div class="session-title" id="session-title">Choose a session</div>
@@ -176,7 +224,7 @@
             <option value="__custom__">Enter another Secret name…</option>
           </select>
           <input name="secretName" id="credential-secret-custom" placeholder="agent-credentials" autocomplete="off" hidden>
-          <small>Previously used credentials are suggested without granting the web server access to Secret contents.</small>
+          <small>Previously used credentials are suggested without granting the Console server access to Secret contents.</small>
         </label>
         <label>
           <span>Workspace <em>optional</em></span>
@@ -274,6 +322,22 @@
         <button class="primary-button" id="save-session-display-name">Save name</button>
       </div>
     </form>
+  </dialog>
+
+  <dialog class="session-dialog resource-detail-dialog" id="resource-detail-dialog" aria-labelledby="resource-detail-title">
+    <div class="resource-detail-content">
+      <div class="dialog-header">
+        <div>
+          <h2 id="resource-detail-title">Resource manifest</h2>
+          <p id="resource-detail-subtitle"></p>
+        </div>
+        <button class="icon-button close-resource-detail" type="button" aria-label="Close">×</button>
+      </div>
+      <pre id="resource-detail-yaml"></pre>
+      <div class="dialog-actions">
+        <button class="secondary-button close-resource-detail" type="button">Close</button>
+      </div>
+    </div>
   </dialog>
 
   <div class="session-actions-menu" id="session-actions-menu" role="menu" hidden>

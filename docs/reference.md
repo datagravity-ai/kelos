@@ -236,7 +236,7 @@ the Session resource and is visible through the Kubernetes API.
 
 The Session runtime refreshes pull request and GitHub check status at startup,
 after each turn, every 30 seconds while checks are pending or the pull request
-is queued, and every five minutes otherwise. The Session web application's
+is queued, and every five minutes otherwise. The Console Sessions view's
 sidebar and selected Session header show the aggregate check state and pending
 progress. `status.pullRequest.checks` is omitted when GitHub reports no checks
 for the pull request. Failed GitHub refreshes use exponential retry delays from
@@ -301,9 +301,9 @@ also show reported context use and cumulative input and output tokens once the
 agent reports usage; Codex Sessions additionally show weekly limit remaining.
 Less important status-bar items are omitted as the terminal narrows. The
 model is the same runtime-reported value persisted in
-`status.model`. Web chat is served by the optional shared
-`kelos-session-server`; it shows the same live runtime details beneath its
-composer. The composer accepts prompt drafts while a selected Session is still
+`status.model`. The optional `kelos-console-server` includes a Sessions view
+that shows the same live runtime details beneath its composer. The composer
+accepts prompt drafts while a selected Session is still
 Pending and enables sending after the runtime connects. It shows connection
 status separately from working, waiting-for-input,
 and interrupting progress, including elapsed time for active work, and adds the
@@ -405,7 +405,7 @@ agent is working. `Active=False` means it is idle. Activity becomes `Unknown` wh
 it cannot be reported, such as while the Session Pod is being replaced. Clients
 can use the `WaitingForInput` reason to highlight turns that need a response;
 other condition reasons and messages are informational unless documented as
-machine-readable below. The shared web client orders Sessions by recent activity,
+machine-readable below. The Console Sessions view orders Sessions by recent activity,
 newest first, using `status.lastActivityTime`. Creation counts as the initial
 activity until the runtime first reports its activity state. Replacing a Session
 Pod does not change the order. The web client shows activity,
@@ -470,11 +470,11 @@ replacing only its Pod. Workspace initialization and
 is submitted to the new conversation. The StorageClass reclaim policy controls
 whether the old underlying PersistentVolume is deleted or retained.
 
-The shared web server can create, list, reset, delete, and connect to Sessions
-across namespaces while the web application operates on one active namespace
+The Console can inspect Kelos resources and create, list, reset, delete, and
+connect to Sessions across namespaces while operating on one active namespace
 at a time. Users can switch the active namespace live from the sidebar.
-`sessionServer.defaultNamespace` sets its initial value, and Session, Workspace,
-AgentConfig, and credential options are loaded only from the active namespace.
+`consoleServer.defaultNamespace` sets its initial value, and resource inventory,
+Session form options, and credential options are loaded only from the active namespace.
 Selecting an existing Session as a source populates both the form fields and the
 editable YAML manifest. Settings that the form cannot represent remain editable
 in YAML mode.
@@ -1447,7 +1447,7 @@ Enable them via the `podMonitor` values:
 
 | Value | Default | Description |
 |-------|---------|-------------|
-| `podMonitor.enabled` | `false` | Ship a PodMonitor for the control-plane pods (controller manager, webhook servers, slack server). They all expose the `metrics` port (8080). Target discovery spans both `kelos-system` (where the controller manager runs) and the release namespace (where the webhook and slack servers run); under `kelos install` these are the same namespace. The session server is not scraped — its 8080 port serves the web app, not metrics. |
+| `podMonitor.enabled` | `false` | Ship a PodMonitor for the control-plane pods (controller manager, webhook servers, slack server). They all expose the `metrics` port (8080). Target discovery spans both `kelos-system` (where the controller manager runs) and the release namespace (where the webhook and slack servers run); under `kelos install` these are the same namespace. The Console server is not scraped — its 8080 port serves the web app, not metrics. |
 | `podMonitor.interval` | `30s` | Scrape interval. |
 | `podMonitor.scrapeTimeout` | `10s` | Per-scrape timeout. |
 | `podMonitor.honorLabels` | `false` | Keep target-exposed labels when they collide with labels Prometheus would add. |

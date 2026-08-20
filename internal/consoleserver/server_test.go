@@ -1,4 +1,4 @@
-package sessionserver
+package consoleserver
 
 import (
 	"bytes"
@@ -92,8 +92,124 @@ func TestAuthenticationProtectsApplicationAndAPI(t *testing.T) {
 	request.AddCookie(cookies[0])
 	response = httptest.NewRecorder()
 	server.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Kelos Sessions") {
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Kelos Console") {
 		t.Fatalf("authenticated application status = %d body = %s", response.Code, response.Body.String())
+	}
+}
+
+func TestConsoleApplicationIncludesResourceViews(t *testing.T) {
+	server := testServer(t)
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.Header.Set("Authorization", "Bearer secret-token")
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET / status = %d body = %s", response.Code, response.Body.String())
+	}
+	for _, expected := range []string{
+		`id="console-overview"`,
+		`id="console-sessions"`,
+		`id="console-resources"`,
+		`id="overview-view"`,
+		`id="resources-view"`,
+		`id="resource-detail-dialog"`,
+	} {
+		if !strings.Contains(response.Body.String(), expected) {
+			t.Errorf("Console application does not contain %s", expected)
+		}
+	}
+	javascript, err := webFiles.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		"async function loadResources",
+		"function renderOverview",
+		"function renderResources",
+		"async function openResourceDetail",
+		"/api/resources?namespace=",
+	} {
+		if !strings.Contains(string(javascript), expected) {
+			t.Errorf("Console JavaScript does not contain %q", expected)
+		}
+	}
+	styles, err := webFiles.ReadFile("web/styles.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{".resource-summary-grid", ".resource-summary-card", ".resource-table", ".resource-detail-dialog"} {
+		if !strings.Contains(string(styles), expected) {
+			t.Errorf("Console styles do not contain %q", expected)
+		}
+	}
+}
+
+func TestConsoleResourcesListAndGet(t *testing.T) {
+	server := testServer(t)
+	objects := []client.Object{
+		&kelos.Task{
+			ObjectMeta: metav1.ObjectMeta{Name: "running-task", Namespace: "team-a", CreationTimestamp: metav1.NewTime(time.Unix(20, 0))},
+			Status:     kelos.TaskStatus{Phase: kelos.TaskPhaseRunning, Message: "Agent is working"},
+		},
+		&kelos.Workspace{ObjectMeta: metav1.ObjectMeta{Name: "repository", Namespace: "team-a", CreationTimestamp: metav1.NewTime(time.Unix(10, 0))}},
+		&kelos.Task{ObjectMeta: metav1.ObjectMeta{Name: "other-task", Namespace: "team-b"}},
+	}
+	for _, object := range objects {
+		if err := server.client.Create(t.Context(), object); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/api/resources?namespace=team-a", nil)
+	request.Header.Set("Authorization", "Bearer secret-token")
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("resource inventory status = %d body = %s", response.Code, response.Body.String())
+	}
+	var inventory struct {
+		Namespace string                 `json:"namespace"`
+		Groups    []consoleResourceGroup `json:"groups"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &inventory); err != nil {
+		t.Fatal(err)
+	}
+	if inventory.Namespace != "team-a" || len(inventory.Groups) != 4 {
+		t.Fatalf("resource inventory = %#v", inventory)
+	}
+	collections := make(map[string]consoleResourceCollection)
+	for _, group := range inventory.Groups {
+		for _, collection := range group.Resources {
+			collections[collection.Resource] = collection
+		}
+	}
+	if len(collections) != len(consoleResourceDefinitions) {
+		t.Fatalf("resource collections = %d, want %d", len(collections), len(consoleResourceDefinitions))
+	}
+	tasks := collections["tasks"].Items
+	if len(tasks) != 1 || tasks[0].Name != "running-task" || tasks[0].Phase != "Running" || tasks[0].Message != "Agent is working" {
+		t.Fatalf("Task summaries = %#v", tasks)
+	}
+	workspaces := collections["workspaces"].Items
+	if len(workspaces) != 1 || workspaces[0].Name != "repository" {
+		t.Fatalf("Workspace summaries = %#v", workspaces)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/api/resources/tasks/team-a/running-task", nil)
+	request.Header.Set("Authorization", "Bearer secret-token")
+	response = httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("resource detail status = %d body = %s", response.Code, response.Body.String())
+	}
+	var detail consoleResourceDetail
+	if err := json.Unmarshal(response.Body.Bytes(), &detail); err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"apiVersion: kelos.dev/v1alpha2", "kind: Task", "phase: Running"} {
+		if !strings.Contains(detail.YAML, expected) {
+			t.Errorf("resource detail YAML does not contain %q:\n%s", expected, detail.YAML)
+		}
 	}
 }
 
@@ -283,7 +399,7 @@ func TestApplicationIncludesFileChangesView(t *testing.T) {
 		`No file changes yet.`,
 	} {
 		if !strings.Contains(response.Body.String(), expected) {
-			t.Errorf("Session application does not contain %s", expected)
+			t.Errorf("Console Sessions view does not contain %s", expected)
 		}
 	}
 
@@ -392,6 +508,28 @@ func TestApplicationRendersMarkdownSafely(t *testing.T) {
 	}
 	if strings.Contains(string(styles), `.message-bubble .task-list {`) {
 		t.Error("Markdown rendering styles suppress markers for ordinary items in mixed task lists")
+	}
+}
+
+func TestConsoleJavaScriptSyntax(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node is not installed")
+	}
+	command := exec.Command(node, "--check", "web/app.js")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("checking Console JavaScript: %v\n%s", err, output)
+	}
+}
+
+func TestApplicationConsoleResourcesBehavior(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("Node.js is not installed")
+	}
+	command := exec.Command(node, "testdata/console_resources_test.js")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("running Console resources tests: %v\n%s", err, output)
 	}
 }
 

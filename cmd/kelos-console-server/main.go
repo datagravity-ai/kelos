@@ -19,7 +19,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	kelos "github.com/kelos-dev/kelos/api/v1alpha2"
-	"github.com/kelos-dev/kelos/internal/sessionserver"
+	"github.com/kelos-dev/kelos/internal/consoleserver"
 )
 
 func main() {
@@ -29,7 +29,7 @@ func main() {
 	var secureCookie bool
 	flag.StringVar(&address, "bind-address", ":8080", "HTTP listen address")
 	flag.StringVar(&tokenFile, "token-file", "", "Path to the required static authentication token")
-	flag.StringVar(&defaultNamespace, "default-namespace", "default", "Default namespace for Sessions created in the web UI")
+	flag.StringVar(&defaultNamespace, "default-namespace", "default", "Initial namespace in the Console")
 	flag.BoolVar(&secureCookie, "secure-cookie", false, "Mark the authentication cookie as HTTPS-only")
 	flag.Parse()
 
@@ -61,7 +61,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Failed to create Kubernetes clientset: %v\n", err)
 		os.Exit(1)
 	}
-	handler, err := sessionserver.New(sessionserver.Config{
+	handler, err := consoleserver.New(consoleserver.Config{
 		Token:            token,
 		Client:           controllerClient,
 		Clientset:        clientset,
@@ -89,9 +89,9 @@ func main() {
 		defer shutdownCancel()
 		_ = server.Shutdown(shutdownCtx)
 	}()
-	fmt.Printf("Kelos Session server listening address=%s\n", address)
+	fmt.Printf("Kelos Console server listening address=%s\n", address)
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		fmt.Fprintf(os.Stderr, "Session server failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Console server failed: %v\n", err)
 		os.Exit(1)
 	}
 }
