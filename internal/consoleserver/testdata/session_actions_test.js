@@ -172,6 +172,29 @@ async function testEverySessionRowHasActionsMenu() {
   assert.equal(document.activeElement, actions);
 }
 
+async function testSessionDragDoesNotCaptureActions() {
+  resetHarness();
+  const session = {namespace: 'default', name: 'review', provider: 'codex'};
+  state.sessions = [session];
+
+  let dragHandle;
+  const configureDrag = global.configureSessionDrag;
+  global.configureSessionDrag = (item, handle) => {
+    assert.equal(item.draggable, false);
+    dragHandle = handle;
+  };
+  const item = createSessionListItem(session, true);
+  global.configureSessionDrag = configureDrag;
+  const select = item.children.find(child => child.className === 'session-item-select');
+  const actions = item.children.find(child => child.className === 'session-item-actions');
+
+  assert.equal(select.draggable, true);
+  assert.equal(dragHandle, select);
+  assert.equal(actions.draggable, false);
+  await actions.dispatch('click', {stopPropagation() {}});
+  assert.equal(elements.sessionActionsMenu.hidden, false);
+}
+
 function testOpenMenuSurvivesSessionRefresh() {
   resetHarness();
   const session = {namespace: 'default', name: 'review', provider: 'codex'};
@@ -325,6 +348,7 @@ assert.match(styles, /\.session-actions-menu button:focus-visible \{[^}]*outline
 assert.match(application, /sessionActionsMenu\.addEventListener\('focusout'/);
 
 testEverySessionRowHasActionsMenu()
+  .then(() => testSessionDragDoesNotCaptureActions())
   .then(() => {
     testOpenMenuSurvivesSessionRefresh();
     return testActionsCanTargetAnUnselectedSession();

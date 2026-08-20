@@ -950,17 +950,18 @@ func TestSessionUIAdaptsToPhoneViewport(t *testing.T) {
 		}
 	}
 	for description, expected := range map[string]string{
-		"dynamic viewport height":    `height: 100dvh`,
-		"landscape phone breakpoint": `(max-height: 500px) and (pointer: coarse)`,
-		"two-row phone header":       `grid-template-areas: "menu heading reset delete" "tabs tabs connection connection"`,
-		"phone header resume slot":   `.conversation-header:has(#resume-session:not([hidden])) { grid-template-areas: "menu heading resume reset delete"`,
-		"48-pixel touch targets":     `.icon-button { width: 48px; height: 48px; }`,
-		"phone safe-area padding":    `env(safe-area-inset-bottom)`,
-		"non-zooming form fields":    `.composer textarea, .pending-message-input, .yaml-panel textarea, .form-grid input`,
-		"desktop composer alignment": `.composer textarea { flex: 1; min-height: 36px;`,
-		"mobile composer alignment":  `.composer textarea { min-height: 48px; padding: 12px 0; line-height: 24px; }`,
-		"phone-sized dialog":         `max-height: calc(100dvh - 16px`,
-		"shrinking composer content": `.composer-wrap { min-width: 0;`,
+		"dynamic viewport height":     `height: 100dvh`,
+		"landscape phone breakpoint":  `(max-height: 500px) and (pointer: coarse)`,
+		"two-row phone header":        `grid-template-areas: "menu heading reset delete" "tabs tabs connection connection"`,
+		"phone header resume slot":    `.conversation-header:has(#resume-session:not([hidden])) { grid-template-areas: "menu heading resume reset delete"`,
+		"48-pixel touch targets":      `.icon-button { width: 48px; height: 48px; }`,
+		"Session action touch target": `.session-item-actions { top: 5px; right: 1px; width: 44px; height: 44px; }`,
+		"phone safe-area padding":     `env(safe-area-inset-bottom)`,
+		"non-zooming form fields":     `.composer textarea, .pending-message-input, .yaml-panel textarea, .form-grid input`,
+		"desktop composer alignment":  `.composer textarea { flex: 1; min-height: 36px;`,
+		"mobile composer alignment":   `.composer textarea { min-height: 48px; padding: 12px 0; line-height: 24px; }`,
+		"phone-sized dialog":          `max-height: calc(100dvh - 16px`,
+		"shrinking composer content":  `.composer-wrap { min-width: 0;`,
 	} {
 		if !strings.Contains(string(styles), expected) {
 			t.Errorf("Session styles are missing %s: %s", description, expected)
@@ -1561,7 +1562,7 @@ func TestSessionUISections(t *testing.T) {
 	for description, expected := range map[string]string{
 		"section grouping":      `const sessionsBySection = new Map();`,
 		"unsectioned group":     `name.textContent = section || 'Unsectioned';`,
-		"Session drag handling": `configureSessionDrag(item, session);`,
+		"Session drag handling": `configureSessionDrag(item, button, session);`,
 		"section drag handling": `configureSectionDrag(group, heading, title, section);`,
 		"unsectioned ordering":  `if (!available.includes('')) available.push('');`,
 		"browser order storage": `window.localStorage.setItem(sectionOrderStorageKey(namespace), JSON.stringify(normalized));`,

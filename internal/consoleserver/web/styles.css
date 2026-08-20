@@ -78,8 +78,8 @@ button { color: inherit; }
 .session-item.active { background: #fff; box-shadow: 0 4px 14px rgba(35,49,42,.06); }
 .session-item.section-saving { opacity: .55; }
 .session-item-select { width: 100%; display: grid; grid-template-columns: 9px minmax(0,1fr); gap: 9px; padding: 11px 42px 11px 10px; border: 0; background: transparent; text-align: left; cursor: pointer; }
-.session-item[draggable="true"] .session-item-select { cursor: grab; }
-.session-item[draggable="true"] .session-item-select:active { cursor: grabbing; }
+.session-item-select[draggable="true"] { cursor: grab; }
+.session-item-select[draggable="true"]:active { cursor: grabbing; }
 .session-item.has-pull-request .session-item-select { padding-bottom: 5px; }
 .session-item-actions { position: absolute; top: 6px; right: 5px; width: 32px; height: 32px; display: grid; place-items: center; padding: 0 0 5px; border: 0; border-radius: 8px; background: transparent; color: var(--faint); font-size: 18px; line-height: 1; cursor: pointer; }
 .session-item-actions:hover, .session-item-actions:focus-visible, .session-item-actions[aria-expanded="true"] { background: var(--line-soft); color: var(--ink); }
@@ -445,6 +445,9 @@ button { color: inherit; }
   .resource-toolbar select { width: 100%; min-width: 0; font-size: 16px; }
   .resource-table-wrap { overflow-x: auto; }
   .resource-table { min-width: 680px; }
+  .session-item-select { padding-right: 52px; }
+  .session-item-actions { top: 5px; right: 1px; width: 44px; height: 44px; }
+  .session-actions-menu button { min-height: 44px; font-size: 14px; }
   .conversation { height: 100%; height: 100dvh; }
   .conversation-header { display: grid; grid-template-areas: "menu heading reset delete" "tabs tabs connection connection"; grid-template-columns: 48px minmax(0, 1fr) 48px 48px; gap: 8px 10px; padding: calc(8px + env(safe-area-inset-top)) calc(10px + env(safe-area-inset-right)) 9px calc(10px + env(safe-area-inset-left)); }
   .conversation-header:has(#resume-session:not([hidden])) { grid-template-areas: "menu heading resume reset delete" "tabs tabs connection connection connection"; grid-template-columns: 48px minmax(0, 1fr) 48px 48px 48px; }
