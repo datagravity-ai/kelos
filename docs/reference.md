@@ -475,6 +475,12 @@ connect to Sessions across namespaces while operating on one active namespace
 at a time. Users can switch the active namespace live from the sidebar.
 `consoleServer.defaultNamespace` sets its initial value, and resource inventory,
 Session form options, and credential options are loaded only from the active namespace.
+Selecting a Task from the resource inventory shows its agent container logs and
+manifest. The Logs tab shows up to the latest 2,000 lines with a 2 MiB maximum
+and can be refreshed while the Task is running. WorkerPool-backed Task views
+include only the selected Task's segment from the recent shared worker Pod log.
+The Console reports that the segment is unavailable when its markers are
+outside the bounded log window.
 Selecting an existing Session as a source populates both the form fields and the
 editable YAML manifest. Settings that the form cannot represent remain editable
 in YAML mode.

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gorilla/websocket"
 	corev1 "k8s.io/api/core/v1"
@@ -113,6 +115,9 @@ func TestConsoleApplicationIncludesResourceViews(t *testing.T) {
 		`id="overview-view"`,
 		`id="resources-view"`,
 		`id="resource-detail-dialog"`,
+		`id="resource-detail-logs-tab"`,
+		`id="refresh-resource-logs"`,
+		`id="resource-detail-logs"`,
 	} {
 		if !strings.Contains(response.Body.String(), expected) {
 			t.Errorf("Console application does not contain %s", expected)
@@ -126,8 +131,13 @@ func TestConsoleApplicationIncludesResourceViews(t *testing.T) {
 		"async function loadResources",
 		"function renderOverview",
 		"function renderResources",
+		"function setResourceDetailView",
+		"function handleResourceDetailTabKeydown",
+		"async function loadResourceTaskLogs",
 		"async function openResourceDetail",
+		"elements.resourceDetailTabs.addEventListener('keydown', handleResourceDetailTabKeydown)",
 		"/api/resources?namespace=",
+		"/api/resources/tasks/",
 	} {
 		if !strings.Contains(string(javascript), expected) {
 			t.Errorf("Console JavaScript does not contain %q", expected)
@@ -137,7 +147,7 @@ func TestConsoleApplicationIncludesResourceViews(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{".resource-summary-grid", ".resource-summary-card", ".resource-table", ".resource-detail-dialog"} {
+	for _, expected := range []string{".resource-summary-grid", ".resource-summary-card", ".resource-table", ".resource-detail-dialog", ".resource-detail-tabs[hidden]"} {
 		if !strings.Contains(string(styles), expected) {
 			t.Errorf("Console styles do not contain %q", expected)
 		}
@@ -210,6 +220,285 @@ func TestConsoleResourcesListAndGet(t *testing.T) {
 		if !strings.Contains(detail.YAML, expected) {
 			t.Errorf("resource detail YAML does not contain %q:\n%s", expected, detail.YAML)
 		}
+	}
+}
+
+func TestConsoleTaskLogs(t *testing.T) {
+	server := testServer(t)
+	task := &kelos.Task{
+		ObjectMeta: metav1.ObjectMeta{Name: "running-task", Namespace: "team-a"},
+		Status:     kelos.TaskStatus{Phase: kelos.TaskPhaseRunning, PodName: "running-task-pod"},
+	}
+	if err := server.client.Create(t.Context(), task); err != nil {
+		t.Fatal(err)
+	}
+	server.taskLogStream = func(_ context.Context, got *kelos.Task, tailLines int64) (io.ReadCloser, error) {
+		if got.Name != task.Name || got.Status.PodName != task.Status.PodName {
+			t.Fatalf("Task passed to log stream = %#v", got)
+		}
+		if tailLines != taskLogTailLineLimit {
+			t.Fatalf("Task log tail lines = %d, want %d", tailLines, taskLogTailLineLimit)
+		}
+		return io.NopCloser(strings.NewReader("agent output\n")), nil
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/api/resources/tasks/team-a/running-task/logs", nil)
+	request.Header.Set("Authorization", "Bearer secret-token")
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("Task logs status = %d body = %s", response.Code, response.Body.String())
+	}
+	if got, want := response.Header().Get("Content-Type"), "text/plain; charset=utf-8"; got != want {
+		t.Errorf("Task logs Content-Type = %q, want %q", got, want)
+	}
+	if got, want := response.Body.String(), "agent output\n"; got != want {
+		t.Errorf("Task logs = %q, want %q", got, want)
+	}
+}
+
+func TestConsoleWorkerPoolTaskLogsOnlyIncludeSelectedTask(t *testing.T) {
+	server := testServer(t)
+	task := &kelos.Task{
+		ObjectMeta: metav1.ObjectMeta{Name: "task-b", Namespace: "team-a"},
+		Spec:       kelos.TaskSpec{WorkerPoolRef: &kelos.WorkerPoolReference{Name: "pool"}},
+		Status:     kelos.TaskStatus{Phase: kelos.TaskPhaseSucceeded, PodName: "pool-0"},
+	}
+	if err := server.client.Create(t.Context(), task); err != nil {
+		t.Fatal(err)
+	}
+	server.taskLogStream = func(_ context.Context, _ *kelos.Task, tailLines int64) (io.ReadCloser, error) {
+		if tailLines != workerTaskLogLineLimit {
+			t.Fatalf("WorkerPool Task log tail lines = %d, want %d", tailLines, workerTaskLogLineLimit)
+		}
+		return io.NopCloser(strings.NewReader(strings.Join([]string{
+			"worker startup",
+			"---KELOS_TASK_START--- task-a",
+			"task-a output",
+			"---KELOS_TASK_END--- task-a",
+			"---KELOS_TASK_START--- task-b",
+			"task-b output",
+			"---KELOS_TASK_END--- task-b",
+			"worker idle",
+		}, "\n"))), nil
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/api/resources/tasks/team-a/task-b/logs", nil)
+	request.Header.Set("Authorization", "Bearer secret-token")
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("WorkerPool Task logs status = %d body = %s", response.Code, response.Body.String())
+	}
+	if got, want := response.Body.String(), "task-b output\n"; got != want {
+		t.Errorf("WorkerPool Task logs = %q, want %q", got, want)
+	}
+}
+
+func TestTaskPodLogOptionsBoundLogRetrieval(t *testing.T) {
+	task := &kelos.Task{}
+	options := taskPodLogOptions(task, taskLogTailLineLimit)
+	if options.Container != kelos.AgentContainerName {
+		t.Errorf("Pod log container = %q, want %q", options.Container, kelos.AgentContainerName)
+	}
+	if options.TailLines == nil || *options.TailLines != taskLogTailLineLimit {
+		t.Errorf("Pod log tail lines = %v, want %d", options.TailLines, taskLogTailLineLimit)
+	}
+	if options.SinceTime != nil {
+		t.Errorf("Pod log since time = %v, want nil", options.SinceTime)
+	}
+
+	startedAt := metav1.NewTime(time.Unix(20, 0))
+	task.Spec.WorkerPoolRef = &kelos.WorkerPoolReference{Name: "pool"}
+	task.Status.StartTime = &startedAt
+	options = taskPodLogOptions(task, workerTaskLogLineLimit)
+	if options.TailLines == nil || *options.TailLines != workerTaskLogLineLimit {
+		t.Errorf("WorkerPool Pod log tail lines = %v, want %d", options.TailLines, workerTaskLogLineLimit)
+	}
+	wantSinceTime := startedAt.Add(-workerTaskLogSinceMargin)
+	if options.SinceTime == nil || !options.SinceTime.Time.Equal(wantSinceTime) {
+		t.Errorf("WorkerPool Pod log since time = %v, want %v", options.SinceTime, wantSinceTime)
+	}
+
+	createdAt := metav1.NewTime(time.Unix(18, 0))
+	task.CreationTimestamp = createdAt
+	options = taskPodLogOptions(task, workerTaskLogLineLimit)
+	if options.SinceTime == nil || !options.SinceTime.Time.Equal(createdAt.Time) {
+		t.Errorf("WorkerPool Pod log clamped since time = %v, want %v", options.SinceTime, createdAt)
+	}
+
+	task.Status.StartTime = nil
+	options = taskPodLogOptions(task, workerTaskLogLineLimit)
+	if options.SinceTime == nil || !options.SinceTime.Time.Equal(createdAt.Time) {
+		t.Errorf("WorkerPool Pod log since time without start time = %v, want %v", options.SinceTime, createdAt)
+	}
+}
+
+func TestReadTaskLogsBoundsHistoricalWorkerPoolTaskRetrieval(t *testing.T) {
+	server := testServer(t)
+	task := &kelos.Task{
+		ObjectMeta: metav1.ObjectMeta{Name: "task-b", Namespace: "team-a"},
+		Spec:       kelos.TaskSpec{WorkerPoolRef: &kelos.WorkerPoolReference{Name: "pool"}},
+		Status:     kelos.TaskStatus{Phase: kelos.TaskPhaseSucceeded, PodName: "pool-0"},
+	}
+	var requestedTailLines []int64
+	server.taskLogStream = func(_ context.Context, _ *kelos.Task, tailLines int64) (io.ReadCloser, error) {
+		requestedTailLines = append(requestedTailLines, tailLines)
+		return io.NopCloser(strings.NewReader("recent unrelated worker output\n")), nil
+	}
+
+	logs, err := server.readTaskLogs(t.Context(), task)
+	if !errors.Is(err, errTaskLogSegmentUnavailable) {
+		t.Fatalf("historical WorkerPool Task log error = %v, want %v", err, errTaskLogSegmentUnavailable)
+	}
+	if logs != "" {
+		t.Errorf("historical WorkerPool Task logs = %q, want empty", logs)
+	}
+	if got, want := fmt.Sprint(requestedTailLines), fmt.Sprint([]int64{workerTaskLogLineLimit}); got != want {
+		t.Errorf("WorkerPool Task log requests = %s, want %s", got, want)
+	}
+}
+
+func TestReadTaskLogsRequiresMarkerForRunningWorkerPoolTask(t *testing.T) {
+	server := testServer(t)
+	task := &kelos.Task{
+		ObjectMeta: metav1.ObjectMeta{Name: "task-b", Namespace: "team-a"},
+		Spec:       kelos.TaskSpec{WorkerPoolRef: &kelos.WorkerPoolReference{Name: "pool"}},
+		Status:     kelos.TaskStatus{Phase: kelos.TaskPhaseRunning, PodName: "pool-0"},
+	}
+	var requestedTailLines []int64
+	server.taskLogStream = func(_ context.Context, _ *kelos.Task, tailLines int64) (io.ReadCloser, error) {
+		requestedTailLines = append(requestedTailLines, tailLines)
+		return io.NopCloser(strings.NewReader("recent output without the start marker\n")), nil
+	}
+
+	logs, err := server.readTaskLogs(t.Context(), task)
+	if !errors.Is(err, errTaskLogSegmentUnavailable) {
+		t.Fatalf("running WorkerPool Task log error = %v, want %v", err, errTaskLogSegmentUnavailable)
+	}
+	if logs != "" {
+		t.Errorf("running WorkerPool Task logs = %q, want empty", logs)
+	}
+	if got, want := fmt.Sprint(requestedTailLines), fmt.Sprint([]int64{workerTaskLogLineLimit}); got != want {
+		t.Errorf("running WorkerPool Task log requests = %s, want %s", got, want)
+	}
+}
+
+func TestConsoleWorkerPoolTaskLogsReportUnavailableSegment(t *testing.T) {
+	server := testServer(t)
+	task := &kelos.Task{
+		ObjectMeta: metav1.ObjectMeta{Name: "task-b", Namespace: "team-a"},
+		Spec:       kelos.TaskSpec{WorkerPoolRef: &kelos.WorkerPoolReference{Name: "pool"}},
+		Status:     kelos.TaskStatus{Phase: kelos.TaskPhaseSucceeded, PodName: "pool-0"},
+	}
+	if err := server.client.Create(t.Context(), task); err != nil {
+		t.Fatal(err)
+	}
+	server.taskLogStream = func(_ context.Context, _ *kelos.Task, _ int64) (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader("recent unrelated worker output\n")), nil
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/api/resources/tasks/team-a/task-b/logs", nil)
+	request.Header.Set("Authorization", "Bearer secret-token")
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+
+	if response.Code != http.StatusNotFound || !strings.Contains(response.Body.String(), `Task \"task-b\" log segment is unavailable`) {
+		t.Fatalf("unavailable WorkerPool Task logs status = %d body = %s", response.Code, response.Body.String())
+	}
+}
+
+func TestTailLogLinesAppliesLineAndByteLimits(t *testing.T) {
+	logs, err := tailLogLines(strings.NewReader("one\ntwo\nthree\nfour\n"), 2, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := taskLogOmittedMessage + "three\nfour\n"; logs != want {
+		t.Errorf("line-limited logs = %q, want %q", logs, want)
+	}
+
+	maxBytes := len(taskLogOmittedMessage) + 10
+	logs, err = tailLogLines(strings.NewReader(strings.Repeat("x", 100)+"\n"), 10, maxBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(logs) > maxBytes {
+		t.Errorf("byte-limited logs length = %d, want at most %d", len(logs), maxBytes)
+	}
+	if want := taskLogOmittedMessage + strings.Repeat("x", 9) + "\n"; logs != want {
+		t.Errorf("byte-limited logs = %q, want %q", logs, want)
+	}
+
+	maxBytes = len(taskLogOmittedMessage) + 6
+	logs, err = tailLogLines(strings.NewReader("한글\n"), 10, maxBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !utf8.ValidString(logs) {
+		t.Errorf("byte-limited logs are not valid UTF-8: %q", logs)
+	}
+	if want := taskLogOmittedMessage + "글\n"; logs != want {
+		t.Errorf("UTF-8 byte-limited logs = %q, want %q", logs, want)
+	}
+}
+
+func TestTailWorkerTaskLogSegmentStopsAtTaskEnd(t *testing.T) {
+	logs, found, err := tailWorkerTaskLogSegment(strings.NewReader(strings.Join([]string{
+		"worker startup",
+		"---KELOS_TASK_START--- task-b",
+		"first",
+		"second",
+		"third",
+		"---KELOS_TASK_END--- task-b",
+		"later worker output",
+	}, "\n")), "task-b", 2, 1024, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found {
+		t.Fatal("WorkerPool Task log segment was not found")
+	}
+	if want := taskLogOmittedMessage + "second\nthird\n"; logs != want {
+		t.Errorf("WorkerPool Task log tail = %q, want %q", logs, want)
+	}
+}
+
+func TestTailWorkerTaskLogSegmentAcceptsTailWithoutStartMarker(t *testing.T) {
+	logs, found, err := tailWorkerTaskLogSegment(strings.NewReader(strings.Join([]string{
+		"second-to-last",
+		"last",
+		"---KELOS_TASK_END--- task-b",
+		"later worker output",
+	}, "\n")), "task-b", 2, 1024, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found {
+		t.Fatal("WorkerPool Task log tail was not found")
+	}
+	if want := "second-to-last\nlast\n"; logs != want {
+		t.Errorf("WorkerPool Task partial log tail = %q, want %q", logs, want)
+	}
+}
+
+func TestConsoleTaskLogsReportMissingPod(t *testing.T) {
+	server := testServer(t)
+	if err := server.client.Create(t.Context(), &kelos.Task{
+		ObjectMeta: metav1.ObjectMeta{Name: "pending-task", Namespace: "team-a"},
+		Status:     kelos.TaskStatus{Phase: kelos.TaskPhasePending},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/api/resources/tasks/team-a/pending-task/logs", nil)
+	request.Header.Set("Authorization", "Bearer secret-token")
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `Task \"pending-task\" has no pod yet`) {
+		t.Fatalf("Task logs without Pod status = %d body = %s", response.Code, response.Body.String())
 	}
 }
 

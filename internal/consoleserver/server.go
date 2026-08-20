@@ -56,7 +56,15 @@ const (
 	maxSessionSectionLength      = 64
 	requestBodyLimit             = 1024 * 1024
 	attachmentRequestLimit       = sessionruntime.MaxAttachmentBytes + 1024*1024
+	taskLogTailLineLimit         = 2000
+	taskLogTailByteLimit         = 2 * 1024 * 1024
+	taskLogScannerMaxTokenSize   = 10 * 1024 * 1024
+	taskLogOmittedMessage        = "[... earlier log output omitted ...]\n"
+	workerTaskLogLineLimit       = taskLogTailLineLimit + 2
+	workerTaskLogSinceMargin     = 5 * time.Second
 )
+
+var errTaskLogSegmentUnavailable = errors.New("Task log segment is unavailable in the recent WorkerPool log window")
 
 //go:embed web/*
 var webFiles embed.FS
@@ -84,6 +92,7 @@ type Server struct {
 	upgrader         websocket.Upgrader
 	bridge           func(context.Context, *sessionSocket, string, string, func() error) error
 	attachments      sessionAttachmentTransfer
+	taskLogStream    func(context.Context, *kelos.Task, int64) (io.ReadCloser, error)
 }
 
 type sessionAttachmentTransfer interface {
@@ -266,6 +275,7 @@ func New(config Config) (*Server, error) {
 		},
 	}
 	server.bridge = server.bridgeExec
+	server.taskLogStream = server.openTaskLogStream
 	server.handler = server.routes()
 	return server, nil
 }
@@ -393,6 +403,10 @@ func (s *Server) api(writer http.ResponseWriter, request *http.Request) {
 	}
 	if len(parts) == 4 && parts[0] == "resources" && request.Method == http.MethodGet {
 		s.getConsoleResource(writer, request, parts[1], parts[2], parts[3])
+		return
+	}
+	if len(parts) == 5 && parts[0] == "resources" && parts[1] == "tasks" && parts[4] == "logs" && request.Method == http.MethodGet {
+		s.getTaskLogs(writer, request, parts[2], parts[3])
 		return
 	}
 	if len(parts) < 3 || parts[0] != "sessions" {
@@ -567,6 +581,189 @@ func (s *Server) getConsoleResource(writer http.ResponseWriter, request *http.Re
 		Namespace: namespace,
 		YAML:      string(data),
 	})
+}
+
+func (s *Server) getTaskLogs(writer http.ResponseWriter, request *http.Request, namespace, name string) {
+	var task kelos.Task
+	if err := s.client.Get(request.Context(), client.ObjectKey{Namespace: namespace, Name: name}, &task); err != nil {
+		writeKubernetesError(writer, fmt.Sprintf("getting Task %q", name), err)
+		return
+	}
+	if task.Status.PodName == "" {
+		writeError(writer, http.StatusConflict, fmt.Sprintf("Task %q has no pod yet", name))
+		return
+	}
+
+	logs, err := s.readTaskLogs(request.Context(), &task)
+	if err != nil {
+		if errors.Is(err, errTaskLogSegmentUnavailable) {
+			writeError(writer, http.StatusNotFound, fmt.Sprintf("Task %q log segment is unavailable in the recent WorkerPool log window", name))
+			return
+		}
+		writeKubernetesError(writer, fmt.Sprintf("getting logs for Task %q", name), err)
+		return
+	}
+
+	writer.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	writer.WriteHeader(http.StatusOK)
+	_, _ = io.WriteString(writer, logs)
+}
+
+func (s *Server) readTaskLogs(ctx context.Context, task *kelos.Task) (string, error) {
+	if task.Spec.WorkerPoolRef == nil {
+		stream, err := s.taskLogStream(ctx, task, taskLogTailLineLimit)
+		if err != nil {
+			return "", err
+		}
+		defer stream.Close()
+		return tailLogLines(stream, taskLogTailLineLimit, taskLogTailByteLimit)
+	}
+
+	stream, err := s.taskLogStream(ctx, task, workerTaskLogLineLimit)
+	if err != nil {
+		return "", err
+	}
+	logs, found, err := tailWorkerTaskLogSegment(stream, task.Name, taskLogTailLineLimit, taskLogTailByteLimit, true)
+	_ = stream.Close()
+	if err != nil {
+		return "", err
+	}
+	if !found {
+		return "", errTaskLogSegmentUnavailable
+	}
+	return logs, nil
+}
+
+func (s *Server) openTaskLogStream(ctx context.Context, task *kelos.Task, tailLines int64) (io.ReadCloser, error) {
+	return s.clientset.CoreV1().Pods(task.Namespace).GetLogs(task.Status.PodName, taskPodLogOptions(task, tailLines)).Stream(ctx)
+}
+
+func taskPodLogOptions(task *kelos.Task, tailLines int64) *corev1.PodLogOptions {
+	options := &corev1.PodLogOptions{Container: kelos.AgentContainerName}
+	if tailLines > 0 {
+		options.TailLines = &tailLines
+	}
+	if task.Spec.WorkerPoolRef == nil {
+		return options
+	}
+
+	// The worker can observe its Pod assignment just before StartTime is persisted.
+	if task.Status.StartTime != nil {
+		sinceTime := metav1.NewTime(task.Status.StartTime.Add(-workerTaskLogSinceMargin))
+		options.SinceTime = &sinceTime
+	}
+	if !task.CreationTimestamp.IsZero() && (options.SinceTime == nil || task.CreationTimestamp.After(options.SinceTime.Time)) {
+		createdAt := task.CreationTimestamp
+		options.SinceTime = &createdAt
+	}
+	return options
+}
+
+type boundedLogTail struct {
+	lines     []string
+	start     int
+	byteSize  int
+	maxLines  int
+	maxBytes  int
+	truncated bool
+}
+
+func newBoundedLogTail(maxLines, maxBytes int) *boundedLogTail {
+	maxBytes -= len(taskLogOmittedMessage)
+	return &boundedLogTail{
+		lines:    make([]string, 0, maxLines),
+		maxLines: maxLines,
+		maxBytes: maxBytes,
+	}
+}
+
+func (tail *boundedLogTail) reset() {
+	tail.lines = tail.lines[:0]
+	tail.start = 0
+	tail.byteSize = 0
+	tail.truncated = false
+}
+
+func (tail *boundedLogTail) add(line string) {
+	if len(line)+1 > tail.maxBytes {
+		start := len(line) - (tail.maxBytes - 1)
+		for start < len(line) && !utf8.RuneStart(line[start]) {
+			start++
+		}
+		line = line[start:]
+		tail.truncated = true
+	}
+	lineBytes := len(line) + 1
+	for len(tail.lines)-tail.start > 0 && (len(tail.lines)-tail.start >= tail.maxLines || tail.byteSize+lineBytes > tail.maxBytes) {
+		tail.byteSize -= len(tail.lines[tail.start]) + 1
+		tail.lines[tail.start] = ""
+		tail.start++
+		tail.truncated = true
+	}
+	if tail.start >= tail.maxLines {
+		copy(tail.lines, tail.lines[tail.start:])
+		tail.lines = tail.lines[:len(tail.lines)-tail.start]
+		tail.start = 0
+	}
+	tail.lines = append(tail.lines, line)
+	tail.byteSize += lineBytes
+}
+
+func (tail *boundedLogTail) string() string {
+	if len(tail.lines) == tail.start {
+		return ""
+	}
+	var result strings.Builder
+	result.Grow(tail.byteSize)
+	if tail.truncated {
+		result.WriteString(taskLogOmittedMessage)
+	}
+	for _, line := range tail.lines[tail.start:] {
+		result.WriteString(line)
+		result.WriteByte('\n')
+	}
+	return result.String()
+}
+
+func tailLogLines(reader io.Reader, maxLines, maxBytes int) (string, error) {
+	tail := newBoundedLogTail(maxLines, maxBytes)
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 0, 64*1024), taskLogScannerMaxTokenSize)
+	for scanner.Scan() {
+		tail.add(scanner.Text())
+	}
+	if err := scanner.Err(); err != nil {
+		return "", err
+	}
+	return tail.string(), nil
+}
+
+func tailWorkerTaskLogSegment(reader io.Reader, taskName string, maxLines, maxBytes int, acceptPartial bool) (string, bool, error) {
+	startMarker := "---KELOS_TASK_START--- " + taskName
+	endMarker := "---KELOS_TASK_END--- " + taskName
+	tail := newBoundedLogTail(maxLines, maxBytes)
+	inSegment := false
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 0, 64*1024), taskLogScannerMaxTokenSize)
+	for scanner.Scan() {
+		line := scanner.Text()
+		switch {
+		case line == startMarker:
+			inSegment = true
+			tail.reset()
+		case line == endMarker && (inSegment || acceptPartial):
+			return tail.string(), true, nil
+		case inSegment || acceptPartial:
+			tail.add(line)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return "", false, err
+	}
+	if inSegment {
+		return tail.string(), true, nil
+	}
+	return "", false, nil
 }
 
 func consoleResourceDefinitionFor(resource string) (consoleResourceDefinition, bool) {

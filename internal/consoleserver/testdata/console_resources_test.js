@@ -14,7 +14,7 @@ function applicationSlice(start, end) {
 }
 
 vm.runInThisContext(applicationSlice('async function refreshConsole', 'async function openResourceDetail'), {filename: 'app.js'});
-vm.runInThisContext(applicationSlice('async function openResourceDetail', 'function sessionKey'), {filename: 'app.js'});
+vm.runInThisContext(applicationSlice('function setResourceDetailView', 'function sessionKey'), {filename: 'app.js'});
 
 function deferred() {
   let resolve;
@@ -30,15 +30,32 @@ async function testResourceDetailsIgnoreStaleResponses() {
   global.elements = {
     resourceDetailTitle: {textContent: ''},
     resourceDetailSubtitle: {textContent: ''},
+    resourceDetailTabs: {hidden: false},
+    resourceDetailLogsTab: {setAttribute() {}, tabIndex: 0},
+    resourceDetailManifestTab: {setAttribute() {}, tabIndex: -1},
+    resourceDetailLogsPanel: {hidden: true},
+    resourceDetailManifestPanel: {hidden: false},
+    refreshResourceLogs: {disabled: true},
+    resourceDetailLogs: {textContent: ''},
     resourceDetailYAML: {textContent: ''},
     resourceDetailDialog: {showModal() {}},
   };
-  global.state = {resourceDetailGeneration: 0};
+  global.state = {
+    resourceDetailGeneration: 0,
+    resourceDetailLogGeneration: 0,
+    resourceDetailTask: null,
+  };
 
-  const requests = [];
+  const manifestRequests = [];
   global.api = requestPath => {
     const request = deferred();
-    requests.push({path: requestPath, ...request});
+    manifestRequests.push({path: requestPath, ...request});
+    return request.promise;
+  };
+  const logRequests = [];
+  global.apiText = requestPath => {
+    const request = deferred();
+    logRequests.push({path: requestPath, ...request});
     return request.promise;
   };
 
@@ -52,13 +69,20 @@ async function testResourceDetailsIgnoreStaleResponses() {
   );
 
   assert.equal(elements.resourceDetailTitle.textContent, 'Task second');
-  requests[1].resolve({yaml: 'name: second'});
+  assert.equal(elements.resourceDetailLogsPanel.hidden, false);
+  assert.equal(logRequests[1].path, '/api/resources/tasks/default/second/logs');
+  manifestRequests[1].resolve({yaml: 'name: second'});
+  logRequests[1].resolve('second logs');
   await second;
   assert.equal(elements.resourceDetailYAML.textContent, 'name: second');
+  assert.equal(elements.resourceDetailLogs.textContent, 'second logs');
+  assert.equal(elements.refreshResourceLogs.disabled, false);
 
-  requests[0].resolve({yaml: 'name: first'});
+  manifestRequests[0].resolve({yaml: 'name: first'});
+  logRequests[0].resolve('first logs');
   await first;
   assert.equal(elements.resourceDetailYAML.textContent, 'name: second');
+  assert.equal(elements.resourceDetailLogs.textContent, 'second logs');
 }
 
 async function testRefreshReportsOptionFailures() {
@@ -73,6 +97,32 @@ async function testRefreshReportsOptionFailures() {
   assert.equal(message, 'options unavailable');
 }
 
+function testResourceDetailTabsSupportKeyboardNavigation() {
+  let clicked = false;
+  let focused = false;
+  let prevented = false;
+  const logsTab = {};
+  const manifestTab = {
+    click() { clicked = true; },
+    focus() { focused = true; },
+  };
+  global.elements = {
+    resourceDetailLogsTab: logsTab,
+    resourceDetailManifestTab: manifestTab,
+  };
+
+  handleResourceDetailTabKeydown({
+    target: logsTab,
+    key: 'ArrowRight',
+    preventDefault() { prevented = true; },
+  });
+
+  assert.equal(clicked, true);
+  assert.equal(focused, true);
+  assert.equal(prevented, true);
+}
+
 testResourceDetailsIgnoreStaleResponses()
   .then(() => testRefreshReportsOptionFailures())
+  .then(() => testResourceDetailTabsSupportKeyboardNavigation())
   .then(() => process.stdout.write('Console resources tests passed\n'));
