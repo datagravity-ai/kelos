@@ -138,8 +138,8 @@ var _ = Describe("Session remote control", func() {
 		runTerminalTurn(f.Namespace, sessionName, "terminal-one", ContainSubstring("agent › turn 1: terminal-one"))
 		runTerminalTurn(f.Namespace, sessionName, "terminal-two", ContainSubstring("agent › turn 2: terminal-two"))
 
-		By("authenticating to the shared Session web server")
-		baseURL := startSessionServerPortForward()
+		By("authenticating to the shared Console server")
+		baseURL := startConsoleServerPortForward()
 		unauthenticatedClient := &http.Client{Timeout: 30 * time.Second}
 		response, err := unauthenticatedClient.Get(baseURL + "/api/sessions")
 		Expect(err).NotTo(HaveOccurred())
@@ -446,7 +446,7 @@ var _ = Describe("Session remote control", func() {
 		Expect(statefulSet.Spec.UpdateStrategy.Type).To(Equal(appsv1.OnDeleteStatefulSetStrategyType))
 		Expect(statefulSet.Spec.UpdateStrategy.RollingUpdate).To(BeNil())
 
-		baseURL := startSessionServerPortForward()
+		baseURL := startConsoleServerPortForward()
 		connection := connectSessionWebSocket(loginSessionWeb(baseURL, token), baseURL, f.Namespace, sessionName)
 		DeferCleanup(func() { _ = connection.Close() })
 		sendSessionRequest(connection, sessionruntime.ClientRequest{Type: "subscribe"})
@@ -573,7 +573,7 @@ var _ = Describe("Session remote control", func() {
 			_ = f.KelosClientset.ApiV1alpha2().Workspaces(f.Namespace).Delete(context.TODO(), workspaceName, metav1.DeleteOptions{})
 		})
 
-		baseURL := startSessionServerPortForward()
+		baseURL := startConsoleServerPortForward()
 		webClient := loginSessionWeb(baseURL, token)
 		initialBranch := "feature/web-options"
 		initialPrompt := "Investigate issue #42 interactively\nand summarize the next steps."
@@ -901,7 +901,7 @@ var _ = Describe("Session remote control", func() {
 		waitForSessionPhase(f, f.Namespace, sessionName, kelos.SessionPhaseReady)
 
 		By("holding a turn open at a user-input request")
-		baseURL := startSessionServerPortForward()
+		baseURL := startConsoleServerPortForward()
 		connection := connectSessionWebSocket(loginSessionWeb(baseURL, token), baseURL, f.Namespace, sessionName)
 		DeferCleanup(func() { _ = connection.Close() })
 		sendSessionRequest(connection, sessionruntime.ClientRequest{Type: "subscribe"})
@@ -1285,9 +1285,9 @@ func runTerminalAttachmentTurn(namespace, name, path, prompt string, outputMatch
 	Expect(command.Wait()).To(Succeed(), "terminal output:\n%s", output.String())
 }
 
-func startSessionServerPortForward() string {
+func startConsoleServerPortForward() string {
 	ctx, cancel := context.WithCancel(context.Background())
-	command := exec.CommandContext(ctx, "kubectl", "--namespace", "kelos-system", "port-forward", "--address", "127.0.0.1", "service/kelos-session-server", ":80")
+	command := exec.CommandContext(ctx, "kubectl", "--namespace", "kelos-system", "port-forward", "--address", "127.0.0.1", "service/kelos-console-server", ":80")
 	output := &lockedBuffer{}
 	command.Stdout = io.MultiWriter(GinkgoWriter, output)
 	command.Stderr = io.MultiWriter(GinkgoWriter, output)

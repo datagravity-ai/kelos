@@ -2,7 +2,7 @@
 ---
 # PodMonitor for the Kelos control-plane pods (controller manager, webhook
 # servers, slack server). They all carry app.kubernetes.io/name: kelos and
-# expose the metrics port (8080). session-server is explicitly excluded: it
+# expose the metrics port (8080). console-server is explicitly excluded: it
 # shares the app.kubernetes.io/name: kelos label but its 8080 port serves the
 # web app (named "http"), not Prometheus metrics.
 #
@@ -35,12 +35,12 @@ spec:
     matchLabels:
       app.kubernetes.io/name: kelos
     matchExpressions:
-      # Exclude the session-server web app, which shares the name label but does
+      # Exclude the console-server web app, which shares the name label but does
       # not expose a Prometheus metrics port.
       - key: app.kubernetes.io/component
         operator: NotIn
         values:
-          - session-server
+          - console-server
   podMetricsEndpoints:
     - port: metrics
       interval: {{ .Values.podMonitor.interval }}

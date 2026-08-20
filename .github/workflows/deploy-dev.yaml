@@ -139,22 +139,35 @@ jobs:
             --dry-run=client -o yaml \
             | kubectl apply -f -
 
-      - name: Apply Session server authentication secret
+      - name: Apply Console server authentication secret
         env:
-          KELOS_SESSION_TOKEN: ${{ secrets.KELOS_SESSION_TOKEN }}
+          KELOS_CONSOLE_TOKEN: ${{ secrets.KELOS_CONSOLE_TOKEN }}
         run: |
-          if [ -z "${KELOS_SESSION_TOKEN}" ]; then
-            echo "KELOS_SESSION_TOKEN is required" >&2
+          if [ -z "${KELOS_CONSOLE_TOKEN}" ]; then
+            echo "KELOS_CONSOLE_TOKEN is required" >&2
             exit 1
           fi
-          kubectl create secret generic kelos-session-server-auth \
+          kubectl create secret generic kelos-console-server-auth \
             --namespace kelos-system \
-            --from-literal=token="${KELOS_SESSION_TOKEN}" \
+            --from-literal=token="${KELOS_CONSOLE_TOKEN}" \
             --dry-run=client -o yaml \
             | kubectl apply -f -
 
       - name: Install kelos
         run: |
+          # FIXME: Remove after the dev cluster has migrated to the Console server.
+          kubectl delete \
+            deployment/kelos-session-server \
+            service/kelos-session-server \
+            serviceaccount/kelos-session-server \
+            secret/kelos-session-server-auth \
+            --namespace kelos-system \
+            --ignore-not-found
+          kubectl delete \
+            clusterrole/kelos-session-server-role \
+            clusterrolebinding/kelos-session-server-rolebinding \
+            --ignore-not-found
+
           cat > /tmp/kelos-dev-values.yaml <<'EOF'
           image:
             tag: main
@@ -170,9 +183,9 @@ jobs:
               limits:
                 cpu: 500m
                 memory: 256Mi
-          sessionServer:
+          consoleServer:
             enabled: true
-            secretName: kelos-session-server-auth
+            secretName: kelos-console-server-auth
             secureCookie: true
             service:
               type: NodePort
@@ -190,8 +203,8 @@ jobs:
                 memory: 128Mi
           EOF
           bin/kelos install -f /tmp/kelos-dev-values.yaml \
-            --set-string sessionServer.defaultNamespace="${KELOS_NAMESPACE}"
-          kubectl patch service kelos-session-server -n kelos-system --type=merge \
+            --set-string consoleServer.defaultNamespace="${KELOS_NAMESPACE}"
+          kubectl patch service kelos-console-server -n kelos-system --type=merge \
             --patch '{"spec":{"ports":[{"name":"http","nodePort":30080,"port":80,"protocol":"TCP","targetPort":"http"}]}}'
           kubectl patch service kelos-webhook-github -n kelos-system --type=merge \
             --patch '{"spec":{"ports":[{"name":"webhook","nodePort":30081,"port":8443,"protocol":"TCP","targetPort":"webhook"}]}}'
@@ -203,10 +216,10 @@ jobs:
               kubectl patch "session/${name}" -n "${namespace}" --type=merge \
                 --patch "{\"spec\":{\"worker\":{\"podOverrides\":{\"labels\":{\"app.kubernetes.io/version\":\"${KELOS_SESSION_VERSION}\"}}}}}"
             done
-          kubectl rollout restart deployment/kelos-session-server -n kelos-system
+          kubectl rollout restart deployment/kelos-console-server -n kelos-system
           kubectl rollout restart deployment -l kelos.dev/component=spawner -n "${KELOS_NAMESPACE}"
           kubectl rollout restart deployment/kelos-webhook-github -n kelos-system
-          kubectl rollout status deployment/kelos-session-server -n kelos-system --timeout=300s
+          kubectl rollout status deployment/kelos-console-server -n kelos-system --timeout=300s
           kubectl rollout status deployment -l kelos.dev/component=spawner -n "${KELOS_NAMESPACE}" --timeout=300s
           kubectl rollout status deployment/kelos-webhook-github -n kelos-system --timeout=300s
 

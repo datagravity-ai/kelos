@@ -65,13 +65,13 @@ workerRunner:
   image: ghcr.io/kelos-dev/kelos-worker-runner
 sessionRuntime:
   image: ghcr.io/kelos-dev/kelos-session-runtime
-sessionServer:
+consoleServer:
   enabled: false
-  image: ghcr.io/kelos-dev/kelos-session-server
+  image: ghcr.io/kelos-dev/kelos-console-server
   replicas: 1
   secretName: ""
   tokenKey: token
-  # Initial active namespace in the Session web application.
+  # Initial active namespace in the Console.
   defaultNamespace: default
   secureCookie: false
   service:

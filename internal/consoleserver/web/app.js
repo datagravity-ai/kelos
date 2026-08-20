@@ -13,6 +13,22 @@ const elements = {
   sessionActionRename: document.querySelector('#session-action-rename'),
   sessionActionReset: document.querySelector('#session-action-reset'),
   sessionActionDelete: document.querySelector('#session-action-delete'),
+  overviewButton: document.querySelector('#console-overview'),
+  sessionsButton: document.querySelector('#console-sessions'),
+  resourcesButton: document.querySelector('#console-resources'),
+  overviewView: document.querySelector('#overview-view'),
+  sessionsView: document.querySelector('#sessions-view'),
+  resourcesView: document.querySelector('#resources-view'),
+  sessionSidebar: document.querySelector('#session-sidebar'),
+  summaryGrid: document.querySelector('#resource-summary-grid'),
+  recentResources: document.querySelector('#recent-resources'),
+  resourceKind: document.querySelector('#resource-kind'),
+  resourceList: document.querySelector('#resource-list'),
+  resourceDetailDialog: document.querySelector('#resource-detail-dialog'),
+  resourceDetailTitle: document.querySelector('#resource-detail-title'),
+  resourceDetailSubtitle: document.querySelector('#resource-detail-subtitle'),
+  resourceDetailYAML: document.querySelector('#resource-detail-yaml'),
+  namespaceLabels: document.querySelectorAll('.console-namespace'),
   newSessionButton: document.querySelector('#new-session'),
   sectionSelect: document.querySelector('#session-section-select'),
   sectionCustom: document.querySelector('#session-section-custom'),
@@ -129,6 +145,10 @@ const state = {
   sourceLoading: false,
   creatingSession: false,
   resumingSession: false,
+  consoleView: 'overview',
+  resourceGroups: [],
+  resourceListGeneration: 0,
+  resourceDetailGeneration: 0,
   sourceStorageClassNamePresent: false,
   loadedSource: null,
   displayNameSaving: false,
@@ -169,6 +189,184 @@ function showToast(message) {
   elements.toast.classList.add('show');
   window.clearTimeout(showToast.timer);
   showToast.timer = window.setTimeout(() => elements.toast.classList.remove('show'), 3200);
+}
+
+function resourceCollections() {
+  return state.resourceGroups.flatMap(group => group.resources.map(resource => ({...resource, group: group.name})));
+}
+
+function setConsoleView(view) {
+  state.consoleView = ['overview', 'sessions', 'resources'].includes(view) ? view : 'overview';
+  elements.overviewView.hidden = state.consoleView !== 'overview';
+  elements.sessionsView.hidden = state.consoleView !== 'sessions';
+  elements.resourcesView.hidden = state.consoleView !== 'resources';
+  elements.sessionSidebar.hidden = state.consoleView !== 'sessions';
+  for (const [button, name] of [
+    [elements.overviewButton, 'overview'],
+    [elements.sessionsButton, 'sessions'],
+    [elements.resourcesButton, 'resources'],
+  ]) {
+    if (name === state.consoleView) button.setAttribute('aria-current', 'page');
+    else button.removeAttribute('aria-current');
+  }
+  if (state.consoleView === 'sessions' && !state.selected && state.sessions.length) selectSession(state.sessions[0]);
+  setSidebarOpen(false);
+}
+
+function resourceAge(createdAt) {
+  return createdAt ? formatSessionRecency({createdAt}, true) : '—';
+}
+
+function resourceStatus(item) {
+  return item.phase || 'Configured';
+}
+
+function createResourceTable(entries) {
+  if (!entries.length) {
+    const empty = document.createElement('div');
+    empty.className = 'resource-empty';
+    empty.textContent = `No resources in ${state.namespace}.`;
+    return empty;
+  }
+  const table = document.createElement('table');
+  table.className = 'resource-table';
+  const head = document.createElement('thead');
+  const heading = document.createElement('tr');
+  for (const label of ['Name', 'Kind', 'Status', 'Created']) {
+    const cell = document.createElement('th');
+    cell.scope = 'col';
+    cell.textContent = label;
+    heading.append(cell);
+  }
+  head.append(heading);
+  const body = document.createElement('tbody');
+  for (const {collection, item} of entries) {
+    const row = document.createElement('tr');
+    const cell = document.createElement('td');
+    cell.colSpan = 4;
+    const button = document.createElement('button');
+    button.className = 'resource-row-button';
+    button.type = 'button';
+    button.title = item.message || `Inspect ${collection.kind} ${item.namespace}/${item.name}`;
+    const name = document.createElement('span');
+    name.className = 'resource-row-name';
+    name.textContent = item.name;
+    const kind = document.createElement('span');
+    kind.className = 'resource-row-kind';
+    kind.textContent = collection.kind;
+    const phase = document.createElement('span');
+    phase.className = 'resource-row-phase';
+    phase.dataset.state = resourceStatus(item).toLowerCase();
+    phase.textContent = resourceStatus(item);
+    const age = document.createElement('span');
+    age.className = 'resource-row-age';
+    age.textContent = resourceAge(item.createdAt);
+    button.append(name, kind, phase, age);
+    button.addEventListener('click', () => openResourceDetail(collection, item));
+    cell.append(button);
+    row.append(cell);
+    body.append(row);
+  }
+  table.append(head, body);
+  return table;
+}
+
+function renderOverview() {
+  elements.summaryGrid.replaceChildren();
+  const collections = resourceCollections();
+  for (const collection of collections) {
+    const card = document.createElement('button');
+    card.className = 'resource-summary-card';
+    card.type = 'button';
+    const label = document.createElement('span');
+    label.textContent = collection.label;
+    const count = document.createElement('strong');
+    count.textContent = String(collection.items.length);
+    card.append(label, count);
+    card.addEventListener('click', () => {
+      elements.resourceKind.value = collection.resource;
+      renderResources();
+      setConsoleView('resources');
+    });
+    elements.summaryGrid.append(card);
+  }
+  if (!collections.length) {
+    const loading = document.createElement('div');
+    loading.className = 'resource-empty';
+    loading.textContent = 'Loading Kelos resources…';
+    elements.summaryGrid.append(loading);
+  }
+  const recent = collections
+    .flatMap(collection => collection.items.map(item => ({collection, item})))
+    .sort((left, right) => String(right.item.createdAt).localeCompare(String(left.item.createdAt)))
+    .slice(0, 10);
+  elements.recentResources.replaceChildren(createResourceTable(recent));
+}
+
+function renderResourceKindOptions() {
+  const selected = elements.resourceKind.value;
+  elements.resourceKind.replaceChildren();
+  for (const group of state.resourceGroups) {
+    const optionGroup = document.createElement('optgroup');
+    optionGroup.label = group.name;
+    for (const collection of group.resources) {
+      const option = document.createElement('option');
+      option.value = collection.resource;
+      option.textContent = `${collection.label} (${collection.items.length})`;
+      optionGroup.append(option);
+    }
+    elements.resourceKind.append(optionGroup);
+  }
+  const collections = resourceCollections();
+  if (collections.some(collection => collection.resource === selected)) elements.resourceKind.value = selected;
+}
+
+function renderResources() {
+  const collections = resourceCollections();
+  const collection = collections.find(item => item.resource === elements.resourceKind.value) || collections[0];
+  if (collection && elements.resourceKind.value !== collection.resource) elements.resourceKind.value = collection.resource;
+  const entries = collection ? collection.items.map(item => ({collection, item})) : [];
+  elements.resourceList.replaceChildren(createResourceTable(entries));
+}
+
+async function loadResources({quiet = false} = {}) {
+  const namespace = state.namespace;
+  const generation = state.namespaceGeneration;
+  const listGeneration = ++state.resourceListGeneration;
+  try {
+    const inventory = await api(`/api/resources?namespace=${encodeURIComponent(namespace)}`);
+    if (generation !== state.namespaceGeneration || listGeneration !== state.resourceListGeneration) return;
+    state.resourceGroups = inventory.groups || [];
+    renderResourceKindOptions();
+    renderOverview();
+    renderResources();
+  } catch (error) {
+    if (!quiet && generation === state.namespaceGeneration && listGeneration === state.resourceListGeneration) showToast(error.message);
+  }
+}
+
+async function refreshConsole() {
+  try {
+    await Promise.all([loadSessions(), loadOptions(), loadResources()]);
+  } catch (error) {
+    showToast(error.message);
+  }
+}
+
+async function openResourceDetail(collection, item) {
+  const generation = ++state.resourceDetailGeneration;
+  elements.resourceDetailTitle.textContent = `${collection.kind} ${item.name}`;
+  elements.resourceDetailSubtitle.textContent = `${item.namespace}/${item.name}`;
+  elements.resourceDetailYAML.textContent = 'Loading manifest…';
+  elements.resourceDetailDialog.showModal();
+  try {
+    const detail = await api(`/api/resources/${encodeURIComponent(collection.resource)}/${encodeURIComponent(item.namespace)}/${encodeURIComponent(item.name)}`);
+    if (generation !== state.resourceDetailGeneration) return;
+    elements.resourceDetailYAML.textContent = detail.yaml;
+  } catch (error) {
+    if (generation !== state.resourceDetailGeneration) return;
+    elements.resourceDetailYAML.textContent = error.message;
+  }
 }
 
 function sessionKey(session) {
@@ -1194,9 +1392,10 @@ async function loadSessions({quiet = false} = {}) {
 async function loadConfig() {
   const config = await api('/api/config');
   state.defaultNamespace = config.defaultNamespace;
-  state.namespace = window.localStorage.getItem('kelos-session-namespace') || state.defaultNamespace;
+  state.namespace = window.localStorage.getItem('kelos-console-namespace') || state.defaultNamespace;
   elements.activeNamespace.value = state.namespace;
   elements.namespace.value = state.namespace;
+  for (const label of elements.namespaceLabels) label.textContent = state.namespace;
 }
 
 function defaultSessionYAML() {
@@ -1277,10 +1476,12 @@ async function switchNamespace(namespace) {
   state.namespace = namespace;
   state.namespaceGeneration += 1;
   state.sessions = [];
+  state.resourceGroups = [];
   state.options = {credentials: [], workspaces: [], agentConfigs: [], sessions: []};
-  window.localStorage.setItem('kelos-session-namespace', namespace);
+  window.localStorage.setItem('kelos-console-namespace', namespace);
   elements.activeNamespace.value = namespace;
   elements.namespace.value = namespace;
+  for (const label of elements.namespaceLabels) label.textContent = namespace;
   resetNamespaceReferences();
   elements.yaml.value = '';
   if (hadLoadedSource) resetSourceValues();
@@ -1289,8 +1490,11 @@ async function switchNamespace(namespace) {
   renderCredentialOptions();
   renderWorkspaceOptions();
   renderAgentConfigOptions();
+  renderOverview();
+  renderResourceKindOptions();
+  renderResources();
   selectSession(null);
-  await Promise.all([loadSessions(), loadOptions()]);
+  await Promise.all([loadSessions(), loadOptions(), loadResources()]);
 }
 
 function addOption(select, value, label) {
@@ -4115,17 +4319,30 @@ function interruptActiveTurn() {
   state.socket.send(JSON.stringify({type: 'interrupt'}));
 }
 
-document.querySelector('#refresh-sessions').addEventListener('click', () => loadSessions());
+elements.overviewButton.addEventListener('click', () => setConsoleView('overview'));
+elements.sessionsButton.addEventListener('click', () => setConsoleView('sessions'));
+elements.resourcesButton.addEventListener('click', () => setConsoleView('resources'));
+elements.resourceKind.addEventListener('change', renderResources);
+document.querySelectorAll('.close-resource-detail').forEach(button => {
+  button.addEventListener('click', () => elements.resourceDetailDialog.close());
+});
+document.querySelector('#refresh-console').addEventListener('click', () => {
+  void refreshConsole();
+});
 document.querySelector('#logout').addEventListener('click', async () => {
   await api('/api/logout', {method: 'POST'}).catch(() => {});
   window.location.replace('/login');
 });
 function setSidebarOpen(open) {
   elements.sidebar.classList.toggle('open', open);
-  elements.openSidebar.setAttribute('aria-expanded', String(open));
+  for (const button of document.querySelectorAll('.open-sidebar-button')) {
+    button.setAttribute('aria-expanded', String(open));
+  }
 }
 
-elements.openSidebar.addEventListener('click', () => setSidebarOpen(true));
+document.querySelectorAll('.open-sidebar-button').forEach(button => {
+  button.addEventListener('click', () => setSidebarOpen(true));
+});
 elements.closeSidebar.addEventListener('click', () => setSidebarOpen(false));
 elements.sidebarScrim.addEventListener('click', () => setSidebarOpen(false));
 elements.list.addEventListener('scroll', () => closeSessionActionsMenu());
@@ -4145,7 +4362,8 @@ document.addEventListener('keydown', event => {
 });
 
 const configReady = loadConfig();
-configReady.then(() => Promise.all([loadOptions(), loadSessions()])).then(() => {
-  if (state.sessions.length) selectSession(state.sessions[0]);
+configReady.then(() => Promise.all([loadOptions(), loadSessions(), loadResources()])).then(() => {
+  setConsoleView('overview');
 }).catch(error => showToast(error.message));
 window.setInterval(() => loadSessions({quiet: true}), 5000);
+window.setInterval(() => loadResources({quiet: true}), 10000);

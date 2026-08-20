@@ -28,9 +28,9 @@ Claude Code, OpenAI Codex, Google Gemini, OpenCode, Cursor, and
 [custom agent images](docs/agent-image-interface.md).
 
 <p align="center">
-  <img alt="Kelos Sessions web interface showing multiple agent conversations" src="docs/images/kelos-session-web-chat.png" />
+  <img alt="Browser-based Session chat showing multiple agent conversations" src="docs/images/kelos-session-web-chat.png" />
   <br>
-  <a href="#use-the-session-web-chat">Set up the Session web chat</a>
+  <a href="#use-the-kelos-console">Set up the Kelos Console</a>
 </p>
 
 ## Why Kelos?
@@ -222,10 +222,11 @@ kubectl apply -f examples/16-session/
 kelos session connect interactive-review
 ```
 
-##### Use the Session web chat
+##### Use the Kelos Console
 
-To create, organize, and chat with Sessions in a browser, enable the optional
-Session server. Follow the [Session web chat guide](internal/manifests/charts/kelos/README.md#session-web-chat)
+To inspect Kelos resources and create, organize, and chat with Sessions in a
+browser, enable the optional Console server. Follow the
+[Kelos Console guide](internal/manifests/charts/kelos/README.md#kelos-console)
 to configure its shared token and access the cluster-internal web application.
 
 See the [configuration reference](docs/reference.md#configuration) for other
@@ -253,7 +254,7 @@ workflows running the project.
 | Resource fields and CLI commands | [Reference](docs/reference.md) |
 | Ready-to-apply patterns | [Examples](examples/) |
 | GitHub, Jira, CI, and webhook connections | [Integration guide](docs/integration.md) |
-| Interactive Sessions | [Session example](examples/16-session/) and [web chat guide](internal/manifests/charts/kelos/README.md#session-web-chat) |
+| Console and interactive Sessions | [Session example](examples/16-session/) and [Console guide](internal/manifests/charts/kelos/README.md#kelos-console) |
 | Custom agent containers | [Agent image interface](docs/agent-image-interface.md) |
 | Helm installation and upgrades | [Chart documentation](internal/manifests/charts/kelos/README.md) |
 | Contributing | [Contributing guide](CONTRIBUTING.md) |

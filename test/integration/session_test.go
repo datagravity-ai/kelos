@@ -19,8 +19,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	kelos "github.com/kelos-dev/kelos/api/v1alpha2"
+	"github.com/kelos-dev/kelos/internal/consoleserver"
 	"github.com/kelos-dev/kelos/internal/controller"
-	"github.com/kelos-dev/kelos/internal/sessionserver"
 )
 
 var _ = Describe("Session", func() {
@@ -34,7 +34,7 @@ var _ = Describe("Session", func() {
 	It("applies a persistent Session through the web YAML API", func() {
 		clientset, err := kubernetes.NewForConfig(cfg)
 		Expect(err).NotTo(HaveOccurred())
-		server, err := sessionserver.New(sessionserver.Config{
+		server, err := consoleserver.New(consoleserver.Config{
 			Token:            "secret-token",
 			Client:           k8sClient,
 			Clientset:        clientset,

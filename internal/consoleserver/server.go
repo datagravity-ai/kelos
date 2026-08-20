@@ -1,4 +1,4 @@
-package sessionserver
+package consoleserver
 
 import (
 	"bufio"
@@ -47,9 +47,9 @@ import (
 )
 
 const (
-	authCookieName               = "kelos_session_auth"
+	authCookieName               = "kelos_console_auth"
 	sessionRuntimeClient         = "/kelos/bin/kelos-session-runtime"
-	sessionApplyManager          = "kelos-session-server"
+	sessionApplyManager          = "kelos-console-server"
 	sessionDisplayNameAnnotation = "kelos.dev/session-display-name"
 	sessionSectionAnnotation     = "kelos.dev/session-section"
 	maxSessionDisplayNameLength  = 64
@@ -61,7 +61,7 @@ const (
 //go:embed web/*
 var webFiles embed.FS
 
-// Config contains dependencies and authentication configuration for the web server.
+// Config contains dependencies and authentication configuration for the Console server.
 type Config struct {
 	Token            string
 	Client           client.Client
@@ -71,7 +71,7 @@ type Config struct {
 	SecureCookie     bool
 }
 
-// Server serves the Session web application and Kubernetes-backed API.
+// Server serves the Kelos Console and its Kubernetes-backed API.
 type Server struct {
 	token            []byte
 	cookieValue      string
@@ -181,6 +181,55 @@ type sessionSourceDetail struct {
 	YAML      string          `json:"yaml"`
 }
 
+type consoleResourceDefinition struct {
+	Resource string
+	Kind     string
+	Label    string
+	Group    string
+	NewList  func() client.ObjectList
+	New      func() client.Object
+}
+
+type consoleResourceGroup struct {
+	Name      string                      `json:"name"`
+	Resources []consoleResourceCollection `json:"resources"`
+}
+
+type consoleResourceCollection struct {
+	Resource string                   `json:"resource"`
+	Kind     string                   `json:"kind"`
+	Label    string                   `json:"label"`
+	Items    []consoleResourceSummary `json:"items"`
+}
+
+type consoleResourceSummary struct {
+	Name      string `json:"name"`
+	Namespace string `json:"namespace"`
+	CreatedAt string `json:"createdAt,omitempty"`
+	Phase     string `json:"phase,omitempty"`
+	Message   string `json:"message,omitempty"`
+}
+
+type consoleResourceDetail struct {
+	Resource  string `json:"resource"`
+	Kind      string `json:"kind"`
+	Name      string `json:"name"`
+	Namespace string `json:"namespace"`
+	YAML      string `json:"yaml"`
+}
+
+var consoleResourceDefinitions = []consoleResourceDefinition{
+	{Resource: "sessions", Kind: "Session", Label: "Sessions", Group: "Workloads", NewList: func() client.ObjectList { return &kelos.SessionList{} }, New: func() client.Object { return &kelos.Session{} }},
+	{Resource: "tasks", Kind: "Task", Label: "Tasks", Group: "Workloads", NewList: func() client.ObjectList { return &kelos.TaskList{} }, New: func() client.Object { return &kelos.Task{} }},
+	{Resource: "taskrecords", Kind: "TaskRecord", Label: "Task records", Group: "Workloads", NewList: func() client.ObjectList { return &kelos.TaskRecordList{} }, New: func() client.Object { return &kelos.TaskRecord{} }},
+	{Resource: "taskspawners", Kind: "TaskSpawner", Label: "Task spawners", Group: "Automation", NewList: func() client.ObjectList { return &kelos.TaskSpawnerList{} }, New: func() client.Object { return &kelos.TaskSpawner{} }},
+	{Resource: "sessionspawners", Kind: "SessionSpawner", Label: "Session spawners", Group: "Automation", NewList: func() client.ObjectList { return &kelos.SessionSpawnerList{} }, New: func() client.Object { return &kelos.SessionSpawner{} }},
+	{Resource: "workerpools", Kind: "WorkerPool", Label: "Worker pools", Group: "Capacity", NewList: func() client.ObjectList { return &kelos.WorkerPoolList{} }, New: func() client.Object { return &kelos.WorkerPool{} }},
+	{Resource: "taskbudgets", Kind: "TaskBudget", Label: "Task budgets", Group: "Capacity", NewList: func() client.ObjectList { return &kelos.TaskBudgetList{} }, New: func() client.Object { return &kelos.TaskBudget{} }},
+	{Resource: "workspaces", Kind: "Workspace", Label: "Workspaces", Group: "Configuration", NewList: func() client.ObjectList { return &kelos.WorkspaceList{} }, New: func() client.Object { return &kelos.Workspace{} }},
+	{Resource: "agentconfigs", Kind: "AgentConfig", Label: "Agent configs", Group: "Configuration", NewList: func() client.ObjectList { return &kelos.AgentConfigList{} }, New: func() client.Object { return &kelos.AgentConfig{} }},
+}
+
 // New validates config and creates the HTTP handler.
 func New(config Config) (*Server, error) {
 	if strings.TrimSpace(config.Token) == "" {
@@ -198,7 +247,7 @@ func New(config Config) (*Server, error) {
 		return nil, err
 	}
 	digest := hmac.New(sha256.New, []byte(config.Token))
-	_, _ = digest.Write([]byte("kelos-session-web-cookie-v1"))
+	_, _ = digest.Write([]byte("kelos-console-cookie-v1"))
 	server := &Server{
 		token:            []byte(config.Token),
 		cookieValue:      base64.RawURLEncoding.EncodeToString(digest.Sum(nil)),
@@ -338,6 +387,14 @@ func (s *Server) api(writer http.ResponseWriter, request *http.Request) {
 	}
 
 	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) == 1 && parts[0] == "resources" && request.Method == http.MethodGet {
+		s.listConsoleResources(writer, request)
+		return
+	}
+	if len(parts) == 4 && parts[0] == "resources" && request.Method == http.MethodGet {
+		s.getConsoleResource(writer, request, parts[1], parts[2], parts[3])
+		return
+	}
 	if len(parts) < 3 || parts[0] != "sessions" {
 		writeError(writer, http.StatusNotFound, "not found")
 		return
@@ -383,6 +440,142 @@ func (s *Server) api(writer http.ResponseWriter, request *http.Request) {
 	default:
 		writer.WriteHeader(http.StatusMethodNotAllowed)
 	}
+}
+
+func (s *Server) listConsoleResources(writer http.ResponseWriter, request *http.Request) {
+	namespace := s.requestNamespace(request)
+	groups := make([]consoleResourceGroup, 0, 4)
+	groupIndexes := make(map[string]int)
+	for _, definition := range consoleResourceDefinitions {
+		list := definition.NewList()
+		if err := s.client.List(request.Context(), list, client.InNamespace(namespace)); err != nil {
+			writeError(writer, http.StatusInternalServerError, fmt.Sprintf("listing %s: %v", definition.Label, err))
+			return
+		}
+		items, err := consoleResourceSummaries(list)
+		if err != nil {
+			writeError(writer, http.StatusInternalServerError, fmt.Sprintf("summarizing %s: %v", definition.Label, err))
+			return
+		}
+		index, ok := groupIndexes[definition.Group]
+		if !ok {
+			index = len(groups)
+			groupIndexes[definition.Group] = index
+			groups = append(groups, consoleResourceGroup{Name: definition.Group})
+		}
+		groups[index].Resources = append(groups[index].Resources, consoleResourceCollection{
+			Resource: definition.Resource,
+			Kind:     definition.Kind,
+			Label:    definition.Label,
+			Items:    items,
+		})
+	}
+	writeJSON(writer, http.StatusOK, map[string]any{"namespace": namespace, "groups": groups})
+}
+
+func consoleResourceSummaries(list client.ObjectList) ([]consoleResourceSummary, error) {
+	objects, err := apiMeta.ExtractList(list)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]consoleResourceSummary, 0, len(objects))
+	for _, object := range objects {
+		accessor, err := apiMeta.Accessor(object)
+		if err != nil {
+			return nil, err
+		}
+		content, err := runtime.DefaultUnstructuredConverter.ToUnstructured(object)
+		if err != nil {
+			return nil, err
+		}
+		phase, _, _ := unstructured.NestedString(content, "status", "phase")
+		if phase == "" {
+			phase, _, _ = unstructured.NestedString(content, "spec", "phase")
+		}
+		if phase == "" {
+			phase = consoleResourceCondition(content)
+		}
+		message, _, _ := unstructured.NestedString(content, "status", "message")
+		createdAt := ""
+		created := accessor.GetCreationTimestamp()
+		if !created.IsZero() {
+			createdAt = created.UTC().Format(time.RFC3339)
+		}
+		items = append(items, consoleResourceSummary{
+			Name:      accessor.GetName(),
+			Namespace: accessor.GetNamespace(),
+			CreatedAt: createdAt,
+			Phase:     phase,
+			Message:   message,
+		})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].CreatedAt != items[j].CreatedAt {
+			return items[i].CreatedAt > items[j].CreatedAt
+		}
+		return items[i].Name < items[j].Name
+	})
+	return items, nil
+}
+
+func consoleResourceCondition(content map[string]any) string {
+	conditions, found, _ := unstructured.NestedSlice(content, "status", "conditions")
+	if !found {
+		return ""
+	}
+	for _, value := range conditions {
+		condition, ok := value.(map[string]any)
+		if !ok || condition["status"] != string(metav1.ConditionTrue) {
+			continue
+		}
+		conditionType, _ := condition["type"].(string)
+		if conditionType != "" {
+			return conditionType
+		}
+	}
+	return ""
+}
+
+func (s *Server) getConsoleResource(writer http.ResponseWriter, request *http.Request, resource, namespace, name string) {
+	definition, ok := consoleResourceDefinitionFor(resource)
+	if !ok {
+		writeError(writer, http.StatusNotFound, "not found")
+		return
+	}
+	object := definition.New()
+	if err := s.client.Get(request.Context(), client.ObjectKey{Namespace: namespace, Name: name}, object); err != nil {
+		writeKubernetesError(writer, fmt.Sprintf("getting %s %q", definition.Kind, name), err)
+		return
+	}
+	content, err := runtime.DefaultUnstructuredConverter.ToUnstructured(object)
+	if err != nil {
+		writeError(writer, http.StatusInternalServerError, fmt.Sprintf("converting %s %q: %v", definition.Kind, name, err))
+		return
+	}
+	content["apiVersion"] = kelos.GroupVersion.String()
+	content["kind"] = definition.Kind
+	unstructured.RemoveNestedField(content, "metadata", "managedFields")
+	data, err := yaml.Marshal(content)
+	if err != nil {
+		writeError(writer, http.StatusInternalServerError, fmt.Sprintf("marshaling %s %q: %v", definition.Kind, name, err))
+		return
+	}
+	writeJSON(writer, http.StatusOK, consoleResourceDetail{
+		Resource:  definition.Resource,
+		Kind:      definition.Kind,
+		Name:      name,
+		Namespace: namespace,
+		YAML:      string(data),
+	})
+}
+
+func consoleResourceDefinitionFor(resource string) (consoleResourceDefinition, bool) {
+	for _, definition := range consoleResourceDefinitions {
+		if definition.Resource == resource {
+			return definition, true
+		}
+	}
+	return consoleResourceDefinition{}, false
 }
 
 func (s *Server) listSessions(writer http.ResponseWriter, request *http.Request) {

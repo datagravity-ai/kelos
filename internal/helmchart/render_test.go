@@ -293,11 +293,11 @@ func TestRender_IncludesSessionCRDs(t *testing.T) {
 	}
 }
 
-func TestRender_SessionServer(t *testing.T) {
+func TestRender_ConsoleServer(t *testing.T) {
 	data, err := Render(manifests.ChartFS, map[string]interface{}{
-		"sessionServer": map[string]interface{}{
+		"consoleServer": map[string]interface{}{
 			"enabled":          true,
-			"secretName":       "session-auth",
+			"secretName":       "console-auth",
 			"defaultNamespace": "team-a",
 		},
 	})
@@ -306,29 +306,57 @@ func TestRender_SessionServer(t *testing.T) {
 	}
 	output := string(data)
 	for _, expected := range []string{
-		"name: kelos-session-server",
-		"secretName: session-auth",
+		"name: kelos-console-server",
+		"secretName: console-auth",
 		"resources:\n      - pods/exec",
-		"resources:\n      - agentconfigs\n      - workspaces\n    verbs:\n      - list",
-		"resources:\n      - sessions\n    verbs:\n      - create\n      - delete\n      - get\n      - list\n      - patch\n      - watch",
-		"--token-file=/var/run/secrets/kelos-session/token",
+		"resources:\n      - agentconfigs\n      - sessions\n      - sessionspawners\n      - taskbudgets\n      - taskrecords\n      - tasks\n      - taskspawners\n      - workerpools\n      - workspaces\n    verbs:\n      - get\n      - list",
+		"resources:\n      - sessions\n    verbs:\n      - create\n      - delete\n      - patch\n      - watch",
+		"--token-file=/var/run/secrets/kelos-console/token",
 		"--default-namespace=team-a",
-		"kind: ClusterRole\nmetadata:\n  name: kelos-session-server-role",
-		"kind: ClusterRoleBinding\nmetadata:\n  name: kelos-session-server-rolebinding",
-		"roleRef:\n  apiGroup: rbac.authorization.k8s.io\n  kind: ClusterRole\n  name: kelos-session-server-role",
+		"kind: ClusterRole\nmetadata:\n  name: kelos-console-server-role",
+		"kind: ClusterRoleBinding\nmetadata:\n  name: kelos-console-server-rolebinding",
+		"roleRef:\n  apiGroup: rbac.authorization.k8s.io\n  kind: ClusterRole\n  name: kelos-console-server-role",
 	} {
 		if !strings.Contains(output, expected) {
-			t.Errorf("expected Session server render to contain %q", expected)
+			t.Errorf("expected Console server render to contain %q", expected)
 		}
 	}
 }
 
-func TestRender_SessionServerRequiresSecret(t *testing.T) {
+func TestRender_ConsoleServerRequiresSecret(t *testing.T) {
+	_, err := Render(manifests.ChartFS, map[string]interface{}{
+		"consoleServer": map[string]interface{}{"enabled": true},
+	})
+	if err == nil || !strings.Contains(err.Error(), "consoleServer.secretName is required") {
+		t.Fatalf("Render() error = %v", err)
+	}
+}
+
+func TestRender_RejectsSessionServerValues(t *testing.T) {
 	_, err := Render(manifests.ChartFS, map[string]interface{}{
 		"sessionServer": map[string]interface{}{"enabled": true},
 	})
-	if err == nil || !strings.Contains(err.Error(), "sessionServer.secretName is required") {
+	if err == nil || !strings.Contains(err.Error(), "sessionServer values are not supported; use consoleServer instead") {
 		t.Fatalf("Render() error = %v", err)
+	}
+}
+
+func TestRender_AllowsAbsentOrDisabledSessionServerValues(t *testing.T) {
+	tests := []struct {
+		name   string
+		values map[string]interface{}
+	}{
+		{name: "absent"},
+		{name: "disabled", values: map[string]interface{}{
+			"sessionServer": map[string]interface{}{"enabled": false},
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := Render(manifests.ChartFS, tt.values); err != nil {
+				t.Fatalf("Render() error = %v", err)
+			}
+		})
 	}
 }
 
@@ -723,10 +751,10 @@ func TestRender_PodMonitorEnabled(t *testing.T) {
 	if matchLabels["app.kubernetes.io/name"] != "kelos" {
 		t.Errorf("expected spec.selector.matchLabels app.kubernetes.io/name=kelos, got: %v", matchLabels)
 	}
-	// session-server shares the name label but is not a metrics endpoint, so the
+	// console-server shares the name label but is not a metrics endpoint, so the
 	// selector must exclude it explicitly rather than rely on the port name.
-	if !selectorExcludesComponent(selector, "session-server") {
-		t.Errorf("expected spec.selector.matchExpressions to exclude session-server via NotIn, got: %v", selector)
+	if !selectorExcludesComponent(selector, "console-server") {
+		t.Errorf("expected spec.selector.matchExpressions to exclude console-server via NotIn, got: %v", selector)
 	}
 
 	// Control-plane target discovery must cover kelos-system, where the
