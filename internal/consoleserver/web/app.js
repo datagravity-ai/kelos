@@ -1070,7 +1070,16 @@ function syncSessionActionsMenu() {
 
 function handleSessionActionsFocusOut(event) {
   if (elements.sessionActionsMenu.contains(event.relatedTarget) || state.sessionActionTrigger?.contains(event.relatedTarget)) return;
-  closeSessionActionsMenu();
+  if (event.relatedTarget) {
+    closeSessionActionsMenu();
+    return;
+  }
+  const trigger = state.sessionActionTrigger;
+  window.setTimeout(() => {
+    if (trigger !== state.sessionActionTrigger) return;
+    if (elements.sessionActionsMenu.contains(document.activeElement) || trigger?.contains(document.activeElement)) return;
+    closeSessionActionsMenu();
+  }, 0);
 }
 
 function sectionLabel(section) {

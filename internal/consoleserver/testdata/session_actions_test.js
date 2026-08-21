@@ -98,6 +98,7 @@ global.window = {
   confirm: () => true,
   innerHeight: 800,
   innerWidth: 400,
+  setTimeout,
 };
 
 const application = fs.readFileSync(path.join(__dirname, '..', 'web', 'app.js'), 'utf8');
@@ -340,6 +341,29 @@ function testMenuClosesWhenFocusLeaves() {
   assert.equal(elements.sessionActionsMenu.hidden, true);
 }
 
+async function testTouchActionRunsBeforeMenuCloses() {
+  resetHarness();
+  const target = {namespace: 'team-a', name: 'target', provider: 'codex'};
+  state.sessions = [target];
+  const action = createSessionListItem(target).children[1];
+  openSessionActionsMenu(target, action);
+
+  let actionTarget;
+  handleSessionActionsFocusOut({relatedTarget: null});
+  assert.equal(elements.sessionActionsMenu.hidden, false);
+  await runSessionMenuAction({detail: 1}, async session => { actionTarget = session; });
+  await new Promise(resolve => setTimeout(resolve, 0));
+
+  assert.equal(actionTarget, target);
+  assert.equal(elements.sessionActionsMenu.hidden, true);
+
+  openSessionActionsMenu(target, action);
+  document.activeElement = null;
+  handleSessionActionsFocusOut({relatedTarget: null});
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(elements.sessionActionsMenu.hidden, true);
+}
+
 assert.match(index, /id="session-actions-menu" role="menu"/);
 assert.match(index, /id="session-action-rename"[^>]+role="menuitem"/);
 assert.match(index, /id="session-action-reset"[^>]+role="menuitem"/);
@@ -356,6 +380,7 @@ testEverySessionRowHasActionsMenu()
   .then(() => testActionsUpdateTheSelectedSession())
   .then(() => testKeyboardActionsRestoreFocusAfterRefresh())
   .then(() => testKeyboardActionRestoresFocusAfterRequestFailure())
+  .then(() => testTouchActionRunsBeforeMenuCloses())
   .then(() => {
     testMenuClosesWhenFocusLeaves();
     process.stdout.write('Session actions tests passed\n');
