@@ -1021,8 +1021,10 @@ function createSessionListItem(session, draggable = false) {
   provider.className = 'provider-badge';
   provider.textContent = providerLabel(session.provider);
   const namespace = document.createElement('span');
+  namespace.className = 'session-item-namespace';
   namespace.textContent = sessionDisplayName(session) === session.name ? `· ${session.namespace}` : `· ${session.namespace}/${session.name}`;
   const activity = document.createElement('span');
+  activity.className = 'session-item-activity';
   activity.textContent = `· ${displayStatus}`;
   meta.append(provider);
   if (session.model) {
