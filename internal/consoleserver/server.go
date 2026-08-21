@@ -428,6 +428,10 @@ func (s *Server) api(writer http.ResponseWriter, request *http.Request) {
 		s.resetSession(writer, request, namespace, name)
 		return
 	}
+	if len(parts) == 4 && parts[3] == "suspend" && request.Method == http.MethodPost {
+		s.suspendSession(writer, request, namespace, name)
+		return
+	}
 	if len(parts) == 4 && parts[3] == "resume" && request.Method == http.MethodPost {
 		s.resumeSession(writer, request, namespace, name)
 		return
@@ -1029,6 +1033,42 @@ func (s *Server) resetSession(writer http.ResponseWriter, request *http.Request,
 		return
 	}
 	writeJSON(writer, http.StatusAccepted, summarize(session))
+}
+
+func (s *Server) suspendSession(writer http.ResponseWriter, request *http.Request, namespace, name string) {
+	var session kelos.Session
+	if err := s.client.Get(request.Context(), client.ObjectKey{Namespace: namespace, Name: name}, &session); err != nil {
+		writeKubernetesError(writer, fmt.Sprintf("getting Session %q to suspend", name), err)
+		return
+	}
+	if session.Spec.Suspend != nil && *session.Spec.Suspend {
+		writeJSON(writer, http.StatusAccepted, summarize(&session))
+		return
+	}
+
+	original := session.DeepCopy()
+	suspend := true
+	session.Spec.Suspend = &suspend
+	if err := s.client.Patch(
+		request.Context(),
+		&session,
+		client.MergeFromWithOptions(original, client.MergeFromWithOptimisticLock{}),
+	); err != nil {
+		status := http.StatusInternalServerError
+		switch {
+		case apierrors.IsNotFound(err):
+			status = http.StatusNotFound
+		case apierrors.IsInvalid(err):
+			status = http.StatusBadRequest
+		case apierrors.IsForbidden(err):
+			status = http.StatusForbidden
+		case apierrors.IsConflict(err):
+			status = http.StatusConflict
+		}
+		writeError(writer, status, fmt.Sprintf("suspending Session %q: %v", name, err))
+		return
+	}
+	writeJSON(writer, http.StatusAccepted, summarize(&session))
 }
 
 func (s *Server) resumeSession(writer http.ResponseWriter, request *http.Request, namespace, name string) {
