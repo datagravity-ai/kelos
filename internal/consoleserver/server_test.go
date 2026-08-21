@@ -1346,24 +1346,31 @@ func TestSessionUIAdaptsToPhoneViewport(t *testing.T) {
 		"edge-to-edge viewport support": `viewport-fit=cover`,
 		"Android keyboard resizing":     `interactive-widget=resizes-content`,
 		"dismissible sidebar backdrop":  `id="sidebar-scrim"`,
+		"compact session list header":   `class="session-sidebar-header"`,
 	} {
 		if !strings.Contains(string(index), expected) {
 			t.Errorf("Session page is missing %s: %s", description, expected)
 		}
 	}
 	for description, expected := range map[string]string{
-		"dynamic viewport height":     `height: 100dvh`,
-		"landscape phone breakpoint":  `(max-height: 500px) and (pointer: coarse)`,
-		"two-row phone header":        `grid-template-areas: "menu heading reset delete" "tabs tabs connection connection"`,
-		"phone header resume slot":    `.conversation-header:has(#resume-session:not([hidden])) { grid-template-areas: "menu heading resume reset delete"`,
-		"48-pixel touch targets":      `.icon-button { width: 48px; height: 48px; }`,
-		"Session action touch target": `.session-item-actions { top: 5px; right: 1px; width: 44px; height: 44px; }`,
-		"phone safe-area padding":     `env(safe-area-inset-bottom)`,
-		"non-zooming form fields":     `.composer textarea, .pending-message-input, .yaml-panel textarea, .form-grid input`,
-		"desktop composer alignment":  `.composer textarea { flex: 1; min-height: 36px;`,
-		"mobile composer alignment":   `.composer textarea { min-height: 48px; padding: 12px 0; line-height: 24px; }`,
-		"phone-sized dialog":          `max-height: calc(100dvh - 16px`,
-		"shrinking composer content":  `.composer-wrap { min-width: 0;`,
+		"dynamic viewport height":      `height: 100dvh`,
+		"desktop sidebar width":        `grid-template-columns: 286px minmax(0, 1fr)`,
+		"landscape phone breakpoint":   `(max-height: 500px) and (pointer: coarse)`,
+		"phone sidebar width":          `width: min(86vw, 310px)`,
+		"single-row phone navigation":  `grid-template-columns: repeat(3, minmax(0, 1fr))`,
+		"compact phone session row":    `.session-item-select { min-height: 60px; padding: 7px 48px 7px 8px; }`,
+		"phone create touch target":    `.new-session-button { min-height: 44px; padding: 6px 10px; }`,
+		"section reorder touch target": `.session-section-order-button { width: 44px; height: 44px; }`,
+		"two-row phone header":         `grid-template-areas: "menu heading reset delete" "tabs tabs connection connection"`,
+		"phone header resume slot":     `.conversation-header:has(#resume-session:not([hidden])) { grid-template-areas: "menu heading resume reset delete"`,
+		"48-pixel touch targets":       `.icon-button { width: 48px; height: 48px; }`,
+		"Session action touch target":  `.session-item-actions { top: 5px; right: 1px; width: 44px; height: 44px; }`,
+		"phone safe-area padding":      `env(safe-area-inset-bottom)`,
+		"non-zooming form fields":      `.composer textarea, .pending-message-input, .yaml-panel textarea, .form-grid input`,
+		"desktop composer alignment":   `.composer textarea { flex: 1; min-height: 36px;`,
+		"mobile composer alignment":    `.composer textarea { min-height: 48px; padding: 12px 0; line-height: 24px; }`,
+		"phone-sized dialog":           `max-height: calc(100dvh - 16px`,
+		"shrinking composer content":   `.composer-wrap { min-width: 0;`,
 	} {
 		if !strings.Contains(string(styles), expected) {
 			t.Errorf("Session styles are missing %s: %s", description, expected)
@@ -1882,7 +1889,9 @@ func TestSessionViewsIncludeRuntimeStatus(t *testing.T) {
 		"active display status":      `if (session.active === true) return 'Active';`,
 		"idle display status":        `if (session.active === false) return 'Idle';`,
 		"activity status in sidebar": "activity.textContent = `· ${displayStatus}`;",
+		"activity status class":      `activity.className = 'session-item-activity';`,
 		"activity status in header":  `sessionDisplayStatus(session)`,
+		"namespace metadata class":   `namespace.className = 'session-item-namespace';`,
 		"model in sidebar":           "model.textContent = `· ${session.model}`;",
 		"model in header":            `if (session.model) details.push(session.model);`,
 		"branch text":                `branch.textContent = session.branch;`,
@@ -1906,8 +1915,16 @@ func TestSessionViewsIncludeRuntimeStatus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(styles), `.session-item-branch { margin-top: 5px;`) {
+	if !strings.Contains(string(styles), `.session-item-branch { margin-top: 3px;`) {
 		t.Error("Session sidebar does not style branch information")
+	}
+	for description, expected := range map[string]string{
+		"truncated namespace metadata": `.session-item-namespace { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }`,
+		"reserved activity status":     `.session-item-activity { flex: none; }`,
+	} {
+		if !strings.Contains(string(styles), expected) {
+			t.Errorf("Session sidebar is missing %s: %s", description, expected)
+		}
 	}
 	for state, expected := range map[string]string{
 		"idle":              `.phase-dot.ready, .phase-dot.idle {`,
