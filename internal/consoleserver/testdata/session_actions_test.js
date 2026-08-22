@@ -115,6 +115,7 @@ function applicationSlice(start, end) {
 
 vm.runInThisContext(applicationSlice('function sessionKey', 'function sessionViewKey'), {filename: 'app.js'});
 vm.runInThisContext(applicationSlice('function createSessionListItem', 'function sectionLabel'), {filename: 'app.js'});
+vm.runInThisContext(applicationSlice('async function requestSessionLifecycleAction', 'function createWelcome'), {filename: 'app.js'});
 vm.runInThisContext(applicationSlice('async function deleteSession', 'elements.resumeButton.addEventListener'), {filename: 'app.js'});
 
 global.sessionDisplayStatus = () => 'Ready';
@@ -127,18 +128,23 @@ global.selectSession = () => {};
 function resetHarness() {
   global.elements = {
     list: new TestNode('div'),
-    sessionActionsMenu: new TestNode('div', {top: 0, right: 0, bottom: 0, width: 176, height: 120}),
+    sessionActionsMenu: new TestNode('div', {top: 0, right: 0, bottom: 0, width: 176, height: 160}),
     sessionActionRename: new TestNode('button'),
+    sessionActionLifecycle: new TestNode('button'),
     sessionActionReset: new TestNode('button'),
     newSessionButton: new TestNode('button'),
   };
-  elements.sessionActionsMenu.append(elements.sessionActionRename, elements.sessionActionReset);
+  elements.sessionActionsMenu.append(elements.sessionActionRename, elements.sessionActionLifecycle, elements.sessionActionReset);
   elements.sessionActionsMenu.hidden = true;
   document.activeElement = null;
   global.state = {
     sessions: [],
     selected: null,
     currentView: null,
+    namespaceGeneration: 0,
+    sessionListGeneration: 0,
+    suspendingSession: false,
+    resumingSession: false,
     sessionActionKey: '',
     sessionActionTrigger: null,
     sectionAssignments: new Set(),
@@ -164,6 +170,7 @@ async function testEverySessionRowHasActionsMenu() {
   assert.equal(stopped, true);
   assert.equal(state.sessionActionKey, 'default/review');
   assert.equal(elements.sessionActionsMenu.hidden, false);
+  assert.equal(elements.sessionActionLifecycle.textContent, 'Suspend');
   assert.equal(actions.attributes.get('aria-expanded'), 'true');
   assert.equal(document.activeElement, elements.sessionActionRename);
 
@@ -203,7 +210,7 @@ function testOpenMenuSurvivesSessionRefresh() {
   const firstItem = createSessionListItem(session);
   openSessionActionsMenu(session, firstItem.children[1]);
 
-  const refreshed = {...session, displayName: 'Review CI', resetting: true};
+  const refreshed = {...session, displayName: 'Review CI', resetting: true, idleSuspended: true};
   state.sessions = [refreshed];
   state.sessionActionTrigger = null;
   const refreshedItem = createSessionListItem(refreshed);
@@ -212,6 +219,7 @@ function testOpenMenuSurvivesSessionRefresh() {
   const refreshedActions = refreshedItem.children[1];
   assert.equal(elements.sessionActionsMenu.hidden, false);
   assert.equal(elements.sessionActionsMenu.attributes.get('aria-label'), 'Actions for Review CI');
+  assert.equal(elements.sessionActionLifecycle.textContent, 'Resume');
   assert.equal(elements.sessionActionReset.disabled, true);
   assert.equal(refreshedActions.attributes.get('aria-expanded'), 'true');
 }
@@ -257,6 +265,43 @@ async function testActionsCanTargetAnUnselectedSession() {
   assert.deepEqual(clearedAttachments, ['team-a/target', 'team-a/target']);
   assert.equal(selectionChanges, 0);
   assert.equal(state.selected, selected);
+}
+
+async function testLifecycleActionTargetsAnUnselectedSession() {
+  resetHarness();
+  const selected = {namespace: 'default', name: 'selected'};
+  const target = {namespace: 'team-a', name: 'target', userSuspended: false};
+  state.sessions = [selected, target];
+  state.selected = selected;
+  state.namespaceGeneration = 4;
+  state.sessionActionKey = sessionKey(target);
+
+  const requests = [];
+  const toasts = [];
+  let socketCloses = 0;
+  global.api = async (requestPath, options) => {
+    requests.push({path: requestPath, options});
+    return {...target, userSuspended: requestPath.endsWith('/suspend')};
+  };
+  global.renderSessions = () => {};
+  global.renderHeader = () => {};
+  global.closeSocket = () => { socketCloses++; };
+  global.connectSocket = () => {};
+  global.setConnection = () => {};
+  global.showToast = message => { toasts.push(message); };
+
+  await runSessionMenuAction({detail: 1}, toggleSessionSuspension);
+  state.sessionActionKey = sessionKey(state.sessions[1]);
+  await runSessionMenuAction({detail: 1}, toggleSessionSuspension);
+
+  assert.deepEqual(requests, [
+    {path: '/api/sessions/team-a/target/suspend', options: {method: 'POST'}},
+    {path: '/api/sessions/team-a/target/resume', options: {method: 'POST'}},
+  ]);
+  assert.deepEqual(toasts, ['Session suspend requested', 'Session resume requested']);
+  assert.equal(socketCloses, 0);
+  assert.equal(state.selected, selected);
+  assert.equal(state.sessions[1].userSuspended, false);
 }
 
 async function testActionsUpdateTheSelectedSession() {
@@ -366,9 +411,11 @@ async function testTouchActionRunsBeforeMenuCloses() {
 
 assert.match(index, /id="session-actions-menu" role="menu"/);
 assert.match(index, /id="session-action-rename"[^>]+role="menuitem"/);
+assert.match(index, /id="session-action-lifecycle"[^>]+role="menuitem"/);
 assert.match(index, /id="session-action-reset"[^>]+role="menuitem"/);
 assert.match(index, /id="session-action-delete"[^>]+role="menuitem"/);
 assert.match(styles, /\.session-actions-menu button:focus-visible \{[^}]*outline: 2px solid var\(--accent-2\)/);
+assert.match(application, /sessionActionLifecycle\.addEventListener\('click'/);
 assert.match(application, /sessionActionsMenu\.addEventListener\('focusout'/);
 
 testEverySessionRowHasActionsMenu()
@@ -377,6 +424,7 @@ testEverySessionRowHasActionsMenu()
     testOpenMenuSurvivesSessionRefresh();
     return testActionsCanTargetAnUnselectedSession();
   })
+  .then(() => testLifecycleActionTargetsAnUnselectedSession())
   .then(() => testActionsUpdateTheSelectedSession())
   .then(() => testKeyboardActionsRestoreFocusAfterRefresh())
   .then(() => testKeyboardActionRestoresFocusAfterRequestFailure())

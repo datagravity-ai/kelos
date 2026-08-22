@@ -174,6 +174,7 @@ function resetHarness() {
     runtimeStatus: new TestNode('div'),
     sidebar: new TestNode('aside'),
     displayNameButton: new TestNode('button'),
+    suspendButton: new TestNode('button'),
     resumeButton: new TestNode('button'),
     resetButton: new TestNode('button'),
     deleteButton: new TestNode('button'),

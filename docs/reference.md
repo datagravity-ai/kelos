@@ -451,8 +451,9 @@ container. Persistent storage is recommended for durable Sessions. When the
 field is omitted, the workspace uses `emptyDir`, which is primarily useful for
 development because its history and changes do not survive Pod replacement.
 
-Set `spec.suspend` to `true` to suspend a Session without deleting it, then set
-it back to `false` or use the Resume action in the shared web client to resume.
+Set `spec.suspend` to `true` or use the Suspend action in the shared web client
+to suspend a Session without deleting it. Set the field back to `false` or use
+the Resume action in the shared web client to resume.
 A suspended Session rejects web connection attempts and the terminal client
 waits for it to resume. Configured persistent workspace and conversation data
 remain available across suspension. An `emptyDir` workspace is deleted with the

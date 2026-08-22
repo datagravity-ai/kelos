@@ -11,6 +11,7 @@ const elements = {
   saveDisplayNameButton: document.querySelector('#save-session-display-name'),
   sessionActionsMenu: document.querySelector('#session-actions-menu'),
   sessionActionRename: document.querySelector('#session-action-rename'),
+  sessionActionLifecycle: document.querySelector('#session-action-lifecycle'),
   sessionActionReset: document.querySelector('#session-action-reset'),
   sessionActionDelete: document.querySelector('#session-action-delete'),
   overviewButton: document.querySelector('#console-overview'),
@@ -92,6 +93,7 @@ const elements = {
   persistentVolume: document.querySelector('#volume-claim-enabled'),
   volumeClaimFields: document.querySelector('#volume-claim-fields'),
   createButton: document.querySelector('#create-session'),
+  suspendButton: document.querySelector('#suspend-session'),
   resumeButton: document.querySelector('#resume-session'),
   resetButton: document.querySelector('#reset-session'),
   deleteButton: document.querySelector('#delete-session'),
@@ -151,6 +153,7 @@ const state = {
   sourceGeneration: 0,
   sourceLoading: false,
   creatingSession: false,
+  suspendingSession: false,
   resumingSession: false,
   consoleView: 'overview',
   resourceGroups: [],
@@ -1125,13 +1128,23 @@ function closeSessionActionsMenu(restoreFocus = false) {
   if (restoreFocus && trigger) trigger.focus();
 }
 
+function sessionLifecycleAction(session) {
+  return session?.userSuspended || session?.idleSuspended ? 'resume' : 'suspend';
+}
+
+function updateSessionActionsMenu(session) {
+  const action = sessionLifecycleAction(session);
+  elements.sessionActionLifecycle.textContent = action === 'resume' ? 'Resume' : 'Suspend';
+  elements.sessionActionReset.disabled = session.resetting;
+  elements.sessionActionsMenu.setAttribute('aria-label', `Actions for ${sessionDisplayName(session)}`);
+}
+
 function openSessionActionsMenu(session, trigger) {
   closeSessionActionsMenu();
   state.sessionActionKey = sessionKey(session);
   state.sessionActionTrigger = trigger;
   trigger.setAttribute('aria-expanded', 'true');
-  elements.sessionActionReset.disabled = session.resetting;
-  elements.sessionActionsMenu.setAttribute('aria-label', `Actions for ${sessionDisplayName(session)}`);
+  updateSessionActionsMenu(session);
   elements.sessionActionsMenu.hidden = false;
   positionSessionActionsMenu(trigger);
   elements.sessionActionRename.focus();
@@ -1153,8 +1166,7 @@ function syncSessionActionsMenu() {
     return;
   }
   state.sessionActionTrigger.setAttribute('aria-expanded', 'true');
-  elements.sessionActionReset.disabled = session.resetting;
-  elements.sessionActionsMenu.setAttribute('aria-label', `Actions for ${sessionDisplayName(session)}`);
+  updateSessionActionsMenu(session);
   positionSessionActionsMenu(state.sessionActionTrigger);
 }
 
@@ -1953,16 +1965,16 @@ function selectSession(session, resumeIdle = false) {
 
 async function resumeIdleSession(session) {
   try {
-    await requestSessionResume(session);
+    await requestSessionLifecycleAction(session, 'resume');
   } catch (error) {
     showToast(error.message);
   }
 }
 
-async function requestSessionResume(session) {
+async function requestSessionLifecycleAction(session, action) {
   const generation = state.namespaceGeneration;
   const updated = await api(
-    `/api/sessions/${encodeURIComponent(session.namespace)}/${encodeURIComponent(session.name)}/resume`,
+    `/api/sessions/${encodeURIComponent(session.namespace)}/${encodeURIComponent(session.name)}/${action}`,
     {method: 'POST'},
   );
   if (generation !== state.namespaceGeneration) return updated;
@@ -1974,20 +1986,57 @@ async function requestSessionResume(session) {
   return updated;
 }
 
-async function resumeSelectedSession() {
-  const session = state.selected;
-  if (!session?.userSuspended || state.resumingSession) return;
+async function suspendSession(session) {
+  if (!session || session.userSuspended || state.suspendingSession) return;
+  const generation = state.namespaceGeneration;
+  const key = sessionKey(session);
+  const selected = state.selected && sessionKey(state.selected) === key;
+  state.suspendingSession = true;
+  renderHeader();
+  if (selected) {
+    closeSocket();
+    setConnection('connecting', 'Suspending');
+  }
+  try {
+    await requestSessionLifecycleAction(session, 'suspend');
+    if (generation === state.namespaceGeneration) showToast('Session suspend requested');
+  } catch (error) {
+    if (generation === state.namespaceGeneration) {
+      showToast(error.message);
+      if (selected && state.selected && sessionKey(state.selected) === key) connectSocket();
+    }
+  } finally {
+    state.suspendingSession = false;
+    renderHeader();
+  }
+}
+
+async function resumeSession(session) {
+  if (sessionLifecycleAction(session) !== 'resume' || state.resumingSession) return;
+  const generation = state.namespaceGeneration;
   state.resumingSession = true;
   renderHeader();
   try {
-    await requestSessionResume(session);
-    showToast('Session resume requested');
+    await requestSessionLifecycleAction(session, 'resume');
+    if (generation === state.namespaceGeneration) showToast('Session resume requested');
   } catch (error) {
-    showToast(error.message);
+    if (generation === state.namespaceGeneration) showToast(error.message);
   } finally {
     state.resumingSession = false;
     renderHeader();
   }
+}
+
+function toggleSessionSuspension(session) {
+  return sessionLifecycleAction(session) === 'resume' ? resumeSession(session) : suspendSession(session);
+}
+
+function suspendSelectedSession() {
+  return suspendSession(state.selected);
+}
+
+function resumeSelectedSession() {
+  return resumeSession(state.selected);
 }
 
 function createWelcome() {
@@ -2006,6 +2055,8 @@ function renderHeader() {
   elements.displayNameButton.hidden = !session;
   elements.displayNameButton.disabled = !session;
   renderSelectedSessionSection(session);
+  elements.suspendButton.hidden = !session || session.userSuspended;
+  elements.suspendButton.disabled = !session || session.userSuspended || state.suspendingSession;
   elements.resumeButton.hidden = !session?.userSuspended;
   elements.resumeButton.disabled = !session?.userSuspended || state.resumingSession;
   elements.resetButton.disabled = !session || session.resetting;
@@ -4379,12 +4430,16 @@ async function resetSession(session) {
 }
 
 elements.resumeButton.addEventListener('click', resumeSelectedSession);
+elements.suspendButton.addEventListener('click', suspendSelectedSession);
 elements.deleteButton.addEventListener('click', () => deleteSession(state.selected));
 elements.resetButton.addEventListener('click', () => resetSession(state.selected));
 elements.sessionActionRename.addEventListener('click', () => {
   const session = sessionActionsTarget();
   closeSessionActionsMenu();
   openDisplayNameDialog(session);
+});
+elements.sessionActionLifecycle.addEventListener('click', event => {
+  void runSessionMenuAction(event, toggleSessionSuspension);
 });
 elements.sessionActionReset.addEventListener('click', event => {
   void runSessionMenuAction(event, resetSession);
