@@ -13,8 +13,96 @@ function applicationSlice(start, end) {
   return application.slice(startIndex, endIndex);
 }
 
+vm.runInThisContext(applicationSlice('const allResourceKind', 'async function loadResources'), {filename: 'app.js'});
 vm.runInThisContext(applicationSlice('async function refreshConsole', 'async function openResourceDetail'), {filename: 'app.js'});
 vm.runInThisContext(applicationSlice('function setResourceDetailView', 'function sessionKey'), {filename: 'app.js'});
+
+function testResourceInventorySupportsAllTypesAndSearch() {
+  const collections = [
+    {resource: 'tasks', kind: 'Task', label: 'Tasks', items: [
+      {name: 'fix-console', phase: 'Running', message: 'Agent is working', createdAt: '2026-08-22T12:00:00Z'},
+    ]},
+    {resource: 'workspaces', kind: 'Workspace', label: 'Workspaces', items: [
+      {name: 'kelos', createdAt: '2026-08-21T12:00:00Z'},
+    ]},
+  ];
+
+  const allEntries = resourceEntries(collections, allResourceKind);
+  assert.equal(allEntries.length, 2);
+  assert.equal(allEntries[0].item.name, 'fix-console');
+  assert.deepEqual(resourceEntries(collections, 'tasks'), [
+    {collection: collections[0], item: collections[0].items[0]},
+  ]);
+  assert.deepEqual(filterResourceEntries(allEntries, 'WORKING'), [allEntries[0]]);
+  assert.deepEqual(filterResourceEntries(allEntries, 'workspace'), [allEntries[1]]);
+  assert.deepEqual(filterResourceEntries(allEntries, 'missing'), []);
+}
+
+function testResourceRelationshipHelpersResolveExistingAndMissingResources() {
+  const task = {name: 'fix-console', namespace: 'default', phase: 'Running'};
+  const collection = {resource: 'tasks', kind: 'Task', label: 'Tasks', items: [task]};
+  global.state = {
+    namespace: 'default',
+    resourceGroups: [{name: 'Workloads', resources: [collection]}],
+  };
+
+  assert.equal(resourceReferenceKey({resource: 'tasks', name: 'fix-console'}), 'tasks/fix-console');
+  assert.deepEqual(resourceEntryForReference({resource: 'tasks', kind: 'Task', name: 'fix-console'}), {collection: {...collection, group: 'Workloads'}, item: task});
+  assert.deepEqual(resourceEntryForReference({resource: 'workspaces', kind: 'Workspace', name: 'missing'}), {
+    collection: {resource: 'workspaces', kind: 'Workspace', label: 'Workspace'},
+    item: {name: 'missing', namespace: 'default', phase: 'Missing', missing: true},
+  });
+
+  const creates = {
+    source: {resource: 'taskspawners', name: 'issues'},
+    target: {resource: 'tasks', name: 'fix-console'},
+    relationship: 'creates',
+  };
+  const uses = {
+    source: {resource: 'tasks', name: 'fix-console'},
+    target: {resource: 'workspaces', name: 'repository'},
+    relationship: 'uses',
+  };
+  assert.deepEqual(resourceRelationshipsForFocus([creates, uses], 'tasks/fix-console'), {
+    incoming: [creates],
+    outgoing: [uses],
+  });
+}
+
+function testResourceViewTabsSupportKeyboardNavigation() {
+  let focused = false;
+  let prevented = false;
+  const diagramTab = {
+    setAttribute(name, value) { this[name] = value; },
+    click() { setResourceView('diagram'); },
+    focus() { focused = true; },
+  };
+  const inventoryTab = {
+    setAttribute(name, value) { this[name] = value; },
+    click() { setResourceView('inventory'); },
+    focus() {},
+  };
+  global.elements = {
+    resourceDiagramTab: diagramTab,
+    resourceInventoryTab: inventoryTab,
+    resourceDiagramPanel: {hidden: false},
+    resourceInventoryPanel: {hidden: true},
+  };
+
+  setResourceView('inventory');
+  assert.equal(elements.resourceDiagramPanel.hidden, true);
+  assert.equal(elements.resourceInventoryPanel.hidden, false);
+  assert.equal(inventoryTab['aria-selected'], 'true');
+
+  handleResourceViewTabKeydown({
+    target: inventoryTab,
+    key: 'ArrowLeft',
+    preventDefault() { prevented = true; },
+  });
+  assert.equal(elements.resourceDiagramPanel.hidden, false);
+  assert.equal(focused, true);
+  assert.equal(prevented, true);
+}
 
 function deferred() {
   let resolve;
@@ -122,6 +210,9 @@ function testResourceDetailTabsSupportKeyboardNavigation() {
   assert.equal(prevented, true);
 }
 
+testResourceInventorySupportsAllTypesAndSearch();
+testResourceRelationshipHelpersResolveExistingAndMissingResources();
+testResourceViewTabsSupportKeyboardNavigation();
 testResourceDetailsIgnoreStaleResponses()
   .then(() => testRefreshReportsOptionFailures())
   .then(() => testResourceDetailTabsSupportKeyboardNavigation())

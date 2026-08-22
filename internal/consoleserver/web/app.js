@@ -23,7 +23,19 @@ const elements = {
   sessionSidebar: document.querySelector('#session-sidebar'),
   summaryGrid: document.querySelector('#resource-summary-grid'),
   recentResources: document.querySelector('#recent-resources'),
+  resourceDiagramTab: document.querySelector('#resource-diagram-tab'),
+  resourceInventoryTab: document.querySelector('#resource-inventory-tab'),
+  resourceDiagramPanel: document.querySelector('#resource-diagram-panel'),
+  resourceInventoryPanel: document.querySelector('#resource-inventory-panel'),
+  resourceDiagram: document.querySelector('#resource-diagram'),
+  resourceRelationshipFocus: document.querySelector('#resource-relationship-focus'),
   resourceKind: document.querySelector('#resource-kind'),
+  resourceTypeList: document.querySelector('#resource-type-list'),
+  resourceTotalCount: document.querySelector('#resource-total-count'),
+  resourceListTitle: document.querySelector('#resource-list-title'),
+  resourceListCount: document.querySelector('#resource-list-count'),
+  resourceListSummary: document.querySelector('#resource-list-summary'),
+  resourceSearch: document.querySelector('#resource-search'),
   resourceList: document.querySelector('#resource-list'),
   resourceDetailDialog: document.querySelector('#resource-detail-dialog'),
   resourceDetailTitle: document.querySelector('#resource-detail-title'),
@@ -157,6 +169,7 @@ const state = {
   resumingSession: false,
   consoleView: 'overview',
   resourceGroups: [],
+  resourceRelationships: [],
   resourceListGeneration: 0,
   resourceDetailGeneration: 0,
   resourceDetailLogGeneration: 0,
@@ -222,6 +235,18 @@ function showToast(message) {
   showToast.timer = window.setTimeout(() => elements.toast.classList.remove('show'), 3200);
 }
 
+const allResourceKind = '__all__';
+const resourceDescriptions = {
+  sessions: 'Long-lived, interactive agent conversations.',
+  tasks: 'Finite units of agent work and their current state.',
+  taskrecords: 'Task lifecycle and usage records.',
+  taskspawners: 'Automation that creates Tasks from schedules and events.',
+  sessionspawners: 'Automation that creates Sessions from events.',
+  workerpools: 'Reusable execution capacity for Tasks.',
+  taskbudgets: 'Limits and usage for Task execution.',
+  workspaces: 'Repository sources and workspace setup.',
+  agentconfigs: 'Shared agent instructions and integrations.',
+};
 function resourceCollections() {
   return state.resourceGroups.flatMap(group => group.resources.map(resource => ({...resource, group: group.name})));
 }
@@ -252,11 +277,11 @@ function resourceStatus(item) {
   return item.phase || 'Configured';
 }
 
-function createResourceTable(entries) {
+function createResourceTable(entries, emptyMessage = `No resources in ${state.namespace}.`) {
   if (!entries.length) {
     const empty = document.createElement('div');
     empty.className = 'resource-empty';
-    empty.textContent = `No resources in ${state.namespace}.`;
+    empty.textContent = emptyMessage;
     return empty;
   }
   const table = document.createElement('table');
@@ -273,29 +298,42 @@ function createResourceTable(entries) {
   const body = document.createElement('tbody');
   for (const {collection, item} of entries) {
     const row = document.createElement('tr');
-    const cell = document.createElement('td');
-    cell.colSpan = 4;
+    if (item.message) row.title = item.message;
+
+    const nameCell = document.createElement('td');
+    nameCell.dataset.label = 'Name';
     const button = document.createElement('button');
-    button.className = 'resource-row-button';
+    button.className = 'resource-name-button';
     button.type = 'button';
-    button.title = item.message || `Inspect ${collection.kind} ${item.namespace}/${item.name}`;
-    const name = document.createElement('span');
-    name.className = 'resource-row-name';
-    name.textContent = item.name;
-    const kind = document.createElement('span');
-    kind.className = 'resource-row-kind';
-    kind.textContent = collection.kind;
+    button.textContent = item.name;
+    button.setAttribute('aria-label', `Inspect ${collection.kind} ${item.namespace}/${item.name}`);
+    button.addEventListener('click', () => openResourceDetail(collection, item));
+    nameCell.append(button);
+    if (item.message) {
+      const message = document.createElement('div');
+      message.className = 'resource-row-message';
+      message.textContent = item.message;
+      nameCell.append(message);
+    }
+
+    const kindCell = document.createElement('td');
+    kindCell.className = 'resource-row-kind';
+    kindCell.dataset.label = 'Kind';
+    kindCell.textContent = collection.kind;
+
+    const statusCell = document.createElement('td');
+    statusCell.dataset.label = 'Status';
     const phase = document.createElement('span');
     phase.className = 'resource-row-phase';
     phase.dataset.state = resourceStatus(item).toLowerCase();
     phase.textContent = resourceStatus(item);
-    const age = document.createElement('span');
-    age.className = 'resource-row-age';
-    age.textContent = resourceAge(item.createdAt);
-    button.append(name, kind, phase, age);
-    button.addEventListener('click', () => openResourceDetail(collection, item));
-    cell.append(button);
-    row.append(cell);
+    statusCell.append(phase);
+
+    const ageCell = document.createElement('td');
+    ageCell.className = 'resource-row-age';
+    ageCell.dataset.label = 'Created';
+    ageCell.textContent = resourceAge(item.createdAt);
+    row.append(nameCell, kindCell, statusCell, ageCell);
     body.append(row);
   }
   table.append(head, body);
@@ -315,9 +353,8 @@ function renderOverview() {
     count.textContent = String(collection.items.length);
     card.append(label, count);
     card.addEventListener('click', () => {
-      elements.resourceKind.value = collection.resource;
-      renderResources();
       setConsoleView('resources');
+      openResourceInventory(collection.resource);
     });
     elements.summaryGrid.append(card);
   }
@@ -337,6 +374,12 @@ function renderOverview() {
 function renderResourceKindOptions() {
   const selected = elements.resourceKind.value;
   elements.resourceKind.replaceChildren();
+  const collections = resourceCollections();
+  const total = collections.reduce((count, collection) => count + collection.items.length, 0);
+  const allOption = document.createElement('option');
+  allOption.value = allResourceKind;
+  allOption.textContent = `All resources (${total})`;
+  elements.resourceKind.append(allOption);
   for (const group of state.resourceGroups) {
     const optionGroup = document.createElement('optgroup');
     optionGroup.label = group.name;
@@ -348,16 +391,301 @@ function renderResourceKindOptions() {
     }
     elements.resourceKind.append(optionGroup);
   }
+  if (selected === allResourceKind || collections.some(collection => collection.resource === selected)) {
+    elements.resourceKind.value = selected;
+  } else {
+    elements.resourceKind.value = allResourceKind;
+  }
+  renderResourceTypeNavigation();
+  renderResourceRelationshipFocusOptions();
+  renderResourceDiagram();
+}
+
+function setResourceView(view) {
+  const showDiagram = view !== 'inventory';
+  elements.resourceDiagramPanel.hidden = !showDiagram;
+  elements.resourceInventoryPanel.hidden = showDiagram;
+  elements.resourceDiagramTab.setAttribute('aria-selected', String(showDiagram));
+  elements.resourceDiagramTab.tabIndex = showDiagram ? 0 : -1;
+  elements.resourceInventoryTab.setAttribute('aria-selected', String(!showDiagram));
+  elements.resourceInventoryTab.tabIndex = showDiagram ? -1 : 0;
+}
+
+function handleResourceViewTabKeydown(event) {
+  const tabs = [elements.resourceDiagramTab, elements.resourceInventoryTab];
+  const current = tabs.indexOf(event.target);
+  if (current < 0) return;
+  let target;
+  if (event.key === 'ArrowLeft') target = tabs[(current - 1 + tabs.length) % tabs.length];
+  if (event.key === 'ArrowRight') target = tabs[(current + 1) % tabs.length];
+  if (event.key === 'Home') target = tabs[0];
+  if (event.key === 'End') target = tabs[tabs.length - 1];
+  if (!target) return;
+  event.preventDefault();
+  target.click();
+  target.focus();
+}
+
+function openResourceInventory(resource) {
+  selectResourceKind(resource);
+  setResourceView('inventory');
+}
+
+function resourceReferenceKey(reference) {
+  return `${reference.resource}/${reference.name}`;
+}
+
+function resourceEntryForReference(reference) {
+  const collection = resourceCollections().find(item => item.resource === reference.resource);
+  const item = collection?.items.find(candidate => candidate.name === reference.name);
+  if (collection && item) return {collection, item};
+  return {
+    collection: {resource: reference.resource, kind: reference.kind || reference.resource, label: reference.kind || reference.resource},
+    item: {name: reference.name, namespace: state.namespace, phase: 'Missing', missing: true},
+  };
+}
+
+function renderResourceRelationshipFocusOptions() {
+  const selected = elements.resourceRelationshipFocus.value;
+  elements.resourceRelationshipFocus.replaceChildren();
+  for (const group of state.resourceGroups) {
+    const optionGroup = document.createElement('optgroup');
+    optionGroup.label = group.name;
+    for (const collection of group.resources) {
+      for (const item of collection.items) {
+        const option = document.createElement('option');
+        option.value = resourceReferenceKey({resource: collection.resource, name: item.name});
+        option.textContent = `${collection.kind}/${item.name}`;
+        optionGroup.append(option);
+      }
+    }
+    if (optionGroup.children.length) elements.resourceRelationshipFocus.append(optionGroup);
+  }
+  const options = Array.from(elements.resourceRelationshipFocus.options);
+  if (options.some(option => option.value === selected)) {
+    elements.resourceRelationshipFocus.value = selected;
+  } else {
+    const related = new Set(state.resourceRelationships.flatMap(relationship => [
+      resourceReferenceKey(relationship.source),
+      resourceReferenceKey(relationship.target),
+    ]));
+    elements.resourceRelationshipFocus.value = options.find(option => related.has(option.value))?.value || options[0]?.value || '';
+  }
+  elements.resourceRelationshipFocus.disabled = !options.length;
+}
+
+function focusResource(reference) {
+  const key = resourceReferenceKey(reference);
+  if (!Array.from(elements.resourceRelationshipFocus.options).some(option => option.value === key)) return;
+  elements.resourceRelationshipFocus.value = key;
+  renderResourceDiagram();
+}
+
+function createResourceRelationshipNode(reference, selected = false) {
+  const {collection, item} = resourceEntryForReference(reference);
+  const node = document.createElement('button');
+  node.className = 'resource-relationship-node';
+  node.type = 'button';
+  node.dataset.resource = collection.resource;
+  if (selected) node.dataset.selected = 'true';
+  const heading = document.createElement('span');
+  heading.className = 'resource-relationship-node-heading';
+  const kind = document.createElement('span');
+  kind.textContent = collection.kind;
+  const status = document.createElement('span');
+  status.dataset.state = resourceStatus(item).toLowerCase();
+  status.textContent = resourceStatus(item);
+  heading.append(kind, status);
+  const name = document.createElement('strong');
+  name.textContent = item.name;
+  node.append(heading, name);
+  if (item.message) {
+    const message = document.createElement('span');
+    message.className = 'resource-relationship-node-message';
+    message.textContent = item.message;
+    node.append(message);
+  }
+  if (item.missing) {
+    node.disabled = true;
+    node.title = `${collection.kind} ${item.name} was not found in ${state.namespace}`;
+  } else if (selected) {
+    node.title = `Inspect ${collection.kind} ${item.name}`;
+    node.addEventListener('click', () => openResourceDetail(collection, item));
+  } else {
+    node.title = `Focus ${collection.kind} ${item.name}`;
+    node.addEventListener('click', () => focusResource(reference));
+  }
+  return node;
+}
+
+function createResourceRelationshipConnector(relationship) {
+  const connector = document.createElement('div');
+  connector.className = 'resource-relationship-connector';
+  connector.dataset.inferred = String(Boolean(relationship.inferred));
+  const label = document.createElement('span');
+  label.textContent = relationship.relationship;
+  const arrow = document.createElement('span');
+  arrow.setAttribute('aria-hidden', 'true');
+  arrow.textContent = '→';
+  connector.append(label, arrow);
+  return connector;
+}
+
+function createResourceRelationshipEdge(relationship, incoming) {
+  const edge = document.createElement('div');
+  edge.className = 'resource-relationship-edge';
+  edge.dataset.direction = incoming ? 'incoming' : 'outgoing';
+  const reference = incoming ? relationship.source : relationship.target;
+  const node = createResourceRelationshipNode(reference);
+  const connector = createResourceRelationshipConnector(relationship);
+  if (incoming) edge.append(node, connector);
+  else edge.append(connector, node);
+  return edge;
+}
+
+function createResourceRelationshipColumn(title, relationships, incoming) {
+  const column = document.createElement('section');
+  column.className = 'resource-relationship-column';
+  const heading = document.createElement('h3');
+  heading.textContent = title;
+  column.append(heading);
+  if (!relationships.length) {
+    const empty = document.createElement('div');
+    empty.className = 'resource-relationship-empty';
+    empty.textContent = incoming ? 'No incoming relationships' : 'No outgoing relationships';
+    column.append(empty);
+    return column;
+  }
+  const edges = document.createElement('div');
+  edges.className = 'resource-relationship-edges';
+  for (const relationship of relationships) edges.append(createResourceRelationshipEdge(relationship, incoming));
+  column.append(edges);
+  return column;
+}
+
+function resourceRelationshipsForFocus(relationships, focusKey) {
+  return {
+    incoming: relationships.filter(relationship => resourceReferenceKey(relationship.target) === focusKey),
+    outgoing: relationships.filter(relationship => resourceReferenceKey(relationship.source) === focusKey),
+  };
+}
+
+function renderResourceDiagram() {
+  const focusKey = elements.resourceRelationshipFocus.value;
+  if (!focusKey) {
+    const empty = document.createElement('div');
+    empty.className = 'resource-empty';
+    empty.textContent = `No resources in ${state.namespace}.`;
+    elements.resourceDiagram.replaceChildren(empty);
+    return;
+  }
+  const {incoming, outgoing} = resourceRelationshipsForFocus(state.resourceRelationships, focusKey);
+  const [resource, name] = focusKey.split('/', 2);
+  const focusEntry = resourceEntryForReference({resource, name});
+  const center = document.createElement('section');
+  center.className = 'resource-relationship-focus-node';
+  const heading = document.createElement('h3');
+  heading.textContent = 'Selected resource';
+  center.append(heading, createResourceRelationshipNode({resource, kind: focusEntry.collection.kind, name}, true));
+
+  const graph = document.createElement('div');
+  graph.className = 'resource-relationship-graph';
+  graph.append(
+    createResourceRelationshipColumn('Related from', incoming, true),
+    center,
+    createResourceRelationshipColumn('Connects to', outgoing, false),
+  );
+  elements.resourceDiagram.replaceChildren(graph);
+}
+
+function createResourceTypeButton(resource, label, count) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.dataset.resource = resource;
+  const name = document.createElement('span');
+  name.textContent = label;
+  const badge = document.createElement('span');
+  badge.textContent = String(count);
+  button.append(name, badge);
+  button.addEventListener('click', () => selectResourceKind(resource));
+  return button;
+}
+
+function renderResourceTypeNavigation() {
   const collections = resourceCollections();
-  if (collections.some(collection => collection.resource === selected)) elements.resourceKind.value = selected;
+  const total = collections.reduce((count, collection) => count + collection.items.length, 0);
+  elements.resourceTotalCount.textContent = String(total);
+  elements.resourceTypeList.replaceChildren(createResourceTypeButton(allResourceKind, 'All resources', total));
+
+  for (const group of state.resourceGroups) {
+    const section = document.createElement('section');
+    section.className = 'resource-type-group';
+    const heading = document.createElement('h3');
+    heading.textContent = group.name;
+    section.append(heading);
+    for (const collection of group.resources) {
+      section.append(createResourceTypeButton(collection.resource, collection.label, collection.items.length));
+    }
+    elements.resourceTypeList.append(section);
+  }
+}
+
+function resourceEntries(collections, resource) {
+  const selected = collections.find(collection => collection.resource === resource);
+  const sources = selected ? [selected] : collections;
+  const entries = sources.flatMap(collection => collection.items.map(item => ({collection, item})));
+  if (!selected) {
+    entries.sort((left, right) => {
+      const created = String(right.item.createdAt || '').localeCompare(String(left.item.createdAt || ''));
+      if (created) return created;
+      return `${left.collection.kind}/${left.item.name}`.localeCompare(`${right.collection.kind}/${right.item.name}`);
+    });
+  }
+  return entries;
+}
+
+function filterResourceEntries(entries, query) {
+  const normalized = query.trim().toLowerCase();
+  if (!normalized) return entries;
+  return entries.filter(({collection, item}) => [
+    item.name,
+    collection.kind,
+    collection.label,
+    resourceStatus(item),
+    item.message,
+  ].some(value => String(value || '').toLowerCase().includes(normalized)));
+}
+
+function selectResourceKind(resource) {
+  elements.resourceKind.value = resource;
+  renderResources();
 }
 
 function renderResources() {
   const collections = resourceCollections();
-  const collection = collections.find(item => item.resource === elements.resourceKind.value) || collections[0];
-  if (collection && elements.resourceKind.value !== collection.resource) elements.resourceKind.value = collection.resource;
-  const entries = collection ? collection.items.map(item => ({collection, item})) : [];
-  elements.resourceList.replaceChildren(createResourceTable(entries));
+  let resource = elements.resourceKind.value;
+  let collection = collections.find(item => item.resource === resource);
+  if (resource !== allResourceKind && !collection) {
+    resource = allResourceKind;
+    elements.resourceKind.value = resource;
+  }
+
+  const entries = resourceEntries(collections, resource);
+  const filteredEntries = filterResourceEntries(entries, elements.resourceSearch.value);
+  const query = elements.resourceSearch.value.trim();
+  elements.resourceListTitle.textContent = collection?.label || 'All resources';
+  elements.resourceListCount.textContent = String(entries.length);
+  elements.resourceListSummary.textContent = query
+    ? `${filteredEntries.length} of ${entries.length} resources match “${query}”.`
+    : resourceDescriptions[collection?.resource] || 'Every Kelos object in this namespace.';
+  for (const button of elements.resourceTypeList.querySelectorAll('button')) {
+    if (button.dataset.resource === resource) button.setAttribute('aria-current', 'true');
+    else button.removeAttribute('aria-current');
+  }
+  const emptyMessage = query
+    ? `No resources match “${query}”.`
+    : `No ${collection?.label.toLowerCase() || 'resources'} in ${state.namespace}.`;
+  elements.resourceList.replaceChildren(createResourceTable(filteredEntries, emptyMessage));
 }
 
 async function loadResources({quiet = false} = {}) {
@@ -368,6 +696,7 @@ async function loadResources({quiet = false} = {}) {
     const inventory = await api(`/api/resources?namespace=${encodeURIComponent(namespace)}`);
     if (generation !== state.namespaceGeneration || listGeneration !== state.resourceListGeneration) return;
     state.resourceGroups = inventory.groups || [];
+    state.resourceRelationships = inventory.relationships || [];
     renderResourceKindOptions();
     renderOverview();
     renderResources();
@@ -1588,6 +1917,7 @@ async function switchNamespace(namespace) {
   state.namespaceGeneration += 1;
   state.sessions = [];
   state.resourceGroups = [];
+  state.resourceRelationships = [];
   state.options = {credentials: [], workspaces: [], agentConfigs: [], sessions: []};
   window.localStorage.setItem('kelos-console-namespace', namespace);
   elements.activeNamespace.value = namespace;
@@ -4476,7 +4806,12 @@ function interruptActiveTurn() {
 elements.overviewButton.addEventListener('click', () => setConsoleView('overview'));
 elements.sessionsButton.addEventListener('click', () => setConsoleView('sessions'));
 elements.resourcesButton.addEventListener('click', () => setConsoleView('resources'));
+elements.resourceDiagramTab.addEventListener('click', () => setResourceView('diagram'));
+elements.resourceInventoryTab.addEventListener('click', () => setResourceView('inventory'));
+document.querySelector('.resource-view-tabs').addEventListener('keydown', handleResourceViewTabKeydown);
+elements.resourceRelationshipFocus.addEventListener('change', renderResourceDiagram);
 elements.resourceKind.addEventListener('change', renderResources);
+elements.resourceSearch.addEventListener('input', renderResources);
 document.querySelectorAll('.close-resource-detail').forEach(button => {
   button.addEventListener('click', () => elements.resourceDetailDialog.close());
 });

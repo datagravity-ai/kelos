@@ -29,6 +29,7 @@ import (
 	apiMeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/uuid"
 	yamlutil "k8s.io/apimachinery/pkg/util/yaml"
@@ -215,6 +216,25 @@ type consoleResourceSummary struct {
 	CreatedAt string `json:"createdAt,omitempty"`
 	Phase     string `json:"phase,omitempty"`
 	Message   string `json:"message,omitempty"`
+}
+
+type consoleResourceReference struct {
+	Resource string `json:"resource"`
+	Kind     string `json:"kind"`
+	Name     string `json:"name"`
+}
+
+type consoleResourceRelationship struct {
+	Source       consoleResourceReference `json:"source"`
+	Target       consoleResourceReference `json:"target"`
+	Relationship string                   `json:"relationship"`
+	Inferred     bool                     `json:"inferred,omitempty"`
+}
+
+type consoleResourceObject struct {
+	Definition consoleResourceDefinition
+	Summary    consoleResourceSummary
+	Object     client.Object
 }
 
 type consoleResourceDetail struct {
@@ -462,16 +482,22 @@ func (s *Server) listConsoleResources(writer http.ResponseWriter, request *http.
 	namespace := s.requestNamespace(request)
 	groups := make([]consoleResourceGroup, 0, 4)
 	groupIndexes := make(map[string]int)
+	allObjects := make([]consoleResourceObject, 0)
 	for _, definition := range consoleResourceDefinitions {
 		list := definition.NewList()
 		if err := s.client.List(request.Context(), list, client.InNamespace(namespace)); err != nil {
 			writeError(writer, http.StatusInternalServerError, fmt.Sprintf("listing %s: %v", definition.Label, err))
 			return
 		}
-		items, err := consoleResourceSummaries(list)
+		objects, err := consoleResourceObjects(definition, list)
 		if err != nil {
 			writeError(writer, http.StatusInternalServerError, fmt.Sprintf("summarizing %s: %v", definition.Label, err))
 			return
+		}
+		allObjects = append(allObjects, objects...)
+		items := make([]consoleResourceSummary, 0, len(objects))
+		for _, object := range objects {
+			items = append(items, object.Summary)
 		}
 		index, ok := groupIndexes[definition.Group]
 		if !ok {
@@ -486,19 +512,24 @@ func (s *Server) listConsoleResources(writer http.ResponseWriter, request *http.
 			Items:    items,
 		})
 	}
-	writeJSON(writer, http.StatusOK, map[string]any{"namespace": namespace, "groups": groups})
+	relationships, err := consoleResourceRelationships(allObjects)
+	if err != nil {
+		writeError(writer, http.StatusInternalServerError, fmt.Sprintf("relating resources: %v", err))
+		return
+	}
+	writeJSON(writer, http.StatusOK, map[string]any{"namespace": namespace, "groups": groups, "relationships": relationships})
 }
 
-func consoleResourceSummaries(list client.ObjectList) ([]consoleResourceSummary, error) {
+func consoleResourceObjects(definition consoleResourceDefinition, list client.ObjectList) ([]consoleResourceObject, error) {
 	objects, err := apiMeta.ExtractList(list)
 	if err != nil {
 		return nil, err
 	}
-	items := make([]consoleResourceSummary, 0, len(objects))
+	items := make([]consoleResourceObject, 0, len(objects))
 	for _, object := range objects {
-		accessor, err := apiMeta.Accessor(object)
-		if err != nil {
-			return nil, err
+		resourceObject, ok := object.(client.Object)
+		if !ok {
+			return nil, fmt.Errorf("%T does not implement client.Object", object)
 		}
 		content, err := runtime.DefaultUnstructuredConverter.ToUnstructured(object)
 		if err != nil {
@@ -513,25 +544,168 @@ func consoleResourceSummaries(list client.ObjectList) ([]consoleResourceSummary,
 		}
 		message, _, _ := unstructured.NestedString(content, "status", "message")
 		createdAt := ""
-		created := accessor.GetCreationTimestamp()
+		created := resourceObject.GetCreationTimestamp()
 		if !created.IsZero() {
 			createdAt = created.UTC().Format(time.RFC3339)
 		}
-		items = append(items, consoleResourceSummary{
-			Name:      accessor.GetName(),
-			Namespace: accessor.GetNamespace(),
-			CreatedAt: createdAt,
-			Phase:     phase,
-			Message:   message,
+		items = append(items, consoleResourceObject{
+			Definition: definition,
+			Summary: consoleResourceSummary{
+				Name:      resourceObject.GetName(),
+				Namespace: resourceObject.GetNamespace(),
+				CreatedAt: createdAt,
+				Phase:     phase,
+				Message:   message,
+			},
+			Object: resourceObject,
 		})
 	}
 	sort.Slice(items, func(i, j int) bool {
-		if items[i].CreatedAt != items[j].CreatedAt {
-			return items[i].CreatedAt > items[j].CreatedAt
+		if items[i].Summary.CreatedAt != items[j].Summary.CreatedAt {
+			return items[i].Summary.CreatedAt > items[j].Summary.CreatedAt
 		}
-		return items[i].Name < items[j].Name
+		return items[i].Summary.Name < items[j].Summary.Name
 	})
 	return items, nil
+}
+
+func consoleResourceRelationships(objects []consoleResourceObject) ([]consoleResourceRelationship, error) {
+	relationships := make(map[string]consoleResourceRelationship)
+	add := func(source, target consoleResourceReference, relationship string, inferred bool) {
+		if source.Name == "" || target.Name == "" {
+			return
+		}
+		key := strings.Join([]string{source.Resource, source.Name, target.Resource, target.Name, relationship}, "\x00")
+		relationships[key] = consoleResourceRelationship{Source: source, Target: target, Relationship: relationship, Inferred: inferred}
+	}
+
+	for _, object := range objects {
+		source := consoleReference(object.Definition, object.Summary.Name)
+		switch value := object.Object.(type) {
+		case *kelos.Task:
+			consoleWorkerRelationships(source, value.Spec.Worker, add)
+			consoleLegacyWorkerRelationships(source, value.Spec.WorkspaceRef, value.Spec.AgentConfigRefs, add)
+			if value.Spec.WorkerPoolRef != nil {
+				add(source, consoleReferenceFor("workerpools", value.Spec.WorkerPoolRef.Name), "runs on", false)
+			}
+			for _, dependency := range value.Spec.DependsOn {
+				add(source, consoleReferenceFor("tasks", dependency), "depends on", false)
+			}
+			if !consoleOwnerRelationship(object.Object, source, "TaskSpawner", "creates", add) {
+				origin := value.Annotations["kelos.dev/created-from-taskspawner"]
+				if origin != "" {
+					add(consoleReferenceFor("taskspawners", origin), source, "creates", false)
+				} else {
+					add(consoleReferenceFor("taskspawners", value.Labels["kelos.dev/taskspawner"]), source, "creates", true)
+				}
+			}
+		case *kelos.Session:
+			consoleWorkerRelationships(source, &value.Spec.Worker, add)
+			if !consoleOwnerRelationship(object.Object, source, "SessionSpawner", "creates", add) {
+				add(consoleReferenceFor("sessionspawners", value.Annotations["kelos.dev/sessionspawner-name"]), source, "creates", false)
+			}
+		case *kelos.TaskSpawner:
+			consoleWorkerRelationships(source, value.Spec.TaskTemplate.Worker, add)
+			consoleLegacyWorkerRelationships(source, value.Spec.TaskTemplate.WorkspaceRef, value.Spec.TaskTemplate.AgentConfigRefs, add)
+			if value.Spec.TaskTemplate.WorkerPoolRef != nil {
+				add(source, consoleReferenceFor("workerpools", value.Spec.TaskTemplate.WorkerPoolRef.Name), "runs Tasks on", false)
+			}
+			for _, dependency := range value.Spec.TaskTemplate.DependsOn {
+				add(source, consoleReferenceFor("tasks", dependency), "spawned Tasks depend on", false)
+			}
+		case *kelos.SessionSpawner:
+			consoleWorkerRelationships(source, &value.Spec.SessionTemplate.Worker, add)
+		case *kelos.WorkerPool:
+			consoleWorkerRelationships(source, &value.Spec.Worker, add)
+		case *kelos.TaskRecord:
+			add(consoleReferenceFor("tasks", value.Spec.TaskRef.Name), source, "recorded as", false)
+		}
+	}
+
+	budgetCandidates := make([]consoleResourceObject, 0)
+	for _, object := range objects {
+		switch object.Object.(type) {
+		case *kelos.Task, *kelos.TaskRecord:
+			budgetCandidates = append(budgetCandidates, object)
+		}
+	}
+	for _, object := range objects {
+		budget, ok := object.Object.(*kelos.TaskBudget)
+		if !ok {
+			continue
+		}
+		selector, err := metav1.LabelSelectorAsSelector(&budget.Spec.TaskSelector)
+		if err != nil {
+			return nil, fmt.Errorf("TaskBudget %q selector: %w", budget.Name, err)
+		}
+		source := consoleReference(object.Definition, object.Summary.Name)
+		for _, candidate := range budgetCandidates {
+			if !selector.Matches(labels.Set(candidate.Object.GetLabels())) {
+				continue
+			}
+			target := consoleReference(candidate.Definition, candidate.Summary.Name)
+			switch candidate.Object.(type) {
+			case *kelos.Task:
+				add(source, target, "limits", true)
+			case *kelos.TaskRecord:
+				add(source, target, "accounts for", true)
+			}
+		}
+	}
+
+	result := make([]consoleResourceRelationship, 0, len(relationships))
+	for _, relationship := range relationships {
+		result = append(result, relationship)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		left := result[i]
+		right := result[j]
+		return strings.Join([]string{left.Source.Resource, left.Source.Name, left.Target.Resource, left.Target.Name, left.Relationship}, "\x00") <
+			strings.Join([]string{right.Source.Resource, right.Source.Name, right.Target.Resource, right.Target.Name, right.Relationship}, "\x00")
+	})
+	return result, nil
+}
+
+func consoleReference(definition consoleResourceDefinition, name string) consoleResourceReference {
+	return consoleResourceReference{Resource: definition.Resource, Kind: definition.Kind, Name: name}
+}
+
+func consoleReferenceFor(resource, name string) consoleResourceReference {
+	definition, ok := consoleResourceDefinitionFor(resource)
+	if !ok {
+		return consoleResourceReference{Resource: resource, Name: name}
+	}
+	return consoleReference(definition, name)
+}
+
+func consoleWorkerRelationships(source consoleResourceReference, worker *kelos.WorkerSpec, add func(consoleResourceReference, consoleResourceReference, string, bool)) {
+	if worker == nil {
+		return
+	}
+	consoleLegacyWorkerRelationships(source, worker.WorkspaceRef, worker.AgentConfigRefs, add)
+}
+
+func consoleLegacyWorkerRelationships(source consoleResourceReference, workspace *kelos.WorkspaceReference, agentConfigs []kelos.AgentConfigReference, add func(consoleResourceReference, consoleResourceReference, string, bool)) {
+	if workspace != nil {
+		add(source, consoleReferenceFor("workspaces", workspace.Name), "uses", false)
+	}
+	for _, agentConfig := range agentConfigs {
+		add(source, consoleReferenceFor("agentconfigs", agentConfig.Name), "uses", false)
+	}
+}
+
+func consoleOwnerRelationship(object client.Object, target consoleResourceReference, ownerKind, relationship string, add func(consoleResourceReference, consoleResourceReference, string, bool)) bool {
+	definition, ok := consoleResourceDefinitionForKind(ownerKind)
+	if !ok {
+		return false
+	}
+	for _, owner := range object.GetOwnerReferences() {
+		if owner.Kind == ownerKind {
+			add(consoleReference(definition, owner.Name), target, relationship, false)
+			return true
+		}
+	}
+	return false
 }
 
 func consoleResourceCondition(content map[string]any) string {
@@ -771,6 +945,15 @@ func tailWorkerTaskLogSegment(reader io.Reader, taskName string, maxLines, maxBy
 func consoleResourceDefinitionFor(resource string) (consoleResourceDefinition, bool) {
 	for _, definition := range consoleResourceDefinitions {
 		if definition.Resource == resource {
+			return definition, true
+		}
+	}
+	return consoleResourceDefinition{}, false
+}
+
+func consoleResourceDefinitionForKind(kind string) (consoleResourceDefinition, bool) {
+	for _, definition := range consoleResourceDefinitions {
+		if definition.Kind == kind {
 			return definition, true
 		}
 	}
