@@ -79,11 +79,58 @@
         </div>
       </header>
       <section class="console-page-body">
-        <div class="resource-toolbar">
-          <label for="resource-kind">Resource type</label>
-          <select id="resource-kind"></select>
+        <div class="mode-switch resource-view-tabs" role="tablist" aria-label="Resource view">
+          <button id="resource-diagram-tab" type="button" role="tab" aria-selected="true" aria-controls="resource-diagram-panel">Relationships</button>
+          <button id="resource-inventory-tab" type="button" role="tab" aria-selected="false" aria-controls="resource-inventory-panel" tabindex="-1">Inventory</button>
         </div>
-        <div class="resource-table-wrap" id="resource-list" aria-live="polite"></div>
+        <section class="resource-diagram-panel" id="resource-diagram-panel" role="tabpanel" aria-labelledby="resource-diagram-tab">
+          <div class="resource-diagram-heading">
+            <div>
+              <h2>Resource relationships</h2>
+              <p>Follow the resources connected to one object.</p>
+            </div>
+            <label class="resource-relationship-focus" for="resource-relationship-focus">
+              <span>Focus resource</span>
+              <select id="resource-relationship-focus"></select>
+            </label>
+          </div>
+          <div class="resource-diagram" id="resource-diagram" aria-live="polite"></div>
+          <div class="resource-relationship-legend">
+            <span><i></i> Explicit reference</span>
+            <span><i data-inferred="true"></i> Selector or label match</span>
+          </div>
+        </section>
+        <section id="resource-inventory-panel" role="tabpanel" aria-labelledby="resource-inventory-tab" hidden>
+          <label class="resource-mobile-kind" for="resource-kind">
+            <span>Resource type</span>
+            <select id="resource-kind"></select>
+          </label>
+          <div class="resource-browser">
+            <aside class="resource-type-panel" aria-label="Resource types">
+              <div class="resource-type-panel-heading">
+                <span>Resource types</span>
+                <span id="resource-total-count">0</span>
+              </div>
+              <nav class="resource-type-list" id="resource-type-list"></nav>
+            </aside>
+            <section class="resource-inventory" aria-labelledby="resource-list-title">
+              <div class="resource-inventory-heading">
+                <div>
+                  <div class="resource-inventory-title-row">
+                    <h2 id="resource-list-title">All resources</h2>
+                    <span id="resource-list-count">0</span>
+                  </div>
+                  <p id="resource-list-summary">Every Kelos object in this namespace.</p>
+                </div>
+                <label class="resource-search" for="resource-search">
+                  <span>Search resources</span>
+                  <input id="resource-search" type="search" placeholder="Name, kind, or status" autocomplete="off">
+                </label>
+              </div>
+              <div class="resource-table-wrap" id="resource-list" aria-live="polite"></div>
+            </section>
+          </div>
+        </section>
       </section>
     </main>
 

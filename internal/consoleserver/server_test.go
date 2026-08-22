@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -125,6 +126,12 @@ func TestConsoleApplicationIncludesResourceViews(t *testing.T) {
 		`id="console-resources"`,
 		`id="overview-view"`,
 		`id="resources-view"`,
+		`id="resource-diagram-tab"`,
+		`id="resource-diagram"`,
+		`id="resource-relationship-focus"`,
+		`id="resource-inventory-panel"`,
+		`id="resource-type-list"`,
+		`id="resource-search"`,
 		`id="resource-detail-dialog"`,
 		`id="resource-detail-logs-tab"`,
 		`id="refresh-resource-logs"`,
@@ -141,6 +148,7 @@ func TestConsoleApplicationIncludesResourceViews(t *testing.T) {
 	for _, expected := range []string{
 		"async function loadResources",
 		"function renderOverview",
+		"function renderResourceDiagram",
 		"function renderResources",
 		"function setResourceDetailView",
 		"function handleResourceDetailTabKeydown",
@@ -158,7 +166,7 @@ func TestConsoleApplicationIncludesResourceViews(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{".resource-summary-grid", ".resource-summary-card", ".resource-table", ".resource-detail-dialog", ".resource-detail-tabs[hidden]"} {
+	for _, expected := range []string{".resource-summary-grid", ".resource-summary-card", ".resource-diagram", ".resource-relationship-node", ".resource-browser", ".resource-type-list", ".resource-table", ".resource-detail-dialog", ".resource-detail-tabs[hidden]"} {
 		if !strings.Contains(string(styles), expected) {
 			t.Errorf("Console styles do not contain %q", expected)
 		}
@@ -231,6 +239,140 @@ func TestConsoleResourcesListAndGet(t *testing.T) {
 		if !strings.Contains(detail.YAML, expected) {
 			t.Errorf("resource detail YAML does not contain %q:\n%s", expected, detail.YAML)
 		}
+	}
+}
+
+func TestConsoleResourceRelationships(t *testing.T) {
+	server := testServer(t)
+	controller := true
+	objects := []client.Object{
+		&kelos.TaskSpawner{
+			ObjectMeta: metav1.ObjectMeta{Name: "issues", Namespace: "team-a", UID: "spawner-uid"},
+			Spec: kelos.TaskSpawnerSpec{TaskTemplate: kelos.TaskTemplate{
+				WorkerPoolRef: &kelos.WorkerPoolReference{Name: "pool"},
+			}},
+		},
+		&kelos.TaskSpawner{
+			ObjectMeta: metav1.ObjectMeta{Name: "automation", Namespace: "team-a"},
+			Spec: kelos.TaskSpawnerSpec{TaskTemplate: kelos.TaskTemplate{
+				WorkspaceRef:    &kelos.WorkspaceReference{Name: "repository"},
+				AgentConfigRefs: []kelos.AgentConfigReference{{Name: "reviewer"}},
+				DependsOn:       []string{"prerequisite"},
+			}},
+		},
+		&kelos.SessionSpawner{ObjectMeta: metav1.ObjectMeta{Name: "webhook", Namespace: "team-a"}},
+		&kelos.Workspace{ObjectMeta: metav1.ObjectMeta{Name: "repository", Namespace: "team-a"}},
+		&kelos.AgentConfig{ObjectMeta: metav1.ObjectMeta{Name: "reviewer", Namespace: "team-a"}},
+		&kelos.WorkerPool{
+			ObjectMeta: metav1.ObjectMeta{Name: "pool", Namespace: "team-a"},
+			Spec: kelos.WorkerPoolSpec{Worker: kelos.WorkerSpec{
+				WorkspaceRef:    &kelos.WorkspaceReference{Name: "repository"},
+				AgentConfigRefs: []kelos.AgentConfigReference{{Name: "reviewer"}},
+			}},
+		},
+		&kelos.Task{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "fix-console",
+				Namespace: "team-a",
+				Labels:    map[string]string{"team": "console"},
+				OwnerReferences: []metav1.OwnerReference{{
+					APIVersion: kelos.GroupVersion.String(),
+					Kind:       "TaskSpawner",
+					Name:       "issues",
+					UID:        "spawner-uid",
+					Controller: &controller,
+				}},
+			},
+			Spec: kelos.TaskSpec{WorkerPoolRef: &kelos.WorkerPoolReference{Name: "pool"}},
+		},
+		&kelos.Task{ObjectMeta: metav1.ObjectMeta{Name: "prerequisite", Namespace: "team-a"}},
+		&kelos.Task{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "legacy-task",
+				Namespace: "team-a",
+				Labels:    map[string]string{"kelos.dev/taskspawner": "issues"},
+			},
+			Spec: kelos.TaskSpec{
+				WorkspaceRef:    &kelos.WorkspaceReference{Name: "repository"},
+				AgentConfigRefs: []kelos.AgentConfigReference{{Name: "reviewer"}},
+				DependsOn:       []string{"prerequisite"},
+			},
+		},
+		&kelos.Task{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:        "manual-task",
+				Namespace:   "team-a",
+				Annotations: map[string]string{"kelos.dev/created-from-taskspawner": "issues"},
+			},
+		},
+		&kelos.Session{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:        "console-session",
+				Namespace:   "team-a",
+				Annotations: map[string]string{"kelos.dev/sessionspawner-name": "webhook"},
+			},
+			Spec: kelos.SessionSpec{Worker: kelos.WorkerSpec{
+				WorkspaceRef:    &kelos.WorkspaceReference{Name: "repository"},
+				AgentConfigRefs: []kelos.AgentConfigReference{{Name: "reviewer"}},
+			}},
+		},
+		&kelos.TaskRecord{
+			ObjectMeta: metav1.ObjectMeta{Name: "fix-console-record", Namespace: "team-a", Labels: map[string]string{"team": "console"}},
+			Spec:       kelos.TaskRecordSpec{TaskRef: kelos.TaskReference{Name: "fix-console"}},
+		},
+		&kelos.TaskBudget{
+			ObjectMeta: metav1.ObjectMeta{Name: "console-budget", Namespace: "team-a"},
+			Spec:       kelos.TaskBudgetSpec{TaskSelector: metav1.LabelSelector{MatchLabels: map[string]string{"team": "console"}}},
+		},
+	}
+	for _, object := range objects {
+		if err := server.client.Create(t.Context(), object); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/api/resources?namespace=team-a", nil)
+	request.Header.Set("Authorization", "Bearer secret-token")
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("resource inventory status = %d body = %s", response.Code, response.Body.String())
+	}
+	var inventory struct {
+		Relationships []consoleResourceRelationship `json:"relationships"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &inventory); err != nil {
+		t.Fatal(err)
+	}
+
+	actual := make(map[string]bool, len(inventory.Relationships))
+	for _, relationship := range inventory.Relationships {
+		key := fmt.Sprintf("%s/%s %s %s/%s", relationship.Source.Resource, relationship.Source.Name, relationship.Relationship, relationship.Target.Resource, relationship.Target.Name)
+		actual[key] = relationship.Inferred
+	}
+	expected := map[string]bool{
+		"taskspawners/automation spawned Tasks depend on tasks/prerequisite":     false,
+		"taskspawners/automation uses agentconfigs/reviewer":                     false,
+		"taskspawners/automation uses workspaces/repository":                     false,
+		"taskspawners/issues creates tasks/fix-console":                          false,
+		"taskspawners/issues creates tasks/legacy-task":                          true,
+		"taskspawners/issues runs Tasks on workerpools/pool":                     false,
+		"tasks/fix-console runs on workerpools/pool":                             false,
+		"tasks/legacy-task depends on tasks/prerequisite":                        false,
+		"tasks/legacy-task uses agentconfigs/reviewer":                           false,
+		"tasks/legacy-task uses workspaces/repository":                           false,
+		"workerpools/pool uses workspaces/repository":                            false,
+		"workerpools/pool uses agentconfigs/reviewer":                            false,
+		"sessions/console-session uses workspaces/repository":                    false,
+		"sessions/console-session uses agentconfigs/reviewer":                    false,
+		"sessionspawners/webhook creates sessions/console-session":               false,
+		"tasks/fix-console recorded as taskrecords/fix-console-record":           false,
+		"taskbudgets/console-budget limits tasks/fix-console":                    true,
+		"taskbudgets/console-budget accounts for taskrecords/fix-console-record": true,
+		"taskspawners/issues creates tasks/manual-task":                          false,
+	}
+	if !maps.Equal(actual, expected) {
+		t.Fatalf("resource relationships = %#v, want %#v", actual, expected)
 	}
 }
 
