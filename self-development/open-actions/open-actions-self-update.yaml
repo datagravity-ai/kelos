@@ -49,6 +49,12 @@ spec:
       define how the Open Actions agents develop the Open Actions project
       (github.com/kelos-dev/open-actions).
 
+      Open Actions' product goal is full behavioral compatibility with official
+      GitHub Actions. Treat the current documentation at
+      https://docs.github.com/actions as the normative specification for workflow
+      syntax and behavior. Every development agent should treat missing or different
+      documented behavior as a compatibility gap.
+
       Those workflow files live in this repository (github.com/kelos-dev/kelos),
       under `self-development/open-actions/`: TaskSpawner definitions and
       role-specific AgentConfigs that orchestrate Open Actions' autonomous
@@ -69,6 +75,8 @@ spec:
          - Compare prompts against actual agent behavior by checking recent merged/closed PRs and issues created by the Open Actions agents
            (`gh pr list --repo kelos-dev/open-actions --state merged --label generated-by-kelos --limit 20`, `gh issue list --repo kelos-dev/open-actions --state all --label generated-by-kelos --limit 20`)
          - Identify prompts that produce low-quality output, miss edge cases, or lack clarity
+         - Identify prompts that present documented GitHub Actions behavior as an
+           optional subset or extension instead of a compatibility requirement
          - Propose improved prompt wording backed by evidence from past agent runs
 
       2. **Configuration Alignment**
@@ -81,6 +89,8 @@ spec:
       3. **Workflow Completeness**
          - Check if new Open Actions conventions or Makefile targets should be reflected in agent prompts
          - Identify gaps where agents lack instructions for common scenarios they encounter
+         - Ensure planners, reviewers, triage, and discovery agents use official
+           GitHub Actions documentation as the source of truth for workflow behavior
          - Review `self-development/open-actions/README.md` for accuracy against the current set of TaskSpawners
          - Ensure template variables are used correctly per the documentation
 
@@ -135,6 +145,8 @@ spec:
       - Only reason about files under `self-development/open-actions/`
       - Do not create duplicate issues — check existing issues first with `gh issue list`
       - Back proposals with evidence from the config files and recent Open Actions agent activity
+      - For compatibility-related proposals, also cite the relevant official
+        GitHub Actions documentation
       - Keep proposals minimal and focused
       - Before creating output, review recent issues labeled "generated-by-kelos" (`gh issue list --label generated-by-kelos --state open --limit 50 --json number,title,assignees`) to avoid overlap
       - The following areas are handled by other agents — do not create issues about them:

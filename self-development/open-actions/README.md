@@ -3,8 +3,11 @@
 This directory contains the orchestration patterns that drive autonomous
 development of [`kelos-dev/open-actions`](https://github.com/kelos-dev/open-actions)
 — a Kubernetes-native, self-hosted control plane that plans, schedules, and
-executes a supported subset of GitHub Actions workflows in the team's own
-cluster.
+executes GitHub Actions workflows in the team's own cluster. Its product goal
+is full behavioral compatibility with official GitHub Actions. The current
+[GitHub Actions documentation](https://docs.github.com/actions) defines the
+expected workflow syntax and behavior; missing or different documented
+behavior is a compatibility gap.
 
 It mirrors [`self-development/`](../), which does the same for this repository
 (`kelos-dev/kelos`). The configs live here, in the kelos repository, but the
@@ -44,15 +47,15 @@ meta-maintenance spawners (`open-actions-config-update`,
 | Spawner | Trigger | Agent | Description |
 |---|---|---|---|
 | **open-actions-workers** | Webhook: issue comment `/kelos pick-up` | Codex | Creates a durable Session with the open issue URL and a dedicated issue branch |
-| **open-actions-planner** | Webhook: issue comment `/kelos plan` | Codex | Investigates an issue and posts a structured implementation plan — advisory only, no code changes |
-| **open-actions-reviewer** | Webhook: PR comment or review `/kelos review` | Codex | Reviews PRs on demand — analyzes code, checks conventions, and updates a sticky review comment |
-| **open-actions-api-reviewer** | Webhook: issue/PR comment or review `/kelos api-review` | Codex | Reviews Kubernetes API design on issues or PRs — naming, compatibility, CRD validation |
-| **open-actions-claude-reviewer** | Webhook: PR comment or review `/kelos claude-review` | Claude Fable | Runs an independent review path through Claude Code and updates a Claude-specific sticky review comment |
-| **open-actions-claude-api-reviewer** | Webhook: issue/PR comment or review `/kelos claude-api-review` | Claude Fable | Runs an independent API design review path through Claude Code and updates Claude-specific sticky PR comments |
+| **open-actions-planner** | Webhook: issue comment `/kelos plan` | Codex | Investigates an issue, establishes documented GitHub Actions behavior, and posts a structured implementation plan — advisory only, no code changes |
+| **open-actions-reviewer** | Webhook: PR comment or review `/kelos review` | Codex | Reviews PRs for code quality and GitHub Actions behavioral compatibility, then updates a sticky review comment |
+| **open-actions-api-reviewer** | Webhook: issue/PR comment or review `/kelos api-review` | Codex | Reviews Kubernetes API design and its preservation of documented GitHub Actions semantics |
+| **open-actions-claude-reviewer** | Webhook: PR comment or review `/kelos claude-review` | Claude Fable | Runs an independent code and GitHub Actions compatibility review through Claude Code |
+| **open-actions-claude-api-reviewer** | Webhook: issue/PR comment or review `/kelos claude-api-review` | Claude Fable | Runs an independent API and GitHub Actions semantics review through Claude Code |
 | **open-actions-pr-responder** | Webhook: PR review/comment with `/kelos pick-up` | Codex | Creates a durable Session with the open PR URL on its existing branch |
-| **open-actions-triage** | Webhook: issue opened/reopened (untriaged) | Codex | Classifies issues by kind/priority, detects duplicates, and recommends an actor |
-| **open-actions-fake-user** | Cron (daily 09:00 UTC) | Codex | Tests DX as a new user and maintains one unassigned issue slot for the highest-impact problem found |
-| **open-actions-fake-strategist** | Cron (every 12 hours) | Codex | Explores new use cases, integrations, and API extensions while maintaining one unassigned strategic issue slot |
+| **open-actions-triage** | Webhook: issue opened/reopened (untriaged) | Codex | Classifies documented GitHub Actions gaps as bugs, detects duplicates, assesses priority, and recommends an actor |
+| **open-actions-fake-user** | Cron (daily 09:00 UTC) | Codex | Reproduces concrete workflow behavior and tests DX while maintaining one unassigned issue slot |
+| **open-actions-fake-strategist** | Cron (every 12 hours) | Codex | Prioritizes the compatibility roadmap, enabling architecture, and adoption strategy while maintaining one unassigned strategic issue slot |
 | **open-actions-config-update** | Cron (daily 18:00 UTC) | Codex | Reviews recent Open Actions PR feedback and creates or updates unassigned configuration PRs accordingly |
 | **open-actions-self-update** | Cron (daily 06:00 UTC) | Codex | Reviews and tunes the `self-development/open-actions/` prompts, configs, and README while maintaining one unassigned improvement issue slot |
 | **open-actions-squash-commits** | Webhook: PR comment `/kelos squash-commits` | Codex | Rebases and squashes PR branch commits into a single clean commit |
@@ -105,9 +108,10 @@ kubectl apply -f self-development/open-actions/open-actions-workers.yaml
 Reacts to `/kelos plan` comments on open issues. Investigates the issue,
 inspects the codebase, and posts a structured implementation plan — advisory
 only, no code changes. For issues that touch CRD types or another user-facing
-surface (controller flags, the webhook contract, the supported workflow
-subset), the plan must resolve naming, shape, and backward compatibility up
-front.
+surface (controller flags, the webhook contract, or the GitHub Actions
+compatibility contract), the plan must resolve naming, shape, and backward
+compatibility up front. For workflow issues, it cites the relevant official
+GitHub Actions documentation and plans tests for the documented behavior.
 
 | | |
 |---|---|
@@ -138,7 +142,8 @@ posts `/kelos review`.
 **Key features:**
 - Uses the `review-all` skill to reconcile two independent reviews of the same diff
 - Reads the full diff and surrounding context to understand changes
-- Checks correctness, tests, project conventions, security, and code quality
+- Checks correctness, tests, project conventions, security, code quality, and
+  behavior against the official GitHub Actions documentation
 - Flags obvious CRD permanence risks and defers the deep API checklist to `/kelos api-review`
 - Creates or updates a single sticky PR comment with the structured review result
 - Read-only agent — does not push code, modify files, or run local validation
@@ -162,6 +167,7 @@ Runs a Claude Fable review when a maintainer or `kelos-bot[bot]` posts
 **Key features:**
 
 - Uses the same repository-specific checklist and sticky comment format as `open-actions-reviewer`
+- Checks workflow behavior against the official GitHub Actions documentation
 - Flags obvious CRD permanence risks and defers the deep API checklist to `/kelos claude-api-review`
 - Creates or updates a Claude-specific sticky PR comment
 - Read-only agent — does not push code, modify files, or run local validation
@@ -189,6 +195,8 @@ compatibility, and best practices when a maintainer or `kelos-bot[bot]` posts
 - Works on both issues (API design proposals) and pull requests (API implementation review)
 - Treats CRD types, generated schemas, samples, labels, annotations, flags,
   configuration, and webhook contracts as user-facing API surfaces
+- Requires surfaces that model GitHub Actions concepts to preserve official
+  names, meanings, defaults, and observable behavior
 - For PRs: creates or updates a single sticky PR comment with structured API review feedback
 - For issues: posts a structured comment with API design guidance
 - Read-only agent — does not push code or modify files
@@ -213,6 +221,7 @@ posts `/kelos claude-api-review`.
 
 - Uses the `api-review` skill for API design analysis and verdicts
 - Covers the same user-facing API surfaces as `open-actions-api-reviewer`
+- Checks API designs that model GitHub Actions concepts against official semantics
 - Works on both issues and pull requests
 - Creates or updates a Claude-specific sticky PR comment for pull requests
 - Posts a structured API design comment for issues
@@ -260,12 +269,12 @@ Triages newly opened (and certain reopened) GitHub issues.
 | **Concurrency** | 8 |
 
 **For each issue, the agent:**
-1. Classifies with exactly one `kind/*` label (`kind/bug`, `kind/feature`, `kind/api`, `kind/docs`). `kind/api` covers any change to a user-facing surface — CRD fields, generated CRD schemas, controller flags, the webhook contract, or the supported workflow subset.
+1. Classifies with exactly one `kind/*` label (`kind/bug`, `kind/feature`, `kind/api`, `kind/docs`). Documented GitHub Actions behavior that Open Actions does not reproduce is `kind/bug`; `kind/api` covers changes to Open Actions-owned user-facing surfaces such as CRD fields, generated schemas, controller flags, and the webhook contract.
 2. Checks if the issue has already been fixed by a merged PR or recent commit
 3. Checks if the issue references outdated CRD fields, flags, or workflow behaviors
 4. Detects duplicate issues
 5. Assesses priority (`priority/important-soon`, `priority/important-longterm`, `priority/backlog`)
-6. Recommends an actor — assigns `actor/kelos` if the issue has clear scope and verifiable criteria, otherwise `actor/human`. `kind/api` issues always get `actor/human` and are **not** marked `triage-accepted`, because user-facing surface changes must be reviewed with a maintainer first.
+6. Recommends an actor — assigns `actor/kelos` if the issue has clear scope and verifiable criteria, otherwise `actor/human`. A concrete documented compatibility bug may go to `actor/kelos`; `kind/api` issues always get `actor/human` and are **not** marked `triage-accepted`, because Open Actions-owned surface changes must be reviewed with a maintainer first.
 
 Posts a single triage comment and adds `triage-accepted` to prevent re-triage.
 
@@ -285,9 +294,13 @@ Runs daily to test the developer experience as if you were a new user.
 | **Concurrency** | 1 |
 
 Each run picks one focus area:
-- **Documentation & Onboarding** — follow the installation instructions, check the documented workflow subset
+- **Concrete Workflow Compatibility** — reproduce one documented feature in a concrete workflow and compare its user-visible behavior with Open Actions
+- **Documentation & Onboarding** — follow installation instructions and ensure compatibility gaps are not presented as intentional limitations
 - **Developer Experience** — build and test, review error messages and status conditions, exercise operator workflows
 - **Examples & Use Cases** — verify `config/samples/` manifests, identify missing examples
+
+Concrete workflow reproduction belongs to fake-user. Broad compatibility
+coverage and roadmap prioritization belong to fake-strategist.
 
 Creates or updates the single unassigned `open-actions-fake-user` issue slot
 for the highest-impact problem found. If that issue is assigned, the run treats
@@ -310,9 +323,13 @@ Actions.
 | **Concurrency** | 1 |
 
 Each run picks one focus area:
-- **New Use Cases** — explore teams and CI workloads that could benefit from self-hosted, high-volume workflow execution
-- **Integration Opportunities** — identify source integrations and Kubernetes-toolchain integrations Open Actions could support
-- **New CRDs & API Extensions** — propose extensions to the supported workflow subset, existing CRDs, or new controller capabilities
+- **Compatibility Roadmap** — assess a complete documentation area and prioritize systemic gaps
+- **Compatibility-Enabling Architecture** — propose the minimum API or controller capability needed for a concrete documented behavior
+- **Adoption of Existing GitHub Actions Workloads** — identify compatibility blockers for teams moving existing workflows unchanged
+
+Strategic coverage, architecture, and adoption planning belong to
+fake-strategist. Reproducing an isolated workflow failure or reporting
+documentation and operator-experience problems belongs to fake-user.
 
 Creates or updates the single unassigned `open-actions-fake-strategist` issue
 slot for the highest-impact actionable insight. If that issue is assigned, the
@@ -341,7 +358,8 @@ identify recurring feedback patterns, then updates the configuration under
 `agentconfig.yaml` or a specific TaskSpawner prompt). Opens a PR against this
 repository using `/kind cleanup` and `release-note: NONE`, since it only
 touches `self-development/open-actions/`. Skips uncertain or contradictory
-feedback, and skips an existing configuration PR when it has assignees.
+feedback, checks workflow-related feedback against the official GitHub Actions
+documentation, and skips an existing configuration PR when it has assignees.
 
 **Deploy:**
 ```bash
@@ -360,7 +378,10 @@ files themselves.
 | **Workspace** | `kelos-agent` (reasons about `self-development/open-actions/` in this repo) |
 | **Concurrency** | 1 |
 
-Each run picks one focus area: **Prompt Tuning**, **Configuration Alignment**, or **Workflow Completeness**.
+Each run picks one focus area: **Prompt Tuning**, **Configuration Alignment**,
+or **Workflow Completeness**. Compatibility-related proposals must cite the
+official GitHub Actions documentation, and the audit checks that every
+development agent treats documented behavior as a compatibility requirement.
 
 Creates or updates the single unassigned `open-actions-self-update` issue slot
 for the highest-impact actionable improvement. If that issue is assigned, the
