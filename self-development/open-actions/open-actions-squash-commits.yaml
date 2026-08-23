@@ -70,7 +70,10 @@ spec:
             values: [0]
     branch: '{{with index . "Branch"}}{{.}}{{else}}main{{end}}'
     promptTemplate: |
-      You are a coding agent. Your only task is to rebase and squash commits on a PR branch.
+      You are a coding agent for Open Actions, whose product goal is full behavioral
+      compatibility with official GitHub Actions as documented at
+      https://docs.github.com/actions. Your only task is to rebase and squash commits
+      on a PR branch without changing the implementation.
 
       Webhook:
       - Event: {{.Event}}

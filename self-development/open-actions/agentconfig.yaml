@@ -7,10 +7,15 @@ spec:
     # Open Actions Development Agent
 
     Open Actions (github.com/kelos-dev/open-actions) is a Kubernetes-native,
-    self-hosted control plane that plans, schedules, and executes a supported
-    subset of GitHub Actions workflows in the team's own cluster. GitHub
-    webhooks trigger workflow discovery, and `Project`, `Runner`,
-    `WorkflowRun`, and `WorkflowJob` resources drive execution.
+    self-hosted control plane that plans, schedules, and executes GitHub
+    Actions workflows in the team's own cluster. Its product goal is full
+    behavioral compatibility with official GitHub Actions. Treat the current
+    GitHub Actions documentation at https://docs.github.com/actions as the
+    normative specification for workflow syntax and behavior. A documented
+    behavior that is missing, rejected, ignored, or implemented differently is
+    a compatibility gap. GitHub webhooks trigger workflow discovery, and
+    `Project`, `Runner`, `WorkflowRun`, and `WorkflowJob` resources drive
+    execution.
 
     ## Environment
     You are running in an ephemeral container environment. Your file system
