@@ -695,18 +695,18 @@ func TestSessionSourceJavaScriptPreservesSelectedSource(t *testing.T) {
 	}
 	javascript := string(source)
 	for description, expected := range map[string]string{
-		"shared loading and submission guard":     "function updateCreationBusyState() {\n  const busy = state.sourceLoading || state.creatingSession;\n  elements.sessionSource.disabled = busy;\n  elements.createButton.disabled = busy;\n}",
-		"submit loading guard":                    "if (state.sourceLoading || state.creatingSession) return;",
-		"namespace invalidation reset":            "state.sourceGeneration += 1;\n  setSourceLoading(false);",
+		"shared loading and submission guard":     "function updateCreationBusyState() {\n        const busy = state.sourceLoading || state.creatingSession;\n        elements.sessionSource.disabled = busy;\n        elements.createButton.disabled = busy;\n    }",
+		"submit loading guard":                    "if (state.sourceLoading || state.creatingSession)\n            return;",
+		"namespace invalidation reset":            "state.sourceGeneration += 1;\n        setSourceLoading(false);",
 		"explicit StorageClass tracking":          "state.sourceStorageClassNamePresent = Boolean(claim && 'storageClassName' in claim);",
-		"explicit empty StorageClass copy":        "if (storageClassName || state.sourceStorageClassNamePresent) {\n          payload.volumeClaimTemplate.storageClassName = storageClassName;\n        }",
+		"explicit empty StorageClass copy":        "if (storageClassName || state.sourceStorageClassNamePresent) {\n                        payload.volumeClaimTemplate.storageClassName = storageClassName;\n                    }",
 		"advanced reference warning":              "in YAML for additional namespace-scoped references.",
-		"unsupported spec field YAML requirement": "const allowedSpecFields = new Set(['worker', 'suspend', 'initialBranch', 'initialPrompt', 'volumeClaimTemplate']);\n  if (Object.keys(manifest.spec).some(key => !allowedSpecFields.has(key))) return false;",
-		"suspended source YAML requirement":       "if (manifest.spec.suspend === true) return false;",
+		"unsupported spec field YAML requirement": "const allowedSpecFields = new Set(['worker', 'suspend', 'initialBranch', 'initialPrompt', 'volumeClaimTemplate']);\n        if (Object.keys(manifest.spec).some(key => !allowedSpecFields.has(key)))\n            return false;",
+		"suspended source YAML requirement":       "if (manifest.spec.suspend === true)\n            return false;",
 		"source initial branch population":        "elements.form.elements.initialBranch.value = manifest.spec.initialBranch || '';",
 		"source initial prompt population":        "elements.form.elements.initialPrompt.value = manifest.spec.initialPrompt || '';",
-		"initial branch form submission":          "const initialBranch = values.get('initialBranch').trim();\n      if (initialBranch) payload.initialBranch = initialBranch;",
-		"initial prompt form submission":          "const initialPrompt = values.get('initialPrompt');\n      if (initialPrompt.trim()) payload.initialPrompt = initialPrompt;",
+		"initial branch form submission":          "const initialBranch = formValue(values, 'initialBranch').trim();\n                if (initialBranch)\n                    payload.initialBranch = initialBranch;",
+		"initial prompt form submission":          "const initialPrompt = formValue(values, 'initialPrompt');\n                if (initialPrompt.trim())\n                    payload.initialPrompt = initialPrompt;",
 	} {
 		if !strings.Contains(javascript, expected) {
 			t.Errorf("Session source JavaScript is missing %s: %s", description, expected)
@@ -790,7 +790,7 @@ func TestSessionJavaScriptResumesIdleSuspension(t *testing.T) {
 	javascript := string(source)
 	for _, expected := range []string{
 		"selectSession(session, true)",
-		"if (resumeIdle && session.idleSuspended) resumeIdleSession(session);",
+		"if (resumeIdle && session.idleSuspended)\n            resumeIdleSession(session);",
 		"await requestSessionLifecycleAction(session, 'resume');",
 	} {
 		if !strings.Contains(javascript, expected) {
@@ -822,9 +822,9 @@ func TestSessionPageOffersUserSuspensionControls(t *testing.T) {
 		"return session?.userSuspended || session?.idleSuspended ? 'resume' : 'suspend';",
 		"elements.sessionActionLifecycle.textContent = action === 'resume' ? 'Resume' : 'Suspend';",
 		"elements.sessionActionLifecycle.addEventListener('click', event => {",
-		"elements.suspendButton.hidden = !session || session.userSuspended;",
+		"elements.suspendButton.hidden = !session || Boolean(session.userSuspended);",
 		"elements.suspendButton.addEventListener('click', suspendSelectedSession);",
-		"elements.resumeButton.hidden = !session?.userSuspended;",
+		"elements.resumeButton.hidden = !Boolean(session?.userSuspended);",
 		"elements.resumeButton.addEventListener('click', resumeSelectedSession);",
 	} {
 		if !strings.Contains(string(source), expected) {
@@ -917,7 +917,7 @@ func TestApplicationRendersMarkdownSafely(t *testing.T) {
 		`const header = document.createElement('th')`,
 		`const cell = document.createElement('td')`,
 		`const element = document.createElement(tags[0])`,
-		`if (url.protocol !== 'http:' && url.protocol !== 'https:') return false`,
+		`url.protocol !== 'http:' && url.protocol !== 'https:'`,
 		`appendInlineMarkdown(link, label, depth + 1, false, scanBudget)`,
 		`completedAssistantText(event.text, state.assistantTextByTurn.get(key))`,
 		`state.assistantTextByTurn.set(key, text)`,
@@ -1423,7 +1423,7 @@ func TestSessionResetControlWarnsAndUsesResetEndpoint(t *testing.T) {
 	}
 	for description, expected := range map[string]string{
 		"destructive warning":        "This permanently deletes its conversation history and all workspace changes.",
-		"reset API request":          "/reset`, {method: 'POST'}",
+		"reset API request":          "/reset`, { method: 'POST' }",
 		"reset history clearing":     "resetCurrentSessionView();",
 		"reset cached view clearing": "discardSessionView(session);",
 		"reset connection blocking":  "state.selected.resetting",
@@ -1443,11 +1443,11 @@ func TestSessionComposerKeepsDraftsPerSession(t *testing.T) {
 		"draft storage":           `promptDrafts: new Map()`,
 		"draft save key":          `state.promptDrafts.set(sessionKey(session), elements.input.value)`,
 		"draft clear key":         `state.promptDrafts.delete(sessionKey(session))`,
-		"Session selection save":  "function selectSession(session, resumeIdle = false) {\n  savePromptDraft(state.selected);",
+		"Session selection save":  "function selectSession(session, resumeIdle = false) {\n        savePromptDraft(state.selected);",
 		"Session draft restore":   `state.promptDrafts.get(sessionKey(session))`,
-		"prompt submission clear": "state.socket.send(JSON.stringify({type: 'message', text, attachmentIds: attachments.map(attachment => attachment.id)}));\n    clearPromptDraft(session);",
-		"Session deletion clear":  "{method: 'DELETE'});\n    discardSessionView(session);\n    clearPromptDraft(session);\n    clearAttachmentDraft(session);",
-		"composer input save":     "elements.input.addEventListener('input', () => {\n  savePromptDraft(state.selected);",
+		"prompt submission clear": "state.socket.send(JSON.stringify({ type: 'message', text, attachmentIds: attachments.map(attachment => attachment.id) }));\n            clearPromptDraft(session);",
+		"Session deletion clear":  "{ method: 'DELETE' });\n            discardSessionView(session);\n            clearPromptDraft(session);\n            clearAttachmentDraft(session);",
+		"composer input save":     "elements.input.addEventListener('input', () => {\n        savePromptDraft(state.selected);",
 	} {
 		if !strings.Contains(string(source), expected) {
 			t.Errorf("Session composer is missing %s: %s", description, expected)
@@ -1461,7 +1461,7 @@ func TestSessionComposerUploadsDroppedAttachments(t *testing.T) {
 		t.Fatal(err)
 	}
 	for description, expected := range map[string]string{
-		"drop handling":       "event.dataTransfer?.files?.length",
+		"drop handling":       "dragEvent.dataTransfer?.files?.length",
 		"multipart upload":    "const body = new FormData();",
 		"attachment endpoint": "/attachments`, {",
 		"message references":  "attachmentIds: attachments.map(attachment => attachment.id)",
@@ -2141,19 +2141,19 @@ func TestSessionViewsIncludeRuntimeStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 	for description, expected := range map[string]string{
-		"waiting display status":     `if (session.waitingForInput) return 'Waiting for input';`,
-		"active display status":      `if (session.active === true) return 'Active';`,
-		"idle display status":        `if (session.active === false) return 'Idle';`,
+		"waiting display status":     "if (session.waitingForInput)\n            return 'Waiting for input';",
+		"active display status":      "if (session.active === true)\n            return 'Active';",
+		"idle display status":        "if (session.active === false)\n            return 'Idle';",
 		"activity status in sidebar": "activity.textContent = `· ${displayStatus}`;",
 		"activity status class":      `activity.className = 'session-item-activity';`,
 		"activity status in header":  `sessionDisplayStatus(session)`,
 		"namespace metadata class":   `namespace.className = 'session-item-namespace';`,
 		"model in sidebar":           "model.textContent = `· ${session.model}`;",
-		"model in header":            `if (session.model) details.push(session.model);`,
+		"model in header":            "if (session.model)\n            details.push(session.model);",
 		"branch text":                `branch.textContent = session.branch;`,
 		"validated pull request URL": `const url = safeHTTPURL(pullRequest?.url);`,
 		"pull request state label":   "link.textContent = state ? `${pullRequestLabel(url)} · ${state}` : pullRequestLabel(url);",
-		"pull request state color":   `if (state) link.dataset.state = state.toLowerCase();`,
+		"pull request state color":   "if (state)\n            link.dataset.state = state.toLowerCase();",
 		"pull request checks label":  "Pending: `Checks ${completed}/${checks.total}`",
 		"pull request checks state":  "checkStatus.dataset.state = checks.state;",
 		"pull request link target":   `link.target = '_blank';`,
@@ -2239,9 +2239,9 @@ func TestSessionUISections(t *testing.T) {
 		"unsectioned group":     `name.textContent = section || 'Unsectioned';`,
 		"Session drag handling": `configureSessionDrag(item, button, session);`,
 		"section drag handling": `configureSectionDrag(group, heading, title, section);`,
-		"unsectioned ordering":  `if (!available.includes('')) available.push('');`,
+		"unsectioned ordering":  "if (!available.includes(''))\n            available.push('');",
 		"browser order storage": `window.localStorage.setItem(sectionOrderStorageKey(namespace), JSON.stringify(normalized));`,
-		"order focus restore":   `if (focusDirection) focusSectionOrderControl(section, focusDirection);`,
+		"order focus restore":   "if (focusDirection)\n            focusSectionOrderControl(section, focusDirection);",
 	} {
 		if !strings.Contains(string(javascript), expected) {
 			t.Errorf("Session behavior is missing %s: %s", description, expected)

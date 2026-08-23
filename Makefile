@@ -62,6 +62,8 @@ update: controller-gen yamlfmt shfmt ## Run all generators and formatters.
 	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./..."
 	hack/update-install-manifest.sh $(CONTROLLER_GEN)
 	hack/update-codegen.sh
+	npm --prefix internal/consoleserver/frontend ci --ignore-scripts
+	npm --prefix internal/consoleserver/frontend run build
 	go fmt ./...
 	go mod tidy
 	$(YAMLFMT) .
