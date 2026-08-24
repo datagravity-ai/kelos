@@ -952,8 +952,8 @@ func TestApplicationRendersMarkdownSafely(t *testing.T) {
 		`.message-bubble .code-copy-button {`,
 		`.message-bubble pre {`,
 		`overflow-x: auto`,
-		`--code-bg:#0d1410`,
-		`--code-ink:#e3ebe5`,
+		`--code-bg:#171717`,
+		`--code-ink:#ececec`,
 	} {
 		if !strings.Contains(string(styles), expected) {
 			t.Errorf("Markdown rendering styles do not contain %q", expected)
@@ -1517,24 +1517,25 @@ func TestSessionUIAdaptsToPhoneViewport(t *testing.T) {
 		}
 	}
 	for description, expected := range map[string]string{
-		"dynamic viewport height":      `height: 100dvh`,
-		"desktop sidebar width":        `grid-template-columns: 286px minmax(0, 1fr)`,
-		"landscape phone breakpoint":   `(max-height: 500px) and (pointer: coarse)`,
-		"phone sidebar width":          `width: min(86vw, 310px)`,
-		"single-row phone navigation":  `grid-template-columns: repeat(3, minmax(0, 1fr))`,
-		"compact phone session row":    `.session-item-select { min-height: 60px; padding: 7px 48px 7px 8px; }`,
-		"phone create touch target":    `.new-session-button { min-height: 44px; padding: 6px 10px; }`,
-		"section reorder touch target": `.session-section-order-button { width: 44px; height: 44px; }`,
-		"two-row phone header":         `grid-template-areas: "menu heading reset delete" "tabs tabs connection connection"`,
-		"phone lifecycle action slot":  `.conversation-header:has(.session-lifecycle-action:not([hidden])) { grid-template-areas: "menu heading lifecycle reset delete"`,
-		"48-pixel touch targets":       `.icon-button { width: 48px; height: 48px; }`,
-		"Session action touch target":  `.session-item-actions { top: 5px; right: 1px; width: 44px; height: 44px; }`,
-		"phone safe-area padding":      `env(safe-area-inset-bottom)`,
-		"non-zooming form fields":      `.composer textarea, .pending-message-input, .yaml-panel textarea, .form-grid input`,
-		"desktop composer alignment":   `.composer textarea { flex: 1; min-height: 36px;`,
-		"mobile composer alignment":    `.composer textarea { min-height: 48px; padding: 12px 0; line-height: 24px; }`,
-		"phone-sized dialog":           `max-height: calc(100dvh - 16px`,
-		"shrinking composer content":   `.composer-wrap { min-width: 0;`,
+		"dynamic viewport height":            `height: 100dvh`,
+		"desktop sidebar width":              `grid-template-columns: 260px minmax(0, 1fr)`,
+		"landscape phone breakpoint":         `(max-height: 500px) and (pointer: coarse)`,
+		"phone sidebar width":                `width: min(88vw, 320px)`,
+		"phone navigation touch target":      `.console-nav button { min-height: 44px; padding: 8px 10px; font-size: 14px; }`,
+		"compact phone session row":          `.session-item-select { min-height: 60px; padding: 7px 48px 7px 8px; }`,
+		"phone create touch target":          `.new-session-button { min-height: 44px; margin-top: 4px; padding: 8px 10px; }`,
+		"section reorder touch target":       `.session-section-order-button { width: 44px; height: 44px; }`,
+		"single-row phone header":            `grid-template-areas: "menu heading actions"`,
+		"phone lifecycle actions in sidebar": `.session-lifecycle-action, #reset-session, #delete-session { display: none !important; }`,
+		"44-pixel touch targets":             `.icon-button { width: 44px; height: 44px; }`,
+		"44-pixel view tabs":                 `.view-tabs button { min-height: 44px; padding: 5px 8px; }`,
+		"Session action touch target":        `.session-item-actions { top: 5px; right: 1px; width: 44px; height: 44px; }`,
+		"phone safe-area padding":            `env(safe-area-inset-bottom)`,
+		"non-zooming form fields":            `.composer textarea, .pending-message-input, .yaml-panel textarea, .form-grid input`,
+		"desktop composer alignment":         `.composer textarea { flex: 1; min-height: 36px;`,
+		"mobile composer alignment":          `.composer textarea { min-height: 44px; padding: 10px 2px; line-height: 24px; }`,
+		"phone-sized dialog":                 `max-height: calc(100dvh - 16px`,
+		"shrinking composer content":         `z-index: 2; min-width: 0;`,
 	} {
 		if !strings.Contains(string(styles), expected) {
 			t.Errorf("Session styles are missing %s: %s", description, expected)
@@ -2222,6 +2223,8 @@ func TestSessionUISections(t *testing.T) {
 		"selected Session section control":       `id="session-section-form"`,
 		"selected Session section chooser":       `id="session-section-choice" aria-label="Section"`,
 		"selected Session new section field":     `id="session-section-choice-custom" maxlength="64"`,
+		"selected Session section menu action":   `id="session-action-section" type="button" role="menuitem"`,
+		"selected Session section editor close":  `id="cancel-session-section" type="button"`,
 		"new Session section chooser":            `name="section" id="session-section-select"`,
 		"new Session new section creation field": `name="sectionCustom" id="session-section-custom" maxlength="64"`,
 	} {
@@ -2242,6 +2245,7 @@ func TestSessionUISections(t *testing.T) {
 		"unsectioned ordering":  "if (!available.includes(''))\n            available.push('');",
 		"browser order storage": `window.localStorage.setItem(sectionOrderStorageKey(namespace), JSON.stringify(normalized));`,
 		"order focus restore":   "if (focusDirection)\n            focusSectionOrderControl(section, focusDirection);",
+		"mobile section editor": `function openSessionSectionEditor(session)`,
 	} {
 		if !strings.Contains(string(javascript), expected) {
 			t.Errorf("Session behavior is missing %s: %s", description, expected)
@@ -2255,6 +2259,7 @@ func TestSessionUISections(t *testing.T) {
 	for description, expected := range map[string]string{
 		"section headings":       `.session-section-heading {`,
 		"inline section control": `.session-section-control {`,
+		"mobile section control": `.session-section-control.mobile-open {`,
 		"Session drop target":    `.session-section-group.session-drop-target {`,
 		"section order controls": `.session-section-order-button { width: 28px; height: 28px;`,
 	} {

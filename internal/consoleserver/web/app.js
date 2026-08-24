@@ -29,6 +29,7 @@
         saveDisplayNameButton: document.querySelector('#save-session-display-name'),
         sessionActionsMenu: document.querySelector('#session-actions-menu'),
         sessionActionRename: document.querySelector('#session-action-rename'),
+        sessionActionSection: document.querySelector('#session-action-section'),
         sessionActionLifecycle: document.querySelector('#session-action-lifecycle'),
         sessionActionReset: document.querySelector('#session-action-reset'),
         sessionActionDelete: document.querySelector('#session-action-delete'),
@@ -74,6 +75,7 @@
         sectionChoice: document.querySelector('#session-section-choice'),
         sectionChoiceCustom: document.querySelector('#session-section-choice-custom'),
         saveSectionButton: document.querySelector('#save-session-section'),
+        cancelSectionButton: document.querySelector('#cancel-session-section'),
         messages: document.querySelector('#messages'),
         changes: document.querySelector('#changes-view'),
         changesList: document.querySelector('#changes-list'),
@@ -2263,6 +2265,7 @@ spec:
     }
     function selectSession(session, resumeIdle = false) {
         savePromptDraft(state.selected);
+        closeSessionSectionEditor();
         closeSocket();
         saveCurrentSessionView();
         state.selected = session;
@@ -4466,6 +4469,7 @@ spec:
             showToast(errorMessage(error));
             return;
         }
+        setConsoleView('sessions');
         elements.dialogError.textContent = '';
         setCreationMode(state.creationMode);
         elements.dialog.showModal();
@@ -4699,6 +4703,16 @@ spec:
         updateCustomSectionField(elements.sectionChoice, elements.sectionChoiceCustom);
         elements.saveSectionButton.hidden = elements.sectionChoiceCustom.hidden;
     }
+    function closeSessionSectionEditor() {
+        elements.sectionForm.classList.remove('mobile-open');
+    }
+    function openSessionSectionEditor(session) {
+        closeSessionActionsMenu();
+        if (!state.selected || sessionKey(state.selected) !== sessionKey(session))
+            selectSession(session);
+        elements.sectionForm.classList.add('mobile-open');
+        elements.sectionChoice.focus();
+    }
     function renderSelectedSessionSection(session, preserveEditing = true) {
         elements.sectionForm.hidden = !session;
         if (!session) {
@@ -4736,6 +4750,7 @@ spec:
             return;
         if (section === (session.section || '')) {
             renderSelectedSessionSection(session, false);
+            closeSessionSectionEditor();
             return;
         }
         const creating = createsNewSection(elements.sectionChoice);
@@ -4745,6 +4760,7 @@ spec:
             if (state.selected && sessionKey(state.selected) === sessionKey(session)) {
                 renderSelectedSessionSection(state.selected, false);
             }
+            closeSessionSectionEditor();
             showToast(section ? `Moved Session to ${section}` : 'Moved Session to Unsectioned');
         }
         catch (error) {
@@ -4768,6 +4784,7 @@ spec:
     elements.sectionChoiceCustom.addEventListener('input', () => {
         validateCustomSectionField(elements.sectionChoice, elements.sectionChoiceCustom);
     });
+    elements.cancelSectionButton.addEventListener('click', closeSessionSectionEditor);
     elements.sectionForm.addEventListener('submit', async (event) => {
         event.preventDefault();
         if (state.sectionSaving || !createsNewSection(elements.sectionChoice))
@@ -4823,6 +4840,11 @@ spec:
         const session = sessionActionsTarget();
         closeSessionActionsMenu();
         openDisplayNameDialog(session);
+    });
+    elements.sessionActionSection.addEventListener('click', () => {
+        const session = sessionActionsTarget();
+        if (session)
+            openSessionSectionEditor(session);
     });
     elements.sessionActionLifecycle.addEventListener('click', event => {
         void runSessionMenuAction(event, toggleSessionSuspension);
