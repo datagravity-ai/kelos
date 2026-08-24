@@ -27,14 +27,16 @@ import (
 )
 
 type fakeProvider struct {
-	mu        sync.Mutex
-	prompts   []string
-	inputs    []TurnInput
-	resume    chan struct{}
-	closed    bool
-	done      chan struct{}
-	doneOnce  sync.Once
-	closeOnce sync.Once
+	mu              sync.Mutex
+	prompts         []string
+	inputs          []TurnInput
+	shellCommands   []shellCommandRecord
+	shellCommandErr error
+	resume          chan struct{}
+	closed          bool
+	done            chan struct{}
+	doneOnce        sync.Once
+	closeOnce       sync.Once
 }
 
 type fakeGoalProvider struct {
@@ -258,6 +260,16 @@ func (p *fakeProvider) RunTurn(ctx context.Context, input TurnInput, sink EventS
 		}
 	}
 	sink.Emit(Event{Type: EventAssistantDelta, Text: " done"})
+	return nil
+}
+
+func (p *fakeProvider) recordShellCommand(_ context.Context, record shellCommandRecord) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.shellCommandErr != nil {
+		return p.shellCommandErr
+	}
+	p.shellCommands = append(p.shellCommands, record)
 	return nil
 }
 
@@ -531,6 +543,31 @@ func TestRunTurnExecutesShellCommandInWorkspace(t *testing.T) {
 	if len(provider.prompts) != 0 {
 		t.Fatalf("shell command was sent to provider: %#v", provider.prompts)
 	}
+	if len(provider.shellCommands) != 1 {
+		t.Fatalf("shell command context = %#v, want one record", provider.shellCommands)
+	}
+	record := provider.shellCommands[0]
+	if record.command != "printf 'shell output'" || record.exitCode != 0 || record.output != "shell output" || record.duration <= 0 {
+		t.Fatalf("shell command context = %#v", record)
+	}
+}
+
+func TestRunTurnFailsWhenShellContextRecordingFails(t *testing.T) {
+	journal := NewJournal()
+	t.Cleanup(journal.Close)
+	provider := &fakeProvider{shellCommandErr: errors.New("recording shell context failed")}
+	server := NewServer(Config{WorkingDir: t.TempDir(), Environment: os.Environ()}, journal, provider)
+
+	server.runTurn(t.Context(), turnRequest{id: "turn-1", command: sessionCommand{kind: sessionCommandShell, text: "printf output"}})
+
+	events := journal.Snapshot()
+	assertEventTypes(t, events, EventTurnStarted, EventToolStarted, EventToolDelta, EventToolCompleted, EventError, EventTurnCompleted)
+	if events[4].Text != "recording shell context failed" || events[4].Status != "failed" {
+		t.Fatalf("shell context error event = %#v", events[4])
+	}
+	if events[5].Status != "failed" {
+		t.Fatalf("shell command completion = %#v", events[5])
+	}
 }
 
 func TestServerInterruptsShellCommandWithoutStoppingProvider(t *testing.T) {
@@ -592,6 +629,12 @@ func TestServerInterruptsShellCommandWithoutStoppingProvider(t *testing.T) {
 	if completion := events[len(events)-1]; completion.Type != EventTurnCompleted || completion.Status != "interrupted" {
 		t.Fatalf("shell command completion = %#v", completion)
 	}
+	provider.mu.Lock()
+	if len(provider.shellCommands) != 1 || provider.shellCommands[0].exitCode != -1 {
+		provider.mu.Unlock()
+		t.Fatalf("interrupted shell command context = %#v", provider.shellCommands)
+	}
+	provider.mu.Unlock()
 	if err := syscall.Kill(shellPID, 0); !errors.Is(err, syscall.ESRCH) {
 		t.Fatalf("shell process %d remains after interrupt: %v", shellPID, err)
 	}
@@ -3375,6 +3418,60 @@ func TestCodexRequestOmitsNilParams(t *testing.T) {
 	pending <- codexResponse{Result: json.RawMessage(`{}`)}
 	if err := <-requestDone; err != nil {
 		t.Fatalf("Codex request error = %v", err)
+	}
+}
+
+func TestCodexRecordsShellCommandInContext(t *testing.T) {
+	reader, writer := io.Pipe()
+	defer reader.Close()
+	defer writer.Close()
+	provider := &CodexProvider{
+		stdin:    writer,
+		pending:  map[string]chan codexResponse{},
+		threadID: "thread-1",
+		done:     make(chan struct{}),
+	}
+	recordDone := make(chan error, 1)
+	go func() {
+		recordDone <- provider.recordShellCommand(t.Context(), shellCommandRecord{
+			command:  "printf shell-output",
+			exitCode: 0,
+			duration: 1234 * time.Millisecond,
+			output:   "shell-output",
+		})
+	}()
+
+	var request struct {
+		ID     int64  `json:"id"`
+		Method string `json:"method"`
+		Params struct {
+			ThreadID string `json:"threadId"`
+			Items    []struct {
+				Type    string `json:"type"`
+				Role    string `json:"role"`
+				Content []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"items"`
+		} `json:"params"`
+	}
+	if err := json.NewDecoder(reader).Decode(&request); err != nil {
+		t.Fatal(err)
+	}
+	if request.Method != "thread/inject_items" || request.Params.ThreadID != "thread-1" {
+		t.Fatalf("Codex shell context request = %#v", request)
+	}
+	if len(request.Params.Items) != 1 || request.Params.Items[0].Type != "message" || request.Params.Items[0].Role != "user" || len(request.Params.Items[0].Content) != 1 || request.Params.Items[0].Content[0].Type != "input_text" {
+		t.Fatalf("Codex shell context item = %#v", request.Params.Items)
+	}
+	want := "<user_shell_command>\n<command>\nprintf shell-output\n</command>\n<result>\nExit code: 0\nDuration: 1.2340 seconds\nOutput:\nshell-output\n</result>\n</user_shell_command>"
+	if got := request.Params.Items[0].Content[0].Text; got != want {
+		t.Fatalf("Codex shell context text = %q, want %q", got, want)
+	}
+	respondCodexRequest(t, provider, request.ID, `{}`)
+	if err := <-recordDone; err != nil {
+		t.Fatalf("recordShellCommand() error = %v", err)
 	}
 }
 

@@ -98,6 +98,39 @@ func TestOpenCodeProviderStreamsOrderedEvents(t *testing.T) {
 	}
 }
 
+func TestOpenCodeProviderRecordsShellCommandWithoutReply(t *testing.T) {
+	fake := newFakeOpenCodeServer(t)
+	provider := newTestOpenCodeProvider(t, fake, ProviderConfig{WorkingDir: t.TempDir(), StateDir: t.TempDir()})
+	record := shellCommandRecord{
+		command:  "printf shell-output",
+		exitCode: 0,
+		duration: 1234 * time.Millisecond,
+		output:   "shell-output",
+	}
+	if err := provider.recordShellCommand(t.Context(), record); err != nil {
+		t.Fatalf("recordShellCommand() error = %v", err)
+	}
+
+	select {
+	case request := <-fake.contexts:
+		if request["noReply"] != true {
+			t.Fatalf("OpenCode shell context request = %#v", request)
+		}
+		parts, ok := request["parts"].([]any)
+		want := "<user_shell_command>\n<command>\nprintf shell-output\n</command>\n<result>\nExit code: 0\nDuration: 1.2340 seconds\nOutput:\nshell-output\n</result>\n</user_shell_command>"
+		if !ok || len(parts) != 1 || parts[0].(map[string]any)["type"] != "text" || parts[0].(map[string]any)["text"] != want {
+			t.Fatalf("OpenCode shell context parts = %#v", request["parts"])
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("OpenCode shell context was not submitted")
+	}
+	select {
+	case prompt := <-fake.prompts:
+		t.Fatalf("shell context started an OpenCode turn: %#v", prompt)
+	default:
+	}
+}
+
 func TestOpenCodeProviderAnswersQuestion(t *testing.T) {
 	fake := newFakeOpenCodeServer(t)
 	provider := newTestOpenCodeProvider(t, fake, ProviderConfig{WorkingDir: t.TempDir(), StateDir: t.TempDir()})
@@ -311,6 +344,7 @@ type fakeOpenCodeServer struct {
 	resumeFound       bool
 	events            chan string
 	prompts           chan map[string]any
+	contexts          chan map[string]any
 	questionReplies   chan [][]string
 	permissionReplies chan string
 	aborts            chan struct{}
@@ -328,6 +362,7 @@ func newFakeOpenCodeServer(t *testing.T) *fakeOpenCodeServer {
 		resumeFound:       true,
 		events:            make(chan string, 64),
 		prompts:           make(chan map[string]any, 4),
+		contexts:          make(chan map[string]any, 4),
 		questionReplies:   make(chan [][]string, 4),
 		permissionReplies: make(chan string, 4),
 		aborts:            make(chan struct{}, 4),
@@ -378,6 +413,16 @@ func (f *fakeOpenCodeServer) serveHTTP(response http.ResponseWriter, request *ht
 		}
 		f.prompts <- body
 		response.WriteHeader(http.StatusNoContent)
+	case request.Method == http.MethodPost && request.URL.Path == "/session/"+f.sessionID+"/message":
+		f.requireDirectory(request)
+		var body map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			f.t.Errorf("decoding OpenCode context message: %v", err)
+			response.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		f.contexts <- body
+		writeOpenCodeJSON(response, map[string]any{"info": map[string]string{"role": "user"}, "parts": body["parts"]})
 	case request.Method == http.MethodPost && request.URL.Path == "/session/"+f.sessionID+"/abort":
 		f.requireDirectory(request)
 		f.aborts <- struct{}{}

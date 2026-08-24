@@ -332,6 +332,25 @@ func (p *CodexProvider) RunTurn(ctx context.Context, input TurnInput, sink Event
 	})
 }
 
+func (p *CodexProvider) recordShellCommand(ctx context.Context, record shellCommandRecord) error {
+	item := map[string]any{
+		"type": "message",
+		"role": "user",
+		"content": []map[string]string{{
+			"type": "input_text",
+			"text": formatShellCommandRecord(record),
+		}},
+	}
+	_, err := p.request(ctx, "thread/inject_items", map[string]any{
+		"threadId": p.threadID,
+		"items":    []any{item},
+	})
+	if err != nil {
+		return fmt.Errorf("recording shell command in Codex context: %w", err)
+	}
+	return nil
+}
+
 func (p *CodexProvider) RunGoal(ctx context.Context, command goalCommand, sink EventSink) error {
 	return p.runInteraction(ctx, sink, codexInteractionGoal, func() (bool, error) {
 		if err := p.applyGoalCommand(ctx, command, sink); err != nil {

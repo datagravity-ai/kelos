@@ -268,7 +268,10 @@ the Session is ready.
 Both terminal and web chat recognize `!COMMAND` and `/goal` before ordinary
 messages are submitted. `!COMMAND` runs `/bin/sh -lc COMMAND` directly in the
 Session working directory with the Session environment. It does not ask the
-agent for approval or send the command to the model. Its live and retained
+agent for approval or start a model turn. The command, exit code, duration, and
+retained output are added to the agent conversation context for subsequent
+turns. Claude Code includes pending command results with the next ordinary
+prompt; Codex and OpenCode record them immediately. Live and retained command
 output appears as tool activity, and interrupting the Session turn stops the
 command.
 

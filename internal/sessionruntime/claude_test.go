@@ -1,11 +1,92 @@
 package sessionruntime
 
 import (
+	"context"
 	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
+
+type channelWriteCloser struct {
+	writes chan []byte
+}
+
+func (w *channelWriteCloser) Write(data []byte) (int, error) {
+	w.writes <- append([]byte(nil), data...)
+	return len(data), nil
+}
+
+func (w *channelWriteCloser) Close() error {
+	return nil
+}
+
+func TestClaudeProviderIncludesShellCommandWithNextPrompt(t *testing.T) {
+	stdin := &channelWriteCloser{writes: make(chan []byte, 1)}
+	provider := &ClaudeProvider{
+		ctx:       context.Background(),
+		stdin:     stdin,
+		sessionID: "session-1",
+	}
+	record := shellCommandRecord{
+		command:  "printf shell-output",
+		exitCode: 0,
+		duration: 1234 * time.Millisecond,
+		output:   "shell-output",
+	}
+	if err := provider.recordShellCommand(t.Context(), record); err != nil {
+		t.Fatalf("recordShellCommand() error = %v", err)
+	}
+	select {
+	case message := <-stdin.writes:
+		t.Fatalf("recordShellCommand() wrote a Claude message: %s", message)
+	default:
+	}
+
+	turnDone := make(chan error, 1)
+	go func() {
+		turnDone <- provider.RunTurn(t.Context(), TurnInput{Text: "continue"}, &collectingSink{})
+	}()
+
+	var message struct {
+		Message struct {
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"message"`
+	}
+	select {
+	case data := <-stdin.writes:
+		if err := json.Unmarshal(data, &message); err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Claude prompt was not submitted")
+	}
+	wantContext := "<user_shell_command>\n<command>\nprintf shell-output\n</command>\n<result>\nExit code: 0\nDuration: 1.2340 seconds\nOutput:\nshell-output\n</result>\n</user_shell_command>"
+	if len(message.Message.Content) != 2 || message.Message.Content[0].Type != "text" || message.Message.Content[0].Text != wantContext || message.Message.Content[1].Text != "continue" {
+		t.Fatalf("Claude prompt content = %#v", message.Message.Content)
+	}
+	provider.activeMu.Lock()
+	done := provider.turnDone
+	provider.activeMu.Unlock()
+	done <- claudeTurnResult{}
+	select {
+	case err := <-turnDone:
+		if err != nil {
+			t.Fatalf("RunTurn() error = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Claude turn did not finish")
+	}
+	provider.shellContextMu.Lock()
+	defer provider.shellContextMu.Unlock()
+	if len(provider.pendingShellCommands) != 0 {
+		t.Fatalf("pending shell commands = %#v", provider.pendingShellCommands)
+	}
+}
 
 // TestClaudeProviderClosesEachTextBlock verifies that a streamed turn with two
 // text blocks emits an assistant.message after each block's deltas, so clients

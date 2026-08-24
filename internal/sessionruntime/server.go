@@ -811,13 +811,25 @@ func (s *Server) runTurn(ctx context.Context, turn turnRequest) {
 	}
 	sink := &turnSink{server: s, turnID: turn.id}
 	if command.kind == sessionCommandShell {
-		runErr := s.runShellCommand(turnCtx, turn.id, command.text, sink)
+		record, runErr := s.runShellCommand(turnCtx, turn.id, command.text, sink)
 		sink.stop()
-		if errors.Is(runErr, ErrTurnInterrupted) || errors.Is(context.Cause(turnCtx), ErrTurnInterrupted) {
-			_ = s.journal.Append(Event{Type: EventTurnCompleted, TurnID: turn.id, Status: "interrupted"})
+		interrupted := errors.Is(runErr, ErrTurnInterrupted) || errors.Is(context.Cause(turnCtx), ErrTurnInterrupted)
+		if runErr != nil && turnCtx.Err() != nil && !interrupted {
 			return
 		}
-		if runErr != nil && turnCtx.Err() != nil {
+		if provider, ok := s.provider.(shellCommandContextProvider); ok {
+			recordCtx := turnCtx
+			if interrupted {
+				recordCtx = ctx
+			}
+			if err := provider.recordShellCommand(recordCtx, record); err != nil {
+				_ = s.journal.Append(Event{Type: EventError, TurnID: turn.id, Text: err.Error(), Status: "failed"})
+				_ = s.journal.Append(Event{Type: EventTurnCompleted, TurnID: turn.id, Status: "failed"})
+				return
+			}
+		}
+		if interrupted {
+			_ = s.journal.Append(Event{Type: EventTurnCompleted, TurnID: turn.id, Status: "interrupted"})
 			return
 		}
 		_ = s.journal.Append(Event{Type: EventTurnCompleted, TurnID: turn.id, Status: "completed"})
@@ -884,7 +896,7 @@ func (s *Server) runTurn(ctx context.Context, turn turnRequest) {
 	_ = s.journal.Append(Event{Type: EventTurnCompleted, TurnID: turn.id, Status: "completed"})
 }
 
-func (s *Server) runShellCommand(ctx context.Context, turnID, script string, sink EventSink) error {
+func (s *Server) runShellCommand(ctx context.Context, turnID, script string, sink EventSink) (shellCommandRecord, error) {
 	toolID := turnID + "-shell"
 	sink.Emit(Event{Type: EventToolStarted, ToolID: toolID, ToolName: script, Status: "running"})
 	command := exec.CommandContext(ctx, "/bin/sh", "-lc", script)
@@ -905,11 +917,12 @@ func (s *Server) runShellCommand(ctx context.Context, turnID, script string, sin
 	outputReader, outputWriter := io.Pipe()
 	command.Stdout = outputWriter
 	command.Stderr = outputWriter
+	started := time.Now()
 	if err := command.Start(); err != nil {
 		_ = outputReader.Close()
 		_ = outputWriter.Close()
 		sink.Emit(Event{Type: EventToolCompleted, ToolID: toolID, ToolName: script, Output: err.Error(), Status: "failed"})
-		return nil
+		return shellCommandRecord{command: script, exitCode: -1, duration: time.Since(started), output: err.Error()}, nil
 	}
 
 	output := newBoundedToolOutput(maxToolOutputBytes)
@@ -943,6 +956,7 @@ func (s *Server) runShellCommand(ctx context.Context, turnID, script string, sin
 		}
 	}()
 	waitErr := command.Wait()
+	duration := time.Since(started)
 	_ = outputWriter.Close()
 	readErr := <-readDone
 	if readErr != nil && waitErr == nil {
@@ -957,11 +971,16 @@ func (s *Server) runShellCommand(ctx context.Context, turnID, script string, sin
 			output.WriteString(waitErr.Error())
 		}
 	}
-	sink.Emit(Event{Type: EventToolCompleted, ToolID: toolID, ToolName: script, Output: output.String(), Status: status})
+	exitCode := command.ProcessState.ExitCode()
 	if ctx.Err() != nil {
-		return context.Cause(ctx)
+		exitCode = -1
 	}
-	return nil
+	record := shellCommandRecord{command: script, exitCode: exitCode, duration: duration, output: output.String()}
+	sink.Emit(Event{Type: EventToolCompleted, ToolID: toolID, ToolName: script, Output: record.output, Status: status})
+	if ctx.Err() != nil {
+		return record, context.Cause(ctx)
+	}
+	return record, nil
 }
 
 func workspaceDiff(ctx context.Context, workingDir string) string {
