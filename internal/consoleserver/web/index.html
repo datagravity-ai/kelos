@@ -18,26 +18,28 @@
         </div>
         <button class="icon-button mobile-only" id="close-sidebar" aria-label="Close navigation">×</button>
       </div>
-      <button class="new-session-button" id="new-session" type="button">
-        <span aria-hidden="true">＋</span> New session
-      </button>
-      <form class="namespace-form" id="namespace-form">
-        <label for="active-namespace">Namespace</label>
-        <div>
-          <input id="active-namespace" required autocomplete="off" aria-label="Active namespace">
-          <button type="submit">Switch</button>
+      <div class="sidebar-scroll">
+        <button class="new-session-button" id="new-session" type="button">
+          <span aria-hidden="true">＋</span> New session
+        </button>
+        <form class="namespace-form" id="namespace-form">
+          <label for="active-namespace">Namespace</label>
+          <div>
+            <input id="active-namespace" required autocomplete="off" aria-label="Active namespace">
+            <button type="submit">Switch</button>
+          </div>
+        </form>
+        <nav class="console-nav" aria-label="Console">
+          <button id="console-overview" type="button" aria-current="page"><span aria-hidden="true">⌂</span> Overview</button>
+          <button id="console-sessions" type="button"><span aria-hidden="true">◌</span> Sessions</button>
+          <button id="console-resources" type="button"><span aria-hidden="true">◇</span> Resources</button>
+        </nav>
+        <div class="session-sidebar" id="session-sidebar" hidden>
+          <div class="session-sidebar-header">
+            <div class="sidebar-label">Conversations</div>
+          </div>
+          <div class="session-list" id="session-list" aria-live="polite"></div>
         </div>
-      </form>
-      <nav class="console-nav" aria-label="Console">
-        <button id="console-overview" type="button" aria-current="page"><span aria-hidden="true">⌂</span> Overview</button>
-        <button id="console-sessions" type="button"><span aria-hidden="true">◌</span> Sessions</button>
-        <button id="console-resources" type="button"><span aria-hidden="true">◇</span> Resources</button>
-      </nav>
-      <div class="session-sidebar" id="session-sidebar" hidden>
-        <div class="session-sidebar-header">
-          <div class="sidebar-label">Conversations</div>
-        </div>
-        <div class="session-list" id="session-list" aria-live="polite"></div>
       </div>
       <div class="sidebar-footer">
         <button class="quiet-button" id="refresh-console">Refresh</button>
