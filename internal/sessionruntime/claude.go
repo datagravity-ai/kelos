@@ -43,6 +43,9 @@ type ClaudeProvider struct {
 	writeMu sync.Mutex
 	turnMu  sync.Mutex
 
+	shellContextMu       sync.Mutex
+	pendingShellCommands []shellCommandRecord
+
 	controlMu      sync.Mutex
 	controlPending map[string]chan error
 	nextControlID  atomic.Int64
@@ -184,21 +187,33 @@ func (p *ClaudeProvider) RunTurn(ctx context.Context, input TurnInput, sink Even
 	p.sessionMu.Lock()
 	sessionID := p.sessionID
 	p.sessionMu.Unlock()
+	p.shellContextMu.Lock()
+	content := make([]map[string]string, 0, len(p.pendingShellCommands)+1)
+	for _, record := range p.pendingShellCommands {
+		content = append(content, map[string]string{
+			"type": "text",
+			"text": formatShellCommandRecord(record),
+		})
+	}
+	content = append(content, map[string]string{
+		"type": "text",
+		"text": attachmentPrompt(input),
+	})
 	message := map[string]any{
 		"type": "user",
 		"message": map[string]any{
-			"role": "user",
-			"content": []map[string]string{{
-				"type": "text",
-				"text": attachmentPrompt(input),
-			}},
+			"role":    "user",
+			"content": content,
 		},
 		"parent_tool_use_id": nil,
 		"session_id":         sessionID,
 	}
 	if err := p.write(message); err != nil {
+		p.shellContextMu.Unlock()
 		return err
 	}
+	p.pendingShellCommands = nil
+	p.shellContextMu.Unlock()
 
 	select {
 	case result := <-done:
@@ -220,6 +235,13 @@ func (p *ClaudeProvider) RunTurn(ctx context.Context, input TurnInput, sink Even
 		}
 		return errors.New("Claude Code stopped")
 	}
+}
+
+func (p *ClaudeProvider) recordShellCommand(_ context.Context, record shellCommandRecord) error {
+	p.shellContextMu.Lock()
+	defer p.shellContextMu.Unlock()
+	p.pendingShellCommands = append(p.pendingShellCommands, record)
+	return nil
 }
 
 // Interrupt stops the active Claude Code turn without closing its session.

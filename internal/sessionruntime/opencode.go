@@ -465,6 +465,20 @@ func (p *OpenCodeProvider) RunTurn(ctx context.Context, input TurnInput, sink Ev
 	}
 }
 
+func (p *OpenCodeProvider) recordShellCommand(ctx context.Context, record shellCommandRecord) error {
+	request := map[string]any{
+		"noReply": true,
+		"parts": []map[string]string{{
+			"type": "text",
+			"text": formatShellCommandRecord(record),
+		}},
+	}
+	if err := p.client.doJSON(ctx, http.MethodPost, "/session/"+url.PathEscape(p.currentSessionID())+"/message", true, request, nil); err != nil {
+		return fmt.Errorf("recording shell command in OpenCode context: %w", err)
+	}
+	return nil
+}
+
 // Interrupt stops the active OpenCode turn without deleting its session.
 func (p *OpenCodeProvider) Interrupt(ctx context.Context) error {
 	p.activeMu.Lock()
