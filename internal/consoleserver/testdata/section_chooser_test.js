@@ -20,6 +20,12 @@ class TestNode {
     this._value = '';
     this._text = '';
     this.validationMessage = '';
+    this.classes = new Set();
+    this.classList = {
+      add: (...names) => names.forEach(name => this.classes.add(name)),
+      remove: (...names) => names.forEach(name => this.classes.delete(name)),
+      contains: name => this.classes.has(name),
+    };
   }
 
   append(...nodes) {
@@ -162,6 +168,7 @@ function resetHarness() {
     sectionChoiceCustom: new TestNode('input'),
     sectionForm: new TestNode('form'),
     saveSectionButton: new TestNode('button'),
+    cancelSectionButton: new TestNode('button'),
   };
   elements.sectionForm.reportValidity = () => true;
   global.state = {

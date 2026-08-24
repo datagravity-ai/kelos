@@ -77,7 +77,11 @@ class TestNode {
   }
 
   get classList() {
-    return {add: (...names) => names.forEach(name => this.classes.add(name))};
+    return {
+      add: (...names) => names.forEach(name => this.classes.add(name)),
+      remove: (...names) => names.forEach(name => this.classes.delete(name)),
+      contains: name => this.classes.has(name),
+    };
   }
 
   set textContent(value) {
@@ -117,6 +121,7 @@ vm.runInThisContext(applicationSlice('function errorMessage', 'function requireE
 vm.runInThisContext(applicationSlice('function sessionKey', 'function sessionViewKey'), {filename: 'app.js'});
 vm.runInThisContext(applicationSlice('function createSessionListItem', 'function sectionLabel'), {filename: 'app.js'});
 vm.runInThisContext(applicationSlice('async function requestSessionLifecycleAction', 'function createWelcome'), {filename: 'app.js'});
+vm.runInThisContext(applicationSlice('function closeSessionSectionEditor', 'function renderSelectedSessionSection'), {filename: 'app.js'});
 vm.runInThisContext(applicationSlice('async function deleteSession', 'elements.resumeButton.addEventListener'), {filename: 'app.js'});
 
 global.sessionDisplayStatus = () => 'Ready';
@@ -131,11 +136,14 @@ function resetHarness() {
     list: new TestNode('div'),
     sessionActionsMenu: new TestNode('div', {top: 0, right: 0, bottom: 0, width: 176, height: 160}),
     sessionActionRename: new TestNode('button'),
+    sessionActionSection: new TestNode('button'),
     sessionActionLifecycle: new TestNode('button'),
     sessionActionReset: new TestNode('button'),
+    sectionForm: new TestNode('form'),
+    sectionChoice: new TestNode('select'),
     newSessionButton: new TestNode('button'),
   };
-  elements.sessionActionsMenu.append(elements.sessionActionRename, elements.sessionActionLifecycle, elements.sessionActionReset);
+  elements.sessionActionsMenu.append(elements.sessionActionRename, elements.sessionActionSection, elements.sessionActionLifecycle, elements.sessionActionReset);
   elements.sessionActionsMenu.hidden = true;
   document.activeElement = null;
   global.state = {
@@ -410,13 +418,37 @@ async function testTouchActionRunsBeforeMenuCloses() {
   assert.equal(elements.sessionActionsMenu.hidden, true);
 }
 
+function testSectionActionOpensTouchEditorForTargetSession() {
+  resetHarness();
+  const selected = {namespace: 'default', name: 'selected', provider: 'codex'};
+  const target = {namespace: 'team-a', name: 'target', provider: 'codex'};
+  state.sessions = [selected, target];
+  state.selected = selected;
+  state.sessionActionKey = sessionKey(target);
+  state.sessionActionTrigger = new TestNode('button');
+  elements.sessionActionsMenu.hidden = false;
+  global.selectSession = session => { state.selected = session; };
+
+  openSessionSectionEditor(target);
+
+  assert.equal(state.selected, target);
+  assert.equal(elements.sessionActionsMenu.hidden, true);
+  assert.equal(elements.sectionForm.classList.contains('mobile-open'), true);
+  assert.equal(document.activeElement, elements.sectionChoice);
+
+  closeSessionSectionEditor();
+  assert.equal(elements.sectionForm.classList.contains('mobile-open'), false);
+}
+
 assert.match(index, /id="session-actions-menu" role="menu"/);
 assert.match(index, /id="session-action-rename"[^>]+role="menuitem"/);
+assert.match(index, /id="session-action-section"[^>]+role="menuitem"/);
 assert.match(index, /id="session-action-lifecycle"[^>]+role="menuitem"/);
 assert.match(index, /id="session-action-reset"[^>]+role="menuitem"/);
 assert.match(index, /id="session-action-delete"[^>]+role="menuitem"/);
 assert.match(styles, /\.session-actions-menu button:focus-visible \{[^}]*outline: 2px solid var\(--accent-2\)/);
 assert.match(application, /sessionActionLifecycle\.addEventListener\('click'/);
+assert.match(application, /sessionActionSection\.addEventListener\('click'/);
 assert.match(application, /sessionActionsMenu\.addEventListener\('focusout'/);
 
 testEverySessionRowHasActionsMenu()
@@ -432,5 +464,6 @@ testEverySessionRowHasActionsMenu()
   .then(() => testTouchActionRunsBeforeMenuCloses())
   .then(() => {
     testMenuClosesWhenFocusLeaves();
+    testSectionActionOpensTouchEditorForTargetSession();
     process.stdout.write('Session actions tests passed\n');
   });
