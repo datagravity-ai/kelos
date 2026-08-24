@@ -130,6 +130,7 @@
         resetButton: document.querySelector('#reset-session'),
         deleteButton: document.querySelector('#delete-session'),
         sidebar: document.querySelector('#sidebar'),
+        sidebarScroll: document.querySelector('.sidebar-scroll'),
         openSidebar: document.querySelector('#open-sidebar'),
         closeSidebar: document.querySelector('#close-sidebar'),
         sidebarScrim: document.querySelector('#sidebar-scrim'),
@@ -4923,7 +4924,7 @@ spec:
     });
     elements.closeSidebar.addEventListener('click', () => setSidebarOpen(false));
     elements.sidebarScrim.addEventListener('click', () => setSidebarOpen(false));
-    elements.list.addEventListener('scroll', () => closeSessionActionsMenu());
+    elements.sidebarScroll.addEventListener('scroll', () => closeSessionActionsMenu());
     window.addEventListener('resize', () => closeSessionActionsMenu());
     document.addEventListener('pointerdown', event => {
         if (elements.sessionActionsMenu.hidden)

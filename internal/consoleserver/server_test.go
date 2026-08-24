@@ -1516,6 +1516,22 @@ func TestSessionUIAdaptsToPhoneViewport(t *testing.T) {
 			t.Errorf("Session page is missing %s: %s", description, expected)
 		}
 	}
+	scrollStart := bytes.Index(index, []byte(`<div class="sidebar-scroll">`))
+	scrollEnd := bytes.Index(index, []byte(`<div class="sidebar-footer">`))
+	if scrollStart < 0 || scrollEnd <= scrollStart {
+		t.Fatal("Session page does not define sidebar scrolling before the fixed footer")
+	}
+	scrollContent := string(index[scrollStart:scrollEnd])
+	for description, expected := range map[string]string{
+		"new Session action":    `id="new-session"`,
+		"namespace switcher":    `id="namespace-form"`,
+		"console navigation":    `class="console-nav"`,
+		"Session conversations": `id="session-list"`,
+	} {
+		if !strings.Contains(scrollContent, expected) {
+			t.Errorf("Scrollable sidebar is missing %s: %s", description, expected)
+		}
+	}
 	for description, expected := range map[string]string{
 		"dynamic viewport height":            `height: 100dvh`,
 		"desktop sidebar width":              `grid-template-columns: 260px minmax(0, 1fr)`,
@@ -1535,6 +1551,7 @@ func TestSessionUIAdaptsToPhoneViewport(t *testing.T) {
 		"desktop composer alignment":         `.composer textarea { flex: 1; min-height: 36px;`,
 		"mobile composer alignment":          `.composer textarea { min-height: 44px; padding: 10px 2px; line-height: 24px; }`,
 		"phone-sized dialog":                 `max-height: calc(100dvh - 16px`,
+		"scrolling sidebar controls":         `.sidebar-scroll { flex: 1; min-height: 0; overflow-y: auto;`,
 		"shrinking composer content":         `z-index: 2; min-width: 0;`,
 	} {
 		if !strings.Contains(string(styles), expected) {
@@ -1542,8 +1559,9 @@ func TestSessionUIAdaptsToPhoneViewport(t *testing.T) {
 		}
 	}
 	for description, expected := range map[string]string{
-		"sidebar backdrop action": `elements.sidebarScrim.addEventListener('click', () => setSidebarOpen(false))`,
-		"sidebar Escape action":   `event.key === 'Escape' && elements.sidebar.classList.contains('open')`,
+		"sidebar backdrop action":       `elements.sidebarScrim.addEventListener('click', () => setSidebarOpen(false))`,
+		"sidebar Escape action":         `event.key === 'Escape' && elements.sidebar.classList.contains('open')`,
+		"sidebar scroll menu dismissal": `elements.sidebarScroll.addEventListener('scroll', () => closeSessionActionsMenu())`,
 	} {
 		if !strings.Contains(string(javascript), expected) {
 			t.Errorf("Session behavior is missing %s: %s", description, expected)

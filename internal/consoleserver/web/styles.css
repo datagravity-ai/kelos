@@ -38,7 +38,8 @@ button { color: inherit; }
 .brand-mark { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 50%; background: var(--accent); color: #fff; font: 700 13px/1 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .brand { font-size: 15px; font-weight: 650; letter-spacing: -.01em; }
 .brand-subtitle { margin-top: 1px; color: var(--muted); font-size: 11px; }
-.new-session-button { min-height: 40px; display: flex; align-items: center; justify-content: flex-start; gap: 9px; margin: 0; padding: 9px 10px; border: 0; border-radius: 9px; background: transparent; font-size: 13px; font-weight: 500; cursor: pointer; transition: background .15s; }
+.sidebar-scroll { flex: 1; min-height: 0; overflow-y: auto; scrollbar-width: thin; }
+.new-session-button { width: 100%; min-height: 40px; display: flex; align-items: center; justify-content: flex-start; gap: 9px; margin: 0; padding: 9px 10px; border: 0; border-radius: 9px; background: transparent; font-size: 13px; font-weight: 500; cursor: pointer; transition: background .15s; }
 .new-session-button:hover { background: var(--line-soft); }
 .new-session-button span { width: 20px; font-size: 18px; text-align: center; }
 .namespace-form { margin: 8px 0; padding: 0 3px; }
@@ -52,11 +53,8 @@ button { color: inherit; }
 .console-nav button:hover { background: var(--line-soft); }
 .console-nav button[aria-current="page"] { background: var(--line-soft); font-weight: 600; }
 .console-nav button span { display: grid; place-items: center; color: var(--ink); font-size: 17px; }
-.session-sidebar { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.session-sidebar[hidden] { display: none; }
 .session-sidebar-header { min-height: 42px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 2px 2px 4px 10px; }
 .sidebar-label { color: var(--muted); font-size: 12px; font-weight: 600; }
-.session-list { flex: 1; min-height: 0; overflow-y: auto; scrollbar-width: thin; }
 .session-section-group { position: relative; border-radius: 11px; transition: background .15s, outline-color .15s; }
 .session-section-group + .session-section-group { margin-top: 10px; }
 .session-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0; padding: 6px 9px 4px; color: var(--faint); font-size: 11px; font-weight: 600; }
