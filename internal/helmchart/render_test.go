@@ -566,6 +566,152 @@ func TestRender_WebhookServiceTypeDefault(t *testing.T) {
 	}
 }
 
+func TestRender_GatewayServerMetadataAndServiceAccount(t *testing.T) {
+	vals := map[string]interface{}{
+		"webhookServer": map[string]interface{}{
+			"gatewayServer": map[string]interface{}{
+				"enabled":            true,
+				"serviceAccountName": "custom-webhook",
+				"labels": map[string]interface{}{
+					"example.com/deployment": "enabled",
+					"app.kubernetes.io/name": "override",
+				},
+				"annotations": map[string]interface{}{
+					"example.com/deployment-note": "configured",
+				},
+				"podLabels": map[string]interface{}{
+					"example.com/pod":             "enabled",
+					"app.kubernetes.io/component": "override",
+				},
+				"podAnnotations": map[string]interface{}{
+					"example.com/pod-note": "configured",
+				},
+			},
+		},
+	}
+	data, err := Render(manifests.ChartFS, vals)
+	if err != nil {
+		t.Fatalf("rendering chart: %v", err)
+	}
+	output := string(data)
+	deployment := extractResource(t, output, "Deployment", "kelos-webhook-gateway-server")
+	for _, expected := range []string{
+		"example.com/deployment: enabled",
+		"example.com/deployment-note: configured",
+		"example.com/pod: enabled",
+		"example.com/pod-note: configured",
+		"serviceAccountName: custom-webhook",
+	} {
+		if !strings.Contains(deployment, expected) {
+			t.Errorf("expected gateway Deployment to contain %q, got:\n%s", expected, deployment)
+		}
+	}
+	for _, unexpected := range []string{
+		"app.kubernetes.io/name: override",
+		"app.kubernetes.io/component: override",
+	} {
+		if strings.Contains(deployment, unexpected) {
+			t.Errorf("expected built-in gateway label to take precedence over %q, got:\n%s", unexpected, deployment)
+		}
+	}
+	serviceAccount := extractResource(t, output, "ServiceAccount", "custom-webhook")
+	if !strings.Contains(serviceAccount, "namespace: kelos-system") {
+		t.Errorf("expected custom gateway ServiceAccount in release namespace, got:\n%s", serviceAccount)
+	}
+	roleBinding := extractResource(t, output, "ClusterRoleBinding", "kelos-webhook-rolebinding")
+	if !strings.Contains(roleBinding, "name: custom-webhook") {
+		t.Errorf("expected webhook role binding to include custom gateway ServiceAccount, got:\n%s", roleBinding)
+	}
+}
+
+func TestRender_GatewayServerRejectsEmptyServiceAccountName(t *testing.T) {
+	vals := map[string]interface{}{
+		"webhookServer": map[string]interface{}{
+			"gatewayServer": map[string]interface{}{
+				"enabled":            true,
+				"serviceAccountName": "",
+			},
+		},
+	}
+	if _, err := Render(manifests.ChartFS, vals); err == nil {
+		t.Fatal("expected error rendering gateway server with empty serviceAccountName")
+	} else if !strings.Contains(err.Error(), "serviceAccountName must not be empty") {
+		t.Errorf("expected service account validation error, got: %v", err)
+	}
+}
+
+func TestRender_GatewayServerRejectsReservedServiceAccountNames(t *testing.T) {
+	for _, name := range []string{"kelos-controller", "kelos-console-server", "kelos-slack-server"} {
+		t.Run(name, func(t *testing.T) {
+			vals := map[string]interface{}{
+				"webhookServer": map[string]interface{}{
+					"gatewayServer": map[string]interface{}{
+						"enabled":            true,
+						"serviceAccountName": name,
+					},
+				},
+			}
+			if _, err := Render(manifests.ChartFS, vals); err == nil {
+				t.Fatalf("expected error rendering gateway server with reserved ServiceAccount %q", name)
+			} else if !strings.Contains(err.Error(), "is reserved for another chart component") {
+				t.Errorf("expected reserved service account error, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestRender_GatewayServerMetricsService(t *testing.T) {
+	tests := []struct {
+		name                string
+		serviceType         string
+		wantSeparateMetrics bool
+	}{
+		{name: "ClusterIP uses primary service", serviceType: "ClusterIP", wantSeparateMetrics: false},
+		{name: "LoadBalancer creates internal metrics service", serviceType: "LoadBalancer", wantSeparateMetrics: true},
+		{name: "NodePort creates internal metrics service", serviceType: "NodePort", wantSeparateMetrics: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			vals := map[string]interface{}{
+				"webhookServer": map[string]interface{}{
+					"gatewayServer": map[string]interface{}{
+						"enabled": true,
+						"service": map[string]interface{}{"type": tt.serviceType},
+					},
+				},
+			}
+			data, err := Render(manifests.ChartFS, vals)
+			if err != nil {
+				t.Fatalf("rendering chart: %v", err)
+			}
+			output := string(data)
+			primary := extractServiceSpec(t, output, "kelos-webhook-gateway-server")
+			primaryHasMetrics := strings.Contains(primary, "name: metrics")
+			if primaryHasMetrics != !tt.wantSeparateMetrics {
+				t.Errorf("primary gateway Service metrics exposure = %v, want %v for type %s", primaryHasMetrics, !tt.wantSeparateMetrics, tt.serviceType)
+			}
+
+			metricsName := "kelos-webhook-gateway-server-metrics"
+			hasSeparateMetrics := strings.Contains(output, "name: "+metricsName+"\n")
+			if hasSeparateMetrics != tt.wantSeparateMetrics {
+				t.Errorf("separate metrics Service rendered = %v, want %v", hasSeparateMetrics, tt.wantSeparateMetrics)
+			}
+			if tt.wantSeparateMetrics {
+				metrics := extractServiceSpec(t, output, metricsName)
+				for _, expected := range []string{"type: ClusterIP", "name: metrics"} {
+					if !strings.Contains(metrics, expected) {
+						t.Errorf("expected metrics Service to contain %q, got:\n%s", expected, metrics)
+					}
+				}
+				if strings.Contains(metrics, "name: webhook") {
+					t.Errorf("expected metrics Service to omit webhook port, got:\n%s", metrics)
+				}
+			}
+		})
+	}
+}
+
 func TestRender_WebhookServiceMetricsPortExposure(t *testing.T) {
 	tests := []struct {
 		name            string
@@ -646,11 +792,15 @@ func TestRender_WebhookServiceMetricsPortExposure(t *testing.T) {
 // extractServiceSpec returns the YAML body for the Service named name from the
 // rendered chart output, or fails the test if not found.
 func extractServiceSpec(t *testing.T, output, name string) string {
+	return extractResource(t, output, "Service", name)
+}
+
+func extractResource(t *testing.T, output, kind, name string) string {
 	t.Helper()
 	docs := strings.Split(output, "---\n")
 	marker := "name: " + name + "\n"
 	for _, doc := range docs {
-		if !strings.Contains(doc, "kind: Service") {
+		if !strings.Contains(doc, "kind: "+kind) {
 			continue
 		}
 		if !strings.Contains(doc, marker) {
@@ -658,7 +808,7 @@ func extractServiceSpec(t *testing.T, output, name string) string {
 		}
 		return doc
 	}
-	t.Fatalf("Service %q not found in rendered output", name)
+	t.Fatalf("%s %q not found in rendered output", kind, name)
 	return ""
 }
 
@@ -707,6 +857,22 @@ func TestRender_WebhookServiceTypeRejectsUnsupported(t *testing.T) {
 				t.Errorf("expected validation error, got: %v", err)
 			}
 		})
+	}
+}
+
+func TestRender_GatewayServiceTypeRejectsUnsupported(t *testing.T) {
+	vals := map[string]interface{}{
+		"webhookServer": map[string]interface{}{
+			"gatewayServer": map[string]interface{}{
+				"enabled": true,
+				"service": map[string]interface{}{"type": "ExternalName"},
+			},
+		},
+	}
+	if _, err := Render(manifests.ChartFS, vals); err == nil {
+		t.Fatal("expected error rendering gateway server with unsupported service type")
+	} else if !strings.Contains(err.Error(), "is not supported") {
+		t.Errorf("expected service type validation error, got: %v", err)
 	}
 }
 

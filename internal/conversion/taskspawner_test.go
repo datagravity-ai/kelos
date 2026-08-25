@@ -401,6 +401,64 @@ func TestTaskSpawnerConvert_NameTemplateRoundTrips(t *testing.T) {
 	}
 }
 
+func TestTaskSpawnerConvert_GatewayRefRoundTrips(t *testing.T) {
+	tests := []struct {
+		name   string
+		when   v1alpha2.When
+		getRef func(v1alpha2.When) *v1alpha2.GatewayReference
+	}{
+		{
+			name: "github",
+			when: v1alpha2.When{GitHubWebhook: &v1alpha2.GitHubWebhook{
+				Events:     []string{"issues"},
+				GatewayRef: &v1alpha2.GatewayReference{Name: "github-gateway"},
+			}},
+			getRef: func(when v1alpha2.When) *v1alpha2.GatewayReference { return when.GitHubWebhook.GatewayRef },
+		},
+		{
+			name: "linear",
+			when: v1alpha2.When{LinearWebhook: &v1alpha2.LinearWebhook{
+				Types:      []string{"Issue"},
+				GatewayRef: &v1alpha2.GatewayReference{Name: "linear-gateway"},
+			}},
+			getRef: func(when v1alpha2.When) *v1alpha2.GatewayReference { return when.LinearWebhook.GatewayRef },
+		},
+		{
+			name: "generic",
+			when: v1alpha2.When{GenericWebhook: &v1alpha2.GenericWebhook{
+				Source:       "source",
+				FieldMapping: map[string]string{"id": "$.id"},
+				GatewayRef:   &v1alpha2.GatewayReference{Name: "generic-gateway"},
+			}},
+			getRef: func(when v1alpha2.When) *v1alpha2.GatewayReference { return when.GenericWebhook.GatewayRef },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hub := &v1alpha2.TaskSpawner{Spec: v1alpha2.TaskSpawnerSpec{When: tt.when}}
+			spoke := &v1alpha1.TaskSpawner{}
+			if err := taskSpawnerFromHub(context.Background(), hub, spoke); err != nil {
+				t.Fatalf("taskSpawnerFromHub() error = %v", err)
+			}
+			if spoke.Annotations[preservedWebhookGatewayRefsAnnotation] == "" {
+				t.Fatal("gateway reference preservation annotation is empty")
+			}
+
+			back := &v1alpha2.TaskSpawner{}
+			if err := taskSpawnerToHub(context.Background(), spoke, back); err != nil {
+				t.Fatalf("taskSpawnerToHub() error = %v", err)
+			}
+			if got := tt.getRef(back.Spec.When); got == nil || got.Name != tt.getRef(tt.when).Name {
+				t.Fatalf("round-tripped gatewayRef = %+v, want %+v", got, tt.getRef(tt.when))
+			}
+			if _, ok := back.Annotations[preservedWebhookGatewayRefsAnnotation]; ok {
+				t.Fatal("preservation annotation remained on hub")
+			}
+		})
+	}
+}
+
 func TestTaskSpawnerConvert_GitHubCommentsReportingRoundTrips(t *testing.T) {
 	tests := []struct {
 		name               string

@@ -7472,6 +7472,18 @@ spec:
                           - event
                           type: object
                         type: array
+                      gatewayRef:
+                        description: |-
+                          GatewayRef binds this source to a WebhookGateway in the same namespace whose
+                          spec.github field is set. The per-source webhook server ignores this spawner.
+                        properties:
+                          name:
+                            description: Name is the name of the WebhookGateway resource.
+                            minLength: 1
+                            type: string
+                        required:
+                        - name
+                        type: object
                       reporting:
                         description: Reporting configures status reporting back to
                           the originating GitHub issue or PR.

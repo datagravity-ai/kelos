@@ -105,6 +105,7 @@ rules:
   - agentconfigs
   - sessionspawners
   - taskbudgets
+  - webhookgateways
   - workspaces
   verbs:
   - get
@@ -128,6 +129,7 @@ rules:
   - taskbudgets/status
   - tasks/status
   - taskspawners/status
+  - webhookgateways/status
   - workerpools/status
   verbs:
   - get
@@ -374,7 +376,10 @@ subjects:
   - kind: ServiceAccount
     name: kelos-controller
     namespace: kelos-system
-{{- if or .Values.webhookServer.sources.github.enabled .Values.webhookServer.sources.linear.enabled .Values.webhookServer.sources.generic.enabled }}
+{{- $sourceWebhooksEnabled := or .Values.webhookServer.sources.github.enabled .Values.webhookServer.sources.linear.enabled .Values.webhookServer.sources.generic.enabled }}
+{{- $gatewayServerEnabled := .Values.webhookServer.gatewayServer.enabled }}
+{{- $gatewayServiceAccountName := .Values.webhookServer.gatewayServer.serviceAccountName }}
+{{- if or $sourceWebhooksEnabled $gatewayServerEnabled }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -385,6 +390,14 @@ rules:
       - ""
     resources:
       - secrets
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - kelos.dev
+    resources:
+      - webhookgateways
     verbs:
       - get
       - list
@@ -442,9 +455,16 @@ roleRef:
   kind: ClusterRole
   name: kelos-webhook-role
 subjects:
+  {{- if or $sourceWebhooksEnabled (and $gatewayServerEnabled (eq $gatewayServiceAccountName "kelos-webhook")) }}
   - kind: ServiceAccount
     name: kelos-webhook
     namespace: {{ .Release.Namespace }}
+  {{- end }}
+  {{- if and $gatewayServerEnabled (ne $gatewayServiceAccountName "kelos-webhook") }}
+  - kind: ServiceAccount
+    name: {{ $gatewayServiceAccountName }}
+    namespace: {{ .Release.Namespace }}
+  {{- end }}
 {{- end }}
 {{- if .Values.slackServer.enabled }}
 ---

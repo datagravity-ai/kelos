@@ -27,6 +27,8 @@ metadata:
 spec:
   when:
     githubWebhook:
+      gatewayRef:
+        name: agora
       repository: kelos-dev/agora
       excludeAuthors:
         - kelos-bot[bot]

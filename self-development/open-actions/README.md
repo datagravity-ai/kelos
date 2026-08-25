@@ -486,14 +486,21 @@ kubectl create secret generic personal-github-token \
 The token needs write access to `kelos-dev/open-actions` and `repo` plus
 `workflow` when using a classic personal access token.
 
-### 4. GitHub Webhook Secret and Delivery
+### 4. WebhookGateway, Secret, and Delivery
 
-The issue and PR pick-up SessionSpawners and the remaining webhook
-TaskSpawners are event-driven. Reuse the `github-webhook-secret` from your
-existing deployment, then configure a repository webhook on
-`kelos-dev/open-actions`:
+The webhook TaskSpawners and SessionSpawners route through the `open-actions`
+`WebhookGateway`. Apply it in the same namespace as the spawners. Its
+`github-webhook-secret` contains the inbound HMAC secret and outbound API
+credentials.
 
-- Point it at the same `https://<your-domain>/webhook/github` endpoint
+```bash
+kubectl apply -f self-development/open-actions/webhookgateway.yaml
+```
+
+Then configure a repository webhook on `kelos-dev/open-actions`:
+
+- Point it at `https://<your-domain>/webhook/<namespace>/open-actions`; obtain
+  the relative path with `kubectl get webhookgateway open-actions -o jsonpath='{.status.path}'`
 - Use the same shared secret
 - Subscribe to `issues`, `issue_comment`, and `pull_request_review`
 

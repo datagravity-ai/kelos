@@ -32,6 +32,16 @@ const preservedTaskSpawnerCredentialsAnnotation = "kelos.dev/v1alpha2-taskspawne
 // restored when the object returns to v1alpha2.
 const preservedGitHubCommentsReportingAnnotation = "kelos.dev/v1alpha2-github-comments-reporting"
 
+// preservedWebhookGatewayRefsAnnotation carries v1alpha2 gateway references
+// across a v1alpha1 round-trip without exposing the capability in v1alpha1.
+const preservedWebhookGatewayRefsAnnotation = "kelos.dev/v1alpha2-webhook-gateway-refs"
+
+type preservedWebhookGatewayRefs struct {
+	GitHub  *v1alpha2.GatewayReference `json:"github,omitempty"`
+	Linear  *v1alpha2.GatewayReference `json:"linear,omitempty"`
+	Generic *v1alpha2.GatewayReference `json:"generic,omitempty"`
+}
+
 type preservedGitHubCommentsReporting struct {
 	GitHubIssues       *preservedGitHubCommentsSource `json:"githubIssues,omitempty"`
 	GitHubPullRequests *preservedGitHubCommentsSource `json:"githubPullRequests,omitempty"`
@@ -64,6 +74,8 @@ func taskSpawnerToHub(_ context.Context, src *v1alpha1.TaskSpawner, dst *v1alpha
 	deleteAnnotation(dst.Annotations, preservedTaskSpawnerCredentialsAnnotation)
 	restorePreservedGitHubCommentsReporting(src.Annotations, &dst.Spec.When)
 	deleteAnnotation(dst.Annotations, preservedGitHubCommentsReportingAnnotation)
+	restorePreservedWebhookGatewayRefs(src.Annotations, &dst.Spec.When)
+	deleteAnnotation(dst.Annotations, preservedWebhookGatewayRefsAnnotation)
 	return nil
 }
 
@@ -86,7 +98,56 @@ func taskSpawnerFromHub(_ context.Context, src *v1alpha2.TaskSpawner, dst *v1alp
 	if err := setPreservedGitHubCommentsReporting(dst, src.Spec.When); err != nil {
 		return err
 	}
+	if err := setPreservedWebhookGatewayRefs(dst, src.Spec.When); err != nil {
+		return err
+	}
 	return convertViaJSON(&src.Status, &dst.Status)
+}
+
+func setPreservedWebhookGatewayRefs(dst *v1alpha1.TaskSpawner, when v1alpha2.When) error {
+	preserved := preservedWebhookGatewayRefs{}
+	if when.GitHubWebhook != nil {
+		preserved.GitHub = when.GitHubWebhook.GatewayRef
+	}
+	if when.LinearWebhook != nil {
+		preserved.Linear = when.LinearWebhook.GatewayRef
+	}
+	if when.GenericWebhook != nil {
+		preserved.Generic = when.GenericWebhook.GatewayRef
+	}
+	if preserved.GitHub == nil && preserved.Linear == nil && preserved.Generic == nil {
+		deleteAnnotation(dst.Annotations, preservedWebhookGatewayRefsAnnotation)
+		return nil
+	}
+	data, err := json.Marshal(preserved)
+	if err != nil {
+		return err
+	}
+	if dst.Annotations == nil {
+		dst.Annotations = map[string]string{}
+	}
+	dst.Annotations[preservedWebhookGatewayRefsAnnotation] = string(data)
+	return nil
+}
+
+func restorePreservedWebhookGatewayRefs(annotations map[string]string, when *v1alpha2.When) {
+	raw, ok := annotations[preservedWebhookGatewayRefsAnnotation]
+	if !ok || raw == "" {
+		return
+	}
+	var preserved preservedWebhookGatewayRefs
+	if err := json.Unmarshal([]byte(raw), &preserved); err != nil {
+		return
+	}
+	if when.GitHubWebhook != nil && when.GitHubWebhook.GatewayRef == nil {
+		when.GitHubWebhook.GatewayRef = preserved.GitHub
+	}
+	if when.LinearWebhook != nil && when.LinearWebhook.GatewayRef == nil {
+		when.LinearWebhook.GatewayRef = preserved.Linear
+	}
+	if when.GenericWebhook != nil && when.GenericWebhook.GatewayRef == nil {
+		when.GenericWebhook.GatewayRef = preserved.Generic
+	}
 }
 
 func setPreservedNameTemplateAnnotation(dst *v1alpha1.TaskSpawner, nameTemplate string) {

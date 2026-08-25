@@ -122,17 +122,18 @@ jobs:
             fi
           done
 
-          # Apply the full github-webhook-secret from repo secrets so the
-          # workflow is self-sufficient and the secret state is portable to
-          # other clusters. Holds both the HMAC WEBHOOK_SECRET and the
-          # GitHub App credentials the webhook server uses to resolve
-          # .Branch for issue_comment events on pull requests.
+          # Apply github-webhook-secret in the spawner namespace so the
+          # WebhookGateway (self-development/webhookgateway.yaml) can resolve it:
+          #   - webhook-secret: HMAC secret for github.secretRef (inbound verify)
+          #   - appID/installationID/privateKey: GitHub App credentials for
+          #     github.credentialsRef (PR-file enrichment + status reporting,
+          #     and resolving .Branch for issue_comment events on PRs)
           KEY_FILE=$(mktemp)
           trap 'rm -f "$KEY_FILE"' EXIT
           printf '%s' "$KELOS_GITHUB_APP_PRIVATE_KEY" > "$KEY_FILE"
           kubectl create secret generic github-webhook-secret \
-            --namespace kelos-system \
-            --from-literal=WEBHOOK_SECRET="$KELOS_WEBHOOK_SECRET" \
+            --namespace "${KELOS_NAMESPACE}" \
+            --from-literal=webhook-secret="$KELOS_WEBHOOK_SECRET" \
             --from-literal=appID="$KELOS_GITHUB_APP_ID" \
             --from-literal=installationID="$KELOS_GITHUB_APP_INSTALLATION_ID" \
             --from-file=privateKey="$KEY_FILE" \
@@ -189,14 +190,23 @@ jobs:
             secureCookie: true
             service:
               type: NodePort
+          # NOTE: webhookServer.gateway is intentionally left at its disabled
+          # default. The dev cluster's kelos-webhook-gateway Gateway and
+          # kelos-webhook-route HTTPRoute are managed out of band, so enabling
+          # the chart-managed resources would create an ownership conflict.
+          #
+          # Required external configuration: the HTTPRoute routes the /webhook/
+          # prefix to the kelos-webhook-gateway-server Service, and the
+          # kelos-dev/kelos repository webhook URL uses the 'kelos'
+          # WebhookGateway's /webhook/<KELOS_NAMESPACE>/kelos status.path.
+          #
+          # gatewayServer runs the gateway-mode webhook server: it routes by
+          # per-gateway path using WebhookGateway resources (the self-development
+          # spawners reference the 'kelos' gateway via gatewayRef) and resolves
+          # each gateway's HMAC secret and API credentials.
           webhookServer:
-            sources:
-              github:
-                enabled: true
-                secretName: github-webhook-secret
-                githubSecretName: github-webhook-secret
-                service:
-                  type: NodePort
+            gatewayServer:
+              enabled: true
             resources:
               requests:
                 cpu: 100m
@@ -206,8 +216,6 @@ jobs:
             --set-string consoleServer.defaultNamespace="${KELOS_NAMESPACE}"
           kubectl patch service kelos-console-server -n kelos-system --type=merge \
             --patch '{"spec":{"ports":[{"name":"http","nodePort":30080,"port":80,"protocol":"TCP","targetPort":"http"}]}}'
-          kubectl patch service kelos-webhook-github -n kelos-system --type=merge \
-            --patch '{"spec":{"ports":[{"name":"webhook","nodePort":30081,"port":8443,"protocol":"TCP","targetPort":"webhook"}]}}'
           kubectl rollout restart deployment/kelos-controller-manager -n kelos-system
           kubectl rollout status deployment/kelos-controller-manager -n kelos-system --timeout=300s
           kubectl get session --all-namespaces \
@@ -218,10 +226,10 @@ jobs:
             done
           kubectl rollout restart deployment/kelos-console-server -n kelos-system
           kubectl rollout restart deployment -l kelos.dev/component=spawner -n "${KELOS_NAMESPACE}"
-          kubectl rollout restart deployment/kelos-webhook-github -n kelos-system
+          kubectl rollout restart deployment/kelos-webhook-gateway-server -n kelos-system
           kubectl rollout status deployment/kelos-console-server -n kelos-system --timeout=300s
           kubectl rollout status deployment -l kelos.dev/component=spawner -n "${KELOS_NAMESPACE}" --timeout=300s
-          kubectl rollout status deployment/kelos-webhook-github -n kelos-system --timeout=300s
+          kubectl rollout status deployment/kelos-webhook-gateway-server -n kelos-system --timeout=300s
 
       - name: Apply self-development resources
         run: kubectl apply -f self-development/ -n "${KELOS_NAMESPACE}"

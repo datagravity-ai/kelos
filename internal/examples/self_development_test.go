@@ -61,7 +61,58 @@ func TestSelfDevelopmentGitHubSpawnersUseWebhooks(t *testing.T) {
 			if len(spawner.Filters) == 0 {
 				t.Fatalf("expected %s to define webhook filters", tt.file)
 			}
+			if gr := spawner.GatewayRef; gr == nil || gr.Name != "kelos" {
+				t.Fatalf("expected %s to route through WebhookGateway %q via gatewayRef, got %+v", tt.file, "kelos", gr)
+			}
 		})
+	}
+}
+
+func TestNestedDevelopmentGitHubSpawnersUseGateways(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		dir        string
+		gateway    string
+		repository string
+		files      []string
+	}{
+		{
+			dir:        "self-development/kanon",
+			gateway:    "kanon",
+			repository: "kelos-dev/kanon",
+			files:      []string{"kanon-claude-reviewer.yaml", "kanon-planner.yaml", "kanon-pr-responder.yaml", "kanon-reviewer.yaml", "kanon-squash-commits.yaml", "kanon-triage.yaml", "kanon-workers.yaml"},
+		},
+		{
+			dir:        "self-development/agora",
+			gateway:    "agora",
+			repository: "kelos-dev/agora",
+			files:      []string{"agora-claude-reviewer.yaml", "agora-planner.yaml", "agora-pr-responder.yaml", "agora-reviewer.yaml", "agora-squash-commits.yaml", "agora-triage.yaml", "agora-workers.yaml"},
+		},
+		{
+			dir:        "self-development/open-actions",
+			gateway:    "open-actions",
+			repository: "kelos-dev/open-actions",
+			files:      []string{"open-actions-api-reviewer.yaml", "open-actions-claude-api-reviewer.yaml", "open-actions-claude-reviewer.yaml", "open-actions-planner.yaml", "open-actions-pr-responder.yaml", "open-actions-reviewer.yaml", "open-actions-squash-commits.yaml", "open-actions-triage.yaml", "open-actions-workers.yaml"},
+		},
+	}
+
+	for _, tt := range tests {
+		for _, file := range tt.files {
+			t.Run(tt.gateway+"/"+file, func(t *testing.T) {
+				t.Parallel()
+				spawner := readGitHubWebhookFromDir(t, tt.dir, file)
+				if spawner == nil {
+					t.Fatalf("expected %s to use githubWebhook", file)
+				}
+				if spawner.Repository != tt.repository {
+					t.Fatalf("%s repository = %q, want %q", file, spawner.Repository, tt.repository)
+				}
+				if spawner.GatewayRef == nil || spawner.GatewayRef.Name != tt.gateway {
+					t.Fatalf("%s gatewayRef = %+v, want %q", file, spawner.GatewayRef, tt.gateway)
+				}
+			})
+		}
 	}
 }
 
@@ -1288,6 +1339,48 @@ func assertReviewerTriggerableByBot(t *testing.T, dir, file, repository, bodyPat
 			}
 			if got != tt.want {
 				t.Fatalf("MatchesGitHubEvent() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestDevelopmentWebhookGateways verifies the WebhookGateway manifests for each
+// self-development target and their gatewayRef names.
+func TestDevelopmentWebhookGateways(t *testing.T) {
+	t.Parallel()
+
+	gateways := []struct {
+		dir  string
+		name string
+	}{
+		{dir: "self-development", name: "kelos"},
+		{dir: "self-development/kanon", name: "kanon"},
+		{dir: "self-development/agora", name: "agora"},
+		{dir: "self-development/open-actions", name: "open-actions"},
+	}
+	for _, tt := range gateways {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join("..", "..", tt.dir, "webhookgateway.yaml")
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("reading %s: %v", path, err)
+			}
+			var gw kelos.WebhookGateway
+			if err := sigyaml.Unmarshal(data, &gw); err != nil {
+				t.Fatalf("decoding WebhookGateway from %s: %v", path, err)
+			}
+			if gw.Name != tt.name {
+				t.Fatalf("gateway name = %q, want %q", gw.Name, tt.name)
+			}
+			if gw.Spec.GitHub == nil || gw.Spec.Linear != nil || gw.Spec.Generic != nil {
+				t.Fatalf("expected only the github provider, got %+v", gw.Spec)
+			}
+			if gw.Spec.GitHub.SecretRef.Name == "" {
+				t.Fatal("github.secretRef.name is empty")
+			}
+			if gw.Spec.GitHub.CredentialsRef == nil || gw.Spec.GitHub.CredentialsRef.Name == "" {
+				t.Fatal("github.credentialsRef.name is empty")
 			}
 		})
 	}
