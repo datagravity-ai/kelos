@@ -398,13 +398,22 @@ kubectl create secret generic personal-github-token \
 The token needs write access to `kelos-dev/kanon` and `repo` plus `workflow`
 when using a classic personal access token.
 
-### 4. GitHub Webhook Secret and Delivery
+### 4. WebhookGateway, Secret, and Delivery
 
-The issue and PR pick-up SessionSpawners and the remaining webhook
-TaskSpawners are event-driven. Reuse the `github-webhook-secret` from your
-existing deployment, then configure a repository webhook on `kelos-dev/kanon`:
+The webhook TaskSpawners and SessionSpawners route through the `kanon`
+`WebhookGateway` in `webhookgateway.yaml`. Apply it in the same namespace as
+the spawners. It reuses `github-webhook-secret`, which must contain the inbound
+HMAC secret under `webhook-secret` and outbound API credentials as either a
+`GITHUB_TOKEN` or GitHub App keys.
 
-- Point it at the same `https://<your-domain>/webhook/github` endpoint
+```bash
+kubectl apply -f self-development/kanon/webhookgateway.yaml
+```
+
+Then configure a repository webhook on `kelos-dev/kanon`:
+
+- Point it at `https://<your-domain>/webhook/<namespace>/kanon`; obtain the
+  relative path with `kubectl get webhookgateway kanon -o jsonpath='{.status.path}'`
 - Use the same shared secret
 - Subscribe to `issues`, `issue_comment`, and `pull_request_review`
 

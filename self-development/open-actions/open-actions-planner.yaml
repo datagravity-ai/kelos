@@ -27,6 +27,8 @@ metadata:
 spec:
   when:
     githubWebhook:
+      gatewayRef:
+        name: open-actions
       repository: kelos-dev/open-actions
       excludeAuthors:
         - kelos-bot[bot]

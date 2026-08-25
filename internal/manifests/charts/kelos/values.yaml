@@ -135,6 +135,33 @@ webhookServer:
         # to avoid externally publishing the metrics endpoint; scrape metrics
         # via a PodMonitor or a separate ClusterIP Service in that case.
         type: ClusterIP
+  # gatewayServer runs a single webhook server that routes by per-gateway path
+  # (/webhook/<namespace>/<name>) using WebhookGateway resources. Each gateway
+  # carries its own HMAC secret and (for github) API base URL and credentials,
+  # so one deployment can serve github.com plus multiple GitHub Enterprise
+  # instances. It serves TaskSpawners and SessionSpawners that reference a
+  # WebhookGateway. The github/linear per-source servers can run alongside it
+  # because they use more specific Gateway-API paths. The gateway server and
+  # generic per-source server both use the /webhook/ prefix, so the generated
+  # Gateway API route can expose only one of them.
+  gatewayServer:
+    enabled: false
+    replicas: 1
+    # Extra Deployment metadata. Built-in selector labels take precedence over
+    # conflicting entries in labels.
+    labels: {}
+    annotations: {}
+    # Extra Pod metadata. Built-in selector labels take precedence over
+    # conflicting entries in podLabels.
+    podLabels: {}
+    podAnnotations: {}
+    # ServiceAccount created and bound to the webhook role for the gateway
+    # server Pod. Names used by other chart components are reserved.
+    serviceAccountName: kelos-webhook
+    service:
+      # LoadBalancer and NodePort expose only the webhook port. In those modes,
+      # the chart creates a separate ClusterIP Service for metrics.
+      type: ClusterIP
   resources:
     limits:
       cpu: 500m

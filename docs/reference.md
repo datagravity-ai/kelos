@@ -508,6 +508,7 @@ webhook-driven TaskSpawner.
 |-------|-------------|----------|
 | `spec.when.githubWebhook.events` | GitHub event types to listen for, using the same values as TaskSpawner | Yes |
 | `spec.when.githubWebhook.repository` | Repository filter in `owner/repo` format; omit to accept any repository | No |
+| `spec.when.githubWebhook.gatewayRef.name` | Bind this source to a [WebhookGateway](#webhookgateway) in the same namespace whose `spec.github` field is set. The per-source webhook server ignores this spawner when the reference is present | No |
 | `spec.when.githubWebhook.excludeAuthors` | GitHub senders ignored before filter evaluation | No |
 | `spec.when.githubWebhook.filters` | GitHub webhook filters using the same fields and OR semantics as TaskSpawner | No |
 | `spec.credentials[].name` | Unique name for a credential distributed by this SessionSpawner. The name is recorded in the `kelos.dev/spawner-credential` label on generated Sessions | Yes when `spec.credentials` is set |
@@ -800,18 +801,20 @@ to receive refreshed credentials during long-running work.
 | `spec.when.githubWebhook.reporting.enabled` | **Deprecated:** use `reporting.comments`. Posts status comments back to the originating issue or PR using `PerTask` mode | No |
 | `spec.when.githubWebhook.reporting.comments.mode` | Enables status comments back to the originating issue or PR. `PerTask` (default) creates one comment for each Task; `Sticky` maintains one comment per TaskSpawner and originating issue or PR across Tasks | No |
 | `spec.when.githubWebhook.reporting.checks.name` | Creates a GitHub Check Run for tasks spawned by PR-related webhook events, enabling branch protection and merge queue integration. Sets the Check Run name (defaults to `"Kelos: <taskspawner-name>"`, max 100 chars). The token used by the workspace must have `checks:write` permission. Requires `events` to include at least one of `pull_request`, `pull_request_review`, `pull_request_review_comment`, or `pull_request_target` (enforced by CEL validation). | No |
+| `spec.when.githubWebhook.gatewayRef.name` | Bind this source to a [WebhookGateway](#webhookgateway) in the same namespace whose `spec.github` field is set. The per-source webhook server ignores this spawner when the reference is present | No |
 | `spec.when.linearWebhook.types` | Linear resource types to listen for (e.g., `"Issue"`, `"Comment"`) | Yes (when using linearWebhook) |
 | `spec.when.linearWebhook.filters[].type` | Scope filter to a specific resource type | No |
 | `spec.when.linearWebhook.filters[].action` | Filter by webhook action: `create`, `update`, or `remove` | No |
 | `spec.when.linearWebhook.filters[].states` | Filter by workflow state names (e.g., `"Todo"`, `"In Progress"`) | No |
 | `spec.when.linearWebhook.filters[].labels` | Require the issue to have all of these labels | No |
 | `spec.when.linearWebhook.filters[].excludeLabels` | Exclude issues with any of these labels | No |
+| `spec.when.linearWebhook.gatewayRef.name` | Bind this source to a [WebhookGateway](#webhookgateway) in the same namespace whose `spec.linear` field is set. The per-source webhook server ignores this spawner when the reference is present | No |
 | `spec.when.slack.channels` | Restrict which Slack channels the bot listens in (channel IDs like `"C0123456789"`); when empty, listens in all invited channels | No |
 | `spec.when.slack.botMessagePolicy` | Controls whether bot-originated messages can trigger this spawner: `None` (default) rejects all bot messages, `All` allows all including self, `OthersOnly` allows other bots but rejects the bot's own output to prevent self-trigger loops | No |
 | `spec.when.slack.triggers[].pattern` | RE2 regex matched against message text (unanchored); leading `<@USER_ID>` mentions are stripped before matching; bot mention required unless `mentionOptional` is set; multiple triggers use OR semantics; when empty, every bot mention fires | No |
 | `spec.when.slack.triggers[].mentionOptional` | When `true`, fire on pattern match alone without requiring a bot @-mention | No |
 | `spec.when.slack.excludePatterns` | RE2 regex patterns that reject messages when any pattern matches (OR semantics); leading `<@USER_ID>` mentions are stripped before matching; does not apply to slash commands | No |
-| `spec.when.webhook.source` | Short identifier for the generic webhook source (lowercase alphanumeric with optional hyphens). Determines the URL path (`/webhook/<source>`). The endpoint is currently unauthenticated — see [#1040](https://github.com/kelos-dev/kelos/issues/1040) | Yes (when using webhook) |
+| `spec.when.webhook.source` | Short identifier for the generic webhook source (lowercase alphanumeric with optional hyphens). On the per-source server it determines the URL path (`/webhook/<source>`); that endpoint is unauthenticated (see [#1040](https://github.com/kelos-dev/kelos/issues/1040)). Set `gatewayRef` to route through a [WebhookGateway](#webhookgateway) | Yes (when using webhook) |
 | `spec.when.webhook.fieldMapping` | Map of template variable name → JSONPath expression evaluated against the request body. Each key becomes a top-level template variable. Lowercase `id`, `title`, `body`, `url` are also exposed as `{{.ID}}`, `{{.Title}}`, `{{.Body}}`, `{{.URL}}`. The `id` key is required (used for delivery deduplication and Task naming) | Yes (when using webhook) |
 | `spec.when.webhook.filters[].field` | JSONPath expression selecting the payload field to match. A field missing from the payload fails the filter (the delivery is skipped); a malformed JSONPath expression skips the spawner for that delivery and logs an error | Yes (per filter) |
 | `spec.when.webhook.filters[].value` | Require an exact string match against the extracted field value (mutually exclusive with `pattern`) | Conditional |
@@ -819,6 +822,7 @@ to receive refreshed credentials during long-running work.
 | `spec.when.webhook.excludeFilters[].field` | JSONPath expression selecting the payload field to match. A delivery matching any exclude filter is skipped (OR semantics), even when every entry in `filters` matched. Unlike `filters[].field`, a field missing from the payload does not match and so does not exclude the delivery; a malformed JSONPath expression skips the spawner for that delivery and logs an error | Yes (per exclude filter) |
 | `spec.when.webhook.excludeFilters[].value` | Exclude the delivery on an exact string match against the extracted field value (mutually exclusive with `pattern`) | Conditional |
 | `spec.when.webhook.excludeFilters[].pattern` | Exclude the delivery on a regex match against the extracted field value (mutually exclusive with `value`) | Conditional |
+| `spec.when.webhook.gatewayRef.name` | Bind this source to a [WebhookGateway](#webhookgateway) in the same namespace whose `spec.generic` field is set. Generic gateway deliveries remain unauthenticated, and the per-source server ignores this spawner when the reference is present | No |
 | `spec.when.jira.pollInterval` | Per-source poll interval (e.g., `"30s"`, `"5m"`). Defaults to `5m` when omitted | No |
 | `spec.when.cron.schedule` | Cron schedule expression (e.g., `"0 * * * *"`) | Yes (when using cron) |
 | `spec.credentials[].name` | Unique name for a credential distributed by this TaskSpawner. The name is recorded in the `kelos.dev/spawner-credential` label on generated Tasks | Yes when `spec.credentials` is set |
@@ -1082,6 +1086,48 @@ Example — fetch a GitHub API resource authenticated with a GitHub App installa
             type: JSONPath
             expression: "$.body"
 ```
+
+## WebhookGateway
+
+A `WebhookGateway` is a per-channel authentication and routing boundary for
+webhook-driven TaskSpawners and SessionSpawners. It owns one inbound path,
+`/webhook/<namespace>/<name>` (surfaced in `status.path`), verifies inbound
+deliveries against its own secret (github/linear), and fans out only to
+spawners in its own namespace that reference it via `gatewayRef`. This
+enables per-tenant secrets and multiple GitHub instances (github.com plus GitHub
+Enterprise) without a per-instance Deployment. Enable the gateway server with
+`webhookServer.gatewayServer.enabled` in the Helm chart. See
+[example 18](../examples/18-webhookgateway).
+
+Exactly one provider sub-struct (`spec.github`, `spec.linear`, or `spec.generic`)
+must be set; the one that is present selects the source.
+
+| Field | Description | Required |
+| --- | --- | --- |
+| `spec.github` | GitHub gateway configuration (see below). Set exactly one of `github`/`linear`/`generic` | Conditional |
+| `spec.github.secretRef.name` | Secret holding the inbound HMAC secret (under a `webhook-secret` key) | Yes (for github) |
+| `spec.github.apiBaseURL` | GitHub API base URL for outbound calls (PR-file enrichment, status reporting, and GitHub App token minting), e.g. `https://ghe.example.com/api/v3`. Defaults to `https://api.github.com` | No |
+| `spec.github.credentialsRef.name` | Secret holding outbound GitHub API credentials — a `GITHUB_TOKEN` key (PAT) or GitHub App keys (`appID`, `installationID`, `privateKey`) | No |
+| `spec.linear.secretRef.name` | Secret holding the inbound HMAC secret (under a `webhook-secret` key) | Yes (for linear) |
+| `spec.generic` | Generic gateway configuration (no fields yet; deliveries are accepted without verification) | Conditional |
+| `status.path` | Derived inbound path, `/webhook/<namespace>/<name>`, relative to the configured webhook host | — |
+| `status.phase` | `Authenticated`, `SecretMissing`, or `Unauthenticated` (generic gateways are `Unauthenticated`) | — |
+
+> `generic` gateways are accepted but **not** signature-verified;
+> restrict access at the network layer. Task execution (clone/push) credentials
+> come from the Workspace's `secretRef`, separate from a gateway's
+> `github.credentialsRef`.
+
+### "Gateway" terminology
+
+Several distinct "gateway" concepts coexist:
+
+| Term | What it is |
+| --- | --- |
+| `WebhookGateway` (CRD) | The per-channel auth/routing resource described above. |
+| `gatewayRef` | The field on a TaskSpawner or SessionSpawner webhook source that binds it to a `WebhookGateway`. |
+| `Gateway` (gateway.networking.k8s.io) | The Gateway-API ingress object that fronts the webhook server; created by the chart as `kelos-webhook-gateway` when `webhookServer.gateway.enabled`. |
+| `webhookServer.gateway*` (Helm values) | `webhookServer.gateway` configures the Gateway-API `Gateway`/`HTTPRoute`; `webhookServer.gatewayServer` enables the gateway-mode webhook server that serves `WebhookGateway` paths. |
 
 ## Task Status
 

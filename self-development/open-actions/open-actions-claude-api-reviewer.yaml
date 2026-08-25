@@ -37,6 +37,8 @@ metadata:
 spec:
   when:
     githubWebhook:
+      gatewayRef:
+        name: open-actions
       repository: kelos-dev/open-actions
       events:
         - issue_comment
