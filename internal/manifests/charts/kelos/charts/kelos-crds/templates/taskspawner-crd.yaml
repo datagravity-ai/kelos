@@ -23302,13 +23302,13 @@ spec:
                         type: array
                       excludeThreadPatterns:
                         description: |-
-                          ExcludeThreadPatterns rejects thread replies whose fetched thread
-                          context matches any of the given regular expressions, so a follow-up
-                          that continues a thread's topic does not fire the spawner even when
-                          its own text does not drive it. Each entry is checked independently —
-                          the message is excluded if the context matches ANY entry. Patterns
-                          use Go regexp syntax (RE2, unanchored). Only applies to
-                          human-authored messages with successfully fetched thread context.
+                          ExcludeThreadPatterns rejects human-authored thread replies whose
+                          fetched thread context matches any of the given regular expressions,
+                          regardless of the reply's own text. Each entry is checked
+                          independently — the message is excluded if the thread context matches
+                          ANY entry. Patterns use Go regexp syntax (RE2, unanchored). Applies
+                          only when the thread context was fetched successfully, and never to
+                          bot-originated messages. Does NOT apply to slash commands.
                         items:
                           maxLength: 256
                           minLength: 1
