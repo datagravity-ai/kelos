@@ -207,6 +207,8 @@ jobs:
           webhookServer:
             gatewayServer:
               enabled: true
+              service:
+                type: NodePort
             resources:
               requests:
                 cpu: 100m
