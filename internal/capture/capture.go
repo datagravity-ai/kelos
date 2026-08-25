@@ -95,7 +95,7 @@ func captureOutputs(r runner, usage map[string]string) []string {
 		}
 	}
 
-	for _, key := range []string{"cost-usd", "input-tokens", "output-tokens", "response"} {
+	for _, key := range []string{"cost-usd", "input-tokens", "output-tokens", "response", "degenerate"} {
 		if v, ok := usage[key]; ok {
 			outputs = append(outputs, key+": "+v)
 		}

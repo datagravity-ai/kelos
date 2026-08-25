@@ -45,7 +45,8 @@ func newUsageAccumulator(agentType string) usageAccumulator {
 // `tee` produced previously), and returns the parsed token usage for the
 // given agent type. Returns nil usage for empty/unknown agent types or
 // when no usage data is present. For Claude Code, an incomplete final result
-// returns the parsed usage together with a non-nil error.
+// returns the parsed usage together with a non-nil error; a degenerate final
+// result additionally sets the "degenerate" key in the returned usage.
 //
 // Bytes from r are forwarded to w exactly as read, in order — there is no
 // scanner buffer between us and r, so an arbitrarily long line is still
@@ -100,6 +101,15 @@ func StreamUsage(agentType string, r io.Reader, w io.Writer) (usage map[string]s
 		lastResultAccumulator, ok := acc.(*lastResultAccumulator)
 		if ok && lastResultAccumulator.last != nil {
 			completion := extractClaudeCodeCompletion(lastResultAccumulator.last)
+			if completion.IsDegenerateOutput() {
+				// Recorded even though the run fails, so downstream
+				// consumers can tell a degenerate result apart from
+				// any other failure.
+				if usage == nil {
+					usage = make(map[string]string)
+				}
+				usage["degenerate"] = "true"
+			}
 			if completion.Status() != claudecode.ResultCompleted {
 				return usage, errors.New(completion.FailureMessage())
 			}
@@ -220,11 +230,14 @@ func extractClaudeCodeCompletion(m map[string]any) claudecode.Result {
 	isError, _ := m["is_error"].(bool)
 	stopReason, _ := m["stop_reason"].(string)
 	terminalReason, _ := m["terminal_reason"].(string)
+	text, _ := m["result"].(string)
 	return claudecode.Result{
 		Subtype:        subtype,
 		IsError:        isError,
 		StopReason:     stopReason,
 		TerminalReason: terminalReason,
+		Text:           text,
+		NumTurns:       int(toInt64(m["num_turns"])),
 	}
 }
 
