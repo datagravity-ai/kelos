@@ -60618,6 +60618,8 @@ spec:
                         items:
                           pattern: ^[CG][A-Z0-9]{8,}$
                           type: string
+                        maxItems: 64
+                        type: array
                       excludeChannels:
                         description: |-
                           ExcludeChannels rejects messages from the given Slack channels,
@@ -60628,8 +60630,6 @@ spec:
                         items:
                           pattern: ^[CG][A-Z0-9]{8,}$
                           type: string
-                        maxItems: 64
-                        type: array
                         maxItems: 64
                         type: array
                       excludePatterns:
