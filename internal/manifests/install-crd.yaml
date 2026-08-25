@@ -60589,6 +60589,21 @@ spec:
                           type: string
                         maxItems: 10
                         type: array
+                      excludeThreadPatterns:
+                        description: |-
+                          ExcludeThreadPatterns rejects thread replies whose fetched thread
+                          context matches any of the given regular expressions, so a follow-up
+                          that continues a thread's topic does not fire the spawner even when
+                          its own text does not drive it. Each entry is checked independently —
+                          the message is excluded if the context matches ANY entry. Patterns
+                          use Go regexp syntax (RE2, unanchored). Only applies to
+                          human-authored messages with successfully fetched thread context.
+                        items:
+                          maxLength: 256
+                          minLength: 1
+                          type: string
+                        maxItems: 10
+                        type: array
                       triggers:
                         description: |-
                           Triggers define regex patterns that must match the message text.
@@ -60598,6 +60613,16 @@ spec:
                           description: SlackTrigger defines a regex pattern trigger
                             for Slack messages.
                           properties:
+                            matchThread:
+                              description: |-
+                                MatchThread, when true, also evaluates Pattern against the full
+                                thread context when this trigger fires on a human-authored thread
+                                reply, so a follow-up that continues the thread's topic matches even
+                                when its own text does not. The trigger's usual mention requirement
+                                still applies (unless MentionOptional is set). Thread-context
+                                matching never applies to bot-originated messages, and requires the
+                                thread context to have been fetched successfully.
+                              type: boolean
                             mentionOptional:
                               description: |-
                                 MentionOptional, when true, fires the trigger on pattern match alone

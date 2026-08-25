@@ -662,6 +662,18 @@ type Slack struct {
 	// +kubebuilder:validation:items:MinLength=1
 	// +kubebuilder:validation:items:MaxLength=256
 	ExcludePatterns []string `json:"excludePatterns,omitempty"`
+	// ExcludeThreadPatterns rejects human-authored thread replies whose
+	// fetched thread context matches any of the given regular expressions,
+	// regardless of the reply's own text. Each entry is checked
+	// independently — the message is excluded if the thread context matches
+	// ANY entry. Patterns use Go regexp syntax (RE2, unanchored). Applies
+	// only when the thread context was fetched successfully, and never to
+	// bot-originated messages. Does NOT apply to slash commands.
+	// +optional
+	// +kubebuilder:validation:MaxItems=10
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=256
+	ExcludeThreadPatterns []string `json:"excludeThreadPatterns,omitempty"`
 }
 
 // SlackTrigger defines a regex pattern trigger for Slack messages.
@@ -677,6 +689,16 @@ type SlackTrigger struct {
 	// without requiring a bot @-mention.
 	// +optional
 	MentionOptional *bool `json:"mentionOptional,omitempty"`
+
+	// MatchThread, when true, also evaluates Pattern against the full
+	// thread context when this trigger fires on a human-authored thread
+	// reply, so a follow-up that continues the thread's topic matches even
+	// when its own text does not. The trigger's usual mention requirement
+	// still applies (unless MentionOptional is set). Thread-context
+	// matching never applies to bot-originated messages, and requires the
+	// thread context to have been fetched successfully.
+	// +optional
+	MatchThread *bool `json:"matchThread,omitempty"`
 }
 
 // BotMessagePolicy controls whether bot-originated messages can trigger a spawner.

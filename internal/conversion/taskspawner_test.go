@@ -739,3 +739,174 @@ func TestTaskSpawnerFromHub_NoNameTemplateOmitsAnnotation(t *testing.T) {
 		t.Error("annotation should not be set when nameTemplate is empty")
 	}
 }
+
+func boolPtr(v bool) *bool { return &v }
+
+func TestTaskSpawnerConvert_SlackThreadMatchRoundTrips(t *testing.T) {
+	hub := &v1alpha2.TaskSpawner{
+		ObjectMeta: metav1.ObjectMeta{Name: "quote-bot", Namespace: "default"},
+		Spec: v1alpha2.TaskSpawnerSpec{
+			When: v1alpha2.When{
+				Slack: &v1alpha2.Slack{
+					Triggers: []v1alpha2.SlackTrigger{
+						{Pattern: "help"},
+						{Pattern: "quote", MentionOptional: boolPtr(true), MatchThread: boolPtr(true)},
+					},
+				},
+			},
+		},
+	}
+
+	spoke := &v1alpha1.TaskSpawner{}
+	if err := taskSpawnerFromHub(context.Background(), hub, spoke); err != nil {
+		t.Fatalf("taskSpawnerFromHub() error = %v", err)
+	}
+	if len(spoke.Spec.When.Slack.Triggers) != 2 {
+		t.Fatalf("spoke triggers len = %d, want 2", len(spoke.Spec.When.Slack.Triggers))
+	}
+	if got := spoke.Spec.When.Slack.Triggers[1].MentionOptional; got == nil || !*got {
+		t.Error("v1alpha1 trigger lost mentionOptional")
+	}
+	// v1alpha1.SlackTrigger has no MatchThread field; the flag must be parked
+	// in the preservation annotation instead.
+	if _, ok := spoke.Annotations[preservedSlackThreadMatchAnnotation]; !ok {
+		t.Fatal("expected preserved slack thread match annotation on spoke")
+	}
+
+	back := &v1alpha2.TaskSpawner{}
+	if err := taskSpawnerToHub(context.Background(), spoke, back); err != nil {
+		t.Fatalf("taskSpawnerToHub() error = %v", err)
+	}
+	triggers := back.Spec.When.Slack.Triggers
+	if len(triggers) != 2 {
+		t.Fatalf("round-tripped triggers len = %d, want 2", len(triggers))
+	}
+	if triggers[0].MatchThread != nil {
+		t.Errorf("trigger[0].matchThread = %v, want nil (was not set on hub)", *triggers[0].MatchThread)
+	}
+	if triggers[1].MatchThread == nil || !*triggers[1].MatchThread {
+		t.Error("round-tripped trigger[1].matchThread is not true, want true (index-aligned restore)")
+	}
+	if _, ok := back.Annotations[preservedSlackThreadMatchAnnotation]; ok {
+		t.Error("internal preservation annotation leaked onto hub object")
+	}
+}
+
+func TestTaskSpawnerConvert_SlackThreadMatchStaysOnPatternEdit(t *testing.T) {
+	hub := &v1alpha2.TaskSpawner{
+		ObjectMeta: metav1.ObjectMeta{Name: "quote-bot", Namespace: "default"},
+		Spec: v1alpha2.TaskSpawnerSpec{
+			When: v1alpha2.When{
+				Slack: &v1alpha2.Slack{
+					Triggers: []v1alpha2.SlackTrigger{
+						{Pattern: "quote", MentionOptional: boolPtr(true), MatchThread: boolPtr(true)},
+					},
+				},
+			},
+		},
+	}
+
+	spoke := &v1alpha1.TaskSpawner{}
+	if err := taskSpawnerFromHub(context.Background(), hub, spoke); err != nil {
+		t.Fatalf("taskSpawnerFromHub() error = %v", err)
+	}
+	// A v1alpha1 client edits the trigger's pattern; the flag must survive
+	// because it is preserved by index, not by pattern.
+	spoke.Spec.When.Slack.Triggers[0].Pattern = "(?is)\\bneed a quote\\b|\\bare you free\\b"
+
+	back := &v1alpha2.TaskSpawner{}
+	if err := taskSpawnerToHub(context.Background(), spoke, back); err != nil {
+		t.Fatalf("taskSpawnerToHub() error = %v", err)
+	}
+	trigger := back.Spec.When.Slack.Triggers[0]
+	if trigger.MatchThread == nil || !*trigger.MatchThread {
+		t.Error("matchThread dropped by pattern edit; index-aligned preservation failed")
+	}
+	if trigger.Pattern != "(?is)\\bneed a quote\\b|\\bare you free\\b" {
+		t.Errorf("edited pattern = %q, want the edited value", trigger.Pattern)
+	}
+}
+
+func TestTaskSpawnerConvert_SlackExcludeThreadPatternsRoundTrips(t *testing.T) {
+	hub := &v1alpha2.TaskSpawner{
+		ObjectMeta: metav1.ObjectMeta{Name: "general", Namespace: "default"},
+		Spec: v1alpha2.TaskSpawnerSpec{
+			When: v1alpha2.When{
+				Slack: &v1alpha2.Slack{
+					ExcludeThreadPatterns: []string{"(?is)\\bneed a quote\\b"},
+				},
+			},
+		},
+	}
+
+	spoke := &v1alpha1.TaskSpawner{}
+	if err := taskSpawnerFromHub(context.Background(), hub, spoke); err != nil {
+		t.Fatalf("taskSpawnerFromHub() error = %v", err)
+	}
+	// v1alpha1.Slack has no ExcludeThreadPatterns field; the value must be
+	// parked in the preservation annotation instead.
+	if _, ok := spoke.Annotations[preservedSlackExcludeThreadPatternsAnnotation]; !ok {
+		t.Fatal("expected preserved slack exclude thread patterns annotation on spoke")
+	}
+
+	back := &v1alpha2.TaskSpawner{}
+	if err := taskSpawnerToHub(context.Background(), spoke, back); err != nil {
+		t.Fatalf("taskSpawnerToHub() error = %v", err)
+	}
+	if got := back.Spec.When.Slack.ExcludeThreadPatterns; len(got) != 1 || got[0] != "(?is)\\bneed a quote\\b" {
+		t.Errorf("round-tripped excludeThreadPatterns = %#v, want the preserved value", got)
+	}
+	if _, ok := back.Annotations[preservedSlackExcludeThreadPatternsAnnotation]; ok {
+		t.Error("internal preservation annotation leaked onto hub object")
+	}
+}
+
+func TestTaskSpawnerToHub_MalformedSlackPreservationAnnotationsIgnored(t *testing.T) {
+	spoke := &v1alpha1.TaskSpawner{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "quote-bot",
+			Namespace: "default",
+			Annotations: map[string]string{
+				preservedSlackThreadMatchAnnotation:           "[not-json",
+				preservedSlackExcludeThreadPatternsAnnotation: "{",
+			},
+		},
+		Spec: v1alpha1.TaskSpawnerSpec{
+			When: v1alpha1.When{
+				Slack: &v1alpha1.Slack{
+					Triggers: []v1alpha1.SlackTrigger{{Pattern: "quote", MentionOptional: boolPtr(true)}},
+				},
+			},
+		},
+	}
+
+	back := &v1alpha2.TaskSpawner{}
+	if err := taskSpawnerToHub(context.Background(), spoke, back); err != nil {
+		t.Fatalf("taskSpawnerToHub() error = %v", err)
+	}
+	if back.Spec.When.Slack.Triggers[0].MatchThread != nil {
+		t.Error("malformed matchThread annotation restored a value")
+	}
+	if len(back.Spec.When.Slack.ExcludeThreadPatterns) != 0 {
+		t.Error("malformed excludeThreadPatterns annotation restored a value")
+	}
+}
+
+func TestTaskSpawnerFromHub_NoSlackOmitsPreservationAnnotations(t *testing.T) {
+	hub := &v1alpha2.TaskSpawner{
+		ObjectMeta: metav1.ObjectMeta{Name: "cron-only", Namespace: "default"},
+		Spec: v1alpha2.TaskSpawnerSpec{
+			When: v1alpha2.When{Cron: &v1alpha2.Cron{Schedule: "0 9 * * 1"}},
+		},
+	}
+	spoke := &v1alpha1.TaskSpawner{}
+	if err := taskSpawnerFromHub(context.Background(), hub, spoke); err != nil {
+		t.Fatalf("taskSpawnerFromHub() error = %v", err)
+	}
+	if _, ok := spoke.Annotations[preservedSlackThreadMatchAnnotation]; ok {
+		t.Error("matchThread annotation should not be set when no slack block exists")
+	}
+	if _, ok := spoke.Annotations[preservedSlackExcludeThreadPatternsAnnotation]; ok {
+		t.Error("excludeThreadPatterns annotation should not be set when no slack block exists")
+	}
+}

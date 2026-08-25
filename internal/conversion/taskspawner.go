@@ -32,6 +32,15 @@ const preservedTaskSpawnerCredentialsAnnotation = "kelos.dev/v1alpha2-taskspawne
 // restored when the object returns to v1alpha2.
 const preservedGitHubCommentsReportingAnnotation = "kelos.dev/v1alpha2-github-comments-reporting"
 
+// preservedSlackThreadMatchAnnotation carries per-trigger SlackTrigger.MatchThread
+// values (index-aligned with the trigger list) across a v1alpha1 round-trip,
+// since the v1alpha1 slack trigger has no matchThread field.
+const preservedSlackThreadMatchAnnotation = "kelos.dev/v1alpha2-slack-thread-match"
+
+// preservedSlackExcludeThreadPatternsAnnotation carries Slack.ExcludeThreadPatterns
+// across a v1alpha1 round-trip, since the v1alpha1 slack block has no such field.
+const preservedSlackExcludeThreadPatternsAnnotation = "kelos.dev/v1alpha2-slack-exclude-thread-patterns"
+
 type preservedGitHubCommentsReporting struct {
 	GitHubIssues       *preservedGitHubCommentsSource `json:"githubIssues,omitempty"`
 	GitHubPullRequests *preservedGitHubCommentsSource `json:"githubPullRequests,omitempty"`
@@ -64,6 +73,14 @@ func taskSpawnerToHub(_ context.Context, src *v1alpha1.TaskSpawner, dst *v1alpha
 	deleteAnnotation(dst.Annotations, preservedTaskSpawnerCredentialsAnnotation)
 	restorePreservedGitHubCommentsReporting(src.Annotations, &dst.Spec.When)
 	deleteAnnotation(dst.Annotations, preservedGitHubCommentsReportingAnnotation)
+	if err := restorePreservedSlackThreadMatch(src.Annotations, dst.Spec.When.Slack); err != nil {
+		return err
+	}
+	deleteAnnotation(dst.Annotations, preservedSlackThreadMatchAnnotation)
+	if err := restorePreservedSlackExcludeThreadPatterns(src.Annotations, dst.Spec.When.Slack); err != nil {
+		return err
+	}
+	deleteAnnotation(dst.Annotations, preservedSlackExcludeThreadPatternsAnnotation)
 	return nil
 }
 
@@ -84,6 +101,12 @@ func taskSpawnerFromHub(_ context.Context, src *v1alpha2.TaskSpawner, dst *v1alp
 		return err
 	}
 	if err := setPreservedGitHubCommentsReporting(dst, src.Spec.When); err != nil {
+		return err
+	}
+	if err := setPreservedSlackThreadMatch(dst, src.Spec.When.Slack); err != nil {
+		return err
+	}
+	if err := setPreservedSlackExcludeThreadPatterns(dst, src.Spec.When.Slack); err != nil {
 		return err
 	}
 	return convertViaJSON(&src.Status, &dst.Status)
@@ -290,6 +313,108 @@ func gitHubWebhookReporting(when v1alpha2.When) *v1alpha2.GitHubReporting {
 		return nil
 	}
 	return when.GitHubWebhook.Reporting
+}
+
+// setPreservedSlackThreadMatch records each trigger's MatchThread flag into an
+// annotation on the v1alpha1 object so it survives a v1alpha1 round-trip, since
+// the v1alpha1 slack trigger has no matchThread field. The slice is
+// index-aligned with the trigger list so editing a pattern does not silently
+// drop the flag; it is restored when the object returns to v1alpha2.
+func setPreservedSlackThreadMatch(dst *v1alpha1.TaskSpawner, slack *v1alpha2.Slack) error {
+	if slack == nil {
+		deleteAnnotation(dst.Annotations, preservedSlackThreadMatchAnnotation)
+		return nil
+	}
+	match := make([]bool, len(slack.Triggers))
+	any := false
+	for i, trigger := range slack.Triggers {
+		if trigger.MatchThread != nil && *trigger.MatchThread {
+			match[i] = true
+			any = true
+		}
+	}
+	if !any {
+		deleteAnnotation(dst.Annotations, preservedSlackThreadMatchAnnotation)
+		return nil
+	}
+	data, err := json.Marshal(match)
+	if err != nil {
+		return err
+	}
+	if dst.Annotations == nil {
+		dst.Annotations = map[string]string{}
+	}
+	dst.Annotations[preservedSlackThreadMatchAnnotation] = string(data)
+	return nil
+}
+
+// restorePreservedSlackThreadMatch restores MatchThread flags dropped by a
+// v1alpha1 round-trip onto the triggers at the same index, unless the trigger
+// already carries the flag.
+func restorePreservedSlackThreadMatch(annotations map[string]string, slack *v1alpha2.Slack) error {
+	if slack == nil {
+		return nil
+	}
+	raw, ok := annotations[preservedSlackThreadMatchAnnotation]
+	if !ok || raw == "" {
+		return nil
+	}
+	var match []bool
+	if err := json.Unmarshal([]byte(raw), &match); err != nil {
+		// The annotation is best-effort preservation data and can be set by
+		// users; malformed data must not block API version conversion.
+		return nil
+	}
+	for i := range slack.Triggers {
+		if i >= len(match) {
+			break
+		}
+		if match[i] && slack.Triggers[i].MatchThread == nil {
+			value := true
+			slack.Triggers[i].MatchThread = &value
+		}
+	}
+	return nil
+}
+
+// setPreservedSlackExcludeThreadPatterns records Slack.ExcludeThreadPatterns
+// into an annotation on the v1alpha1 object so it survives a v1alpha1
+// round-trip and is restored when the object returns to v1alpha2.
+func setPreservedSlackExcludeThreadPatterns(dst *v1alpha1.TaskSpawner, slack *v1alpha2.Slack) error {
+	if slack == nil || len(slack.ExcludeThreadPatterns) == 0 {
+		deleteAnnotation(dst.Annotations, preservedSlackExcludeThreadPatternsAnnotation)
+		return nil
+	}
+	data, err := json.Marshal(slack.ExcludeThreadPatterns)
+	if err != nil {
+		return err
+	}
+	if dst.Annotations == nil {
+		dst.Annotations = map[string]string{}
+	}
+	dst.Annotations[preservedSlackExcludeThreadPatternsAnnotation] = string(data)
+	return nil
+}
+
+// restorePreservedSlackExcludeThreadPatterns restores ExcludeThreadPatterns
+// dropped by a v1alpha1 round-trip, unless the slack block already carries
+// patterns.
+func restorePreservedSlackExcludeThreadPatterns(annotations map[string]string, slack *v1alpha2.Slack) error {
+	if slack == nil || len(slack.ExcludeThreadPatterns) > 0 {
+		return nil
+	}
+	raw, ok := annotations[preservedSlackExcludeThreadPatternsAnnotation]
+	if !ok || raw == "" {
+		return nil
+	}
+	var patterns []string
+	if err := json.Unmarshal([]byte(raw), &patterns); err != nil || len(patterns) == 0 {
+		// The annotation is best-effort preservation data and can be set by
+		// users; malformed data must not block API version conversion.
+		return nil
+	}
+	slack.ExcludeThreadPatterns = patterns
+	return nil
 }
 
 func taskSpawnerCredentialFallback(credentials []v1alpha2.SpawnerCredential) v1alpha2.SpawnerCredential {

@@ -98,12 +98,15 @@ func MatchesSpawner(slackCfg *kelos.Slack, msg *SlackMessageData, botUserID stri
 	if len(slackCfg.Triggers) == 0 {
 		positiveMatch = hasBotMention(msg.Text, botUserID)
 	} else {
-		positiveMatch = matchesTriggers(msg.Text, slackCfg.Triggers, botUserID)
+		positiveMatch = matchesTriggers(msg, slackCfg.Triggers, botUserID)
 	}
 	if !positiveMatch {
 		return false
 	}
 	if matchesExcludePatterns(msg.Text, slackCfg.ExcludePatterns) {
+		return false
+	}
+	if matchesExcludeThreadPatterns(msg, slackCfg.ExcludeThreadPatterns) {
 		return false
 	}
 	return true
@@ -198,21 +201,56 @@ func matchesExcludePatterns(text string, patterns []string) bool {
 // semantics. Leading @-mentions are stripped before pattern matching so
 // patterns target semantic content. Each trigger requires a bot mention
 // (checked against the original text) unless MentionOptional is true.
-func matchesTriggers(text string, triggers []kelos.SlackTrigger, botUserID string) bool {
-	mentioned := hasBotMention(text, botUserID)
-	stripped := stripLeadingMentions(text)
+// Triggers with MatchThread set also evaluate their pattern against the
+// full thread context of human-authored thread replies, so a follow-up
+// that continues the thread's topic matches even when its own text does
+// not. Thread-context matching never applies to bot-originated messages
+// and requires the thread context to have been fetched successfully.
+func matchesTriggers(msg *SlackMessageData, triggers []kelos.SlackTrigger, botUserID string) bool {
+	mentioned := hasBotMention(msg.Text, botUserID)
+	stripped := stripLeadingMentions(msg.Text)
 	for _, t := range triggers {
 		re, err := getOrCompileRegexp(t.Pattern)
 		if err != nil {
 			continue
 		}
-		if !re.MatchString(stripped) {
+		matched := re.MatchString(stripped)
+		if t.MatchThread != nil && *t.MatchThread && msg.HasThreadContext && !msg.IsBotMessage {
+			matched = matched || re.MatchString(stripLeadingMentions(msg.Body))
+		}
+		if !matched {
 			continue
 		}
 		if t.MentionOptional != nil && *t.MentionOptional {
 			return true
 		}
 		if mentioned {
+			return true
+		}
+	}
+	return false
+}
+
+// matchesExcludeThreadPatterns returns true if the thread context of a
+// human-authored thread reply matches any of the given regular
+// expressions. The reply's own text is ignored — exclusion is driven by
+// the fetched thread conversation, so a follow-up posted inside a
+// conversation that matches (e.g. a quote thread) is excluded even when
+// the reply text does not. Never applies to bot-originated messages or
+// messages whose thread context could not be fetched.
+func matchesExcludeThreadPatterns(msg *SlackMessageData, patterns []string) bool {
+	if len(patterns) == 0 {
+		return false
+	}
+	if !msg.HasThreadContext || msg.IsBotMessage {
+		return false
+	}
+	for _, p := range patterns {
+		re, err := getOrCompileRegexp(p)
+		if err != nil {
+			continue
+		}
+		if re.MatchString(msg.Body) {
 			return true
 		}
 	}

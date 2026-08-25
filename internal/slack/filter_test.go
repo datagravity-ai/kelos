@@ -353,6 +353,73 @@ func TestMatchesSpawner(t *testing.T) {
 			botUserID: "UBOT1",
 			want:      true,
 		},
+		{
+			name: "excludeThreadPatterns rejects thread reply whose context matches",
+			slackCfg: &kelos.Slack{
+				ExcludeThreadPatterns: []string{"quote"},
+			},
+			msg:       &SlackMessageData{UserID: "U1", ChannelID: "C1", Text: "<@UBOT1> approved", Body: "can we get a quote for Acme", ThreadTS: "1234567890.123456", HasThreadContext: true},
+			botUserID: "UBOT1",
+			want:      false,
+		},
+		{
+			name: "excludeThreadPatterns allows thread reply whose context does not match",
+			slackCfg: &kelos.Slack{
+				ExcludeThreadPatterns: []string{"quote"},
+			},
+			msg:       &SlackMessageData{UserID: "U1", ChannelID: "C1", Text: "<@UBOT1> approved", Body: "triage this", ThreadTS: "1234567890.123456", HasThreadContext: true},
+			botUserID: "UBOT1",
+			want:      true,
+		},
+		{
+			name: "excludeThreadPatterns not applied without fetched thread context",
+			slackCfg: &kelos.Slack{
+				ExcludeThreadPatterns: []string{"quote"},
+			},
+			msg:       &SlackMessageData{UserID: "U1", ChannelID: "C1", Text: "<@UBOT1> approved", ThreadTS: "1234567890.123456"},
+			botUserID: "UBOT1",
+			want:      true,
+		},
+		{
+			name: "excludeThreadPatterns not applied to bot messages",
+			slackCfg: &kelos.Slack{
+				BotMessagePolicy:      kelos.BotMessagePolicyAll,
+				ExcludeThreadPatterns: []string{"quote"},
+			},
+			msg:       &SlackMessageData{UserID: "UOTHER", ChannelID: "C1", Text: "<@UBOT1> approved", Body: "quote context", ThreadTS: "1234567890.123456", HasThreadContext: true, IsBotMessage: true},
+			botUserID: "UBOT1",
+			want:      true,
+		},
+		{
+			name: "matchThread trigger fires on thread follow-up",
+			slackCfg: &kelos.Slack{
+				BotMessagePolicy: kelos.BotMessagePolicyNone,
+				Triggers:         []kelos.SlackTrigger{{Pattern: "quote", MentionOptional: boolPtr(true), MatchThread: boolPtr(true)}},
+			},
+			msg:       &SlackMessageData{UserID: "U1", ChannelID: "C1", Text: "approved", Body: "can we get a quote for Acme", ThreadTS: "1234567890.123456", HasThreadContext: true},
+			botUserID: "UBOT1",
+			want:      true,
+		},
+		{
+			name: "excludeThreadPatterns beats matchThread trigger",
+			slackCfg: &kelos.Slack{
+				BotMessagePolicy:      kelos.BotMessagePolicyNone,
+				Triggers:              []kelos.SlackTrigger{{Pattern: "quote", MentionOptional: boolPtr(true), MatchThread: boolPtr(true)}},
+				ExcludeThreadPatterns: []string{"quote"},
+			},
+			msg:       &SlackMessageData{UserID: "U1", ChannelID: "C1", Text: "approved", Body: "can we get a quote for Acme", ThreadTS: "1234567890.123456", HasThreadContext: true},
+			botUserID: "UBOT1",
+			want:      false,
+		},
+		{
+			name: "excludeThreadPatterns invalid regex skipped",
+			slackCfg: &kelos.Slack{
+				ExcludeThreadPatterns: []string{"[invalid"},
+			},
+			msg:       &SlackMessageData{UserID: "U1", ChannelID: "C1", Text: "<@UBOT1> approved", Body: "quote context", ThreadTS: "1234567890.123456", HasThreadContext: true},
+			botUserID: "UBOT1",
+			want:      true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -530,42 +597,42 @@ func TestHasBotMention(t *testing.T) {
 func TestMatchesTriggers(t *testing.T) {
 	tests := []struct {
 		name      string
-		text      string
+		msg       *SlackMessageData
 		triggers  []kelos.SlackTrigger
 		botUserID string
 		want      bool
 	}{
 		{
 			name:      "pattern matches with mention",
-			text:      "<@UBOT1> deploy prod",
+			msg:       &SlackMessageData{Text: "<@UBOT1> deploy prod"},
 			triggers:  []kelos.SlackTrigger{{Pattern: "deploy"}},
 			botUserID: "UBOT1",
 			want:      true,
 		},
 		{
 			name:      "pattern matches without mention requires mention",
-			text:      "deploy prod",
+			msg:       &SlackMessageData{Text: "deploy prod"},
 			triggers:  []kelos.SlackTrigger{{Pattern: "deploy"}},
 			botUserID: "UBOT1",
 			want:      false,
 		},
 		{
 			name:      "mentionOptional allows pattern only",
-			text:      "deploy prod",
+			msg:       &SlackMessageData{Text: "deploy prod"},
 			triggers:  []kelos.SlackTrigger{{Pattern: "deploy", MentionOptional: boolPtr(true)}},
 			botUserID: "UBOT1",
 			want:      true,
 		},
 		{
 			name:      "pattern does not match",
-			text:      "<@UBOT1> rollback",
+			msg:       &SlackMessageData{Text: "<@UBOT1> rollback"},
 			triggers:  []kelos.SlackTrigger{{Pattern: "deploy"}},
 			botUserID: "UBOT1",
 			want:      false,
 		},
 		{
 			name: "OR semantics across triggers",
-			text: "<@UBOT1> rollback",
+			msg:  &SlackMessageData{Text: "<@UBOT1> rollback"},
 			triggers: []kelos.SlackTrigger{
 				{Pattern: "deploy"},
 				{Pattern: "rollback"},
@@ -575,29 +642,105 @@ func TestMatchesTriggers(t *testing.T) {
 		},
 		{
 			name:      "invalid regex skipped",
-			text:      "<@UBOT1> fix it",
+			msg:       &SlackMessageData{Text: "<@UBOT1> fix it"},
 			triggers:  []kelos.SlackTrigger{{Pattern: "[invalid"}, {Pattern: "fix"}},
 			botUserID: "UBOT1",
 			want:      true,
 		},
 		{
 			name:      "anchored pattern matches after mention stripping",
-			text:      "<@UBOT1> deploy prod",
+			msg:       &SlackMessageData{Text: "<@UBOT1> deploy prod"},
 			triggers:  []kelos.SlackTrigger{{Pattern: "^deploy"}},
 			botUserID: "UBOT1",
 			want:      true,
 		},
 		{
 			name:      "anchored pattern with display-name mention",
-			text:      "<@UBOT1|kelos-bot> deploy prod",
+			msg:       &SlackMessageData{Text: "<@UBOT1|kelos-bot> deploy prod"},
 			triggers:  []kelos.SlackTrigger{{Pattern: "^deploy"}},
 			botUserID: "UBOT1",
 			want:      true,
 		},
 		{
 			name:      "multiple leading mentions stripped for triggers",
-			text:      "<@UBOT1> <@U999> deploy prod",
+			msg:       &SlackMessageData{Text: "<@UBOT1> <@U999> deploy prod"},
 			triggers:  []kelos.SlackTrigger{{Pattern: "^deploy", MentionOptional: boolPtr(true)}},
+			botUserID: "UBOT1",
+			want:      true,
+		},
+		{
+			name: "matchThread matches thread context when own text does not",
+			msg: &SlackMessageData{
+				Text:             "approved",
+				Body:             "<@UBOT1> can we get a quote for Acme? Approved!",
+				HasThreadContext: true,
+			},
+			triggers:  []kelos.SlackTrigger{{Pattern: "quote", MentionOptional: boolPtr(true), MatchThread: boolPtr(true)}},
+			botUserID: "UBOT1",
+			want:      true,
+		},
+		{
+			name: "matchThread does not match without fetched thread context",
+			msg: &SlackMessageData{
+				Text: "approved",
+			},
+			triggers:  []kelos.SlackTrigger{{Pattern: "quote", MentionOptional: boolPtr(true), MatchThread: boolPtr(true)}},
+			botUserID: "UBOT1",
+			want:      false,
+		},
+		{
+			name: "matchThread never applies to bot messages",
+			msg: &SlackMessageData{
+				Text:             "approved",
+				Body:             "can we get a quote for Acme? Approved!",
+				HasThreadContext: true,
+				IsBotMessage:     true,
+			},
+			triggers:  []kelos.SlackTrigger{{Pattern: "quote", MentionOptional: boolPtr(true), MatchThread: boolPtr(true)}},
+			botUserID: "UBOT1",
+			want:      false,
+		},
+		{
+			name: "matchThread without mentionOptional still requires mention in own text",
+			msg: &SlackMessageData{
+				Text:             "approved",
+				Body:             "can we get a quote for Acme? Approved!",
+				HasThreadContext: true,
+			},
+			triggers:  []kelos.SlackTrigger{{Pattern: "quote", MatchThread: boolPtr(true)}},
+			botUserID: "UBOT1",
+			want:      false,
+		},
+		{
+			name: "matchThread without mentionOptional matches when own text mentions",
+			msg: &SlackMessageData{
+				Text:             "<@UBOT1> approved",
+				Body:             "can we get a quote for Acme? Approved!",
+				HasThreadContext: true,
+			},
+			triggers:  []kelos.SlackTrigger{{Pattern: "quote", MatchThread: boolPtr(true)}},
+			botUserID: "UBOT1",
+			want:      true,
+		},
+		{
+			name: "matchThread false does not match against thread context",
+			msg: &SlackMessageData{
+				Text:             "approved",
+				Body:             "can we get a quote for Acme? Approved!",
+				HasThreadContext: true,
+			},
+			triggers:  []kelos.SlackTrigger{{Pattern: "quote", MentionOptional: boolPtr(true), MatchThread: boolPtr(false)}},
+			botUserID: "UBOT1",
+			want:      false,
+		},
+		{
+			name: "matchThread strips leading mentions from thread context",
+			msg: &SlackMessageData{
+				Text:             "approved",
+				Body:             "<@UBOT1> quote approved!",
+				HasThreadContext: true,
+			},
+			triggers:  []kelos.SlackTrigger{{Pattern: "^quote", MentionOptional: boolPtr(true), MatchThread: boolPtr(true)}},
 			botUserID: "UBOT1",
 			want:      true,
 		},
@@ -605,7 +748,7 @@ func TestMatchesTriggers(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := matchesTriggers(tt.text, tt.triggers, tt.botUserID); got != tt.want {
+			if got := matchesTriggers(tt.msg, tt.triggers, tt.botUserID); got != tt.want {
 				t.Errorf("matchesTriggers() = %v, want %v", got, tt.want)
 			}
 		})
@@ -638,6 +781,72 @@ func TestMatchesExcludePatterns(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := matchesExcludePatterns(tt.text, tt.patterns); got != tt.want {
 				t.Errorf("matchesExcludePatterns() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMatchesExcludeThreadPatterns(t *testing.T) {
+	tests := []struct {
+		name     string
+		msg      *SlackMessageData
+		patterns []string
+		want     bool
+	}{
+		{
+			name:     "empty patterns never match",
+			msg:      &SlackMessageData{Text: "approved", Body: "quote context", HasThreadContext: true},
+			patterns: nil,
+			want:     false,
+		},
+		{
+			name:     "thread context matches",
+			msg:      &SlackMessageData{Text: "approved", Body: "can we get a quote for Acme", HasThreadContext: true},
+			patterns: []string{"quote"},
+			want:     true,
+		},
+		{
+			name:     "thread context does not match",
+			msg:      &SlackMessageData{Text: "approved", Body: "triage this", HasThreadContext: true},
+			patterns: []string{"quote"},
+			want:     false,
+		},
+		{
+			name:     "reply text alone never drives exclusion",
+			msg:      &SlackMessageData{Text: "quote", Body: "triage this", HasThreadContext: true},
+			patterns: []string{"quote"},
+			want:     false,
+		},
+		{
+			name:     "no thread context never matches",
+			msg:      &SlackMessageData{Text: "approved"},
+			patterns: []string{"quote"},
+			want:     false,
+		},
+		{
+			name:     "bot messages never match",
+			msg:      &SlackMessageData{Text: "approved", Body: "quote context", HasThreadContext: true, IsBotMessage: true},
+			patterns: []string{"quote"},
+			want:     false,
+		},
+		{
+			name:     "invalid regex skipped",
+			msg:      &SlackMessageData{Text: "approved", Body: "quote context", HasThreadContext: true},
+			patterns: []string{"[invalid", "quote"},
+			want:     true,
+		},
+		{
+			name:     "multiple patterns OR semantics",
+			msg:      &SlackMessageData{Text: "approved", Body: "ae name: Acme customer name: X", HasThreadContext: true},
+			patterns: []string{"quote", "ae name"},
+			want:     true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := matchesExcludeThreadPatterns(tt.msg, tt.patterns); got != tt.want {
+				t.Errorf("matchesExcludeThreadPatterns() = %v, want %v", got, tt.want)
 			}
 		})
 	}
