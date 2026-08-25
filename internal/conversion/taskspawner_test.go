@@ -262,6 +262,53 @@ func TestTaskSpawnerConvert_ModernFieldsRoundTrip(t *testing.T) {
 	}
 }
 
+// TestTaskSpawnerConvert_SlackExcludeChannelsRoundTrip verifies that the
+// v1alpha2-only slack excludeChannels field survives a v1alpha1 round-trip via
+// its preservation annotation while shared Slack fields are carried directly.
+func TestTaskSpawnerConvert_SlackExcludeChannelsRoundTrip(t *testing.T) {
+	src := &v1alpha2.TaskSpawner{
+		Spec: v1alpha2.TaskSpawnerSpec{
+			When: v1alpha2.When{
+				Slack: &v1alpha2.Slack{
+					Channels:        []string{"C075ZF7026A"},
+					ExcludeChannels: []string{"C075ZF7026A", "C0AJHN24694"},
+				},
+			},
+		},
+	}
+
+	down := &v1alpha1.TaskSpawner{}
+	if err := taskSpawnerFromHub(context.Background(), src, down); err != nil {
+		t.Fatalf("taskSpawnerFromHub() error = %v", err)
+	}
+	if down.Spec.When.Slack == nil {
+		t.Fatal("expected slack config after down-conversion")
+	}
+	if len(down.Spec.When.Slack.Channels) != 1 || down.Spec.When.Slack.Channels[0] != "C075ZF7026A" {
+		t.Errorf("shared channels not preserved: %#v", down.Spec.When.Slack.Channels)
+	}
+	// v1alpha1 cannot represent excludeChannels — it survives only via the
+	// preservation annotation.
+	if raw, ok := down.Annotations[preservedSlackExcludeChannelsAnnotation]; !ok || raw != `["C075ZF7026A","C0AJHN24694"]` {
+		t.Errorf("preservation annotation = %q, want the excludeChannels JSON", raw)
+	}
+
+	up := &v1alpha2.TaskSpawner{}
+	if err := taskSpawnerToHub(context.Background(), down, up); err != nil {
+		t.Fatalf("taskSpawnerToHub() error = %v", err)
+	}
+	if up.Spec.When.Slack == nil {
+		t.Fatal("expected slack config after up-conversion")
+	}
+	got := up.Spec.When.Slack.ExcludeChannels
+	if len(got) != 2 || got[0] != "C075ZF7026A" || got[1] != "C0AJHN24694" {
+		t.Errorf("excludeChannels not restored: %#v", got)
+	}
+	if _, ok := up.Annotations[preservedSlackExcludeChannelsAnnotation]; ok {
+		t.Error("preservation annotation not cleaned up after restore")
+	}
+}
+
 // TestTaskSpawnerConvert_CheckRunFilterFieldsDownConvert verifies that the
 // v1alpha2-only check_run filter fields (Conclusion, CheckName) convert down to
 // v1alpha1 without error. v1alpha1 has no equivalent fields, so they are dropped

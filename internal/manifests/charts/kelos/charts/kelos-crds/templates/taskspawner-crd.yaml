@@ -23317,6 +23317,18 @@ spec:
                           type: string
                         maxItems: 64
                         type: array
+                      excludeChannels:
+                        description: |-
+                          ExcludeChannels rejects messages from the given Slack channels,
+                          regardless of the Channels allowlist — an excluded channel is never
+                          matched, even when Channels is empty (all channels). Values are
+                          channel IDs (e.g., "C0123456789"). Unlike ExcludePatterns, this
+                          also applies to slash commands.
+                        items:
+                          pattern: ^[CG][A-Z0-9]{8,}$
+                          type: string
+                        maxItems: 64
+                        type: array
                       excludePatterns:
                         description: |-
                           ExcludePatterns rejects messages whose text matches any of the given

@@ -42,6 +42,12 @@ type preservedWebhookGatewayRefs struct {
 	Generic *v1alpha2.GatewayReference `json:"generic,omitempty"`
 }
 
+// preservedSlackExcludeChannelsAnnotation carries spec.when.slack.excludeChannels
+// (a v1alpha2-only field) across a v1alpha1 round-trip so a client that reads
+// and writes the object through v1alpha1 does not silently drop it. v1alpha1
+// does not gain the capability — the value only survives in this annotation.
+const preservedSlackExcludeChannelsAnnotation = "kelos.dev/v1alpha2-slack-exclude-channels"
+
 type preservedGitHubCommentsReporting struct {
 	GitHubIssues       *preservedGitHubCommentsSource `json:"githubIssues,omitempty"`
 	GitHubPullRequests *preservedGitHubCommentsSource `json:"githubPullRequests,omitempty"`
@@ -76,6 +82,8 @@ func taskSpawnerToHub(_ context.Context, src *v1alpha1.TaskSpawner, dst *v1alpha
 	deleteAnnotation(dst.Annotations, preservedGitHubCommentsReportingAnnotation)
 	restorePreservedWebhookGatewayRefs(src.Annotations, &dst.Spec.When)
 	deleteAnnotation(dst.Annotations, preservedWebhookGatewayRefsAnnotation)
+	restorePreservedSlackExcludeChannels(src.Annotations, dst.Spec.When.Slack)
+	deleteAnnotation(dst.Annotations, preservedSlackExcludeChannelsAnnotation)
 	return nil
 }
 
@@ -99,6 +107,9 @@ func taskSpawnerFromHub(_ context.Context, src *v1alpha2.TaskSpawner, dst *v1alp
 		return err
 	}
 	if err := setPreservedWebhookGatewayRefs(dst, src.Spec.When); err != nil {
+		return err
+	}
+	if err := setPreservedSlackExcludeChannels(dst, src.Spec.When.Slack); err != nil {
 		return err
 	}
 	return convertViaJSON(&src.Status, &dst.Status)
@@ -168,6 +179,44 @@ func restorePreservedNameTemplate(annotations map[string]string, dst *v1alpha2.T
 	if v, ok := annotations[preservedNameTemplateAnnotation]; ok {
 		dst.NameTemplate = v
 	}
+}
+
+// setPreservedSlackExcludeChannels records spec.when.slack.excludeChannels in
+// an annotation on the v1alpha1 object so the field survives a v1alpha1
+// round-trip. The annotation is cleared when there is nothing to preserve.
+func setPreservedSlackExcludeChannels(dst *v1alpha1.TaskSpawner, slack *v1alpha2.Slack) error {
+	if slack == nil || len(slack.ExcludeChannels) == 0 {
+		deleteAnnotation(dst.Annotations, preservedSlackExcludeChannelsAnnotation)
+		return nil
+	}
+	data, err := json.Marshal(slack.ExcludeChannels)
+	if err != nil {
+		return err
+	}
+	if dst.Annotations == nil {
+		dst.Annotations = map[string]string{}
+	}
+	dst.Annotations[preservedSlackExcludeChannelsAnnotation] = string(data)
+	return nil
+}
+
+// restorePreservedSlackExcludeChannels restores excludeChannels dropped by a
+// v1alpha1 round-trip, unless the v1alpha2 object already carries the field.
+func restorePreservedSlackExcludeChannels(annotations map[string]string, slack *v1alpha2.Slack) {
+	if slack == nil || len(slack.ExcludeChannels) > 0 {
+		return
+	}
+	raw, ok := annotations[preservedSlackExcludeChannelsAnnotation]
+	if !ok || raw == "" {
+		return
+	}
+	var excludeChannels []string
+	if err := json.Unmarshal([]byte(raw), &excludeChannels); err != nil || len(excludeChannels) == 0 {
+		// The annotation is best-effort preservation data and can be set by
+		// users; malformed data must not block API version conversion.
+		return
+	}
+	slack.ExcludeChannels = excludeChannels
 }
 
 // setPreservedContextGitHubAppAuth records the githubAppAuth block of each

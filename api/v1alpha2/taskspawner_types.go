@@ -665,6 +665,16 @@ type Slack struct {
 	// +kubebuilder:validation:items:Pattern=`^[CG][A-Z0-9]{8,}$`
 	Channels []string `json:"channels,omitempty"`
 
+	// ExcludeChannels rejects messages from the given Slack channels,
+	// regardless of the Channels allowlist — an excluded channel is never
+	// matched, even when Channels is empty (all channels). Values are
+	// channel IDs (e.g., "C0123456789"). Unlike ExcludePatterns, this
+	// also applies to slash commands.
+	// +optional
+	// +kubebuilder:validation:MaxItems=64
+	// +kubebuilder:validation:items:Pattern=`^[CG][A-Z0-9]{8,}$`
+	ExcludeChannels []string `json:"excludeChannels,omitempty"`
+
 	// BotMessages controls whether bot-originated messages can trigger this
 	// spawner. Accepting bot messages carries loop risk — especially "All"
 	// which includes the bot's own output. Use ExcludePatterns or Triggers
