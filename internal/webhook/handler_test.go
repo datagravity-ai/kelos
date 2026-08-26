@@ -1161,6 +1161,13 @@ func TestServeHTTP_IssueCommentOnPR_EnrichesBranch(t *testing.T) {
 			When: kelos.When{
 				GitHubWebhook: &kelos.GitHubWebhook{
 					Events: []string{"issue_comment"},
+					Filters: []kelos.GitHubWebhookFilter{{
+						Event:     "issue_comment",
+						CommentOn: kelos.CommentOnPullRequest,
+					}},
+					Reporting: &kelos.GitHubReporting{
+						Checks: &kelos.GitHubChecksReporting{},
+					},
 				},
 			},
 			TaskTemplate: kelos.TaskTemplate{
@@ -1220,6 +1227,12 @@ func TestServeHTTP_IssueCommentOnPR_EnrichesBranch(t *testing.T) {
 	task := taskList.Items[0]
 	if task.Spec.Prompt != "Review PR on branch feature-branch" {
 		t.Errorf("Expected prompt with enriched branch, got %q", task.Spec.Prompt)
+	}
+	if task.Annotations[reporting.AnnotationGitHubChecks] != "enabled" {
+		t.Errorf("Expected github-checks 'enabled', got %q", task.Annotations[reporting.AnnotationGitHubChecks])
+	}
+	if task.Annotations[reporting.AnnotationSourceSHA] != "enriched-sha-456" {
+		t.Errorf("Expected source-sha 'enriched-sha-456', got %q", task.Annotations[reporting.AnnotationSourceSHA])
 	}
 }
 
@@ -2209,7 +2222,7 @@ func TestServeHTTP_ChecksAnnotationsForPRWebhook(t *testing.T) {
 	}
 }
 
-func TestServeHTTP_ChecksAnnotationsSkippedForNonPRWebhook(t *testing.T) {
+func TestServeHTTP_ChecksAnnotationsSkippedForIssueComment(t *testing.T) {
 	spawner := &kelos.TaskSpawner{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "checks-issue-spawner",
@@ -2219,7 +2232,11 @@ func TestServeHTTP_ChecksAnnotationsSkippedForNonPRWebhook(t *testing.T) {
 		Spec: kelos.TaskSpawnerSpec{
 			When: kelos.When{
 				GitHubWebhook: &kelos.GitHubWebhook{
-					Events: []string{"issues", "pull_request"},
+					Events: []string{"issue_comment", "pull_request"},
+					Filters: []kelos.GitHubWebhookFilter{{
+						Event:     "issue_comment",
+						CommentOn: kelos.CommentOnIssue,
+					}},
 					Reporting: &kelos.GitHubReporting{
 						Enabled: true,
 						Checks:  &kelos.GitHubChecksReporting{},
@@ -2241,11 +2258,11 @@ func TestServeHTTP_ChecksAnnotationsSkippedForNonPRWebhook(t *testing.T) {
 
 	handler := newTestHandler(t, spawner)
 
-	payload := []byte(issuesPayload)
+	payload := []byte(issueCommentPayload)
 	sig := signPayload(payload, []byte(testSecret))
 
 	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(payload))
-	req.Header.Set(GitHubEventHeader, "issues")
+	req.Header.Set(GitHubEventHeader, "issue_comment")
 	req.Header.Set(GitHubSignatureHeader, sig)
 	req.Header.Set(GitHubDeliveryHeader, "checks-issue-delivery")
 	rr := httptest.NewRecorder()
@@ -2264,16 +2281,14 @@ func TestServeHTTP_ChecksAnnotationsSkippedForNonPRWebhook(t *testing.T) {
 	}
 
 	task := taskList.Items[0]
-	// Comment reporting should be enabled
 	if task.Annotations[reporting.AnnotationGitHubReporting] != "enabled" {
 		t.Errorf("Expected github-reporting 'enabled', got %q", task.Annotations[reporting.AnnotationGitHubReporting])
 	}
-	// Checks should NOT be stamped for issue events even when checks is configured
 	if _, ok := task.Annotations[reporting.AnnotationGitHubChecks]; ok {
-		t.Error("Expected no github-checks annotation for issue event")
+		t.Error("Expected no github-checks annotation for issue comment")
 	}
 	if _, ok := task.Annotations[reporting.AnnotationSourceSHA]; ok {
-		t.Error("Expected no source-sha annotation for issue event")
+		t.Error("Expected no source-sha annotation for issue comment")
 	}
 }
 

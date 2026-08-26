@@ -72,8 +72,9 @@ type Cron struct {
 // GitHubReporting configures status reporting back to GitHub.
 // All GitHub sources (issues, pull requests, webhooks) support comment
 // reporting. The Checks field is supported for githubPullRequests and for
-// githubWebhook sources that include at least one pull-request event type;
-// other sources reject it via CEL validation.
+// githubWebhook sources that include at least one pull-request event type or
+// only match issue_comment events on pull requests; other sources reject it
+// via CEL validation.
 type GitHubReporting struct {
 	// Enabled posts standard status comments back to the originating GitHub issue or PR.
 	//
@@ -89,7 +90,8 @@ type GitHubReporting struct {
 
 	// Checks creates GitHub Check Runs for pull request tasks. When nil,
 	// no Check Runs are created. Supported for githubPullRequests and
-	// githubWebhook sources with pull-request event types.
+	// githubWebhook sources with pull-request event types or PR-scoped
+	// issue_comment filters.
 	// +optional
 	Checks *GitHubChecksReporting `json:"checks,omitempty"`
 }
@@ -382,7 +384,7 @@ type Jira struct {
 }
 
 // GitHubWebhook configures matching for GitHub webhook events.
-// +kubebuilder:validation:XValidation:rule="!has(self.reporting) || !has(self.reporting.checks) || self.events.exists(e, e in ['pull_request', 'pull_request_review', 'pull_request_review_comment', 'pull_request_target'])",message="checks reporting requires at least one pull-request event type"
+// +kubebuilder:validation:XValidation:rule="!has(self.reporting) || !has(self.reporting.checks) || self.events.exists(e, e in ['pull_request', 'pull_request_review', 'pull_request_review_comment', 'pull_request_target']) || (self.events.exists(e, e == 'issue_comment') && has(self.filters) && self.filters.exists(f, f.event == 'issue_comment') && self.filters.all(f, f.event != 'issue_comment' || (has(f.commentOn) && f.commentOn == 'PullRequest')))",message="checks reporting requires a pull-request event type or PR-scoped issue_comment filters"
 type GitHubWebhook struct {
 	// Events is the list of GitHub event types to listen for.
 	// e.g., "issue_comment", "pull_request_review", "push", "issues"

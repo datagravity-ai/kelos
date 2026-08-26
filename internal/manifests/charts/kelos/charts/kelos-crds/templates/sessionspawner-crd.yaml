@@ -7492,7 +7492,8 @@ spec:
                             description: |-
                               Checks creates GitHub Check Runs for pull request tasks. When nil,
                               no Check Runs are created. Supported for githubPullRequests and
-                              githubWebhook sources with pull-request event types.
+                              githubWebhook sources with pull-request event types or PR-scoped
+                              issue_comment filters.
                             properties:
                               name:
                                 description: |-
@@ -7537,11 +7538,15 @@ spec:
                     - events
                     type: object
                     x-kubernetes-validations:
-                    - message: checks reporting requires at least one pull-request
-                        event type
+                    - message: checks reporting requires a pull-request event type
+                        or PR-scoped issue_comment filters
                       rule: '!has(self.reporting) || !has(self.reporting.checks) ||
                         self.events.exists(e, e in [''pull_request'', ''pull_request_review'',
-                        ''pull_request_review_comment'', ''pull_request_target''])'
+                        ''pull_request_review_comment'', ''pull_request_target''])
+                        || (self.events.exists(e, e == ''issue_comment'') && has(self.filters)
+                        && self.filters.exists(f, f.event == ''issue_comment'') &&
+                        self.filters.all(f, f.event != ''issue_comment'' || (has(f.commentOn)
+                        && f.commentOn == ''PullRequest'')))'
                 type: object
             required:
             - sessionTemplate

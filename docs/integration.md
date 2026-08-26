@@ -123,7 +123,7 @@ spec:
 
 To require the Check Run before merge, open the GitHub repository's **Settings → Branches → Branch protection rule** for the target branch, enable **Require status checks to pass before merging**, and add the same name (`kelos/pr-review` or the default `Kelos: <taskspawner-name>`) to the required checks list. Renaming the TaskSpawner changes the default name, so pin the name with `reporting.checks.name` if you reference it from branch protection or merge queue config.
 
-> **Note:** `reporting.checks` is supported for `githubPullRequests` and for `githubWebhook` sources that include a pull-request event type. It is rejected at admission for `githubIssues` sources.
+> **Note:** `reporting.checks` is supported for `githubPullRequests` and for `githubWebhook` sources that include a pull-request event type or have at least one `issue_comment` filter with all such filters set to `commentOn: PullRequest`. It is rejected at admission for `githubIssues` sources.
 
 ### GitHub Webhooks
 
@@ -191,7 +191,7 @@ spec:
 
 **Filtering options:** `events` (required), `repository`, `excludeAuthors`, and per-filter fields: `action`, `labels`, `excludeLabels`, `state`, `branch`, `draft`, `author`, `bodyPattern`, `excludeBodyPatterns`, `commentOn` (scopes `issue_comment` events to `"Issue"` or `"PullRequest"`). The legacy `bodyContains` substring filter is **deprecated** — use `bodyPattern` (Go re2 regular expression) instead.
 
-**Status reporting:** Like `githubPullRequests`, the webhook source supports `reporting.comments` (status comments back to the originating issue or PR) and `reporting.checks.name` (GitHub Check Runs for branch protection). Comment mode defaults to `PerTask`; `Sticky` maintains one comment per TaskSpawner and originating issue or PR across Tasks. Check Runs require `events` to include at least one pull-request event type (`pull_request`, `pull_request_review`, `pull_request_review_comment`, or `pull_request_target`); the configuration is rejected at admission otherwise.
+**Status reporting:** Like `githubPullRequests`, the webhook source supports `reporting.comments` (status comments back to the originating issue or PR) and `reporting.checks.name` (GitHub Check Runs for branch protection). Comment mode defaults to `PerTask`; `Sticky` maintains one comment per TaskSpawner and originating issue or PR across Tasks. Check Runs require `events` to include at least one pull-request event type (`pull_request`, `pull_request_review`, `pull_request_review_comment`, or `pull_request_target`), or to include `issue_comment` with at least one matching filter and every `issue_comment` filter set to `commentOn: PullRequest`. Other configurations are rejected at admission. An `issue_comment` Check Run is associated with the pull request's current head SHA, which Kelos fetches from GitHub before creating the Task.
 
 **Webhook-specific variables:** `{{.Event}}`, `{{.Action}}`, `{{.Sender}}`, `{{.Ref}}`, `{{.Repository}}`, `{{.Payload}}` (full payload access).
 
