@@ -337,7 +337,10 @@ to expand retained results that exceed five lines.
 Selecting a Session in the web chat opens a bounded page at the latest retained
 message. Use **Load earlier messages** to prepend the previous page without
 moving away from the current scroll position. Reconnecting preserves an
-intentional upward scroll position and the loaded conversation view.
+intentional upward scroll position and the loaded conversation view. When the
+request for the visible response has scrolled out of view, a compact **Current
+request** link follows it while browsing history and scrolls back to the full
+request when clicked. The link stays hidden while viewing file changes.
 
 The Session sidebar shows compact relative activity times, and the selected
 Session header shows whether it is active now, when it was last active, or when

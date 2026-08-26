@@ -76,6 +76,9 @@
         sectionChoiceCustom: document.querySelector('#session-section-choice-custom'),
         saveSectionButton: document.querySelector('#save-session-section'),
         cancelSectionButton: document.querySelector('#cancel-session-section'),
+        currentRequest: document.querySelector('#current-request'),
+        currentRequestButton: document.querySelector('#current-request-button'),
+        currentRequestText: document.querySelector('#current-request-text'),
         messages: document.querySelector('#messages'),
         changes: document.querySelector('#changes-view'),
         changesList: document.querySelector('#changes-list'),
@@ -286,6 +289,8 @@
         }
         if (state.consoleView === 'sessions' && !state.selected && state.sessions.length)
             selectSession(state.sessions[0]);
+        if (state.consoleView === 'sessions')
+            updateCurrentRequest();
         setSidebarOpen(false);
     }
     function resourceAge(createdAt) {
@@ -916,6 +921,7 @@
         refreshSessionProgress();
         renderRuntimeStatus();
         renderHistoryControl();
+        updateCurrentRequest();
     }
     function cachedSessionView(session) {
         const key = sessionViewKey(session);
@@ -967,6 +973,7 @@
         elements.messages.replaceChildren();
         elements.pending.replaceChildren();
         elements.pending.hidden = true;
+        hideCurrentRequest();
         renderFileChanges();
         if (view) {
             view.historyLoaded = false;
@@ -3375,6 +3382,7 @@ spec:
         messages.style.scrollBehavior = 'auto';
         messages.scrollTop = Math.max(0, previousTop + (Number(messages.scrollHeight) || 0) - previousHeight);
         messages.style.scrollBehavior = scrollBehavior;
+        updateCurrentRequest();
         refreshSessionProgress();
         updateComposerAction();
     }
@@ -3408,6 +3416,7 @@ spec:
         if (pinToBottom)
             scheduleBottomAnchor();
         state.pinHistoryToBottom = false;
+        updateCurrentRequest();
     }
     function handleEvent(event) {
         if (state.historyPageReading) {
@@ -3555,10 +3564,65 @@ spec:
         }
         renderAcceptedUser(event);
     }
+    let currentRequestRow = null;
+    let currentRequestUpdateFrame = null;
+    function hideCurrentRequest() {
+        if (!currentRequestRow && elements.currentRequest.hidden)
+            return;
+        currentRequestRow = null;
+        elements.currentRequest.hidden = true;
+    }
+    function updateCurrentRequest() {
+        if (elements.sessionsView.hidden)
+            return;
+        if (elements.messages.hidden) {
+            hideCurrentRequest();
+            return;
+        }
+        const viewportTop = elements.messages.getBoundingClientRect().top;
+        let request = null;
+        for (const row of elements.messages.querySelectorAll('.event-row.user')) {
+            const bounds = row.getBoundingClientRect();
+            if (bounds.top > viewportTop)
+                break;
+            if (bounds.bottom > viewportTop) {
+                request = null;
+                break;
+            }
+            request = row;
+        }
+        const text = request?.dataset.requestText || '';
+        if (!request || !text) {
+            hideCurrentRequest();
+            return;
+        }
+        if (currentRequestRow === request && !elements.currentRequest.hidden && elements.currentRequestText.textContent === text)
+            return;
+        currentRequestRow = request;
+        elements.currentRequestText.textContent = text;
+        elements.currentRequestButton.title = text;
+        elements.currentRequest.hidden = false;
+    }
+    function scheduleCurrentRequestUpdate() {
+        if (currentRequestUpdateFrame !== null)
+            return;
+        currentRequestUpdateFrame = window.requestAnimationFrame(() => {
+            currentRequestUpdateFrame = null;
+            updateCurrentRequest();
+        });
+    }
+    function jumpToCurrentRequest() {
+        const request = currentRequestRow;
+        if (!request)
+            return;
+        hideCurrentRequest();
+        request.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
     function renderAcceptedUser(event) {
         ensureConversation();
         const row = document.createElement('div');
         row.className = 'event-row user';
+        row.dataset.requestText = event.text || (event.attachments || []).map(attachment => attachment.name).join(', ');
         const message = document.createElement('div');
         message.className = 'user-message';
         const bubble = document.createElement('div');
@@ -4215,6 +4279,10 @@ spec:
         elements.changesTab.setAttribute('aria-selected', String(changesActive));
         elements.conversationTab.tabIndex = changesActive ? -1 : 0;
         elements.changesTab.tabIndex = changesActive ? 0 : -1;
+        if (changesActive)
+            hideCurrentRequest();
+        else
+            updateCurrentRequest();
     }
     function handleViewTabKeydown(event) {
         const tabs = [elements.conversationTab, elements.changesTab].filter(tab => !tab.disabled);
@@ -4879,6 +4947,8 @@ spec:
     elements.conversationTab.addEventListener('click', () => setActiveView('conversation'));
     elements.changesTab.addEventListener('click', () => setActiveView('changes'));
     elements.viewTabs.addEventListener('keydown', handleViewTabKeydown);
+    elements.currentRequestButton.addEventListener('click', jumpToCurrentRequest);
+    elements.messages.addEventListener('scroll', scheduleCurrentRequestUpdate);
     function interruptActiveTurn() {
         if (!state.socket || state.socket.readyState !== WebSocket.OPEN || !state.activeTurn || state.interrupting)
             return;
@@ -4925,7 +4995,10 @@ spec:
     elements.closeSidebar.addEventListener('click', () => setSidebarOpen(false));
     elements.sidebarScrim.addEventListener('click', () => setSidebarOpen(false));
     elements.sidebarScroll.addEventListener('scroll', () => closeSessionActionsMenu());
-    window.addEventListener('resize', () => closeSessionActionsMenu());
+    window.addEventListener('resize', () => {
+        closeSessionActionsMenu();
+        scheduleCurrentRequestUpdate();
+    });
     document.addEventListener('pointerdown', event => {
         if (elements.sessionActionsMenu.hidden)
             return;
