@@ -2532,4 +2532,90 @@ var _ = Describe("TaskSpawner Controller", func() {
 			Expect(err.Error()).To(ContainSubstring("Unsupported"))
 		})
 	})
+
+	Context("When configuring GitHub Checks reporting for webhook events", func() {
+		It("Should accept only PR-scoped issue_comment filters", func() {
+			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "test-taskspawner-checks-comments"}}
+			Expect(k8sClient.Create(ctx, ns)).Should(Succeed())
+
+			testCases := []struct {
+				name    string
+				events  []string
+				filters []kelos.GitHubWebhookFilter
+				valid   bool
+			}{
+				{
+					name:   "pull-request-event",
+					events: []string{"pull_request"},
+					valid:  true,
+				},
+				{
+					name:   "pr-comment",
+					events: []string{"issue_comment"},
+					filters: []kelos.GitHubWebhookFilter{{
+						Event:     "issue_comment",
+						CommentOn: kelos.CommentOnPullRequest,
+					}},
+					valid: true,
+				},
+				{
+					name:   "unfiltered-comment",
+					events: []string{"issue_comment"},
+				},
+				{
+					name:   "unscoped-comment",
+					events: []string{"issue_comment"},
+					filters: []kelos.GitHubWebhookFilter{{
+						Event: "issue_comment",
+					}},
+				},
+				{
+					name:   "issue-comment",
+					events: []string{"issue_comment"},
+					filters: []kelos.GitHubWebhookFilter{{
+						Event:     "issue_comment",
+						CommentOn: kelos.CommentOnIssue,
+					}},
+				},
+				{
+					name:   "mixed-comment-scopes",
+					events: []string{"issue_comment"},
+					filters: []kelos.GitHubWebhookFilter{
+						{Event: "issue_comment", CommentOn: kelos.CommentOnPullRequest, Author: "reviewer"},
+						{Event: "issue_comment", CommentOn: kelos.CommentOnIssue, Author: "triager"},
+					},
+				},
+			}
+
+			for _, tt := range testCases {
+				ts := &kelos.TaskSpawner{
+					ObjectMeta: metav1.ObjectMeta{Name: tt.name, Namespace: ns.Name},
+					Spec: kelos.TaskSpawnerSpec{
+						When: kelos.When{GitHubWebhook: &kelos.GitHubWebhook{
+							Events:  tt.events,
+							Filters: tt.filters,
+							Reporting: &kelos.GitHubReporting{
+								Checks: &kelos.GitHubChecksReporting{},
+							},
+						}},
+						TaskTemplate: kelos.TaskTemplate{
+							Worker: &kelos.WorkerSpec{
+								Type:         "codex",
+								Credentials:  &kelos.Credentials{Type: kelos.CredentialTypeNone},
+								WorkspaceRef: &kelos.WorkspaceReference{Name: "workspace"},
+							},
+						},
+					},
+				}
+
+				err := k8sClient.Create(ctx, ts)
+				if tt.valid {
+					Expect(err).NotTo(HaveOccurred(), "case %s", tt.name)
+					continue
+				}
+				Expect(apierrors.IsInvalid(err)).To(BeTrue(), "case %s: %v", tt.name, err)
+				Expect(err.Error()).To(ContainSubstring("PR-scoped issue_comment filters"))
+			}
+		})
+	})
 })
