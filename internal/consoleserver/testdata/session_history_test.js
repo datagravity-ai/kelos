@@ -16,6 +16,8 @@ class TestNode {
     this.listeners = new Map();
     this.style = {};
     this.scrollTop = 0;
+    this.bounds = {top: 0, bottom: 0};
+    this.scrollIntoViewOptions = null;
     this.classList = {
       add: (...names) => names.forEach((name) => this.classes.add(name)),
       remove: (...names) => names.forEach((name) => this.classes.delete(name)),
@@ -96,9 +98,10 @@ class TestNode {
   querySelectorAll(selector) {
     const matches = [];
     for (const child of this.children) {
+      const selectorClasses = selector.startsWith('.') ? selector.slice(1).split('.') : [];
       const classMatch = selector === '.file-change[open]'
         ? child.classes.has('file-change') && child.open
-        : selector.startsWith('.') && child.classes.has(selector.slice(1));
+        : selectorClasses.length > 0 && selectorClasses.every(name => child.classes.has(name));
       if (classMatch || child.tag === selector) matches.push(child);
       matches.push(...child.querySelectorAll(selector));
     }
@@ -111,6 +114,14 @@ class TestNode {
 
   addEventListener(name, listener) {
     this.listeners.set(name, listener);
+  }
+
+  getBoundingClientRect() {
+    return this.bounds;
+  }
+
+  scrollIntoView(options) {
+    this.scrollIntoViewOptions = options;
   }
 
   set textContent(value) {
@@ -141,6 +152,7 @@ let bottomAnchors;
 let interruptRequests;
 let socketConnections;
 let progressTimers;
+let animationFrames;
 let toasts;
 let closeSocketRequests;
 
@@ -148,6 +160,10 @@ global.window = {
   clearInterval: (timer) => progressTimers.delete(timer),
   confirm: () => true,
   matchMedia: () => ({matches: false}),
+  requestAnimationFrame: (callback) => {
+    animationFrames.push(callback);
+    return animationFrames.length;
+  },
   setInterval: (callback) => {
     const timer = progressTimers.size + 1;
     progressTimers.set(timer, callback);
@@ -163,6 +179,10 @@ function resetHarness() {
     changesList: new TestNode('div'),
     changesCount: new TestNode('span'),
     changesSummary: new TestNode('span'),
+    currentRequest: new TestNode('div'),
+    currentRequestButton: new TestNode('button'),
+    currentRequestText: new TestNode('span'),
+    sessionsView: new TestNode('main'),
     composerHint: new TestNode('span'),
     input: new TestNode('textarea'),
     attachFiles: new TestNode('button'),
@@ -185,6 +205,7 @@ function resetHarness() {
     connection: new TestNode('div'),
     welcome: null,
   };
+  elements.currentRequest.hidden = true;
   elements.connection.append(new TestNode('span'), new TestNode('span'));
   global.state = {
     sessions: [],
@@ -230,6 +251,7 @@ function resetHarness() {
   socketConnections = 0;
   closeSocketRequests = 0;
   progressTimers = new Map();
+  animationFrames = [];
   toasts = [];
 }
 
@@ -917,6 +939,61 @@ function testUserAttachmentRendering() {
   assert.match(link.textContent, /screen\.png/);
 }
 
+function testCurrentRequestTracksScrolledTurn() {
+  resetHarness();
+  elements.messages.bounds = {top: 100, bottom: 600};
+  renderAcceptedUser({type: 'user.message', text: 'Review the controller changes'});
+  renderAcceptedUser({type: 'user.message', text: 'Then run the focused tests'});
+  const requests = elements.messages.querySelectorAll('.event-row.user');
+  requests[0].bounds = {top: 20, bottom: 80};
+  requests[1].bounds = {top: 300, bottom: 340};
+
+  updateCurrentRequest();
+
+  assert.equal(elements.currentRequest.hidden, false);
+  assert.equal(elements.currentRequestText.textContent, 'Review the controller changes');
+  assert.equal(elements.currentRequestButton.title, 'Review the controller changes');
+  jumpToCurrentRequest();
+  assert.deepEqual(requests[0].scrollIntoViewOptions, {behavior: 'smooth', block: 'start'});
+  assert.equal(elements.currentRequest.hidden, true);
+  updateCurrentRequest();
+
+  elements.sessionsView.hidden = true;
+  requests[0].bounds = {top: 0, bottom: 0};
+  requests[1].bounds = {top: 0, bottom: 0};
+  updateCurrentRequest();
+  assert.equal(elements.currentRequest.hidden, false);
+  assert.equal(elements.currentRequestText.textContent, 'Review the controller changes');
+
+  elements.sessionsView.hidden = false;
+  requests[1].bounds = {top: 40, bottom: 90};
+  updateCurrentRequest();
+  assert.equal(elements.currentRequestText.textContent, 'Then run the focused tests');
+
+  requests[1].bounds = {top: 100, bottom: 140};
+  updateCurrentRequest();
+  assert.equal(elements.currentRequest.hidden, true);
+}
+
+function testCurrentRequestScrollUpdatesAreThrottled() {
+  resetHarness();
+  elements.messages.bounds = {top: 100, bottom: 600};
+  renderAcceptedUser({type: 'user.message', text: 'Inspect the long response'});
+  elements.messages.querySelectorAll('.event-row.user')[0].bounds = {top: 20, bottom: 80};
+
+  scheduleCurrentRequestUpdate();
+  scheduleCurrentRequestUpdate();
+
+  assert.equal(animationFrames.length, 1);
+  animationFrames.shift()();
+  assert.equal(elements.currentRequest.hidden, false);
+  assert.equal(elements.currentRequestText.textContent, 'Inspect the long response');
+
+  scheduleCurrentRequestUpdate();
+  assert.equal(animationFrames.length, 1);
+  animationFrames.shift()();
+}
+
 function testPendingMessageEditing() {
   resetHarness();
   const sent = [];
@@ -999,6 +1076,8 @@ testGoalRendering();
 testToolOutputRenderingNormalizesCarriageReturns();
 testHistoryToolCompletionRendersOutputWithoutStart();
 testUserAttachmentRendering();
+testCurrentRequestTracksScrolledTurn();
+testCurrentRequestScrollUpdatesAreThrottled();
 testPendingMessageEditing();
 testPendingMessageRemoval();
 testPendingMessageSurvivesCompletedHistoryReplay();

@@ -18,6 +18,28 @@ vm.runInThisContext(applicationSlice('const allResourceKind', 'async function lo
 vm.runInThisContext(applicationSlice('async function refreshConsole', 'async function openResourceDetail'), {filename: 'app.js'});
 vm.runInThisContext(applicationSlice('function setResourceDetailView', 'function sessionKey'), {filename: 'app.js'});
 
+function testReturningToSessionsRefreshesCurrentRequest() {
+  let updates = 0;
+  const navigationButton = () => ({setAttribute() {}, removeAttribute() {}});
+  global.state = {consoleView: 'overview', selected: {}, sessions: []};
+  global.elements = {
+    overviewView: {hidden: false},
+    sessionsView: {hidden: true},
+    resourcesView: {hidden: true},
+    sessionSidebar: {hidden: true},
+    overviewButton: navigationButton(),
+    sessionsButton: navigationButton(),
+    resourcesButton: navigationButton(),
+  };
+  global.updateCurrentRequest = () => { updates++; };
+  global.setSidebarOpen = () => {};
+
+  setConsoleView('sessions');
+
+  assert.equal(elements.sessionsView.hidden, false);
+  assert.equal(updates, 1);
+}
+
 function testResourceInventorySupportsAllTypesAndSearch() {
   const collections = [
     {resource: 'tasks', kind: 'Task', label: 'Tasks', items: [
@@ -211,6 +233,7 @@ function testResourceDetailTabsSupportKeyboardNavigation() {
   assert.equal(prevented, true);
 }
 
+testReturningToSessionsRefreshesCurrentRequest();
 testResourceInventorySupportsAllTypesAndSearch();
 testResourceRelationshipHelpersResolveExistingAndMissingResources();
 testResourceViewTabsSupportKeyboardNavigation();
