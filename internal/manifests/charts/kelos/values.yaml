@@ -195,6 +195,9 @@ slackServer:
   joinMessage: ""
   # Deny service to externally shared (Slack Connect) channels.
   denySlackConnectChannels: false
+  # Channel IDs whose completion replies carry the 👍/👎 score ask and
+  # pre-seeded reactions. Leave empty to disable the score ask everywhere.
+  scorePilotChannels: []
   resources:
     limits:
       cpu: 500m

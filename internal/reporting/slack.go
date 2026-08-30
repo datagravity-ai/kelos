@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"unicode/utf8"
 
@@ -79,6 +80,37 @@ func (r *SlackReporter) UpdateMessage(ctx context.Context, channel, messageTS st
 	return nil
 }
 
+// AddReaction adds a reaction emoji to a posted message. Used to pre-seed
+// the 👍 and 👎 score reactions on completion replies in the pilot channels.
+func (r *SlackReporter) AddReaction(ctx context.Context, channel, messageTS, emoji string) error {
+	item := slack.NewRefToMessage(channel, messageTS)
+	if err := r.api().AddReactionContext(ctx, emoji, item); err != nil {
+		return fmt.Errorf("adding Slack reaction %s to message %s: %w", emoji, messageTS, err)
+	}
+	return nil
+}
+
+// ParseScorePilotChannels splits a comma-separated channel-ID list (e.g.
+// the SLACK_SCORE_PILOT_CHANNELS environment variable) into a set. Empty
+// parts and stray whitespace are ignored, so "C1, ,C2 " and "C1,C2" are
+// equivalent. A blank input yields nil, which keeps the score ask disabled
+// everywhere.
+func ParseScorePilotChannels(value string) map[string]bool {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	channels := map[string]bool{}
+	for _, part := range strings.Split(value, ",") {
+		if channel := strings.TrimSpace(part); channel != "" {
+			channels[channel] = true
+		}
+	}
+	if len(channels) == 0 {
+		return nil
+	}
+	return channels
+}
+
 // isPermanentSlackError reports whether err is a Slack API error that will
 // never succeed if retried, such as replying to a message Slack does not
 // allow replies to ("cannot_reply_to_message"). HTTP-level failures
@@ -104,6 +136,19 @@ func isPermanentSlackError(err error) bool {
 func contextBlock(taskName string) *slack.ContextBlock {
 	return slack.NewContextBlock("",
 		slack.NewTextBlockObject(slack.MarkdownType, fmt.Sprintf("Task: `%s`", taskName), false, false),
+	)
+}
+
+// scoreAskText invites the human to rate the completion reply with a
+// one-tap 👍/👎 reaction. It appears only on terminal ("succeeded" or
+// "failed") transition replies in the score pilot channels, where both
+// reactions are pre-seeded so tapping is all it takes.
+const scoreAskText = "React 👍/👎 to score this."
+
+// scoreAskBlock returns the context block rendering the score ask.
+func scoreAskBlock() *slack.ContextBlock {
+	return slack.NewContextBlock("",
+		slack.NewTextBlockObject(slack.MarkdownType, scoreAskText, false, false),
 	)
 }
 
@@ -146,6 +191,15 @@ func FormatProgressMessage(text, taskName string) SlackMessage {
 // so that no individual message exceeds the Slack block limit, and each chunk
 // is posted as a separate thread reply.
 func FormatSlackTransitionMessage(phase, taskName, message string, results map[string]string) []SlackMessage {
+	return formatSlackTransitionMessage(phase, taskName, message, results, false)
+}
+
+// formatSlackTransitionMessage is the shared implementation of
+// FormatSlackTransitionMessage. When askForScore is true and the phase is
+// terminal, the trailing blocks additionally carry the 👍/👎 score ask
+// (scoreAskBlock) just above the Task: footer, and the pre-seeded reactions
+// make it a one-tap verdict.
+func formatSlackTransitionMessage(phase, taskName, message string, results map[string]string, askForScore bool) []SlackMessage {
 	// Build the optional header block (e.g. "Working on your request…").
 	var headerBlocks []slack.Block
 	if header, ok := phaseHeaderText[phase]; ok {
@@ -163,7 +217,7 @@ func FormatSlackTransitionMessage(phase, taskName, message string, results map[s
 		responseBlocks = responseToBlocks(decoded)
 	}
 
-	// Build the trailing blocks (PR link, error, context).
+	// Build the trailing blocks (PR link, error, score ask, context).
 	var trailingBlocks []slack.Block
 	pr := results["pr"]
 	if pr != "" {
@@ -178,6 +232,10 @@ func FormatSlackTransitionMessage(phase, taskName, message string, results map[s
 			slack.NewTextBlockObject(slack.MarkdownType, fmt.Sprintf(":warning: *Error:* %s", message), false, false),
 			nil, nil,
 		))
+	}
+
+	if askForScore && (phase == "succeeded" || phase == "failed") {
+		trailingBlocks = append(trailingBlocks, scoreAskBlock())
 	}
 
 	trailingBlocks = append(trailingBlocks, contextBlock(taskName))

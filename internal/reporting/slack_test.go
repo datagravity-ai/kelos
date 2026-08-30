@@ -11,6 +11,90 @@ import (
 	"github.com/slack-go/slack"
 )
 
+func TestFormatSlackTransitionMessage_ScoreAsk(t *testing.T) {
+	t.Run("succeeded with ask", func(t *testing.T) {
+		got := firstMsg(t, formatSlackTransitionMessage("succeeded", "spawner-1234567890.123456", "", nil, true))
+		// context only: score ask + Task footer
+		assertBlockCount(t, got.Blocks, 2)
+		assertContextContains(t, got.Blocks[0], scoreAskText)
+		assertContextContains(t, got.Blocks[1], "spawner-1234567890.123456")
+	})
+
+	t.Run("failed with ask", func(t *testing.T) {
+		got := firstMsg(t, formatSlackTransitionMessage("failed", "spawner-1234567890.123456", "pod OOMKilled", nil, true))
+		assertBlockCount(t, got.Blocks, 4) // header + error + score ask + Task footer
+		assertContextContains(t, got.Blocks[2], scoreAskText)
+		assertContextContains(t, got.Blocks[3], "spawner-1234567890.123456")
+	})
+
+	t.Run("accepted never asks", func(t *testing.T) {
+		got := firstMsg(t, formatSlackTransitionMessage("accepted", "spawner-1234567890.123456", "", nil, true))
+		assertBlockCount(t, got.Blocks, 2) // header + context, no ask
+		assertContextContains(t, got.Blocks[1], "spawner-1234567890.123456")
+		if blocksContainText(got.Blocks, scoreAskText) {
+			t.Error("accepted message must not carry the score ask")
+		}
+	})
+
+	t.Run("succeeded without ask", func(t *testing.T) {
+		got := firstMsg(t, formatSlackTransitionMessage("succeeded", "spawner-1234567890.123456", "", nil, false))
+		assertBlockCount(t, got.Blocks, 1) // context only, no ask
+		if blocksContainText(got.Blocks, scoreAskText) {
+			t.Error("score ask must only appear when explicitly requested")
+		}
+	})
+
+	t.Run("ask survives splitting on last part", func(t *testing.T) {
+		var sb strings.Builder
+		for i := 0; i < 30; i++ {
+			if i > 0 {
+				sb.WriteString("\n\n")
+			}
+			sb.WriteString("### Header\nSome content here.")
+		}
+		results := map[string]string{"response": b64(sb.String())}
+		msgs := formatSlackTransitionMessage("succeeded", "test-task", "", results, true)
+		if len(msgs) < 2 {
+			t.Fatalf("expected the long response to split, got %d messages", len(msgs))
+		}
+		// Trailing blocks (score ask, then Task footer) ride on the last part.
+		last := msgs[len(msgs)-1]
+		assertContextContains(t, last.Blocks[len(last.Blocks)-2], scoreAskText)
+		assertContextContains(t, last.Blocks[len(last.Blocks)-1], "test-task")
+	})
+}
+
+func TestParseScorePilotChannels(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  map[string]bool
+	}{
+		{"empty", "", nil},
+		{"whitespace only", "  ", nil},
+		{"stray commas", ", ,", nil},
+		{"single", "C123ABC", map[string]bool{"C123ABC": true}},
+		{"multiple", "C123ABC,C456DEF", map[string]bool{"C123ABC": true, "C456DEF": true}},
+		{"trims whitespace", " C123ABC , C456DEF ", map[string]bool{"C123ABC": true, "C456DEF": true}},
+		{"drops empty parts", "C123ABC,,C456DEF", map[string]bool{"C123ABC": true, "C456DEF": true}},
+		{"deduplicates", "C123ABC,C123ABC", map[string]bool{"C123ABC": true}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ParseScorePilotChannels(tt.value)
+			if len(got) != len(tt.want) {
+				t.Fatalf("ParseScorePilotChannels(%q) = %v, want %v", tt.value, got, tt.want)
+			}
+			for ch := range tt.want {
+				if !got[ch] {
+					t.Errorf("ParseScorePilotChannels(%q) missing %q", tt.value, ch)
+				}
+			}
+		})
+	}
+}
+
 // firstMsg is a helper that returns the first (and usually only) message
 // from FormatSlackTransitionMessage, failing the test if the slice is empty.
 func firstMsg(t *testing.T, msgs []SlackMessage) SlackMessage {

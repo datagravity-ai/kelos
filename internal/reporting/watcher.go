@@ -473,10 +473,12 @@ func (tr *TaskReporter) persistAnnotations(ctx context.Context, task *kelos.Task
 	return nil
 }
 
-// SlackMessenger is the interface for posting and updating Slack messages.
+// SlackMessenger is the interface for posting, updating, and reacting to
+// Slack messages.
 type SlackMessenger interface {
 	PostThreadReply(ctx context.Context, channel, threadTS string, msg SlackMessage) (string, error)
 	UpdateMessage(ctx context.Context, channel, messageTS string, msg SlackMessage) error
+	AddReaction(ctx context.Context, channel, messageTS, emoji string) error
 }
 
 // activityState tracks the target message for activity indicator updates.
@@ -507,6 +509,11 @@ type SlackTaskReporter struct {
 	Reporter       SlackMessenger
 	ProgressReader ProgressReader
 	ActivityReader ActivityReader
+
+	// ScorePilotChannels is the set of channel IDs whose completion
+	// replies carry the 👍/👎 score ask and pre-seeded reactions. A nil or
+	// empty map disables the ask everywhere.
+	ScorePilotChannels map[string]bool
 
 	mu           sync.Mutex
 	lastProgress map[types.UID]string         // taskUID -> last posted text
@@ -567,7 +574,8 @@ func (tr *SlackTaskReporter) ReportTaskStatus(ctx context.Context, task *kelos.T
 		return nil
 	}
 
-	msgs := FormatSlackTransitionMessage(desiredPhase, task.Name, task.Status.Message, task.Status.Results)
+	askForScore := tr.scoreAskEnabled(channel, desiredPhase)
+	msgs := formatSlackTransitionMessage(desiredPhase, task.Name, task.Status.Message, task.Status.Results, askForScore)
 
 	// For terminal phases, try to edit the existing progress message
 	// in-place. When the response is a single message, this keeps the
@@ -581,11 +589,18 @@ func (tr *SlackTaskReporter) ReportTaskStatus(ctx context.Context, task *kelos.T
 				log.Error(err, "Failed to update progress message with final result, posting new reply", "task", task.Name)
 			} else {
 				// Post any continuation messages as new thread replies.
+				// The last reply carries the trailing blocks, so it is the
+				// one the score ask and pre-seeded reactions belong on.
+				lastReplyTS := progressTS
 				for _, msg := range msgs[1:] {
-					if _, err := tr.Reporter.PostThreadReply(ctx, channel, threadTS, msg); err != nil {
+					replyTS, err := tr.Reporter.PostThreadReply(ctx, channel, threadTS, msg)
+					if err != nil {
 						log.Error(err, "Failed to post continuation message", "task", task.Name)
+						continue
 					}
+					lastReplyTS = replyTS
 				}
+				tr.preSeedScoreReactions(ctx, channel, lastReplyTS, askForScore)
 				tr.clearProgressCache(task.UID)
 				tr.clearActivityState(task.UID)
 				return tr.persistSlackReportingState(ctx, task, desiredPhase)
@@ -595,6 +610,7 @@ func (tr *SlackTaskReporter) ReportTaskStatus(ctx context.Context, task *kelos.T
 
 	// Post all messages as thread replies.
 	var firstReplyTS string
+	var lastReplyTS string
 	for i, msg := range msgs {
 		log.Info("Posting Slack thread reply", "task", task.Name, "channel", channel, "phase", desiredPhase, "part", i+1, "total", len(msgs))
 		replyTS, err := tr.Reporter.PostThreadReply(ctx, channel, threadTS, msg)
@@ -615,7 +631,13 @@ func (tr *SlackTaskReporter) ReportTaskStatus(ctx context.Context, task *kelos.T
 		if i == 0 {
 			firstReplyTS = replyTS
 		}
+		lastReplyTS = replyTS
 	}
+
+	// Pre-seed the 👍/👎 reactions on the completion reply in the pilot
+	// channels so a human taps either one instead of opening the emoji
+	// picker. Skipped when askForScore is false or nothing was posted.
+	tr.preSeedScoreReactions(ctx, channel, lastReplyTS, askForScore)
 
 	// Track the accepted message so the activity loop can update it.
 	if desiredPhase == "accepted" && firstReplyTS != "" {
@@ -633,6 +655,33 @@ func (tr *SlackTaskReporter) ReportTaskStatus(ctx context.Context, task *kelos.T
 	}
 
 	return nil
+}
+
+// scoreAskEnabled reports whether the task's completion reply should carry
+// the 👍/👎 score ask. Only terminal phases get the ask, and only in the
+// pilot channels named in ScorePilotChannels; a nil or empty map disables
+// it everywhere.
+func (tr *SlackTaskReporter) scoreAskEnabled(channel, desiredPhase string) bool {
+	if desiredPhase != "succeeded" && desiredPhase != "failed" {
+		return false
+	}
+	return tr.ScorePilotChannels != nil && tr.ScorePilotChannels[channel]
+}
+
+// preSeedScoreReactions adds the 👍 and 👎 reactions to a posted completion
+// reply so a human taps once instead of opening the emoji picker. The
+// collector ignores bot reactions, so pre-seeding does not skew the verdict
+// ratio. Failures are logged and otherwise ignored: the reply itself is
+// already posted, and a missing reaction only costs the one-tap convenience.
+func (tr *SlackTaskReporter) preSeedScoreReactions(ctx context.Context, channel, messageTS string, askForScore bool) {
+	if !askForScore || messageTS == "" {
+		return
+	}
+	for _, emoji := range []string{"+1", "-1"} {
+		if err := tr.Reporter.AddReaction(ctx, channel, messageTS, emoji); err != nil {
+			ctrl.Log.WithName("slack-reporter").Error(err, "Failed to pre-seed score reaction", "channel", channel, "messageTS", messageTS, "emoji", emoji)
+		}
+	}
 }
 
 func (tr *SlackTaskReporter) persistSlackReportingState(ctx context.Context, task *kelos.Task, desiredPhase string) error {

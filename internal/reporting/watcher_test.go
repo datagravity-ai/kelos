@@ -1552,6 +1552,319 @@ func TestSlackTaskReporter_PostsNewReplyOnPhaseChange(t *testing.T) {
 
 }
 
+func TestSlackTaskReporter_ScoreAskInPilotChannel(t *testing.T) {
+	// Completion replies in a score pilot channel carry the 👍/👎 ask and
+	// have both reactions pre-seeded, so a human taps once.
+	task := &kelos.Task{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-task",
+			Namespace: "default",
+			Annotations: map[string]string{
+				AnnotationSlackReporting: "enabled",
+				AnnotationSlackChannel:   "C123ABC",
+				AnnotationSlackThreadTS:  "1234567890.123456",
+
+				AnnotationSlackReportPhase: "accepted",
+			},
+		},
+		Spec: kelos.TaskSpec{
+			Type:   "claude-code",
+			Prompt: "test",
+			Credentials: &kelos.Credentials{
+				Type:      kelos.CredentialTypeOAuth,
+				SecretRef: &kelos.SecretReference{Name: "creds"},
+			},
+		},
+		Status: kelos.TaskStatus{
+			Phase:   kelos.TaskPhaseSucceeded,
+			Results: map[string]string{"response": "done"},
+		},
+	}
+
+	cl := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(task).Build()
+
+	var posted []slackReplyRecord
+	reporter := &fakeSlackReporter{
+		postFn: func(ctx context.Context, channel, threadTS string, msg SlackMessage) (string, error) {
+			posted = append(posted, slackReplyRecord{method: "post", channel: channel, threadTS: threadTS, msg: msg})
+			return "1234567890.888888", nil
+		},
+	}
+
+	tr := &SlackTaskReporter{
+		Client:             cl,
+		Reporter:           reporter,
+		ScorePilotChannels: map[string]bool{"C123ABC": true},
+	}
+
+	if err := tr.ReportTaskStatus(context.Background(), task); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(posted) != 1 {
+		t.Fatalf("expected 1 post, got %d", len(posted))
+	}
+	if !blocksContainText(posted[0].msg.Blocks, scoreAskText) {
+		t.Error("expected completion reply to carry the score ask")
+	}
+
+	wantReactions := []slackReactionRecord{
+		{channel: "C123ABC", messageTS: "1234567890.888888", emoji: "+1"},
+		{channel: "C123ABC", messageTS: "1234567890.888888", emoji: "-1"},
+	}
+	if len(reporter.reactions) != len(wantReactions) {
+		t.Fatalf("expected %d reactions, got %d: %+v", len(wantReactions), len(reporter.reactions), reporter.reactions)
+	}
+	for i, want := range wantReactions {
+		if reporter.reactions[i] != want {
+			t.Errorf("reaction %d = %+v, want %+v", i, reporter.reactions[i], want)
+		}
+	}
+}
+
+func TestSlackTaskReporter_ScoreAskOnFailedPhase(t *testing.T) {
+	// A failed completion in a pilot channel gets the ask too, so bad
+	// replies are as easy to flag as good ones.
+	task := &kelos.Task{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-task",
+			Namespace: "default",
+			Annotations: map[string]string{
+				AnnotationSlackReporting: "enabled",
+				AnnotationSlackChannel:   "C123ABC",
+				AnnotationSlackThreadTS:  "1234567890.123456",
+
+				AnnotationSlackReportPhase: "accepted",
+			},
+		},
+		Status: kelos.TaskStatus{
+			Phase:   kelos.TaskPhaseFailed,
+			Message: "pod OOMKilled",
+		},
+	}
+
+	cl := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(task).Build()
+
+	var posted []slackReplyRecord
+	reporter := &fakeSlackReporter{
+		postFn: func(ctx context.Context, channel, threadTS string, msg SlackMessage) (string, error) {
+			posted = append(posted, slackReplyRecord{method: "post", channel: channel, threadTS: threadTS, msg: msg})
+			return "1234567890.777777", nil
+		},
+	}
+
+	tr := &SlackTaskReporter{
+		Client:             cl,
+		Reporter:           reporter,
+		ScorePilotChannels: map[string]bool{"C123ABC": true},
+	}
+
+	if err := tr.ReportTaskStatus(context.Background(), task); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(posted) != 1 {
+		t.Fatalf("expected 1 post, got %d", len(posted))
+	}
+	if !blocksContainText(posted[0].msg.Blocks, scoreAskText) {
+		t.Error("expected failed completion reply to carry the score ask")
+	}
+	if len(reporter.reactions) != 2 {
+		t.Errorf("expected 2 pre-seeded reactions, got %d: %+v", len(reporter.reactions), reporter.reactions)
+	}
+}
+
+func TestSlackTaskReporter_NoScoreAskOutsidePilotChannels(t *testing.T) {
+	// Outside the pilot channels — or with no pilot config at all — the
+	// completion reply neither asks for a score nor pre-seeds reactions.
+	tests := []struct {
+		name   string
+		ch     string
+		pilots map[string]bool
+	}{
+		{"non-pilot channel", "C999XYZ", map[string]bool{"C123ABC": true}},
+		{"nil pilot map", "C123ABC", nil},
+		{"empty pilot map", "C123ABC", map[string]bool{}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			task := &kelos.Task{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-task",
+					Namespace: "default",
+					Annotations: map[string]string{
+						AnnotationSlackReporting: "enabled",
+						AnnotationSlackChannel:   tt.ch,
+						AnnotationSlackThreadTS:  "1234567890.123456",
+
+						AnnotationSlackReportPhase: "accepted",
+					},
+				},
+				Status: kelos.TaskStatus{
+					Phase:   kelos.TaskPhaseSucceeded,
+					Results: map[string]string{"response": "done"},
+				},
+			}
+
+			cl := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(task).Build()
+
+			var posted []slackReplyRecord
+			reporter := &fakeSlackReporter{
+				postFn: func(ctx context.Context, channel, threadTS string, msg SlackMessage) (string, error) {
+					posted = append(posted, slackReplyRecord{method: "post", channel: channel, threadTS: threadTS, msg: msg})
+					return "1234567890.666666", nil
+				},
+			}
+
+			tr := &SlackTaskReporter{
+				Client:             cl,
+				Reporter:           reporter,
+				ScorePilotChannels: tt.pilots,
+			}
+
+			if err := tr.ReportTaskStatus(context.Background(), task); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if len(posted) != 1 {
+				t.Fatalf("expected 1 post, got %d", len(posted))
+			}
+			if blocksContainText(posted[0].msg.Blocks, scoreAskText) {
+				t.Error("completion reply outside pilot channels must not carry the score ask")
+			}
+			if len(reporter.reactions) != 0 {
+				t.Errorf("expected no pre-seeded reactions, got %+v", reporter.reactions)
+			}
+		})
+	}
+}
+
+func TestSlackTaskReporter_ScoreAskOnUpdatePath(t *testing.T) {
+	// When the final result is edited into the existing progress message,
+	// the ask travels with it and the reactions land on that message.
+	task := newRunningTaskWithAnnotations("test-task", "uid-score-update", map[string]string{
+		AnnotationSlackReporting:   "enabled",
+		AnnotationSlackChannel:     "C123ABC",
+		AnnotationSlackThreadTS:    "1234567890.123456",
+		AnnotationSlackReportPhase: "accepted",
+	})
+
+	cl := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(task).Build()
+
+	var posted []slackReplyRecord
+	var updates []slackReplyRecord
+	reporter := &fakeSlackReporter{
+		postFn: func(ctx context.Context, channel, threadTS string, msg SlackMessage) (string, error) {
+			posted = append(posted, slackReplyRecord{method: "post", channel: channel, threadTS: threadTS, msg: msg})
+			return "ts-progress", nil
+		},
+		updateFn: func(ctx context.Context, channel, messageTS string, msg SlackMessage) error {
+			updates = append(updates, slackReplyRecord{method: "update", channel: channel, threadTS: messageTS, msg: msg})
+			return nil
+		},
+	}
+
+	tr := &SlackTaskReporter{
+		Client:             cl,
+		Reporter:           reporter,
+		ProgressReader:     &fakeProgressReader{text: "Working on the analysis..."},
+		ScorePilotChannels: map[string]bool{"C123ABC": true},
+	}
+
+	// Post a progress update (simulates the running phase).
+	if err := tr.ReportTaskStatus(context.Background(), task); err != nil {
+		t.Fatalf("unexpected error posting progress: %v", err)
+	}
+	if len(posted) != 1 {
+		t.Fatalf("expected 1 post (progress), got %d", len(posted))
+	}
+
+	// Transition to succeeded.
+	succeededTask := task.DeepCopy()
+	succeededTask.Status.Phase = kelos.TaskPhaseSucceeded
+	succeededTask.Status.Message = "Here is the final answer."
+	succeededTask.Status.Results = map[string]string{"response": "done"}
+
+	cl2 := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(succeededTask).Build()
+	tr.Client = cl2
+
+	if err := tr.ReportTaskStatus(context.Background(), succeededTask); err != nil {
+		t.Fatalf("unexpected error on terminal phase: %v", err)
+	}
+
+	if len(posted) != 1 {
+		t.Errorf("expected no new posts on terminal phase, got %d new", len(posted)-1)
+	}
+	if len(updates) != 1 || updates[0].threadTS != "ts-progress" {
+		t.Fatalf("expected an update to the progress message, got %+v", updates)
+	}
+	if !blocksContainText(updates[0].msg.Blocks, scoreAskText) {
+		t.Error("expected updated completion message to carry the score ask")
+	}
+
+	wantReactions := []slackReactionRecord{
+		{channel: "C123ABC", messageTS: "ts-progress", emoji: "+1"},
+		{channel: "C123ABC", messageTS: "ts-progress", emoji: "-1"},
+	}
+	if len(reporter.reactions) != len(wantReactions) {
+		t.Fatalf("expected %d reactions, got %d: %+v", len(wantReactions), len(reporter.reactions), reporter.reactions)
+	}
+	for i, want := range wantReactions {
+		if reporter.reactions[i] != want {
+			t.Errorf("reaction %d = %+v, want %+v", i, reporter.reactions[i], want)
+		}
+	}
+}
+
+func TestSlackTaskReporter_ScoreReactionFailureStillReports(t *testing.T) {
+	// A failed reactions.add must not break task reporting: the reply is
+	// already posted and the phase must still be marked reported.
+	task := &kelos.Task{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-task",
+			Namespace: "default",
+			Annotations: map[string]string{
+				AnnotationSlackReporting: "enabled",
+				AnnotationSlackChannel:   "C123ABC",
+				AnnotationSlackThreadTS:  "1234567890.123456",
+
+				AnnotationSlackReportPhase: "accepted",
+			},
+		},
+		Status: kelos.TaskStatus{
+			Phase:   kelos.TaskPhaseSucceeded,
+			Results: map[string]string{"response": "done"},
+		},
+	}
+
+	cl := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(task).Build()
+
+	reporter := &fakeSlackReporter{
+		reactionFn: func(ctx context.Context, channel, messageTS, emoji string) error {
+			return fmt.Errorf("no_such_emoji")
+		},
+	}
+
+	tr := &SlackTaskReporter{
+		Client:             cl,
+		Reporter:           reporter,
+		ScorePilotChannels: map[string]bool{"C123ABC": true},
+	}
+
+	if err := tr.ReportTaskStatus(context.Background(), task); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var updated kelos.Task
+	if err := cl.Get(context.Background(), client.ObjectKeyFromObject(task), &updated); err != nil {
+		t.Fatalf("getting updated task: %v", err)
+	}
+	if updated.Annotations[AnnotationSlackReportPhase] != "succeeded" {
+		t.Errorf("report phase = %q, want succeeded", updated.Annotations[AnnotationSlackReportPhase])
+	}
+}
+
 func TestSlackTaskReporter_SkipPaths(t *testing.T) {
 	baseTask := &kelos.Task{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1637,9 +1950,18 @@ type slackReplyRecord struct {
 	msg      SlackMessage
 }
 
+type slackReactionRecord struct {
+	channel   string
+	messageTS string
+	emoji     string
+}
+
 type fakeSlackReporter struct {
-	postFn   func(ctx context.Context, channel, threadTS string, msg SlackMessage) (string, error)
-	updateFn func(ctx context.Context, channel, messageTS string, msg SlackMessage) error
+	postFn     func(ctx context.Context, channel, threadTS string, msg SlackMessage) (string, error)
+	updateFn   func(ctx context.Context, channel, messageTS string, msg SlackMessage) error
+	reactionFn func(ctx context.Context, channel, messageTS, emoji string) error
+	// reactions records every AddReaction call unless reactionFn is set.
+	reactions []slackReactionRecord
 }
 
 func (f *fakeSlackReporter) PostThreadReply(ctx context.Context, channel, threadTS string, msg SlackMessage) (string, error) {
@@ -1654,6 +1976,30 @@ func (f *fakeSlackReporter) UpdateMessage(ctx context.Context, channel, messageT
 		return f.updateFn(ctx, channel, messageTS, msg)
 	}
 	return nil
+}
+
+func (f *fakeSlackReporter) AddReaction(ctx context.Context, channel, messageTS, emoji string) error {
+	if f.reactionFn != nil {
+		return f.reactionFn(ctx, channel, messageTS, emoji)
+	}
+	f.reactions = append(f.reactions, slackReactionRecord{channel: channel, messageTS: messageTS, emoji: emoji})
+	return nil
+}
+
+// blocksContainText reports whether any block in blocks contains substr in
+// its rendered text. It is used to verify the 👍/👎 score ask travels with
+// the posted completion message.
+func blocksContainText(blocks []slack.Block, substr string) bool {
+	for _, block := range blocks {
+		blockBytes, err := json.Marshal(block)
+		if err != nil {
+			continue
+		}
+		if strings.Contains(string(blockBytes), substr) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestSlackTaskReporter_PhaseMapping(t *testing.T) {

@@ -126,10 +126,11 @@ func main() {
 	// activity loops. Sharing the instance ensures activity state is
 	// correctly cleared when a progress snapshot is posted.
 	slackReporter := &reporting.SlackTaskReporter{
-		Client:         mgr.GetClient(),
-		Reporter:       &reporting.SlackReporter{BotToken: botToken},
-		ProgressReader: &reporting.DefaultProgressReader{Clientset: clientset},
-		ActivityReader: &reporting.DefaultActivityReader{Clientset: clientset},
+		Client:             mgr.GetClient(),
+		Reporter:           &reporting.SlackReporter{BotToken: botToken},
+		ProgressReader:     &reporting.DefaultProgressReader{Clientset: clientset},
+		ActivityReader:     &reporting.DefaultActivityReader{Clientset: clientset},
+		ScorePilotChannels: reporting.ParseScorePilotChannels(os.Getenv("SLACK_SCORE_PILOT_CHANNELS")),
 	}
 
 	// Register reporting loop as a leader-elected runnable.
