@@ -1,0 +1,75 @@
+apiVersion: kelos.dev/v1alpha2
+kind: TaskPipeline
+metadata:
+  name: deploy-on-signal
+spec:
+  timeout: 1h
+  stages:
+    # Stage 1: Prepare the deployment.
+    - name: prepare
+      tasks:
+        - name: prepare
+          worker:
+            type: claude-code
+            credentials:
+              type: api-key
+              secretRef:
+                name: claude-credentials
+            workspaceRef:
+              name: deploy-workspace
+          promptTemplate: |
+            Validate deployment manifests and run pre-deploy checks.
+            Report "ready" as "true" or "false".
+
+    # Stage 2: Wait for external deploy signal via webhook.
+    # The gate is cleared when the webhook server receives a POST to
+    # /webhook/deploy-signal with payload {"environment": "production", "action": "deploy"}.
+    # No compute is consumed while waiting.
+    - name: wait-for-signal
+      dependsOn: [prepare]
+      when: 'stages.prepare.results.ready == "true"'
+      waitFor:
+        webhook:
+          source: deploy-signal
+          filters:
+            - field: "$.environment"
+              value: "production"
+            - field: "$.action"
+              value: "deploy"
+      tasks:
+        - name: confirm
+          worker:
+            type: claude-code
+            credentials:
+              type: api-key
+              secretRef:
+                name: claude-credentials
+          promptTemplate: "Deploy signal received. Proceeding."
+
+    # Stage 3: Execute the deployment.
+    - name: deploy
+      dependsOn: [wait-for-signal]
+      tasks:
+        - name: rollout
+          worker:
+            type: claude-code
+            credentials:
+              type: api-key
+              secretRef:
+                name: claude-credentials
+            workspaceRef:
+              name: deploy-workspace
+          promptTemplate: |
+            Execute the production deployment using the validated manifests.
+            Monitor the rollout and report success/failure.
+
+---
+# To clear the webhook gate externally:
+#
+#   curl -X POST https://kelos-webhook.example.com/webhook/deploy-signal \
+#     -H "Content-Type: application/json" \
+#     -d '{"environment": "production", "action": "deploy", "approver": "alice"}'
+#
+# The webhook server will match this delivery to the waiting pipeline stage,
+# clear the gate via status patch, and the pipeline controller will advance
+# to creating the deploy stage's tasks.

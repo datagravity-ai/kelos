@@ -1,0 +1,113 @@
+apiVersion: kelos.dev/v1alpha2
+kind: TaskPipeline
+metadata:
+  name: feature-delivery
+spec:
+  timeout: 4h
+  ttlSecondsAfterFinished: 86400
+
+  stages:
+    # Stage 1: Plan the implementation.
+    - name: plan
+      tasks:
+        - name: plan
+          worker:
+            type: claude-code
+            credentials:
+              type: api-key
+              secretRef:
+                name: claude-credentials
+            workspaceRef:
+              name: my-workspace
+          promptTemplate: |
+            Read the requirements in REQUIREMENTS.md and create an implementation
+            plan. Output a structured plan as a result with key "plan".
+
+    # Stage 2: Implement the plan (only if planning succeeded).
+    - name: implement
+      dependsOn: [plan]
+      tasks:
+        - name: code
+          worker:
+            type: claude-code
+            credentials:
+              type: api-key
+              secretRef:
+                name: claude-credentials
+            workspaceRef:
+              name: my-workspace
+          branch: feature/auto-implement
+          promptTemplate: |
+            Implement the following plan:
+            {{index .Stages "plan" "Results" "plan"}}
+
+            Commit your changes and push. Report the commit SHA as result "commit"
+            and the branch name as result "branch".
+
+    # Stage 3: Run tests in parallel via matrix fan-out.
+    - name: test
+      dependsOn: [implement]
+      matrix:
+        params:
+          suite: [unit, integration, e2e]
+      tasks:
+        - name: run
+          worker:
+            type: claude-code
+            credentials:
+              type: api-key
+              secretRef:
+                name: claude-credentials
+            workspaceRef:
+              name: my-workspace
+          branch: feature/auto-implement
+          promptTemplate: |
+            Run the {{.Matrix.suite}} test suite on branch
+            {{index .Stages "implement" "Results" "branch"}}.
+            Report "status" as "pass" or "fail" with "errorCount" as a number.
+
+    # Stage 4: Wait for CI (no compute — polls GitHub Checks API).
+    # Skipped if tests failed.
+    - name: wait-for-ci
+      dependsOn: [test]
+      when: 'stages.test.phase == "Succeeded"'
+      waitFor:
+        githubCheck:
+          owner: myorg
+          repo: myapp
+          ref: '{{index .Stages "implement" "Results" "commit"}}'
+          checkName: "ci/full-suite"
+          targetConclusion: success
+          pollInterval: 60s
+      tasks:
+        - name: ack
+          worker:
+            type: claude-code
+            credentials:
+              type: api-key
+              secretRef:
+                name: claude-credentials
+          promptTemplate: "CI passed. All checks green."
+
+    # Stage 5: Wait for human approval (no compute — cleared via webhook/patch).
+    - name: approve-deploy
+      dependsOn: [wait-for-ci]
+      waitFor:
+        approval:
+          approvers: [platform-team, oncall]
+          message: "All tests and CI passed. Approve production deployment?"
+      tasks:
+        - name: deploy
+          worker:
+            type: claude-code
+            credentials:
+              type: api-key
+              secretRef:
+                name: claude-credentials
+            workspaceRef:
+              name: my-workspace
+          branch: feature/auto-implement
+          promptTemplate: |
+            Open a pull request from branch
+            {{index .Stages "implement" "Results" "branch"}}
+            to main. Include test results in the PR description.
