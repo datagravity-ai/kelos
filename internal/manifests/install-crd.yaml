@@ -7865,11 +7865,6 @@ spec:
               rule: has(self.worker.agentConfigRefs) == has(oldSelf.worker.agentConfigRefs)
                 && (!has(self.worker.agentConfigRefs) || self.worker.agentConfigRefs
                 == oldSelf.worker.agentConfigRefs)
-            - message: worker.podOverrides.serviceAccountName is immutable
-              rule: '(has(self.worker.podOverrides) && has(self.worker.podOverrides.serviceAccountName)
-                ? self.worker.podOverrides.serviceAccountName : '''') == (has(oldSelf.worker.podOverrides)
-                && has(oldSelf.worker.podOverrides.serviceAccountName) ? oldSelf.worker.podOverrides.serviceAccountName
-                : '''')'
             - message: initialBranch is immutable
               rule: '(!has(self.initialBranch) ? '''' : self.initialBranch) == (!has(oldSelf.initialBranch)
                 ? '''' : oldSelf.initialBranch)'

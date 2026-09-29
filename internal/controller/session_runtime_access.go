@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -16,7 +18,7 @@ import (
 	kelos "github.com/kelos-dev/kelos/api/v1alpha2"
 )
 
-func (r *SessionReconciler) ensureSessionRuntimeAccess(ctx context.Context, session *kelos.Session, serviceAccountName string) error {
+func (r *SessionReconciler) ensureSessionRuntimeAccess(ctx context.Context, session *kelos.Session, serviceAccountName string, statefulSet *appsv1.StatefulSet) error {
 	if serviceAccountName == "" {
 		return errors.New("Session runtime service account name is empty")
 	}
@@ -41,6 +43,28 @@ func (r *SessionReconciler) ensureSessionRuntimeAccess(ctx context.Context, sess
 	}
 
 	desiredBinding := sessionRuntimeRoleBinding(session, serviceAccountName)
+	podFound := false
+	runtimeServiceAccountName := ""
+	if statefulSet != nil {
+		runtimeServiceAccountName = statefulSet.Spec.Template.Spec.ServiceAccountName
+		var pod corev1.Pod
+		key := client.ObjectKey{Namespace: session.Namespace, Name: statefulSet.Name + "-0"}
+		if err := r.Get(ctx, key, &pod); err == nil {
+			if metav1.IsControlledBy(&pod, statefulSet) {
+				podFound = true
+				runtimeServiceAccountName = pod.Spec.ServiceAccountName
+			}
+		} else if !apierrors.IsNotFound(err) {
+			return fmt.Errorf("getting Session Pod %q for runtime access: %w", key.Name, err)
+		}
+	}
+	// Preserve drain access when creating or repairing the binding. The current
+	// template retains a known account even when the Pod and binding are absent.
+	if runtimeServiceAccountName != "" && runtimeServiceAccountName != serviceAccountName {
+		desiredBinding.Subjects = append(desiredBinding.Subjects, rbacv1.Subject{
+			Kind: rbacv1.ServiceAccountKind, Name: runtimeServiceAccountName, Namespace: session.Namespace,
+		})
+	}
 	currentBinding := &rbacv1.RoleBinding{}
 	created, err = r.ensureSessionOwnedObject(ctx, session, "RoleBinding", desiredBinding, currentBinding)
 	if err != nil {
@@ -51,6 +75,15 @@ func (r *SessionReconciler) ensureSessionRuntimeAccess(ctx context.Context, sess
 	}
 	if !reflect.DeepEqual(currentBinding.RoleRef, desiredBinding.RoleRef) {
 		return fmt.Errorf("RoleBinding %q has an unexpected role reference", currentBinding.Name)
+	}
+	if !podFound {
+		// A cache gap during Pod creation or replacement must not revoke a live runtime's access.
+		// Prune previous service accounts once the workload's Pod is observed.
+		for _, subject := range currentBinding.Subjects {
+			if subject.Kind == rbacv1.ServiceAccountKind && subject.Namespace == session.Namespace && !slices.Contains(desiredBinding.Subjects, subject) {
+				desiredBinding.Subjects = append(desiredBinding.Subjects, subject)
+			}
+		}
 	}
 	if !reflect.DeepEqual(currentBinding.Subjects, desiredBinding.Subjects) {
 		currentBinding.Subjects = desiredBinding.Subjects
