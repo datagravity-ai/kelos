@@ -98,6 +98,7 @@ type Server struct {
 	config            Config
 	journal           *Journal
 	provider          Provider
+	events            *sessionEvents
 	attachmentStore   *AttachmentStore
 	providerCloseOnce sync.Once
 	providerCloseErr  error
@@ -129,6 +130,7 @@ type Server struct {
 	activeKind         sessionCommandKind
 	activeTurnCancel   context.CancelCauseFunc
 	activeTurnDone     chan struct{}
+	backgroundActive   atomic.Bool
 	providerStopping   atomic.Bool
 	providerStopOnce   sync.Once
 	providerStop       chan struct{}
@@ -145,6 +147,7 @@ type Server struct {
 	pendingInputs                        map[string]*pendingInput
 	nextInputID                          atomic.Int64
 	refreshWorkspaceStatus               func(context.Context, bool) (WorkspaceStatus, error)
+	readWorkspaceDiff                    func(context.Context, string) string
 	publishSessionStatus                 func(context.Context, bool, bool) error
 	workspaceStatusMu                    sync.Mutex
 	workspaceStatusForceDiscovery        bool
@@ -166,6 +169,7 @@ func NewServer(config Config, journal *Journal, provider Provider) *Server {
 		config:                               config,
 		journal:                              journal,
 		provider:                             provider,
+		readWorkspaceDiff:                    workspaceDiff,
 		appendMessage:                        journal.Append,
 		turns:                                make(chan turnRequest, 1),
 		updateReport:                         make(chan struct{}, 1),
@@ -182,6 +186,10 @@ func NewServer(config Config, journal *Journal, provider Provider) *Server {
 		workspaceStatusMaxRetryInterval:      defaultWorkspaceStatusMaxRetryInterval,
 		sessionStatusPublishInterval:         defaultSessionStatusPublishInterval,
 		sessionStatusRetryInterval:           defaultSessionStatusRetryInterval,
+	}
+	server.events = &sessionEvents{server: server, ctx: context.Background()}
+	if provider != nil {
+		provider.SetEventSink(server.events)
 	}
 	if config.StateDir != "" {
 		server.activityMarkerPath = filepath.Join(config.StateDir, activityPublishedFile)
@@ -223,28 +231,17 @@ func Run(ctx context.Context, config Config) error {
 		journal.Close()
 		return err
 	}
-	provider, err := NewProvider(ctx, ProviderConfig{
-		AgentType:   config.AgentType,
-		WorkingDir:  config.WorkingDir,
-		StateDir:    config.StateDir,
-		Model:       config.Model,
-		Effort:      config.Effort,
-		PluginDir:   config.PluginDir,
-		Environment: config.Environment,
-	})
-	if err != nil {
-		journal.Close()
-		return err
-	}
-
 	recovery, err := recoverJournal(journal)
 	if err != nil {
-		_ = provider.Close()
 		journal.Close()
 		return err
 	}
-	server := NewServer(config, journal, provider)
+	server := NewServer(config, journal, nil)
 	server.workspaceChanges = changes
+	server.events.ctx = ctx
+	server.nextTurnID.Store(recovery.nextTurnID)
+	server.nextInputID.Store(recovery.nextInputID)
+	server.completedTurnID.Store(recovery.completedTurnID)
 	publishSessionStatus := func(ctx context.Context, active, waitingForInput bool) error {
 		model := server.runtimeStatusSnapshot().Model
 		return publishObservedSessionStatus(ctx, config.PublishSessionStatus, active, waitingForInput, model, func(ctx context.Context) (WorkspaceStatus, error) {
@@ -259,9 +256,20 @@ func Run(ctx context.Context, config Config) error {
 	if config.PublishSessionStatus != nil {
 		server.publishSessionStatus = publishSessionStatus
 	}
-	server.nextTurnID.Store(recovery.nextTurnID)
-	server.nextInputID.Store(recovery.nextInputID)
-	server.completedTurnID.Store(recovery.completedTurnID)
+	provider, err := NewProvider(ctx, ProviderConfig{
+		AgentType: config.AgentType, WorkingDir: config.WorkingDir, StateDir: config.StateDir,
+		Model: config.Model, Effort: config.Effort, PluginDir: config.PluginDir,
+		Environment: config.Environment, EventSink: server.events,
+	})
+	if err != nil {
+		server.events.close()
+		journal.Close()
+		return err
+	}
+	server.provider = provider
+	if status, ok := provider.(runtimeStatusProvider); ok {
+		server.updateProviderRuntimeStatus(status.runtimeStatusSnapshot())
+	}
 	if err := server.restoreTurn(recovery.pendingTurn); err != nil {
 		_ = provider.Close()
 		journal.Close()
@@ -275,7 +283,9 @@ func Run(ctx context.Context, config Config) error {
 			command:  sessionCommand{kind: sessionCommandGoal, goal: goalCommand{action: goalCommandResume}},
 		}
 		server.recoveredGoalTurn = &turn
+		server.submitMu.Lock()
 		server.outstanding++
+		server.submitMu.Unlock()
 	}
 	if server.activityMarkerPath != "" {
 		settledTurnID, err := loadSettledTurnID(server.activityMarkerPath)
@@ -356,9 +366,13 @@ func replaceProcessEnv(current []string, name, value string) []string {
 // Serve listens for local clients and keeps provider turns alive independently of them.
 func (s *Server) Serve(ctx context.Context) error {
 	serveCtx, cancelServe := context.WithCancel(ctx)
-	defer cancelServe()
+	s.events.mu.Lock()
+	s.events.ctx = serveCtx
+	s.events.mu.Unlock()
 	defer func() {
+		cancelServe()
 		_ = s.closeProvider()
+		s.events.close()
 		s.journal.Close()
 		_ = os.Remove(s.config.SocketPath)
 	}()
@@ -400,6 +414,13 @@ func (s *Server) Serve(ctx context.Context) error {
 		select {
 		case <-serveCtx.Done():
 		case <-providerDone:
+			if serveCtx.Err() == nil && !s.providerStopping.Load() {
+				s.submitMu.Lock()
+				s.providerStopping.Store(true)
+				s.providerStopOnce.Do(func() { close(s.providerStop) })
+				s.submitMu.Unlock()
+				s.events.fail(providerStopError(s.provider))
+			}
 		case <-s.journal.Failed():
 		}
 		_ = listener.Close()
@@ -417,7 +438,7 @@ func (s *Server) Serve(ctx context.Context) error {
 			}
 			select {
 			case <-providerDone:
-				return errors.New("Session provider stopped")
+				return providerStopError(s.provider)
 			default:
 			}
 			return fmt.Errorf("accepting Session client: %w", err)
@@ -472,11 +493,7 @@ func (s *Server) runTurns(ctx context.Context) {
 				s.turns <- turn
 				return
 			}
-			pending, exists := s.takePendingTurn(turn)
-			if !exists {
-				continue
-			}
-			s.runTurn(ctx, pending)
+			s.runTurn(ctx, turn)
 			// Keep the pending turn out of reach of an interrupt call that is
 			// still settling after this turn returned.
 			s.interruptMu.Lock()
@@ -571,7 +588,7 @@ func (s *Server) queueSessionStatusPublish(force bool) {
 		return
 	}
 	s.activeMu.Lock()
-	active := s.activeTurn != ""
+	active := s.activeTurn != "" || s.backgroundActive.Load()
 	waitingForInput := s.pendingInputCount.Load() > 0
 	settledTurnID := s.completedTurnID.Load()
 	s.sessionStatusMu.Lock()
@@ -780,127 +797,62 @@ func (s *Server) runSessionStatusPublishes(ctx context.Context) {
 	}
 }
 
-func (s *Server) runTurn(ctx context.Context, turn turnRequest) {
-	defer s.requestWorkspaceStatusRefresh(true)
-	turnCtx, cancelTurn := context.WithCancelCause(ctx)
-	turnDone := make(chan struct{})
-	command := turn.command
-	if command.kind == "" {
-		command = sessionCommand{kind: sessionCommandMessage, text: turn.text}
-	}
-	s.activeMu.Lock()
-	s.activeTurn = turn.id
-	s.activeKind = command.kind
-	s.activeTurnCancel = cancelTurn
-	s.activeTurnDone = turnDone
-	s.activeMu.Unlock()
-	s.requestSessionStatusPublish()
-	defer func() {
-		cancelTurn(nil)
-		s.activeMu.Lock()
-		if s.activeTurn == turn.id {
-			s.activeTurn = ""
-			s.activeKind = ""
-			s.activeTurnCancel = nil
-			s.activeTurnDone = nil
-		}
-		s.activeMu.Unlock()
-		// Advance the completed-turn high-water mark before requesting the idle
-		// publication so that publication carries a snapshot reflecting this turn.
-		s.markTurnCompleted(turn.id)
-		s.requestSessionStatusPublish()
-		s.finishTurn()
-		close(turnDone)
-	}()
-
-	if err := s.journal.Append(Event{Type: EventTurnStarted, TurnID: turn.id, Status: "running"}); err != nil {
+func (s *Server) runTurn(ctx context.Context, request turnRequest) {
+	turn, request := s.events.begin(ctx, request)
+	if turn == nil {
 		return
 	}
-	sink := &turnSink{server: s, turnID: turn.id}
+	if err := s.journal.Err(); err != nil {
+		s.events.finish(turn, err)
+		return
+	}
+	command := request.command
 	if command.kind == sessionCommandShell {
-		record, runErr := s.runShellCommand(turnCtx, turn.id, command.text, sink)
-		sink.stop()
-		interrupted := errors.Is(runErr, ErrTurnInterrupted) || errors.Is(context.Cause(turnCtx), ErrTurnInterrupted)
-		if runErr != nil && turnCtx.Err() != nil && !interrupted {
-			return
-		}
+		record, err := s.runShellCommand(turn.ctx, request.id, command.text, turn.sink)
 		if provider, ok := s.provider.(shellCommandContextProvider); ok {
-			recordCtx := turnCtx
-			if interrupted {
+			recordCtx := turn.ctx
+			if errors.Is(context.Cause(turn.ctx), ErrTurnInterrupted) {
 				recordCtx = ctx
 			}
-			if err := provider.recordShellCommand(recordCtx, record); err != nil {
-				_ = s.journal.Append(Event{Type: EventError, TurnID: turn.id, Text: err.Error(), Status: "failed"})
-				_ = s.journal.Append(Event{Type: EventTurnCompleted, TurnID: turn.id, Status: "failed"})
-				return
+			if recordErr := provider.recordShellCommand(recordCtx, record); recordErr != nil {
+				err = recordErr
 			}
 		}
-		if interrupted {
-			_ = s.journal.Append(Event{Type: EventTurnCompleted, TurnID: turn.id, Status: "interrupted"})
-			return
-		}
-		_ = s.journal.Append(Event{Type: EventTurnCompleted, TurnID: turn.id, Status: "completed"})
+		s.events.finish(turn, err)
 		return
 	}
-	if command.kind == sessionCommandGoal {
-		provider, ok := s.provider.(goalProvider)
-		if !ok {
-			_ = s.journal.Append(Event{Type: EventError, TurnID: turn.id, Text: "/goal is available only in Codex Sessions", Status: "failed"})
-			_ = s.journal.Append(Event{Type: EventTurnCompleted, TurnID: turn.id, Status: "failed"})
-			return
-		}
-		runErr := provider.RunGoal(turnCtx, command.goal, sink)
-		sink.stop()
-		if errors.Is(runErr, ErrTurnInterrupted) || errors.Is(context.Cause(turnCtx), ErrTurnInterrupted) {
-			_ = s.journal.Append(Event{Type: EventTurnCompleted, TurnID: turn.id, Status: "interrupted"})
-			return
-		}
-		if runErr != nil {
-			if turnCtx.Err() != nil {
-				return
-			}
-			_ = s.journal.Append(Event{Type: EventError, TurnID: turn.id, Text: runErr.Error(), Status: "failed"})
-			_ = s.journal.Append(Event{Type: EventTurnCompleted, TurnID: turn.id, Status: "failed"})
-			return
-		}
-		_ = s.journal.Append(Event{Type: EventTurnCompleted, TurnID: turn.id, Status: "completed"})
-		return
-	}
-	resolvedAttachments, err := s.resolveAttachments(turn.attachments)
-	if err != nil {
-		_ = s.journal.Append(Event{Type: EventError, TurnID: turn.id, Text: err.Error(), Status: "failed"})
-		_ = s.journal.Append(Event{Type: EventTurnCompleted, TurnID: turn.id, Status: "failed"})
-		return
-	}
-	result := make(chan error, 1)
+	startResult := make(chan error, 1)
 	go func() {
-		result <- s.provider.RunTurn(turnCtx, TurnInput{Text: turn.text, Attachments: resolvedAttachments}, sink)
-	}()
-	var runErr error
-	select {
-	case runErr = <-result:
-	case <-turnCtx.Done():
-		runErr = context.Cause(turnCtx)
-	}
-	if s.config.AgentType == "claude-code" || s.config.AgentType == "opencode" {
-		if diff := workspaceDiff(turnCtx, s.config.WorkingDir); diff != "" {
-			sink.Emit(Event{Type: EventFileDiff, Diff: diff})
-		}
-	}
-	sink.stop()
-	if errors.Is(runErr, ErrTurnInterrupted) || errors.Is(context.Cause(turnCtx), ErrTurnInterrupted) {
-		_ = s.journal.Append(Event{Type: EventTurnCompleted, TurnID: turn.id, Status: "interrupted"})
-		return
-	}
-	if runErr != nil {
-		if turnCtx.Err() != nil {
+		if command.kind == sessionCommandGoal {
+			provider, ok := s.provider.(goalProvider)
+			if !ok {
+				startResult <- errors.New("/goal is available only in Codex Sessions")
+				return
+			}
+			startResult <- provider.StartGoal(turn.ctx, command.goal)
 			return
 		}
-		_ = s.journal.Append(Event{Type: EventError, TurnID: turn.id, Text: runErr.Error(), Status: "failed"})
-		_ = s.journal.Append(Event{Type: EventTurnCompleted, TurnID: turn.id, Status: "failed"})
+		attachments, err := s.resolveAttachments(request.attachments)
+		if err == nil {
+			err = s.provider.StartTurn(turn.ctx, TurnInput{Text: request.text, Attachments: attachments})
+		}
+		startResult <- err
+	}()
+	select {
+	case err := <-startResult:
+		if err != nil {
+			s.events.finish(turn, err)
+			return
+		}
+	case <-ctx.Done():
+		s.events.finish(turn, ctx.Err())
 		return
 	}
-	_ = s.journal.Append(Event{Type: EventTurnCompleted, TurnID: turn.id, Status: "completed"})
+	select {
+	case <-turn.done:
+	case <-turn.ctx.Done():
+		s.events.finish(turn, context.Cause(turn.ctx))
+	}
 }
 
 func (s *Server) runShellCommand(ctx context.Context, turnID, script string, sink EventSink) (shellCommandRecord, error) {

@@ -47,7 +47,7 @@ func NewSessionStatusPublisher(client clientv1alpha2.SessionInterface, sessionNa
 		if status.Active {
 			conditionStatus = metav1.ConditionTrue
 			reason = "TurnActive"
-			message = "Session runtime has an unfinished turn"
+			message = "Session runtime has unfinished work"
 			if status.WaitingForInput {
 				reason = "WaitingForInput"
 				message = "Session runtime is waiting for user input"

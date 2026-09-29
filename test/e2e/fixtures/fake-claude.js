@@ -58,6 +58,16 @@ function handleUser(message) {
   fs.mkdirSync(stateDirectory, {recursive: true});
   fs.writeFileSync(turnPath, String(turn));
   const prompt = promptText(message);
+  if (prompt === 'background') {
+    const taskID = `background-${turn}`;
+    send({type: 'system', subtype: 'task_started', task_id: taskID, task_type: 'local_bash'});
+    complete('Background task started');
+    setImmediate(() => {
+      send({type: 'system', subtype: 'task_notification', task_id: taskID, status: 'completed'});
+      complete('Background task finished without another prompt');
+    });
+    return;
+  }
   if (prompt.startsWith('attachment-check\n\n')) {
     complete(`attachment: ${readPromptAttachment(prompt)}`);
     return;

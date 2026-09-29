@@ -44,10 +44,10 @@ func TestClaudeProviderIncludesShellCommandWithNextPrompt(t *testing.T) {
 	default:
 	}
 
-	turnDone := make(chan error, 1)
-	go func() {
-		turnDone <- provider.RunTurn(t.Context(), TurnInput{Text: "continue"}, &collectingSink{})
-	}()
+	provider.SetEventSink(newProviderTestSink(nil))
+	if err := provider.StartTurn(t.Context(), TurnInput{Text: "continue"}); err != nil {
+		t.Fatalf("StartTurn() error = %v", err)
+	}
 
 	var message struct {
 		Message struct {
@@ -69,18 +69,6 @@ func TestClaudeProviderIncludesShellCommandWithNextPrompt(t *testing.T) {
 	if len(message.Message.Content) != 2 || message.Message.Content[0].Type != "text" || message.Message.Content[0].Text != wantContext || message.Message.Content[1].Text != "continue" {
 		t.Fatalf("Claude prompt content = %#v", message.Message.Content)
 	}
-	provider.activeMu.Lock()
-	done := provider.turnDone
-	provider.activeMu.Unlock()
-	done <- claudeTurnResult{}
-	select {
-	case err := <-turnDone:
-		if err != nil {
-			t.Fatalf("RunTurn() error = %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("Claude turn did not finish")
-	}
 	provider.shellContextMu.Lock()
 	defer provider.shellContextMu.Unlock()
 	if len(provider.pendingShellCommands) != 0 {
@@ -93,7 +81,7 @@ func TestClaudeProviderIncludesShellCommandWithNextPrompt(t *testing.T) {
 // render them as separate bubbles instead of concatenating the whole turn.
 func TestClaudeProviderClosesEachTextBlock(t *testing.T) {
 	provider := &ClaudeProvider{blockText: map[int]*strings.Builder{}}
-	sink := newOpenCodeTestSink(nil)
+	sink := newProviderTestSink(nil)
 
 	events := []string{
 		`{"type":"content_block_start","index":0,"content_block":{"type":"text"}}`,
@@ -124,7 +112,7 @@ func TestClaudeProviderClosesEachTextBlock(t *testing.T) {
 // non-text content block (a tool_use) does not emit an empty assistant.message.
 func TestClaudeProviderStreamedToolBlockEmitsNoMessage(t *testing.T) {
 	provider := &ClaudeProvider{blockText: map[int]*strings.Builder{}}
-	sink := newOpenCodeTestSink(nil)
+	sink := newProviderTestSink(nil)
 
 	events := []string{
 		`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tool-1","name":"Bash"}}`,
@@ -147,7 +135,7 @@ func TestClaudeProviderStreamedToolBlockEmitsNoMessage(t *testing.T) {
 // assistant.message per text block.
 func TestClaudeProviderEmitsMessageWithoutStreaming(t *testing.T) {
 	provider := &ClaudeProvider{}
-	sink := newOpenCodeTestSink(nil)
+	sink := newProviderTestSink(nil)
 
 	message := `{"content":[{"type":"text","text":"First"},{"type":"text","text":"Second"}]}`
 	provider.emitClaudeMessage("assistant", json.RawMessage(message), sink)
@@ -168,9 +156,9 @@ func TestClaudeProviderEmitsMessageWithoutStreaming(t *testing.T) {
 // (it also covers API calls that never appear as assistant events).
 func TestClaudeProviderRuntimeStatusMapping(t *testing.T) {
 	provider := &ClaudeProvider{config: ProviderConfig{Effort: "high"}}
-	sink := newOpenCodeTestSink(nil)
+	sink := newProviderTestSink(nil)
 
-	// The init event arrives before any turn is active, so it has no sink.
+	// An init event records status even when no consumer is attached.
 	if _, err := provider.handleClaudeLine([]byte(`{"type":"system","subtype":"init","model":"claude-opus-4-6","session_id":"ses-1"}`), nil); err != nil {
 		t.Fatalf("handleClaudeLine() error = %v", err)
 	}
@@ -228,7 +216,7 @@ func TestClaudeProviderRuntimeStatusMapping(t *testing.T) {
 // message does not re-emit the same text as duplicate assistant.message events.
 func TestClaudeProviderStreamingSuppressesAssembledMessage(t *testing.T) {
 	provider := &ClaudeProvider{blockText: map[int]*strings.Builder{}}
-	sink := newOpenCodeTestSink(nil)
+	sink := newProviderTestSink(nil)
 
 	stream := []string{
 		`{"type":"content_block_start","index":0,"content_block":{"type":"text"}}`,
