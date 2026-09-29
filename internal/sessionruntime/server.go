@@ -101,6 +101,7 @@ type Server struct {
 	attachmentStore   *AttachmentStore
 	providerCloseOnce sync.Once
 	providerCloseErr  error
+	workspaceChanges  *workspaceChangesCollector
 
 	submitMu      sync.Mutex
 	appendMessage func(Event) error
@@ -217,6 +218,11 @@ func Run(ctx context.Context, config Config) error {
 	if err != nil {
 		return err
 	}
+	changes, err := newWorkspaceChangesCollector(ctx, config.WorkingDir, config.StateDir, config.Environment)
+	if err != nil {
+		journal.Close()
+		return err
+	}
 	provider, err := NewProvider(ctx, ProviderConfig{
 		AgentType:   config.AgentType,
 		WorkingDir:  config.WorkingDir,
@@ -238,6 +244,7 @@ func Run(ctx context.Context, config Config) error {
 		return err
 	}
 	server := NewServer(config, journal, provider)
+	server.workspaceChanges = changes
 	publishSessionStatus := func(ctx context.Context, active, waitingForInput bool) error {
 		model := server.runtimeStatusSnapshot().Model
 		return publishObservedSessionStatus(ctx, config.PublishSessionStatus, active, waitingForInput, model, func(ctx context.Context) (WorkspaceStatus, error) {
@@ -1707,6 +1714,23 @@ func (s *Server) handleConnection(ctx context.Context, connection net.Conn) {
 		switch request.Type {
 		case "subscribe":
 			subscribe(request.Since, request.JournalID, request.HistoryBounds, request.HistoryItems, request.HistoryBytes)
+		case "workspace.changes":
+			go func(requestID string) {
+				changes := WorkspaceChanges{Files: []WorkspaceFileChange{}, Message: "Workspace changes are unavailable"}
+				if s.workspaceChanges != nil {
+					var err error
+					changes, err = s.workspaceChanges.capture(connectionCtx)
+					if err != nil {
+						changes = WorkspaceChanges{Files: []WorkspaceFileChange{}, Message: "Unable to read workspace changes: " + err.Error()}
+					}
+				}
+				writeMu.Lock()
+				defer writeMu.Unlock()
+				select {
+				case out <- Event{Type: EventWorkspaceChanges, RequestID: requestID, Changes: &changes}:
+				case <-connectionCtx.Done():
+				}
+			}(request.RequestID)
 		case "history":
 			start, retained, err := s.loadHistoryPage(request.RequestID, request.HistoryCursor)
 			if err != nil {

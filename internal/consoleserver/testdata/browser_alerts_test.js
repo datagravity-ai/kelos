@@ -113,6 +113,7 @@ function resetHarness() {
   global.refreshSessionProgress = () => {};
   global.renderInputRequest = event => rendered.push(event);
   global.renderTurnEnd = event => rendered.push(event);
+  global.requestWorkspaceChanges = () => {};
   global.renderError = event => rendered.push(event);
   global.finishHistoryReplay = () => { state.replayingHistory = false; };
   global.renderSectionOptions = () => {};

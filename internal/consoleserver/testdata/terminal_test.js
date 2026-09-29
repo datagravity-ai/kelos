@@ -211,6 +211,8 @@ vm.runInThisContext(app.slice(pageHideListener, app.indexOf('function interruptA
 for (const [name, tab] of [['conversation', viewElements.conversationTab], ['changes', viewElements.changesTab], ['terminal', viewElements.terminalTab]]) {
   tab.addEventListener('click', () => setActiveView(name));
 }
+let changesRefreshes = 0;
+global.requestWorkspaceChanges = () => { changesRefreshes++; };
 const beforeTabs = sockets.length;
 setActiveView('conversation');
 assert.equal(sockets.length, beforeTabs, 'Conversation must not start a shell');
@@ -231,6 +233,7 @@ assert.equal(viewElements.terminalTab.tabIndex, 0);
 assert.equal(viewElements.conversationTab.tabIndex, -1);
 assert.equal(viewElements.changesTab.tabIndex, -1);
 setActiveView('changes');
+assert.ok(changesRefreshes > 0);
 assert.equal(viewElements.viewChoice.value, 'changes');
 assert.equal(viewElements.viewPicker.dataset.view, 'changes');
 assert.equal(viewElements.changes.hidden, false);

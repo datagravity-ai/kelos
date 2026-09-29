@@ -247,6 +247,9 @@ function resetHarness() {
     inputs: new Map(),
     diffs: new Map(),
     fileChanges: new Map(),
+    workspaceChanges: null,
+    changesRequestID: '',
+    changesRefreshPending: false,
     pendingMessage: null,
     activeTurn: false,
     activeTurnID: '',
@@ -268,7 +271,6 @@ function resetHarness() {
     historyRequestID: '',
     runtimeRecoveryActive: false,
     pinHistoryToBottom: false,
-    fileChangesDirty: false,
     namespace: 'default',
     namespaceGeneration: 0,
     sessionListGeneration: 0,
@@ -579,7 +581,8 @@ function testPromptJumpWaitsForInitialHistory() {
   handleEvent({type: 'history.end', historyState: {}});
   assert.equal(elements.promptsDialog.open, false);
   assert.equal(elements.messages.querySelectorAll('.event-row.user')[0].focused, true);
-  assert.equal(sent.length, 1);
+  assert.equal(sent.filter(request => request.type === 'prompts').length, 1);
+  assert.equal(sent.filter(request => request.type === 'workspace.changes').length, 1);
 }
 
 function testPromptJumpCancellation() {
@@ -1019,7 +1022,6 @@ function testProjectedHistoryRestoresStateAndReconnectHighWater() {
   view.historyCursor = 'stale-cursor';
   activateSessionView(view);
 
-  const fileDiff = 'diff --git a/old.txt b/old.txt\n--- a/old.txt\n+++ b/old.txt\n-old\n+new';
   handleEvent({
     type: 'history.start',
     journalId: 'journal-1',
@@ -1036,7 +1038,6 @@ function testProjectedHistoryRestoresStateAndReconnectHighWater() {
       waitingForInput: true,
       turnInterrupting: true,
       pendingTurn: {turnId: 'turn-2', text: 'pending request'},
-      fileDiff,
     },
   });
 
@@ -1052,7 +1053,6 @@ function testProjectedHistoryRestoresStateAndReconnectHighWater() {
   assert.equal(state.assistantTextByTurn.get('turn-1'), 'working');
   assert.equal(state.assistantTextByTurn.has('current'), false);
   assert.equal(state.pendingMessage.event.text, 'pending request');
-  assert.equal(state.fileChanges.get('old.txt'), fileDiff);
   assert.equal(elements.messages.querySelector('.history-page-control').textContent, 'Load earlier messages');
 
   handleEvent({type: 'assistant.message', id: 13, turnId: 'turn-1', text: 'working done'});
@@ -1394,6 +1394,85 @@ function testPendingMessageSurvivesCompletedHistoryReplay() {
   assert.match(elements.messages.textContent, /completed/);
 }
 
+function testWorkspaceChangesSnapshots() {
+  resetHarness();
+  state.selected = {namespace: 'default', name: 'one', phase: 'Ready'};
+  const requests = [];
+  state.socket = {readyState: WebSocket.OPEN, send: value => requests.push(JSON.parse(value))};
+  requestWorkspaceChanges();
+  requestWorkspaceChanges();
+  assert.equal(requests.length, 1, 'Only one snapshot request may be outstanding');
+  assert.equal(requests[0].type, 'workspace.changes');
+  const diff = 'diff --git a/new.txt b/new.txt\nnew file mode 100644\n--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1 @@\n+new';
+  handleEvent({type: 'workspace.changes', requestId: requests[0].requestId, changes: {
+    base: '123456789abcdef', files: [{name: 'new.txt', diff}],
+  }});
+  assert.equal(state.fileChanges.get('new.txt'), diff);
+  assert.equal(elements.changesList.querySelector('.file-change-name').textContent, 'new.txt');
+  assert.equal(elements.changesList.querySelector('.file-change-added').textContent, '+1');
+  assert.equal(elements.changesSummary.textContent, '1 changed file · Compared with 123456789abc');
+
+  renderDiff({type: 'file.diff', turnId: 'old-turn', diff: '*** Add File: outdated.txt\n+outdated'});
+  replayOlderHistoryPage([{type: 'file.diff', turnId: 'earlier-turn', diff: '*** Add File: earlier.txt\n+earlier'}]);
+  assert.deepEqual([...state.fileChanges.keys()], ['new.txt']);
+
+  requestWorkspaceChanges();
+  handleEvent({type: 'workspace.changes', requestId: requests[1].requestId, changes: {base: '123456789abcdef', files: []}});
+  assert.equal(state.fileChanges.size, 0);
+  assert.equal(elements.changesList.textContent, 'No file changes yet.');
+  handleEvent({type: 'workspace.changes', requestId: requests[0].requestId, changes: {files: [{name: 'stale.txt', diff}]}});
+  assert.equal(state.fileChanges.size, 0, 'Stale responses must not restore files');
+
+  requestWorkspaceChanges();
+  handleEvent({type: 'workspace.changes', requestId: requests[2].requestId, changes: {files: [], message: 'Unable to read workspace changes'}});
+  assert.equal(elements.changesList.textContent, 'Unable to read workspace changes');
+  requestWorkspaceChanges();
+  assert.equal(requests.length, 4, 'Errors must allow another refresh');
+  requestWorkspaceChanges(true);
+  assert.equal(requests.length, 4, 'A completed turn queues a refresh behind an in-flight snapshot');
+
+  state.historyPageReading = true;
+  handleEvent({type: 'workspace.changes', requestId: requests[3].requestId, changes: {files: [{name: 'new.txt', diff}]}});
+  assert.equal(state.fileChanges.get('new.txt'), diff, 'Live snapshots bypass transcript paging');
+  assert.equal(requests.length, 5, 'The queued refresh must run after the in-flight snapshot');
+
+  const warning = 'Showing 1 of 1001 changed files (file list truncated)';
+  handleEvent({type: 'workspace.changes', requestId: requests[4].requestId, changes: {
+    base: '123456789abcdef', files: [{name: 'new.txt', diff}], truncated: true, message: warning,
+  }});
+  assert.equal(elements.changesSummary.textContent, warning);
+  assert.equal(elements.changesList.querySelector('.file-change-name').textContent, 'new.txt');
+}
+
+function testWorkspaceChangesPreservesUnchangedDOM() {
+  resetHarness();
+  state.selected = {namespace: 'default', name: 'one', phase: 'Ready'};
+  const requests = [];
+  state.socket = {readyState: WebSocket.OPEN, send: value => requests.push(JSON.parse(value))};
+  const snapshot = {base: '123456789abcdef', files: [{name: 'file.txt', diff: '*** Add File: file.txt\n+content'}]};
+  requestWorkspaceChanges();
+  handleEvent({type: 'workspace.changes', requestId: requests[0].requestId, changes: snapshot});
+  const fileNode = elements.changesList.firstChild;
+  const files = state.fileChanges;
+  fileNode.open = true;
+
+  requestWorkspaceChanges();
+  requestWorkspaceChanges(true);
+  handleEvent({type: 'workspace.changes', requestId: requests[1].requestId, changes: JSON.parse(JSON.stringify(snapshot))});
+  assert.equal(elements.changesList.firstChild, fileNode, 'Identical snapshots preserve diff DOM nodes');
+  assert.equal(state.fileChanges, files);
+  assert.equal(fileNode.open, true);
+  assert.equal(requests.length, 3, 'An unchanged response still services a queued refresh');
+
+  handleEvent({type: 'workspace.changes', requestId: requests[2].requestId, changes: {
+    ...snapshot, files: [{name: 'file.txt', diff: '*** Add File: file.txt\n+updated\n+content'}],
+  }});
+  assert.notEqual(elements.changesList.firstChild, fileNode);
+  assert.equal(elements.changesList.querySelector('.file-change-added').textContent, '+2');
+}
+
+testWorkspaceChangesSnapshots();
+testWorkspaceChangesPreservesUnchangedDOM();
 testSessionViewSaveAndRestore();
 testSessionViewReset();
 testSessionProgressLifecycle();

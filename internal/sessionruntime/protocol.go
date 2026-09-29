@@ -26,6 +26,7 @@ const (
 	EventInputRequested     = "input.requested"
 	EventInputResolved      = "input.resolved"
 	EventFileDiff           = "file.diff"
+	EventWorkspaceChanges   = "workspace.changes"
 	EventTurnCompleted      = "turn.completed"
 	EventError              = "error"
 
@@ -38,31 +39,32 @@ type Event struct {
 	ID   int64  `json:"id,omitempty"`
 	Type string `json:"type"`
 	// Timestamp records when a durable conversation event was first appended.
-	Timestamp      *time.Time      `json:"timestamp,omitempty"`
-	RequestID      string          `json:"requestId,omitempty"`
-	TurnID         string          `json:"turnId,omitempty"`
-	Text           string          `json:"text,omitempty"`
-	Revision       int64           `json:"revision,omitempty"`
-	SessionCommand bool            `json:"sessionCommand,omitempty"`
-	ToolID         string          `json:"toolId,omitempty"`
-	ToolName       string          `json:"toolName,omitempty"`
-	Output         string          `json:"output,omitempty"`
-	Status         string          `json:"status,omitempty"`
-	InputID        string          `json:"inputId,omitempty"`
-	Questions      []InputQuestion `json:"questions,omitempty"`
-	Diff           string          `json:"diff,omitempty"`
-	FirstEventID   int64           `json:"firstEventId,omitempty"`
-	LastEventID    int64           `json:"lastEventId,omitempty"`
-	JournalID      string          `json:"journalId,omitempty"`
-	Reset          bool            `json:"reset,omitempty"`
-	HistoryLimited bool            `json:"historyLimited,omitempty"`
-	HistoryPage    bool            `json:"historyPage,omitempty"`
-	HistoryCursor  string          `json:"historyCursor,omitempty"`
-	HistoryState   *HistoryState   `json:"historyState,omitempty"`
-	Runtime        *RuntimeStatus  `json:"runtime,omitempty"`
-	Goal           *Goal           `json:"goal,omitempty"`
-	Attachments    []Attachment    `json:"attachments,omitempty"`
-	Prompts        []Prompt        `json:"prompts,omitempty"`
+	Timestamp      *time.Time        `json:"timestamp,omitempty"`
+	RequestID      string            `json:"requestId,omitempty"`
+	TurnID         string            `json:"turnId,omitempty"`
+	Text           string            `json:"text,omitempty"`
+	Revision       int64             `json:"revision,omitempty"`
+	SessionCommand bool              `json:"sessionCommand,omitempty"`
+	ToolID         string            `json:"toolId,omitempty"`
+	ToolName       string            `json:"toolName,omitempty"`
+	Output         string            `json:"output,omitempty"`
+	Status         string            `json:"status,omitempty"`
+	InputID        string            `json:"inputId,omitempty"`
+	Questions      []InputQuestion   `json:"questions,omitempty"`
+	Diff           string            `json:"diff,omitempty"`
+	FirstEventID   int64             `json:"firstEventId,omitempty"`
+	LastEventID    int64             `json:"lastEventId,omitempty"`
+	JournalID      string            `json:"journalId,omitempty"`
+	Reset          bool              `json:"reset,omitempty"`
+	HistoryLimited bool              `json:"historyLimited,omitempty"`
+	HistoryPage    bool              `json:"historyPage,omitempty"`
+	HistoryCursor  string            `json:"historyCursor,omitempty"`
+	HistoryState   *HistoryState     `json:"historyState,omitempty"`
+	Runtime        *RuntimeStatus    `json:"runtime,omitempty"`
+	Goal           *Goal             `json:"goal,omitempty"`
+	Attachments    []Attachment      `json:"attachments,omitempty"`
+	Prompts        []Prompt          `json:"prompts,omitempty"`
+	Changes        *WorkspaceChanges `json:"changes,omitempty"`
 }
 
 // Prompt is a retained user submission, with its latest accepted text.
@@ -90,7 +92,6 @@ type HistoryState struct {
 	TurnInterrupting  bool                `json:"turnInterrupting,omitempty"`
 	WaitingForInput   bool                `json:"waitingForInput,omitempty"`
 	PendingTurn       *HistoryPendingTurn `json:"pendingTurn,omitempty"`
-	FileDiff          string              `json:"fileDiff,omitempty"`
 }
 
 // HistoryPendingTurn describes the user message waiting to run.
