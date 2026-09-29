@@ -172,6 +172,9 @@
         inputs: new Map(),
         diffs: new Map(),
         fileChanges: new Map(),
+        workspaceChanges: null,
+        changesRequestID: '',
+        changesRefreshPending: false,
         pendingMessage: null,
         promptDrafts: new Map(),
         attachmentDrafts: new Map(),
@@ -196,7 +199,6 @@
         historyRequestID: '',
         runtimeRecoveryActive: false,
         pinHistoryToBottom: false,
-        fileChangesDirty: false,
         defaultNamespace: 'default',
         namespace: 'default',
         namespaceGeneration: 0,
@@ -1009,6 +1011,7 @@
             inputs: new Map(),
             diffs: new Map(),
             fileChanges: new Map(),
+            workspaceChanges: null,
             pendingMessage: null,
             activeTurn: false,
             activeTurnID: '',
@@ -1020,7 +1023,6 @@
             historyCursor: '',
             runtimeRecoveryActive: false,
             pinHistoryToBottom: false,
-            fileChangesDirty: false,
             historyLoaded: false,
             statusPlaceholder: false,
         };
@@ -1039,6 +1041,7 @@
         view.inputs = state.inputs;
         view.diffs = state.diffs;
         view.fileChanges = state.fileChanges;
+        view.workspaceChanges = state.workspaceChanges;
         view.pendingMessage = state.pendingMessage;
         view.activeTurn = state.activeTurn;
         view.activeTurnID = state.activeTurnID;
@@ -1050,12 +1053,15 @@
         view.historyCursor = state.historyCursor;
         view.runtimeRecoveryActive = state.runtimeRecoveryActive;
         view.pinHistoryToBottom = state.pinHistoryToBottom;
-        view.fileChangesDirty = state.fileChangesDirty;
     }
     function updateFileChangesHeader() {
         const count = state.fileChanges.size;
         elements.changesCount.textContent = String(count);
-        elements.changesSummary.textContent = count === 1 ? '1 changed file' : `${count} changed files`;
+        const snapshot = state.workspaceChanges;
+        const summary = count === 1 ? '1 changed file' : `${count} changed files`;
+        elements.changesSummary.textContent = snapshot?.message || (snapshot
+            ? `${summary} · Compared with ${snapshot.base?.slice(0, 12)}${snapshot.truncated ? ' · Diff content truncated' : ''}`
+            : 'Loading workspace changes…');
     }
     function activateSessionView(view) {
         state.currentView = view;
@@ -1066,6 +1072,7 @@
         state.inputs = view.inputs;
         state.diffs = view.diffs;
         state.fileChanges = view.fileChanges;
+        state.workspaceChanges = view.workspaceChanges;
         state.pendingMessage = view.pendingMessage;
         state.activeTurn = view.activeTurn;
         state.activeTurnID = view.activeTurnID;
@@ -1083,7 +1090,6 @@
         state.historyRequestID = '';
         state.runtimeRecoveryActive = view.runtimeRecoveryActive;
         state.pinHistoryToBottom = view.pinHistoryToBottom;
-        state.fileChangesDirty = view.fileChangesDirty;
         const hasChanges = view.changes.hasChildNodes();
         elements.messages.replaceChildren(view.messages);
         elements.pending.replaceChildren(view.pending);
@@ -1127,6 +1133,7 @@
         state.inputs = new Map();
         state.diffs = new Map();
         state.fileChanges = new Map();
+        state.workspaceChanges = null;
         state.pendingMessage = null;
         state.activeTurn = false;
         state.activeTurnID = '';
@@ -1144,7 +1151,6 @@
         state.historyRequestID = '';
         state.runtimeRecoveryActive = false;
         state.pinHistoryToBottom = true;
-        state.fileChangesDirty = false;
         elements.messages.replaceChildren();
         elements.pending.replaceChildren();
         elements.pending.hidden = true;
@@ -1162,6 +1168,7 @@
             view.inputs = state.inputs;
             view.diffs = state.diffs;
             view.fileChanges = state.fileChanges;
+            view.workspaceChanges = state.workspaceChanges;
             view.pendingMessage = state.pendingMessage;
             view.activeTurn = false;
             view.activeTurnID = '';
@@ -2699,6 +2706,8 @@ spec:
                 : `Enter to ${action} · Shift+Enter for a new line · !COMMAND · /goal`);
     }
     function closeSocket() {
+        state.changesRequestID = '';
+        state.changesRefreshPending = false;
         closePromptHistory();
         state.socketGeneration += 1;
         if (state.reconnectTimer !== null)
@@ -3536,8 +3545,6 @@ spec:
         state.activeTurnStartedAt = Number.isNaN(startedAt) ? 0 : startedAt;
         state.waitingForInput = Boolean(historyState.waitingForInput);
         state.interrupting = Boolean(historyState.turnInterrupting);
-        if (historyState.fileDiff)
-            updateFileChanges(parseFileDiffs(historyState.fileDiff));
         elements.pending.replaceChildren();
         elements.pending.hidden = true;
         state.pendingMessage = null;
@@ -3555,10 +3562,6 @@ spec:
         updateComposerAction();
     }
     function flushDeferredHistoryRendering() {
-        if (state.fileChangesDirty) {
-            state.fileChangesDirty = false;
-            renderFileChanges();
-        }
         for (const block of state.diffs.values()) {
             if (!block.dirty)
                 continue;
@@ -3584,7 +3587,6 @@ spec:
             lastEventID: state.lastEventID,
             assistantSegmentByTurn: state.assistantSegmentByTurn,
             assistantTextByTurn: state.assistantTextByTurn,
-            fileChanges: new Map(state.fileChanges),
         };
         elements.messages = page;
         state.assistantSegmentByTurn = new Map();
@@ -3593,8 +3595,6 @@ spec:
         state.pinHistoryToBottom = false;
         for (const event of events)
             handleEvent(event);
-        for (const [name, diff] of live.fileChanges)
-            state.fileChanges.set(name, diff);
         flushDeferredHistoryRendering();
         const rendered = moveChildren(page);
         elements.messages = messages;
@@ -3805,6 +3805,10 @@ spec:
         }
     }
     function handleEvent(event) {
+        if (event.type === 'workspace.changes' || (event.type === 'error' && event.requestId?.startsWith('changes-'))) {
+            receiveWorkspaceChanges(event);
+            return;
+        }
         if (event.type === 'prompts' || (event.type === 'error' && event.requestId?.startsWith('prompts-'))) {
             receivePromptHistory(event);
             return;
@@ -3857,8 +3861,10 @@ spec:
                 break;
             }
             case 'history.end':
-                if (!event.historyPage)
+                if (!event.historyPage) {
                     finishHistoryReplay(event.historyState);
+                    requestWorkspaceChanges(true);
+                }
                 break;
             case 'runtime.status':
                 state.runtimeStatus = event.runtime || null;
@@ -3939,6 +3945,8 @@ spec:
             case 'turn.completed':
                 endAssistantSegment(event.turnId);
                 renderTurnEnd(event, recoveredCompletion);
+                if (!state.replayingHistory)
+                    requestWorkspaceChanges(true);
                 break;
             case 'error':
                 endAssistantSegment(event.turnId);
@@ -4488,7 +4496,6 @@ spec:
         if (!event.diff)
             return;
         const files = parseFileDiffs(event.diff);
-        updateFileChanges(files);
         const key = event.turnId || `diff-${event.id || 'current'}`;
         let block = state.diffs.get(key);
         const created = !block;
@@ -4522,13 +4529,34 @@ spec:
                 scrollToBottom();
         }
     }
-    function updateFileChanges(files) {
-        for (const file of files)
-            state.fileChanges.set(file.name, file.diff);
-        if (state.replayingHistory)
-            state.fileChangesDirty = true;
-        else
+    function requestWorkspaceChanges(refreshPending = false) {
+        if (!state.socket || state.socket.readyState !== WebSocket.OPEN)
+            return;
+        if (state.changesRequestID) {
+            state.changesRefreshPending ||= refreshPending;
+            return;
+        }
+        state.changesRequestID = sessionRequestID('changes');
+        state.socket.send(JSON.stringify({ type: 'workspace.changes', requestId: state.changesRequestID }));
+    }
+    function receiveWorkspaceChanges(event) {
+        if (!state.changesRequestID || event.requestId !== state.changesRequestID)
+            return;
+        state.changesRequestID = '';
+        const previous = state.workspaceChanges;
+        const snapshot = event.changes || { files: [], message: event.text || 'Workspace changes are unavailable' };
+        const unchanged = previous && previous.base === snapshot.base && previous.message === snapshot.message
+            && previous.truncated === snapshot.truncated && previous.files.length === snapshot.files.length
+            && previous.files.every((file, index) => file.name === snapshot.files[index].name && file.diff === snapshot.files[index].diff);
+        if (!unchanged) {
+            state.workspaceChanges = snapshot;
+            state.fileChanges = new Map(state.workspaceChanges.files.map(file => [file.name, file.diff]));
             renderFileChanges();
+        }
+        if (state.changesRefreshPending) {
+            state.changesRefreshPending = false;
+            requestWorkspaceChanges();
+        }
     }
     function parseFileDiffs(diff) {
         const lines = diff.split('\n');
@@ -4612,7 +4640,8 @@ spec:
             elements.changesList.replaceChildren();
             const empty = document.createElement('div');
             empty.className = 'changes-empty';
-            empty.textContent = state.selected ? 'No file changes yet.' : 'Choose a Session to inspect its file changes.';
+            empty.textContent = !state.selected ? 'Choose a Session to inspect its file changes.'
+                : state.workspaceChanges?.message || (state.workspaceChanges ? 'No file changes yet.' : 'Loading workspace changes…');
             elements.changesList.append(empty);
             return;
         }
@@ -4695,6 +4724,8 @@ spec:
         elements.viewPicker.dataset.view = view;
         const conversationActive = view === 'conversation';
         const changesActive = view === 'changes';
+        if (changesActive)
+            requestWorkspaceChanges();
         const terminalActive = view === 'terminal';
         elements.messages.hidden = !conversationActive;
         elements.composerWrap.hidden = !conversationActive;
@@ -5485,4 +5516,8 @@ spec:
     }).catch(error => showToast(error.message));
     window.setInterval(() => loadSessions({ quiet: true }), 5000);
     window.setInterval(() => loadResources({ quiet: true }), 10000);
+    window.setInterval(() => {
+        if (!elements.sessionsView.hidden && !elements.changes.hidden && !document.hidden)
+            requestWorkspaceChanges();
+    }, 5000);
 }

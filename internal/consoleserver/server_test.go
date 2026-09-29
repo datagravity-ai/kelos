@@ -911,7 +911,7 @@ func TestApplicationIncludesFileChangesView(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, expected := range []string{
-		`state.fileChanges.set(file.name, file.diff)`,
+		`state.fileChanges = new Map(state.workspaceChanges.files.map(file => [file.name, file.diff]))`,
 		`state.diffs.set(key, block)`,
 		`renderFileChangeList(block.list, block.files, openFiles)`,
 		`const path = normalizeDiffPath(header.slice(prefix.length))`,

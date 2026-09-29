@@ -2849,9 +2849,6 @@ func TestServerPreservesStateOutsideProjectedHistoryPage(t *testing.T) {
 	if state.PendingTurn == nil || state.PendingTurn.TurnID != "turn-2" {
 		t.Fatalf("pending turn = %#v, want turn-2", state.PendingTurn)
 	}
-	if state.FileDiff != "diff --git a/old.txt b/old.txt\n-old\n+new" {
-		t.Fatalf("file diff = %q, want state outside projected history page", state.FileDiff)
-	}
 	if text := state.PendingTurn.Text; len(text) > maxHistoryMessageBytes || !strings.Contains(text, historyTruncationMarker) {
 		t.Fatalf("pending message preview has %d bytes", len(text))
 	}

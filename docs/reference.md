@@ -469,6 +469,26 @@ request for the visible response has scrolled out of view, a compact **Current
 request** link follows it while browsing history and scrolls back to the full
 request when clicked. The link stays hidden while viewing file changes.
 
+The web client's **Changes** tab compares the Git workspace with the commit
+checked out when the Session runtime first records its comparison base. It
+includes committed, staged, and unstaged changes, plus untracked files that Git
+does not ignore, for every agent type. Existing uncommitted changes are included.
+The comparison base survives runtime restarts in the Session state directory;
+Sessions created before this feature record their base on the first successful
+Git inspection after upgrading. A repository without commits uses an empty
+comparison base. Renames appear as a deletion and an addition.
+
+Changes refresh after connecting and completing a turn, when opening the tab,
+and every five seconds while the tab is visible. This includes edits made through
+the terminal. Reverted changes disappear from the list, and browsing conversation
+history does not change it. The tab displays its comparison base, reports Git
+errors and non-Git workspaces, and displays up to 1,000 changed files and 1 MiB
+of diff content. Very long paths can reduce the number of displayed files. The
+tab reports when the file list or diff is truncated, or when files cannot be
+included (for example, a nested repository without commits). Git inspection
+errors do not prevent the Session from starting. If initialization fails, the
+runtime retries recording the comparison base on subsequent refreshes.
+
 The Session sidebar shows compact relative activity times, and the selected
 Session header shows whether it is active now, when it was last active, or when
 it was created if runtime activity has not been reported. Hover over the
