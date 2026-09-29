@@ -25,6 +25,7 @@ import (
 	gomegatypes "github.com/onsi/gomega/types"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apiMeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -408,10 +409,18 @@ var _ = Describe("Session remote control", func() {
 			runtimeVersionLabel  = "app.kubernetes.io/version"
 			updatedModel         = "e2e-updated-model"
 			updatedVersion       = "e2e-updated-version"
+			serviceAccountName   = sessionName + "-identity"
 		)
+		_, err := f.Clientset.CoreV1().ServiceAccounts(f.Namespace).Create(context.TODO(), &corev1.ServiceAccount{
+			ObjectMeta: metav1.ObjectMeta{Name: serviceAccountName},
+		}, metav1.CreateOptions{})
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() {
+			_ = f.Clientset.CoreV1().ServiceAccounts(f.Namespace).Delete(context.TODO(), serviceAccountName, metav1.DeleteOptions{})
+		})
 		configMapName := sessionName + "-provider"
 		mode := int32(0555)
-		_, err := f.Clientset.CoreV1().ConfigMaps(f.Namespace).Create(context.TODO(), &corev1.ConfigMap{
+		_, err = f.Clientset.CoreV1().ConfigMaps(f.Namespace).Create(context.TODO(), &corev1.ConfigMap{
 			ObjectMeta: metav1.ObjectMeta{Name: configMapName, Namespace: f.Namespace},
 			Data:       map[string]string{"claude": fakeClaude},
 		}, metav1.CreateOptions{})
@@ -504,6 +513,7 @@ var _ = Describe("Session remote control", func() {
 				SecretRef: &kelos.SecretReference{Name: credentialSecretName},
 			}
 			currentSession.Spec.Worker.Model = updatedModel
+			currentSession.Spec.Worker.PodOverrides.ServiceAccountName = serviceAccountName
 			if currentSession.Spec.Worker.PodOverrides.Labels == nil {
 				currentSession.Spec.Worker.PodOverrides.Labels = map[string]string{}
 			}
@@ -526,6 +536,12 @@ var _ = Describe("Session remote control", func() {
 			g.Expect(decodeErr).NotTo(HaveOccurred())
 			g.Expect(report.PodUID).To(Equal(podUID))
 			g.Expect(report.Phase).To(Equal(sessionupdate.PhaseDraining))
+			binding, getErr := f.Clientset.RbacV1().RoleBindings(f.Namespace).Get(context.TODO(), pod.Spec.ServiceAccountName, metav1.GetOptions{})
+			g.Expect(getErr).NotTo(HaveOccurred())
+			g.Expect(binding.Subjects).To(ConsistOf(
+				rbacv1.Subject{Kind: rbacv1.ServiceAccountKind, Namespace: f.Namespace, Name: pod.Spec.ServiceAccountName},
+				rbacv1.Subject{Kind: rbacv1.ServiceAccountKind, Namespace: f.Namespace, Name: serviceAccountName},
+			))
 		}, time.Minute, 200*time.Millisecond).Should(Succeed())
 		Consistently(func() bool {
 			currentStatefulSet, getErr := f.Clientset.AppsV1().StatefulSets(f.Namespace).Get(context.TODO(), statefulSet.Name, metav1.GetOptions{})
@@ -566,6 +582,12 @@ var _ = Describe("Session remote control", func() {
 			currentPod, getErr := f.Clientset.CoreV1().Pods(f.Namespace).Get(context.TODO(), session.Status.PodName, metav1.GetOptions{})
 			g.Expect(getErr).NotTo(HaveOccurred())
 			g.Expect(currentPod.UID).To(Equal(session.Status.PodUID))
+			g.Expect(currentPod.Spec.ServiceAccountName).To(Equal(serviceAccountName))
+			binding, getErr := f.Clientset.RbacV1().RoleBindings(f.Namespace).Get(context.TODO(), pod.Spec.ServiceAccountName, metav1.GetOptions{})
+			g.Expect(getErr).NotTo(HaveOccurred())
+			g.Expect(binding.Subjects).To(Equal([]rbacv1.Subject{{
+				Kind: rbacv1.ServiceAccountKind, Namespace: f.Namespace, Name: serviceAccountName,
+			}}))
 			g.Expect(podSessionRuntimeImage(currentPod)).To(Equal(originalRuntimeImage))
 			g.Expect(currentPod.Labels).To(HaveKeyWithValue(runtimeVersionLabel, updatedVersion))
 			g.Expect(currentPod.Labels).To(HaveKeyWithValue(appsv1.StatefulSetRevisionLabel, currentStatefulSet.Status.UpdateRevision))

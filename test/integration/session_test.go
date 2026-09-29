@@ -561,9 +561,12 @@ spec:
 				SecretRef: &kelos.SecretReference{Name: "updated-credentials"},
 			}
 			current.Spec.Worker.Model = "updated-model"
-			current.Spec.Worker.PodOverrides = &kelos.PodOverrides{Labels: map[string]string{
-				"app.kubernetes.io/version": "updated-version",
-			}}
+			current.Spec.Worker.PodOverrides = &kelos.PodOverrides{
+				ServiceAccountName: "workload-identity",
+				Labels: map[string]string{
+					"app.kubernetes.io/version": "updated-version",
+				},
+			}
 			return k8sClient.Update(ctx, &current)
 		}, 10*time.Second, 100*time.Millisecond).Should(Succeed())
 
@@ -572,6 +575,7 @@ spec:
 			g.Expect(k8sClient.Get(ctx, statefulSetKey, &statefulSet)).To(Succeed())
 			g.Expect(statefulSet.Labels).To(HaveKeyWithValue("app.kubernetes.io/version", "updated-version"))
 			g.Expect(statefulSet.Spec.Template.Labels).To(HaveKeyWithValue("app.kubernetes.io/version", "updated-version"))
+			g.Expect(statefulSet.Spec.Template.Spec.ServiceAccountName).To(Equal("workload-identity"))
 			g.Expect(statefulSet.Spec.Template.Spec.Containers).NotTo(BeEmpty())
 			model := ""
 			var credentialEnv *corev1.EnvVar
@@ -590,6 +594,26 @@ spec:
 			g.Expect(credentialEnv.ValueFrom.SecretKeyRef).NotTo(BeNil())
 			g.Expect(credentialEnv.ValueFrom.SecretKeyRef.Name).To(Equal("updated-credentials"))
 			g.Expect(credentialEnv.ValueFrom.SecretKeyRef.Key).To(Equal("CODEX_API_KEY"))
+		}, 10*time.Second, 100*time.Millisecond).Should(Succeed())
+
+		Eventually(func() error {
+			var current kelos.Session
+			if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(session), &current); err != nil {
+				return err
+			}
+			current.Spec.Worker.PodOverrides = nil
+			return k8sClient.Update(ctx, &current)
+		}, 10*time.Second, 100*time.Millisecond).Should(Succeed())
+		Eventually(func(g Gomega) {
+			var statefulSet appsv1.StatefulSet
+			g.Expect(k8sClient.Get(ctx, statefulSetKey, &statefulSet)).To(Succeed())
+			accountName := statefulSet.Spec.Template.Spec.ServiceAccountName
+			g.Expect(accountName).NotTo(BeEmpty())
+			g.Expect(accountName).NotTo(Equal("workload-identity"))
+			var account corev1.ServiceAccount
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: accountName}, &account)).To(Succeed())
+			g.Expect(metav1.IsControlledBy(&account, session)).To(BeTrue())
+			g.Expect(*statefulSet.Spec.Replicas).To(BeZero())
 		}, 10*time.Second, 100*time.Millisecond).Should(Succeed())
 	})
 
@@ -705,9 +729,6 @@ spec:
 			}},
 			{name: "worker-agent-config-refs", mutate: func(session *kelos.Session) {
 				session.Spec.Worker.AgentConfigRefs = []kelos.AgentConfigReference{{Name: "agent-config"}}
-			}},
-			{name: "worker-pod-overrides-service-account-name", mutate: func(session *kelos.Session) {
-				session.Spec.Worker.PodOverrides = &kelos.PodOverrides{ServiceAccountName: "workload-identity"}
 			}},
 			{name: "initial-branch", mutate: func(session *kelos.Session) {
 				session.Spec.InitialBranch = "another-branch"

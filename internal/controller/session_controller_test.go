@@ -984,6 +984,63 @@ func TestSessionReconcilerTreatsAdmissionRewrittenRuntimeImageAsCurrent(t *testi
 	}
 }
 
+func TestSessionReconcilerIgnoresUnownedPodForRuntimeAccess(t *testing.T) {
+	for _, suspended := range []bool{false, true} {
+		name := "active"
+		wantPhase, wantReason := kelos.SessionPhaseFailed, "PodConflict"
+		if suspended {
+			name = "suspended"
+			wantPhase, wantReason = kelos.SessionPhaseSuspended, "RuntimeSuspended"
+		}
+		t.Run(name, func(t *testing.T) {
+			scheme := runtime.NewScheme()
+			for _, add := range []func(*runtime.Scheme) error{appsv1.AddToScheme, corev1.AddToScheme, rbacv1.AddToScheme, kelos.AddToScheme} {
+				if err := add(scheme); err != nil {
+					t.Fatal(err)
+				}
+			}
+			session := testSession("chat", "codex")
+			session.Spec.Suspend = ptr.To(suspended)
+			statefulSet := testSessionStatefulSet(session)
+			statefulSet.Spec.Template.Spec.InitContainers[0].Image = "runtime:stale"
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: statefulSet.Name + "-0", Namespace: session.Namespace},
+				Spec:       corev1.PodSpec{ServiceAccountName: "unrelated-account"},
+			}
+			cl := fake.NewClientBuilder().WithScheme(scheme).
+				WithStatusSubresource(&kelos.Session{}, &appsv1.StatefulSet{}).
+				WithObjects(session, statefulSet, pod).Build()
+			reconciler := testSessionReconciler(cl, scheme)
+			ctx := context.Background()
+			key := client.ObjectKeyFromObject(session)
+			if _, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key}); err != nil {
+				t.Fatal(err)
+			}
+			if err := cl.Get(ctx, key, session); err != nil {
+				t.Fatal(err)
+			}
+			ready := apiMeta.FindStatusCondition(session.Status.Conditions, kelos.SessionConditionReady)
+			if session.Status.Phase != wantPhase || ready == nil || ready.Reason != wantReason {
+				t.Fatalf("Session status = %#v, want phase %s and reason %s", session.Status, wantPhase, wantReason)
+			}
+			if err := cl.Get(ctx, client.ObjectKeyFromObject(statefulSet), statefulSet); err != nil {
+				t.Fatal(err)
+			}
+			if image := statefulSet.Spec.Template.Spec.InitContainers[0].Image; image != "runtime:test" {
+				t.Fatalf("runtime image = %q, want runtime:test", image)
+			}
+			var binding rbacv1.RoleBinding
+			if err := cl.Get(ctx, client.ObjectKey{Namespace: session.Namespace, Name: sessionRuntimeAccessName(session)}, &binding); err != nil {
+				t.Fatal(err)
+			}
+			want := sessionRuntimeRoleBinding(session, sessionRuntimeAccessName(session)).Subjects
+			if !reflect.DeepEqual(binding.Subjects, want) {
+				t.Fatalf("runtime subjects = %#v, want %#v", binding.Subjects, want)
+			}
+		})
+	}
+}
+
 func TestSessionReconcilerWaitsForMatchingRuntimeDrain(t *testing.T) {
 	scheme := runtime.NewScheme()
 	for _, add := range []func(*runtime.Scheme) error{appsv1.AddToScheme, corev1.AddToScheme, rbacv1.AddToScheme, kelos.AddToScheme} {
@@ -992,7 +1049,9 @@ func TestSessionReconcilerWaitsForMatchingRuntimeDrain(t *testing.T) {
 		}
 	}
 	session := testSession("chat", "claude-code")
+	session.Spec.Worker.PodOverrides = &kelos.PodOverrides{ServiceAccountName: "workload-identity"}
 	statefulSet := testSessionStatefulSet(session)
+	statefulSet.Spec.Template.Spec.ServiceAccountName = sessionRuntimeAccessName(session)
 	statefulSet.Status.UpdateRevision = "desired-revision"
 	statefulSet.Status.ObservedGeneration = statefulSet.Generation
 	statefulSet.Spec.Template.Spec.InitContainers[0].Image = "runtime:old"
@@ -1046,6 +1105,17 @@ func TestSessionReconcilerWaitsForMatchingRuntimeDrain(t *testing.T) {
 	var currentPod corev1.Pod
 	if err := cl.Get(context.Background(), client.ObjectKeyFromObject(pod), &currentPod); err != nil {
 		t.Fatalf("Session Pod was replaced before it drained: %v", err)
+	}
+	var binding rbacv1.RoleBinding
+	if err := cl.Get(context.Background(), client.ObjectKey{Namespace: session.Namespace, Name: sessionRuntimeAccessName(session)}, &binding); err != nil {
+		t.Fatal(err)
+	}
+	wantSubjects := []rbacv1.Subject{
+		{Kind: rbacv1.ServiceAccountKind, Name: "workload-identity", Namespace: session.Namespace},
+		{Kind: rbacv1.ServiceAccountKind, Name: pod.Spec.ServiceAccountName, Namespace: session.Namespace},
+	}
+	if !reflect.DeepEqual(binding.Subjects, wantSubjects) {
+		t.Fatalf("runtime subjects while draining = %#v, want %#v", binding.Subjects, wantSubjects)
 	}
 
 	staleReport, err := sessionupdate.EncodeReport(sessionupdate.Report{
