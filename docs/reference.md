@@ -329,7 +329,7 @@ the Session resource and is visible through the Kubernetes API.
 | `status.lastActivityTime` | When runtime activity was first reported or last changed; Pod replacement does not change it | Output |
 | `status.model` | Model reported by the live Session runtime; empty when the runtime does not report a model | Output |
 | `status.conditions[type=Ready]` | Whether the Session infrastructure is ready for clients | Output |
-| `status.conditions[type=Active]` | Whether the runtime has an unfinished turn; `reason: WaitingForInput` means the turn is waiting for a user response, and `Unknown` means activity has not been reported | Output |
+| `status.conditions[type=Active]` | Whether the runtime has an unfinished turn or reported unfinished Claude Code background work; `reason: WaitingForInput` means the turn is waiting for a user response, and `Unknown` means activity has not been reported | Output |
 | `status.branch` | Currently checked-out git branch in the Session workspace | Output |
 | `status.pullRequest.url` | Web URL of the pull request associated with the current branch | Output |
 | `status.pullRequest.state` | Pull request state: `Draft`, `Open`, `Queued`, `Merged`, or `Closed`. `Queued` means the pull request is in a merge queue | Output |
@@ -546,8 +546,9 @@ management policy, volume claim templates, and revision history limit—remain a
 originally created.
 
 When reconciliation changes the Pod template of an active Session, Kelos stops
-accepting new turns and waits for accepted work to finish before replacing the
+accepting new turns and waits for accepted turns to finish before replacing the
 Pod. Pending user input delays the update until it is answered or interrupted.
+Background tasks do not delay Pod replacement and stop when the runtime is replaced.
 Rejected turns are not retried automatically; submit them again after the
 Session reconnects. Suspended Sessions remain at zero replicas while their
 StatefulSet is updated and use the updated template when resumed. Changes to
@@ -575,9 +576,20 @@ Some nested `spec.worker.podOverrides` field descriptions inherit Kubernetes
 wording such as "Cannot be updated". Those restrictions apply to editing an
 existing Pod, not to updating the Session, which replaces its Pod.
 
-`Active=True` means the runtime has an unfinished turn. Its reason is
-`WaitingForInput` when the turn needs a user response and `TurnActive` while the
-agent is working. `Active=False` means it is idle. Activity becomes `Unknown` when
+Sessions receive provider-initiated follow-up replies from Claude Code, Codex,
+and OpenCode without another user message. Replies are retained in conversation
+history even when no client is connected. Background work remains owned by the
+agent runtime and does not survive stopping or replacing that runtime. Replies
+that arrive during a local shell command appear after that command finishes.
+Long-running Claude Code background tasks, such as development servers or file
+watchers, keep the Session active and prevent idle suspension or deletion until
+they stop. Ask the agent to stop them when they are no longer needed. Tasks
+marked by Claude Code as internal housekeeping do not count as activity.
+
+`Active=True` means the runtime has an unfinished turn or Claude Code has
+reported unfinished background work. Its reason is `WaitingForInput` when the
+turn needs a user response and `TurnActive` while the agent is working.
+`Active=False` means it is idle. Activity becomes `Unknown` when
 it cannot be reported, such as while the Session Pod is being replaced. Clients
 can use the `WaitingForInput` reason to highlight turns that need a response;
 other condition reasons and messages are informational unless documented as
@@ -590,7 +602,8 @@ text-labeled state in both the Session sidebar and conversation header.
 
 Idle suspension and deletion use the same idle period, measured from the later
 of Session creation and `status.lastActivityTime`. Before either action, the
-runtime stops accepting new turns and waits for any in-flight turn to finish.
+runtime stops accepting new turns and waits for in-flight turns and reported
+Claude Code background work to finish.
 When `spec.idlePolicy.suspendAfterSeconds` is reached, Kelos scales the runtime
 to zero and reports `status.phase: Suspended` with the `IdlePolicyTriggered`
 Ready-condition reason. `IdlePolicyTriggered` is stable and machine-readable so

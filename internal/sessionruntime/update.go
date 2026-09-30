@@ -203,12 +203,13 @@ func encodeDrainReport(report *sessionupdate.Report) (any, error) {
 // sessionDrainReports returns the acknowledgement for each pending drain request
 // (runtime update and idle drain), or nil for a request that is not pending.
 //
-// A runtime-update report is Drained once no accepted turn remains: the Pod is
-// replaced and recovers from the journal, so an unpublished activity transition
-// is not lost.
+// A runtime-update report is Drained once no submitted or autonomous turn remains.
+// The Pod is replaced and recovers from the journal, so an unpublished activity
+// transition is not lost.
 //
-// An idle-drain report additionally requires every queued activity status update
-// to be durably published, because a Drained idle report leads to deletion.
+// An idle-drain report additionally requires reported background tasks to finish
+// and every queued activity status update to be durably published, because a
+// Drained idle report leads to suspension or deletion.
 // Gating idle drain on publication closes the window where a turn accepted just
 // before the drain finishes and reports Drained while its Active=True/Active=False
 // status updates are still retrying, which would let the controller delete the
@@ -216,15 +217,13 @@ func encodeDrainReport(report *sessionupdate.Report) (any, error) {
 func (s *Server) sessionDrainReports() (updateReport, idleDrainReport *sessionupdate.Report) {
 	s.submitMu.Lock()
 	defer s.submitMu.Unlock()
-	idle := s.outstanding == 0
-	return s.drainReportLocked(s.updateRequest, idle),
-		s.drainReportLocked(s.idleDrainRequest, idle && !s.hasPendingStatusPublishes())
+	turnsComplete := s.outstanding == 0
+	return s.drainReportLocked(s.updateRequest, turnsComplete),
+		s.drainReportLocked(s.idleDrainRequest, turnsComplete && !s.backgroundActive.Load() && !s.hasPendingStatusPublishes())
 }
 
 // hasPendingStatusPublishes reports whether any observed activity status update
-// is still queued for publication. It returns false when no status publisher is
-// configured, so runtimes without a Session client (for example, in tests)
-// drain on the outstanding-turn count alone.
+// is still queued for publication. An unconfigured publisher has no pending updates.
 func (s *Server) hasPendingStatusPublishes() bool {
 	if s.publishSessionStatus == nil {
 		return false

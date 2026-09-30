@@ -171,7 +171,7 @@ type InputRequest struct {
 	Questions []InputQuestion
 }
 
-// EventSink receives provider events for the active turn.
+// EventSink receives conversation events and routes requests for user input.
 type EventSink interface {
 	Emit(Event)
 	RequestInput(ctx context.Context, request InputRequest) (map[string][]string, error)

@@ -391,6 +391,33 @@ var _ = Describe("Session remote control", func() {
 		Expect(os.WriteFile(terminalAttachmentPath, []byte("terminal attachment contents\n"), 0o600)).To(Succeed())
 		runTerminalAttachmentTurn(f.Namespace, sessionName, terminalAttachmentPath, "attachment-check", ContainSubstring("agent › attachment: terminal attachment contents"))
 
+		By("receiving a background follow-up without another user message")
+		sendSessionRequest(connection, sessionruntime.ClientRequest{Type: "message", Text: "background"})
+		waitForSessionEvent(connection, func(event sessionruntime.Event) bool {
+			return event.Type == sessionruntime.EventAssistantDelta && event.Text == "Background task started"
+		})
+		waitForTurnCompletion(connection, "completed")
+		followup := waitForSessionEvent(connection, func(event sessionruntime.Event) bool {
+			return event.Type == sessionruntime.EventAssistantDelta && event.Text == "Background task finished without another prompt"
+		})
+		Expect(followup.TurnID).NotTo(BeEmpty())
+		waitForTurnCompletion(connection, "completed")
+
+		By("replaying the background follow-up after reconnecting")
+		Expect(connection.Close()).To(Succeed())
+		connection = connectSessionWebSocket(webClient, baseURL, f.Namespace, sessionName)
+		sendSessionRequest(connection, sessionruntime.ClientRequest{
+			Type: "subscribe", HistoryBounds: true,
+			HistoryItems: sessionruntime.DefaultHistoryItemLimit, HistoryBytes: sessionruntime.DefaultHistoryByteLimit,
+		})
+		var replayed []string
+		for event := readSessionEvent(connection); event.Type != sessionruntime.EventHistoryEnd; event = readSessionEvent(connection) {
+			if event.Type == sessionruntime.EventAssistantMessage {
+				replayed = append(replayed, event.Text)
+			}
+		}
+		Expect(replayed).To(ContainElement(followup.Text))
+
 		By("deleting the Session and its StatefulSet-backed Pod")
 		Expect(f.KelosClientset.ApiV1alpha2().Sessions(f.Namespace).Delete(context.TODO(), sessionName, metav1.DeleteOptions{})).To(Succeed())
 		waitForPodDeletion(f, f.Namespace, pod.Name)

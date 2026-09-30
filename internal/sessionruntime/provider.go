@@ -25,14 +25,28 @@ type ProviderConfig struct {
 	Effort      string
 	PluginDir   string
 	Environment []string
+	EventSink   EventSink
 }
 
-// Provider runs turns against one provider-owned conversation.
+// Provider owns a conversation whose events can arrive independently of prompts.
 type Provider interface {
-	RunTurn(ctx context.Context, input TurnInput, sink EventSink) error
+	// SetEventSink attaches the consumer for submitted and autonomous turns.
+	SetEventSink(EventSink)
+	// StartTurn submits a prompt. Turn completion is delivered to the event sink.
+	StartTurn(ctx context.Context, input TurnInput) error
 	Interrupt(ctx context.Context) error
 	Done() <-chan struct{}
 	Close() error
+}
+
+// providerStopError reads terminal diagnostics after the provider's Done closes.
+func providerStopError(provider Provider) error {
+	if source, ok := provider.(interface{ providerError() error }); ok {
+		if err := source.providerError(); err != nil {
+			return fmt.Errorf("Session provider stopped: %w", err)
+		}
+	}
+	return errors.New("Session provider stopped")
 }
 
 type shellCommandRecord struct {
@@ -63,7 +77,7 @@ func formatShellCommandRecord(record shellCommandRecord) string {
 }
 
 type goalProvider interface {
-	RunGoal(context.Context, goalCommand, EventSink) error
+	StartGoal(context.Context, goalCommand) error
 	ControlGoal(context.Context, goalCommand, EventSink) error
 	ActiveGoal() *Goal
 }
