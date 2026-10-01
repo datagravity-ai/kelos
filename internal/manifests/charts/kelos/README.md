@@ -210,8 +210,8 @@ the active namespace. Its Sessions view creates and organizes Sessions, bridges
 each chat to its Session Pod through Kubernetes exec, and can request a
 destructive Session workspace reset after user confirmation. Long conversations
 open at a bounded recent page and load earlier messages on demand. The Console
-is disabled by default and requires a non-empty static token in an existing
-Secret:
+is disabled by default. Static-token mode is the default and is intended for
+local or single-user access. It requires a non-empty token in an existing Secret:
 
 ```bash
 kubectl create secret generic kelos-console-auth \
@@ -238,7 +238,112 @@ credentials. Treat it as a credential. For access
 beyond a local port-forward,
 terminate TLS at a trusted proxy, set `consoleServer.secureCookie=true`, and
 restrict access to the endpoint at the network or proxy layer. The Console does
-not provide separate user identities or per-user authorization.
+not provide separate user identities or per-user authorization in static-token
+mode. Use OIDC mode for shared team access.
+
+### Console OIDC authentication
+
+OIDC mode adds an OAuth2 Proxy sidecar and authorizes Console operations with
+Kubernetes SubjectAccessReview. The cluster API server does not need to trust
+the OIDC issuer. Namespace RoleBindings determine access; enabling OIDC does
+not grant any user permission automatically.
+
+Register a confidential OIDC client with the callback URL
+`https://console.example.com/oauth2/callback`. The issuer must support the
+Authorization Code flow with PKCE S256 and supply a stable `sub`, a verified email,
+and the configured groups claim. Set up HTTPS at your ingress or reverse proxy;
+the chart does not create an Ingress or certificate.
+
+Create an existing Secret in the release namespace containing `client-secret`
+and a `cookie-secret` with 32 random bytes encoded as URL-safe base64. For example,
+`openssl rand -base64 32 | tr -- '+/' '-_'` generates a cookie secret. Keep both values out of
+Helm values and command-line arguments. Then configure:
+
+```yaml
+consoleServer:
+  enabled: true
+  defaultNamespace: team-frontend
+  auth:
+    mode: oidc
+    oidc:
+      issuerURL: https://identity.example.com
+      clientID: kelos-console
+      redirectURL: https://console.example.com/oauth2/callback
+      secretName: kelos-console-oidc
+      usernamePrefix: "oidc:example:"
+      groupsPrefix: "oidc:example:"
+      groupsClaim: groups
+      scope: openid profile email groups
+      reverseProxy: true
+      trustedProxyIPs:
+        - 10.20.1.0/24
+```
+
+Set `trustedProxyIPs` to the actual ingress proxy addresses, including every
+trusted hop that appears in `X-Forwarded-For`. Use narrowly scoped ranges;
+catch-all CIDRs are rejected. OAuth2 Proxy validates IP/CIDR syntax at startup
+and fails to start for invalid entries. These addresses identify trusted proxies and
+never exempt clients from login. The proxy exposes the Service port, and
+Kelos listens only on loopback. HTTP and WebSockets follow the same proxy
+path. `/healthz` and `/readyz` accept unauthenticated GET probes through the
+proxy to Kelos. Incoming identity and credential headers are removed; only
+the verified subject and group identities are passed to Kelos.
+
+Choose prefixes unique to this issuer; changing issuer while reusing its
+prefixes can associate existing RoleBindings with different identities.
+Prefixes are required and must not start with `system:` or be a prefix of it
+(such as `system` or `sys`). Usernames use the OIDC
+`sub`, not the display name or email. Bind groups rather than mutable display
+names. Group claims must contain **comma-free group identifiers**: the proxy
+uses commas to delimit groups, so group names containing commas are not
+supported and must be mapped to identifiers at the IdP. Kelos accepts at most
+128 groups, 256 bytes per group, 8192 bytes for the group header, and 1024 bytes
+for the subject. Empty, repeated, or malformed identity headers are rejected;
+a user may have no groups and receive permissions through a User RoleBinding.
+
+The chart creates the unbound `kelos-console-user` ClusterRole. To grant its
+full Console access in one namespace:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kelos-console-developers
+  namespace: team-frontend
+subjects:
+  - kind: Group
+    name: oidc:example:frontend-developers
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: kelos-console-user
+  apiGroup: rbac.authorization.k8s.io
+```
+
+Use narrower Roles for read-only or limited access. The permission table and
+limitations are in [the Console authentication reference](../../../../docs/reference.md#console-authentication-and-authorization).
+The generated user role grants no Pod permissions. The Console ServiceAccount
+performs the underlying Pod operations after checking the caller's permissions.
+
+`secretName`, `tokenKey`, and `secureCookie` at the `consoleServer` level belong
+to static-token mode; do not combine static settings with OIDC. OIDC cookies
+are always Secure and HttpOnly. Optional OIDC `clientSecretKey` and
+`cookieSecretKey` default to `client-secret` and `cookie-secret`.
+`groupsClaim` defaults to `groups`; `scope` defaults to `openid profile email groups`.
+Some issuers require adding `offline_access` to issue refresh tokens. The
+proxy requests a refresh after five minutes and uses an eight-hour cookie
+expiry. Successful refreshes can renew the cookie; this is not an absolute
+maximum login duration. IdP account and group changes depend on the issuer's
+refresh and expiry behavior. Signing out clears the Console proxy cookie;
+it does not necessarily end the IdP's SSO session.
+
+The proxy image defaults to `quay.io/oauth2-proxy/oauth2-proxy:v7.15.5` and can
+be set with `auth.oidc.image`. An explicit release tag of v7.15.5 or later is
+required; a digest may follow the tag. The chart uses the proxy's structured
+configuration to strip credential headers and preserve only the required
+identity claims. Validate this configuration with `make test-integration` when
+updating the proxy version. This target downloads the pinned proxy release
+with the GitHub CLI and requires `gh` authentication (or `GH_TOKEN`).
 
 The Console operates on one active namespace at a time and can switch it live
 from the sidebar. `consoleServer.defaultNamespace` (`default` unless

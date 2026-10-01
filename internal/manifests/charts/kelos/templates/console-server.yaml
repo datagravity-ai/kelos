@@ -2,7 +2,22 @@
 {{- fail "sessionServer values are not supported; use consoleServer instead" }}
 {{- end }}
 {{- if .Values.consoleServer.enabled }}
-{{- $secretName := required "consoleServer.secretName is required when consoleServer.enabled=true" .Values.consoleServer.secretName }}
+{{- $auth := .Values.consoleServer.auth }}
+{{- $oidcMode := eq $auth.mode "oidc" }}
+{{- $oidc := $auth.oidc }}
+{{- include "kelos.console.validateAuth" . }}
+{{- $secretName := .Values.consoleServer.secretName }}
+{{- if $oidcMode }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kelos-console-oidc
+  namespace: {{ .Release.Namespace }}
+data:
+  oauth2-proxy.yaml: |
+    {{- include "kelos.console.proxyConfig" . | nindent 4 }}
+{{- end }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -20,11 +35,18 @@ spec:
       app.kubernetes.io/component: console-server
   template:
     metadata:
+      {{- if $oidcMode }}
+      annotations:
+        checksum/oidc-config: {{ include "kelos.console.proxyConfig" . | sha256sum }}
+      {{- end }}
       labels:
         app.kubernetes.io/name: kelos
         app.kubernetes.io/component: console-server
     spec:
       serviceAccountName: kelos-console-server
+      {{- if $oidcMode }}
+      automountServiceAccountToken: false
+      {{- end }}
       securityContext:
         runAsNonRoot: true
       containers:
@@ -34,15 +56,88 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           {{- end }}
           args:
+            {{- if $oidcMode }}
+            - --bind-address=127.0.0.1:8080
+            - --auth-mode=oidc
+            - {{ printf "--external-url=https://%s" (urlParse $oidc.redirectURL).host | quote }}
+            - {{ printf "--username-prefix=%s" $oidc.usernamePrefix | quote }}
+            - {{ printf "--groups-prefix=%s" $oidc.groupsPrefix | quote }}
+            {{- else }}
             - --bind-address=:8080
             - --token-file=/var/run/secrets/kelos-console/token
+            {{- end }}
             - --default-namespace={{ .Values.consoleServer.defaultNamespace }}
             {{- if .Values.consoleServer.secureCookie }}
             - --secure-cookie
             {{- end }}
+          {{- if not $oidcMode }}
           ports:
             - name: http
               containerPort: 8080
+              protocol: TCP
+          {{- end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            {{- if $oidcMode }}
+            - name: kube-api-access
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
+            {{- else }}
+            - name: auth-token
+              mountPath: /var/run/secrets/kelos-console
+              readOnly: true
+            {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: {{ ternary "4180" "http" $oidcMode }}
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: {{ ternary "4180" "http" $oidcMode }}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.consoleServer.resources | nindent 12 }}
+        {{- if $oidcMode }}
+        - name: oauth2-proxy
+          image: {{ default "quay.io/oauth2-proxy/oauth2-proxy:v7.15.5" $oidc.image | quote }}
+          args:
+            - --alpha-config=/etc/oauth2-proxy/oauth2-proxy.yaml
+            - {{ printf "--redirect-url=%s" $oidc.redirectURL | quote }}
+            - --email-domain=*
+            - --cookie-name=__Host-kelos-console
+            - --cookie-secure=true
+            - --cookie-httponly=true
+            - --cookie-samesite=lax
+            - --cookie-expire=8h
+            - --cookie-refresh=5m
+            - --api-route=^/api/
+            - --skip-auth-route=GET=^/(healthz|readyz)$
+            - --request-logging=false
+            - --auth-logging=false
+            {{- if $oidc.reverseProxy }}
+            - --reverse-proxy=true
+            {{- range $oidc.trustedProxyIPs }}
+            - {{ printf "--trusted-proxy-ip=%s" . | quote }}
+            {{- end }}
+            {{- end }}
+          env:
+            - name: OAUTH2_PROXY_COOKIE_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $oidc.secretName }}
+                  key: {{ default "cookie-secret" $oidc.cookieSecretKey }}
+          ports:
+            - name: http
+              containerPort: 4180
               protocol: TCP
           securityContext:
             allowPrivilegeEscalation: false
@@ -51,30 +146,64 @@ spec:
                 - ALL
             readOnlyRootFilesystem: true
           volumeMounts:
-            - name: auth-token
-              mountPath: /var/run/secrets/kelos-console
+            - name: oidc-config
+              mountPath: /etc/oauth2-proxy
+              readOnly: true
+            - name: oidc-secret
+              mountPath: /var/run/secrets/oidc
               readOnly: true
           readinessProbe:
             httpGet:
               path: /readyz
               port: http
-            initialDelaySeconds: 2
-            periodSeconds: 5
           livenessProbe:
             httpGet:
               path: /healthz
               port: http
-            initialDelaySeconds: 5
-            periodSeconds: 10
           resources:
-            {{- toYaml .Values.consoleServer.resources | nindent 12 }}
+            requests:
+              cpu: 10m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 128Mi
+        {{- end }}
       volumes:
+        {{- if $oidcMode }}
+        - name: kube-api-access
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 3600
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+              - downwardAPI:
+                  items:
+                    - path: namespace
+                      fieldRef:
+                        apiVersion: v1
+                        fieldPath: metadata.namespace
+        - name: oidc-config
+          configMap:
+            name: kelos-console-oidc
+        - name: oidc-secret
+          secret:
+            secretName: {{ $oidc.secretName }}
+            items:
+              - key: {{ default "client-secret" $oidc.clientSecretKey }}
+                path: client-secret
+        {{- else }}
         - name: auth-token
           secret:
             secretName: {{ $secretName }}
             items:
               - key: {{ .Values.consoleServer.tokenKey }}
                 path: token
+        {{- end }}
 ---
 apiVersion: v1
 kind: Service

@@ -71,6 +71,9 @@ consoleServer:
   replicas: 1
   secretName: ""
   tokenKey: token
+  auth:
+    mode: staticToken
+    oidc: {}
   # Initial active namespace in the Console.
   defaultNamespace: default
   secureCookie: false

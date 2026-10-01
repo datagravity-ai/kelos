@@ -295,6 +295,14 @@ rules:
       - delete
       - patch
       - watch
+  {{- if eq .Values.consoleServer.auth.mode "oidc" }}
+  - apiGroups:
+      - authorization.k8s.io
+    resources:
+      - subjectaccessreviews
+    verbs:
+      - create
+  {{- end }}
   - apiGroups:
       - ""
     resources:

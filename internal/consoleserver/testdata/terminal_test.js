@@ -30,7 +30,9 @@ global.document = {
   createElement: () => ({}),
 };
 global.window = new Events();
-global.location = {protocol: 'https:', host: 'console.example'};
+const loginRedirects = [];
+global.location = {protocol: 'https:', host: 'console.example', replace: target => loginRedirects.push(target)};
+global.fetch = async () => ({status: 200});
 const terminals = [];
 const sockets = [];
 const observers = [];
@@ -180,8 +182,13 @@ sockets.at(-1).close();
 assert.match(elements['terminal-status'].textContent, /^Disconnected/);
 controller.close();
 controller.show(session);
+global.fetch = async target => {
+  assert.equal(target, '/api/config');
+  return {status: 401};
+};
 sockets.at(-1).emit('error');
 assert.match(elements['terminal-status'].textContent, /^Could not connect/);
+queueMicrotask(() => assert.deepEqual(loginRedirects, ['/login']));
 controller.close();
 assert.equal(sockets.at(-1).closed, true);
 

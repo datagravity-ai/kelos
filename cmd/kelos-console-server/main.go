@@ -4,6 +4,8 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -27,20 +29,30 @@ func main() {
 	var tokenFile string
 	var defaultNamespace string
 	var secureCookie bool
+	var authMode string
+	var oidc consoleserver.OIDCConfig
 	flag.StringVar(&address, "bind-address", ":8080", "HTTP listen address")
-	flag.StringVar(&tokenFile, "token-file", "", "Path to the required static authentication token")
+	flag.StringVar(&tokenFile, "token-file", "", "Path to the static authentication token")
+	flag.StringVar(&authMode, "auth-mode", consoleserver.AuthModeStaticToken, "Authentication mode: staticToken or oidc")
+	flag.StringVar(&oidc.ExternalURL, "external-url", "", "HTTPS origin of the OIDC Console")
+	flag.StringVar(&oidc.UsernamePrefix, "username-prefix", "", "Prefix for OIDC user identities")
+	flag.StringVar(&oidc.GroupsPrefix, "groups-prefix", "", "Prefix for OIDC group identities")
 	flag.StringVar(&defaultNamespace, "default-namespace", "default", "Initial namespace in the Console")
 	flag.BoolVar(&secureCookie, "secure-cookie", false, "Mark the authentication cookie as HTTPS-only")
 	flag.Parse()
 
-	if tokenFile == "" {
-		fmt.Fprintln(os.Stderr, "Invalid configuration: --token-file is required")
+	if err := validateAuthFlags(authMode, address, tokenFile, secureCookie, oidc); err != nil {
+		fmt.Fprintf(os.Stderr, "Invalid configuration: %v\n", err)
 		os.Exit(1)
 	}
-	token, err := readToken(tokenFile)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Invalid authentication token: %v\n", err)
-		os.Exit(1)
+	var token string
+	if authMode == consoleserver.AuthModeStaticToken {
+		var err error
+		token, err = readToken(tokenFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Invalid authentication token: %v\n", err)
+			os.Exit(1)
+		}
 	}
 
 	restConfig, err := rest.InClusterConfig()
@@ -61,14 +73,21 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Failed to create Kubernetes clientset: %v\n", err)
 		os.Exit(1)
 	}
-	handler, err := consoleserver.New(consoleserver.Config{
+	config := consoleserver.Config{
+		AuthMode:         authMode,
 		Token:            token,
 		Client:           controllerClient,
 		Clientset:        clientset,
 		RESTConfig:       restConfig,
 		DefaultNamespace: defaultNamespace,
 		SecureCookie:     secureCookie,
-	})
+	}
+	if authMode == consoleserver.AuthModeOIDC {
+		oidc.Reviewer = clientset.AuthorizationV1().SubjectAccessReviews()
+		oidc.Logger = slog.New(slog.NewJSONHandler(os.Stdout, nil))
+		config.OIDC = &oidc
+	}
+	handler, err := consoleserver.New(config)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Invalid server configuration: %v\n", err)
 		os.Exit(1)
@@ -94,6 +113,29 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Console server failed: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func validateAuthFlags(mode, address, tokenFile string, secureCookie bool, oidc consoleserver.OIDCConfig) error {
+	switch mode {
+	case consoleserver.AuthModeStaticToken:
+		if tokenFile == "" {
+			return fmt.Errorf("--token-file is required")
+		}
+		if oidc.ExternalURL != "" || oidc.UsernamePrefix != "" || oidc.GroupsPrefix != "" {
+			return fmt.Errorf("OIDC flags require --auth-mode=oidc")
+		}
+	case consoleserver.AuthModeOIDC:
+		if tokenFile != "" || secureCookie {
+			return fmt.Errorf("static token flags cannot be used with --auth-mode=oidc")
+		}
+		host, _, err := net.SplitHostPort(address)
+		if err != nil || !net.ParseIP(host).IsLoopback() {
+			return fmt.Errorf("OIDC requires a loopback IP in --bind-address")
+		}
+	default:
+		return fmt.Errorf("unsupported authentication mode %q", mode)
+	}
+	return nil
 }
 
 func readToken(path string) (string, error) {

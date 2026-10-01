@@ -19,6 +19,9 @@ import (
 )
 
 func (s *Server) execSession(writer http.ResponseWriter, request *http.Request, namespace, name string) {
+	if !s.requireAccess(writer, request, access("get", "sessions", namespace, name), access("create", "sessions/connect", namespace, name)) {
+		return
+	}
 	session, ok := s.readySession(writer, request, namespace, name)
 	if !ok {
 		return

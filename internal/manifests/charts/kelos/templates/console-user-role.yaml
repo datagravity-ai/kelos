@@ -1,0 +1,32 @@
+{{- if and .Values.consoleServer.enabled (eq .Values.consoleServer.auth.mode "oidc") }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kelos-console-user
+rules:
+  - apiGroups: [kelos.dev]
+    resources:
+      - agentconfigs
+      - sessions
+      - sessionspawners
+      - taskbudgets
+      - taskpipelines
+      - taskrecords
+      - tasks
+      - taskspawners
+      - workerpools
+      - workspaces
+    verbs: [get, list]
+  - apiGroups: [kelos.dev]
+    resources: [sessions]
+    verbs: [create, patch, delete]
+  - apiGroups: [kelos.dev]
+    resources: [sessions/connect, sessions/reset, sessions/suspend, sessions/resume]
+    verbs: [create]
+  - apiGroups: [kelos.dev]
+    resources: [sessions/attachments]
+    verbs: [get, create]
+  - apiGroups: [kelos.dev]
+    resources: [tasks/logs]
+    verbs: [get]
+{{- end }}

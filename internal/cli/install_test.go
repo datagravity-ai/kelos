@@ -1195,6 +1195,7 @@ func TestDeleteConsoleServerRBACAcrossNamespaces(t *testing.T) {
 	scheme := runtime.NewScheme()
 	objects := []runtime.Object{
 		rbacObject("ClusterRole", "kelos-console-server-role", ""),
+		rbacObject("ClusterRole", "kelos-console-user", ""),
 		rbacObject("ClusterRoleBinding", "kelos-console-server-rolebinding", ""),
 		rbacObject("Role", "kelos-console-server-role", "team-a"),
 		rbacObject("RoleBinding", "kelos-console-server-rolebinding", "team-a"),
@@ -1224,6 +1225,7 @@ func TestDeleteConsoleServerRBACAcrossNamespaces(t *testing.T) {
 		namespace string
 	}{
 		{gvr: clusterRoleGVR, name: "kelos-console-server-role"},
+		{gvr: clusterRoleGVR, name: "kelos-console-user"},
 		{gvr: clusterRoleBindingGVR, name: "kelos-console-server-rolebinding"},
 		{gvr: roleGVR, name: "kelos-console-server-role", namespace: "team-a"},
 		{gvr: roleBindingGVR, name: "kelos-console-server-rolebinding", namespace: "team-a"},
