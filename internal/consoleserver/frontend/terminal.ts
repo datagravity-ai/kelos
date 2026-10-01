@@ -106,6 +106,9 @@ const sessionTerminal = (() => {
       }
     });
     socket.addEventListener('error', () => {
+      if (!disposed) void fetch('/api/config').then(response => {
+        if (response.status === 401) location.replace('/login');
+      }).catch(() => {});
       if (!disposed && !finished) finish('Could not connect to the session terminal. Reconnect to try again.');
     });
     socket.addEventListener('close', () => {

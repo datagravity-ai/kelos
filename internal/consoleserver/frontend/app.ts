@@ -2383,8 +2383,16 @@ async function loadSessions({quiet = false} = {}) {
   }
 }
 
+async function loadIdentity() {
+  const config = await api<{defaultNamespace: string; username?: string}>('/api/config');
+  const identity = requiredElement('#console-identity');
+  identity.hidden = !config.username;
+  identity.textContent = config.username ? `Signed in as ${config.username}` : '';
+  return config;
+}
+
 async function loadConfig() {
-  const config = await api<{defaultNamespace: string}>('/api/config');
+  const config = await loadIdentity();
   state.defaultNamespace = config.defaultNamespace;
   state.namespace = window.localStorage.getItem('kelos-console-namespace') || state.defaultNamespace;
   elements.activeNamespace.value = state.namespace;
@@ -3111,7 +3119,10 @@ function connectSocket() {
     state.reconnectTimer = window.setTimeout(connectSocket, state.reconnectDelay);
     state.reconnectDelay = Math.min(state.reconnectDelay * 1.8, 10000);
   });
-  socket.addEventListener('error', () => socket.close());
+  socket.addEventListener('error', () => {
+    void loadIdentity().catch(() => {});
+    socket.close();
+  });
 }
 
 function ensureConversation() {
@@ -5762,8 +5773,8 @@ requiredElement('#refresh-console').addEventListener('click', () => {
 });
 requiredElement('#logout').addEventListener('click', async () => {
   closeBrowserNotifications();
-  await api<void>('/api/logout', {method: 'POST'}).catch(() => {});
-  window.location.replace('/login');
+  const result = await api<{logoutURL?: string}>('/api/logout', {method: 'POST'}).catch(() => undefined);
+  window.location.replace(result?.logoutURL || '/login');
 });
 function setSidebarOpen(open: boolean) {
   elements.sidebar.classList.toggle('open', open);

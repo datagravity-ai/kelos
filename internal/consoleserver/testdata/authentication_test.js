@@ -1,0 +1,61 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+
+const source = fs.readFileSync(path.join(__dirname, '../web/app.js'), 'utf8');
+function slice(start, end) {
+  const from = source.indexOf(start);
+  const to = source.indexOf(end, from);
+  assert.notEqual(from, -1);
+  assert.notEqual(to, -1);
+  return source.slice(from, to);
+}
+
+const redirects = [];
+global.window = {location: {replace: target => redirects.push(target)}};
+vm.runInThisContext(slice('async function api(', 'let toastTimer'), {filename: 'app.js'});
+vm.runInThisContext(slice('async function loadIdentity(', 'async function loadConfig('), {filename: 'app.js'});
+
+(async () => {
+  global.fetch = async () => ({status: 401});
+  await assert.rejects(api('/api/config'), /Authentication required/);
+  assert.deepEqual(redirects, ['/login']);
+  redirects.length = 0;
+  global.fetch = async () => ({status: 403, ok: false, json: async () => ({error: 'access denied'})});
+  await assert.rejects(api('/api/sessions'), /access denied/);
+  assert.deepEqual(redirects, []);
+
+  const identity = {};
+  global.requiredElement = selector => {
+    assert.equal(selector, '#console-identity');
+    return identity;
+  };
+  for (const username of ['oidc:alice', 'oidc:bob', undefined]) {
+    let requests = 0;
+    global.fetch = async path => {
+      assert.equal(path, '/api/config');
+      requests++;
+      return {status: 200, ok: true, json: async () => ({defaultNamespace: 'team-a', username})};
+    };
+    await loadIdentity();
+    assert.equal(requests, 1);
+    assert.equal(identity.hidden, !username);
+    assert.equal(identity.textContent, username ? `Signed in as ${username}` : '');
+  }
+
+  let logout;
+  global.requiredElement = () => ({addEventListener: (_event, listener) => { logout = listener; }});
+  global.closeBrowserNotifications = () => {};
+  vm.runInThisContext(slice("requiredElement('#logout').addEventListener", 'function setSidebarOpen'), {filename: 'app.js'});
+  global.fetch = async (_path, options) => {
+    assert.equal(options.method, 'POST');
+    return {status: 200, ok: true, json: async () => ({logoutURL: '/oauth2/sign_out?rd=/oauth2/sign_in'})};
+  };
+  await logout();
+  assert.deepEqual(redirects, ['/oauth2/sign_out?rd=/oauth2/sign_in']);
+  redirects.length = 0;
+  global.fetch = async () => ({status: 200, ok: true, json: async () => ({authenticated: false})});
+  await logout();
+  assert.deepEqual(redirects, ['/login']);
+})().catch(error => { console.error(error); process.exitCode = 1; });

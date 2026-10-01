@@ -722,6 +722,84 @@ applies one `kelos.dev/v1alpha2` Session manifest in the active namespace. The
 manifest may include labels, annotations, `initialBranch`, `initialPrompt`, the complete
 `WorkerSpec`, and an optional persistent volume claim.
 
+### Console authentication and authorization
+
+The Console chart supports `consoleServer.auth.mode: staticToken` (default)
+and `oidc`. Static-token mode represents one shared user with the Console
+ServiceAccount's permissions. OIDC mode authenticates individuals through an
+OAuth2 Proxy sidecar and checks Kubernetes authorization for each API operation
+and each new chat or terminal connection. See the
+[chart setup guide](../internal/manifests/charts/kelos/README.md#console-oidc-authentication)
+for HTTPS, client registration, secrets, identity prefixes, and RoleBindings.
+
+OIDC usernames are the configured prefix followed by the verified OIDC subject.
+Groups receive their own prefix. The IdP must supply comma-free group identifiers.
+Only the managed loopback proxy may provide identities. Static tokens and static
+cookies cannot authenticate requests in OIDC mode.
+
+All permissions below are in the `kelos.dev` API group and the requested
+namespace. Named reads and actions are checked against the exact resource name.
+
+| Console operation | Required permissions |
+| --- | --- |
+| Inventory and relationship graph | `list` each displayed resource kind |
+| Resource YAML | `get` the resource |
+| Task logs | `get tasks` and `get tasks/logs` |
+| Session list | `list sessions` |
+| Session creation options | `list sessions`, `list workspaces`, and `list agentconfigs` |
+| Read or clone a Session source | `get sessions` |
+| Create a Session | `create sessions` |
+| Apply Session YAML | `get sessions`, `patch sessions`, and `create sessions` |
+| Set section or display name | `get sessions` and `patch sessions` |
+| Delete a Session | `delete sessions` |
+| Reset a Session | `get sessions` and `create sessions/reset` |
+| Suspend a Session | `get sessions` and `create sessions/suspend` |
+| Resume a Session | `get sessions` and `create sessions/resume` |
+| Chat or terminal connection | `get sessions` and `create sessions/connect` |
+| Upload an attachment | `get sessions` and `create sessions/attachments` |
+| Download an attachment | `get sessions` and `get sessions/attachments` |
+
+The slash-separated permissions are authorization subresources; they are not
+served CRD endpoints. Human users do not need `pods/log` or `pods/exec`.
+`sessions/connect` grants full interactive access: retained conversations,
+prompts, tool activity, input responses, pending messages, goals, direct shell
+commands, attachment metadata, workspace changes, and terminal access. It does
+not provide read-only chat or command-level restrictions. Shell access also
+permits reading files and mounted credentials in the Session container.
+
+Inventory omits resource kinds the caller cannot list and relationships to or
+from those kinds. If no kind is allowed, the request returns 403. Reading an
+allowed resource's YAML can still expose references stored in that resource;
+RBAC does not redact individual fields. Creation options require all three
+list permissions in the table.
+
+YAML apply requires all three permissions even when updating an existing
+Session, because apply can also create a missing resource. General Session
+patch permission permits editing spec and metadata, including suspend/reset
+requests and `Session.spec.worker.podOverrides.serviceAccountName`. Dedicated
+lifecycle permissions do not constrain a caller who also has general Session
+patch/update permissions. Session creation/editing remains subject to the
+cluster's workload admission policies; Console RBAC is not workload sandboxing.
+
+Invalid authentication returns 401; an authorization denial returns 403.
+Authorization transport or evaluation errors return 503 and prevent the
+operation. Kelos does not cache authorization decisions. RoleBinding changes
+affect subsequent requests once observed by Kubernetes authorization. An
+established WebSocket retains access for its connection lifetime; reconnects
+are checked again. IdP disablement and group changes also depend on the proxy
+session's refresh/expiry behavior. Proxy cookies expire after eight hours and
+are refreshed after five minutes; refresh can renew their lifetime. Signing
+out clears the proxy session, not necessarily the IdP's SSO session.
+
+State-changing requests and WebSocket upgrades require an `Origin` matching
+the configured HTTPS Console origin. Authorization audit events record the
+prefixed username, groups, action, decision, namespace, resource, subresource,
+and name. They do not include prompts, transcripts, commands, logs, file data,
+cookies, or provider credentials. Kubernetes resource operations run as the
+Console ServiceAccount, so Kubernetes resource audit entries identify that
+ServiceAccount; use Console audit events for the human identity.
+
+
 ## SessionSpawner
 
 A SessionSpawner turns matching GitHub webhooks into durable Session

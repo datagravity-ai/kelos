@@ -2068,8 +2068,15 @@
                 showToast(errorMessage(error));
         }
     }
-    async function loadConfig() {
+    async function loadIdentity() {
         const config = await api('/api/config');
+        const identity = requiredElement('#console-identity');
+        identity.hidden = !config.username;
+        identity.textContent = config.username ? `Signed in as ${config.username}` : '';
+        return config;
+    }
+    async function loadConfig() {
+        const config = await loadIdentity();
         state.defaultNamespace = config.defaultNamespace;
         state.namespace = window.localStorage.getItem('kelos-console-namespace') || state.defaultNamespace;
         elements.activeNamespace.value = state.namespace;
@@ -2806,7 +2813,10 @@ spec:
             state.reconnectTimer = window.setTimeout(connectSocket, state.reconnectDelay);
             state.reconnectDelay = Math.min(state.reconnectDelay * 1.8, 10000);
         });
-        socket.addEventListener('error', () => socket.close());
+        socket.addEventListener('error', () => {
+            void loadIdentity().catch(() => { });
+            socket.close();
+        });
     }
     function ensureConversation() {
         if (!elements.messages.querySelector('.welcome'))
@@ -5482,8 +5492,8 @@ spec:
     });
     requiredElement('#logout').addEventListener('click', async () => {
         closeBrowserNotifications();
-        await api('/api/logout', { method: 'POST' }).catch(() => { });
-        window.location.replace('/login');
+        const result = await api('/api/logout', { method: 'POST' }).catch(() => undefined);
+        window.location.replace(result?.logoutURL || '/login');
     });
     function setSidebarOpen(open) {
         elements.sidebar.classList.toggle('open', open);

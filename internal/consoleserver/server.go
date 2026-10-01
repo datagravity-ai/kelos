@@ -76,6 +76,8 @@ var webFiles embed.FS
 
 // Config contains dependencies and authentication configuration for the Console server.
 type Config struct {
+	AuthMode         string
+	OIDC             *OIDCConfig
 	Token            string
 	Client           client.Client
 	Clientset        *kubernetes.Clientset
@@ -86,6 +88,7 @@ type Config struct {
 
 // Server serves the Kelos Console and its Kubernetes-backed API.
 type Server struct {
+	oidc             *OIDCConfig
 	token            []byte
 	cookieValue      string
 	client           client.Client
@@ -265,8 +268,8 @@ var consoleResourceDefinitions = []consoleResourceDefinition{
 
 // New validates config and creates the HTTP handler.
 func New(config Config) (*Server, error) {
-	if strings.TrimSpace(config.Token) == "" {
-		return nil, errors.New("static authentication token must not be empty")
+	if err := validateAuth(config); err != nil {
+		return nil, err
 	}
 	defaultNamespace := strings.TrimSpace(config.DefaultNamespace)
 	if defaultNamespace == "" {
@@ -297,6 +300,17 @@ func New(config Config) (*Server, error) {
 				return request.Header.Get("Origin") == "" || sameOrigin(request)
 			},
 		},
+	}
+	if config.OIDC != nil {
+		oidc := *config.OIDC
+		origin, _ := url.Parse(oidc.ExternalURL)
+		origin.Host = strings.ToLower(origin.Host)
+		if origin.Port() == "443" {
+			origin.Host = strings.TrimSuffix(origin.Host, ":443")
+		}
+		oidc.ExternalURL = origin.String()
+		server.oidc = &oidc
+		server.upgrader.CheckOrigin = func(request *http.Request) bool { return request.Header.Get("Origin") == oidc.ExternalURL }
 	}
 	server.bridge = server.bridgeExec
 	server.terminalExecutor = remotecommand.NewSPDYExecutor
@@ -334,6 +348,10 @@ func securityHeaders(next http.Handler) http.Handler {
 }
 
 func (s *Server) login(writer http.ResponseWriter, request *http.Request) {
+	if s.oidc != nil {
+		writeError(writer, http.StatusNotFound, "static login is disabled")
+		return
+	}
 	var payload struct {
 		Token string `json:"token"`
 	}
@@ -377,6 +395,9 @@ func (s *Server) authenticated(request *http.Request) bool {
 }
 
 func (s *Server) requireAuth(next http.Handler) http.Handler {
+	if s.oidc != nil {
+		return s.requireOIDC(next)
+	}
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if s.authenticated(request) {
 			next.ServeHTTP(writer, request)
@@ -393,7 +414,13 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 func (s *Server) api(writer http.ResponseWriter, request *http.Request) {
 	path := strings.TrimPrefix(request.URL.Path, "/api/")
 	if path == "config" && request.Method == http.MethodGet {
-		writeJSON(writer, http.StatusOK, map[string]string{"defaultNamespace": s.defaultNamespace})
+		config := map[string]string{"defaultNamespace": s.defaultNamespace}
+		if s.oidc != nil {
+			identity := request.Context().Value(principalKey{}).(principal)
+			config["username"] = identity.username
+			config["authMode"] = AuthModeOIDC
+		}
+		writeJSON(writer, http.StatusOK, config)
 		return
 	}
 	if path == "options" && request.Method == http.MethodGet {
@@ -401,6 +428,10 @@ func (s *Server) api(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 	if path == "logout" && request.Method == http.MethodPost {
+		if s.oidc != nil {
+			writeJSON(writer, http.StatusOK, map[string]string{"logoutURL": "/oauth2/sign_out?rd=/oauth2/sign_in"})
+			return
+		}
 		http.SetCookie(writer, &http.Cookie{Name: authCookieName, Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteStrictMode})
 		writeJSON(writer, http.StatusOK, map[string]bool{"authenticated": false})
 		return
@@ -491,10 +522,28 @@ func (s *Server) api(writer http.ResponseWriter, request *http.Request) {
 
 func (s *Server) listConsoleResources(writer http.ResponseWriter, request *http.Request) {
 	namespace := s.requestNamespace(request)
+	allowedKinds := make(map[string]bool, len(consoleResourceDefinitions))
+	for _, definition := range consoleResourceDefinitions {
+		allowed, err := s.allowed(request, access("list", definition.Resource, namespace, ""))
+		if err != nil {
+			writeError(writer, http.StatusServiceUnavailable, "authorization service unavailable")
+			return
+		}
+		if allowed {
+			allowedKinds[definition.Resource] = true
+		}
+	}
+	if len(allowedKinds) == 0 {
+		writeError(writer, http.StatusForbidden, "access denied")
+		return
+	}
 	groups := make([]consoleResourceGroup, 0, 4)
 	groupIndexes := make(map[string]int)
 	allObjects := make([]consoleResourceObject, 0)
 	for _, definition := range consoleResourceDefinitions {
+		if !allowedKinds[definition.Resource] {
+			continue
+		}
 		list := definition.NewList()
 		if err := s.client.List(request.Context(), list, client.InNamespace(namespace)); err != nil {
 			writeError(writer, http.StatusInternalServerError, fmt.Sprintf("listing %s: %v", definition.Label, err))
@@ -528,6 +577,13 @@ func (s *Server) listConsoleResources(writer http.ResponseWriter, request *http.
 		writeError(writer, http.StatusInternalServerError, fmt.Sprintf("relating resources: %v", err))
 		return
 	}
+	visibleRelationships := relationships[:0]
+	for _, relationship := range relationships {
+		if allowedKinds[relationship.Source.Resource] && allowedKinds[relationship.Target.Resource] {
+			visibleRelationships = append(visibleRelationships, relationship)
+		}
+	}
+	relationships = visibleRelationships
 	writeJSON(writer, http.StatusOK, map[string]any{"namespace": namespace, "groups": groups, "relationships": relationships})
 }
 
@@ -748,6 +804,9 @@ func consoleResourceCondition(content map[string]any) string {
 }
 
 func (s *Server) getConsoleResource(writer http.ResponseWriter, request *http.Request, resource, namespace, name string) {
+	if !s.requireAccess(writer, request, access("get", resource, namespace, name)) {
+		return
+	}
 	definition, ok := consoleResourceDefinitionFor(resource)
 	if !ok {
 		writeError(writer, http.StatusNotFound, "not found")
@@ -781,6 +840,9 @@ func (s *Server) getConsoleResource(writer http.ResponseWriter, request *http.Re
 }
 
 func (s *Server) getTaskLogs(writer http.ResponseWriter, request *http.Request, namespace, name string) {
+	if !s.requireAccess(writer, request, access("get", "tasks", namespace, name), access("get", "tasks/logs", namespace, name)) {
+		return
+	}
 	var task kelos.Task
 	if err := s.client.Get(request.Context(), client.ObjectKey{Namespace: namespace, Name: name}, &task); err != nil {
 		writeKubernetesError(writer, fmt.Sprintf("getting Task %q", name), err)
@@ -982,8 +1044,12 @@ func consoleResourceDefinitionForKind(kind string) (consoleResourceDefinition, b
 }
 
 func (s *Server) listSessions(writer http.ResponseWriter, request *http.Request) {
+	namespace := s.requestNamespace(request)
+	if !s.requireAccess(writer, request, access("list", "sessions", namespace, "")) {
+		return
+	}
 	var list kelos.SessionList
-	if err := s.client.List(request.Context(), &list, client.InNamespace(s.requestNamespace(request))); err != nil {
+	if err := s.client.List(request.Context(), &list, client.InNamespace(namespace)); err != nil {
 		writeError(writer, http.StatusInternalServerError, fmt.Sprintf("listing Sessions: %v", err))
 		return
 	}
@@ -1004,6 +1070,9 @@ func (s *Server) listSessions(writer http.ResponseWriter, request *http.Request)
 
 func (s *Server) listSessionOptions(writer http.ResponseWriter, request *http.Request) {
 	namespace := s.requestNamespace(request)
+	if !s.requireAccess(writer, request, access("list", "sessions", namespace, ""), access("list", "workspaces", namespace, ""), access("list", "agentconfigs", namespace, "")) {
+		return
+	}
 	var sessions kelos.SessionList
 	if err := s.client.List(request.Context(), &sessions, client.InNamespace(namespace)); err != nil {
 		writeError(writer, http.StatusInternalServerError, fmt.Sprintf("listing Sessions for form options: %v", err))
@@ -1030,6 +1099,9 @@ func (s *Server) listSessionOptions(writer http.ResponseWriter, request *http.Re
 }
 
 func (s *Server) getSessionSource(writer http.ResponseWriter, request *http.Request, namespace, name string) {
+	if !s.requireAccess(writer, request, access("get", "sessions", namespace, name)) {
+		return
+	}
 	var session kelos.Session
 	if err := s.client.Get(request.Context(), client.ObjectKey{Namespace: namespace, Name: name}, &session); err != nil {
 		writeKubernetesError(writer, fmt.Sprintf("getting source Session %q", name), err)
@@ -1137,6 +1209,9 @@ func (s *Server) createSession(writer http.ResponseWriter, request *http.Request
 	if section != "" {
 		session.Annotations = map[string]string{sessionSectionAnnotation: section}
 	}
+	if !s.requireAccess(writer, request, access("create", "sessions", session.Namespace, "")) {
+		return
+	}
 	if err := s.client.Create(request.Context(), session); err != nil {
 		status := http.StatusInternalServerError
 		if apierrors.IsAlreadyExists(err) || apierrors.IsInvalid(err) {
@@ -1170,6 +1245,10 @@ func (s *Server) applySession(writer http.ResponseWriter, request *http.Request)
 	}
 	if session.Namespace != namespace {
 		writeError(writer, http.StatusForbidden, fmt.Sprintf("namespace %q is not active", session.Namespace))
+		return
+	}
+
+	if !s.requireAccess(writer, request, access("get", "sessions", namespace, session.Name), access("patch", "sessions", namespace, session.Name), access("create", "sessions", namespace, "")) {
 		return
 	}
 
@@ -1208,6 +1287,9 @@ func (s *Server) applySession(writer http.ResponseWriter, request *http.Request)
 }
 
 func (s *Server) deleteSession(writer http.ResponseWriter, request *http.Request, namespace, name string) {
+	if !s.requireAccess(writer, request, access("delete", "sessions", namespace, name)) {
+		return
+	}
 	session := &kelos.Session{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name}}
 	if err := s.client.Delete(request.Context(), session); err != nil {
 		writeKubernetesError(writer, fmt.Sprintf("deleting Session %q", name), err)
@@ -1217,6 +1299,9 @@ func (s *Server) deleteSession(writer http.ResponseWriter, request *http.Request
 }
 
 func (s *Server) resetSession(writer http.ResponseWriter, request *http.Request, namespace, name string) {
+	if !s.requireAccess(writer, request, access("get", "sessions", namespace, name), access("create", "sessions/reset", namespace, name)) {
+		return
+	}
 	session, _, err := sessionreset.Request(
 		request.Context(),
 		s.client,
@@ -1240,6 +1325,9 @@ func (s *Server) resetSession(writer http.ResponseWriter, request *http.Request,
 }
 
 func (s *Server) suspendSession(writer http.ResponseWriter, request *http.Request, namespace, name string) {
+	if !s.requireAccess(writer, request, access("get", "sessions", namespace, name), access("create", "sessions/suspend", namespace, name)) {
+		return
+	}
 	var session kelos.Session
 	if err := s.client.Get(request.Context(), client.ObjectKey{Namespace: namespace, Name: name}, &session); err != nil {
 		writeKubernetesError(writer, fmt.Sprintf("getting Session %q to suspend", name), err)
@@ -1276,6 +1364,9 @@ func (s *Server) suspendSession(writer http.ResponseWriter, request *http.Reques
 }
 
 func (s *Server) resumeSession(writer http.ResponseWriter, request *http.Request, namespace, name string) {
+	if !s.requireAccess(writer, request, access("get", "sessions", namespace, name), access("create", "sessions/resume", namespace, name)) {
+		return
+	}
 	session, _, err := sessionsuspend.RequestResume(
 		request.Context(),
 		s.client,
@@ -1340,6 +1431,9 @@ func (s *Server) resumeSession(writer http.ResponseWriter, request *http.Request
 }
 
 func (s *Server) updateSessionSection(writer http.ResponseWriter, request *http.Request, namespace, name string) {
+	if !s.requireAccess(writer, request, access("get", "sessions", namespace, name), access("patch", "sessions", namespace, name)) {
+		return
+	}
 	var payload updateSessionSectionRequest
 	if err := decodeJSON(request.Body, &payload); err != nil {
 		writeError(writer, http.StatusBadRequest, err.Error())
@@ -1401,6 +1495,9 @@ func normalizeSessionSection(value string) (string, error) {
 }
 
 func (s *Server) updateSessionDisplayName(writer http.ResponseWriter, request *http.Request, namespace, name string) {
+	if !s.requireAccess(writer, request, access("get", "sessions", namespace, name), access("patch", "sessions", namespace, name)) {
+		return
+	}
 	var payload updateSessionDisplayNameRequest
 	if err := decodeJSON(request.Body, &payload); err != nil {
 		writeError(writer, http.StatusBadRequest, err.Error())
@@ -1518,6 +1615,9 @@ func sessionActivityTime(session *kelos.Session) time.Time {
 }
 
 func (s *Server) uploadSessionAttachment(writer http.ResponseWriter, request *http.Request, namespace, name string) {
+	if !s.requireAccess(writer, request, access("get", "sessions", namespace, name), access("create", "sessions/attachments", namespace, name)) {
+		return
+	}
 	if err := http.NewResponseController(writer).SetReadDeadline(time.Now().Add(attachmentUploadTimeout)); err != nil {
 		writeError(writer, http.StatusInternalServerError, fmt.Sprintf("setting upload deadline for Session %q: %v", name, err))
 		return
@@ -1559,6 +1659,9 @@ func (s *Server) uploadSessionAttachment(writer http.ResponseWriter, request *ht
 }
 
 func (s *Server) downloadSessionAttachment(writer http.ResponseWriter, request *http.Request, namespace, name, id string) {
+	if !s.requireAccess(writer, request, access("get", "sessions", namespace, name), access("get", "sessions/attachments", namespace, name)) {
+		return
+	}
 	session, ok := s.readySession(writer, request, namespace, name)
 	if !ok {
 		return
@@ -1616,6 +1719,9 @@ func (s *Server) readySession(writer http.ResponseWriter, request *http.Request,
 }
 
 func (s *Server) connectSession(writer http.ResponseWriter, request *http.Request, namespace, name string) {
+	if !s.requireAccess(writer, request, access("get", "sessions", namespace, name), access("create", "sessions/connect", namespace, name)) {
+		return
+	}
 	var session kelos.Session
 	if err := s.client.Get(request.Context(), client.ObjectKey{Namespace: namespace, Name: name}, &session); err != nil {
 		writeKubernetesError(writer, fmt.Sprintf("getting Session %q", name), err)
@@ -1861,6 +1967,10 @@ func (s *Server) index(writer http.ResponseWriter, request *http.Request) {
 }
 
 func (s *Server) loginPage(writer http.ResponseWriter, request *http.Request) {
+	if s.oidc != nil {
+		http.Redirect(writer, request, "/", http.StatusFound)
+		return
+	}
 	if s.authenticated(request) {
 		http.Redirect(writer, request, "/", http.StatusFound)
 		return
