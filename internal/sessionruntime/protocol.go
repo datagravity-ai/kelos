@@ -114,6 +114,9 @@ type RuntimeStatus struct {
 	PullRequestNumber int               `json:"pullRequestNumber,omitempty"`
 	Usage             *RuntimeUsage     `json:"usage,omitempty"`
 	WeeklyLimit       *RuntimeRateLimit `json:"weeklyLimit,omitempty"`
+	// BackgroundTasks counts unfinished provider-reported tasks. Nil means
+	// the count is unavailable.
+	BackgroundTasks *int `json:"backgroundTasks,omitempty"`
 }
 
 // RuntimeUsage describes cumulative provider token use and the model context window.

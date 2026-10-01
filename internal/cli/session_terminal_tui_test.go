@@ -459,6 +459,60 @@ func TestSessionTUIShowsTurnProgressUntilCompletion(t *testing.T) {
 	}
 }
 
+func TestSessionTUIShowsBackgroundWorkBetweenTurns(t *testing.T) {
+	model, _ := newSessionTUITestModel()
+	model.now = func() time.Time { return time.Date(2026, time.October, 1, 12, 0, 0, 0, time.UTC) }
+	model.Update(tea.WindowSizeMsg{Width: 120, Height: 12})
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventHistoryEnd})
+	draft := strings.Repeat("draft line\n", 8) + "last line"
+	model.input.SetValue(draft)
+	model.resizeComposer()
+	idleComposerHeight := model.input.Height()
+	report := func(count int) {
+		model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventRuntimeStatus, Runtime: &sessionruntime.RuntimeStatus{BackgroundTasks: &count}})
+	}
+	progress := func() string { return strings.TrimSpace(stripSessionTUIANSI(model.progressView())) }
+	report(1)
+	if got := progress(); got != "• 1 background task running" {
+		t.Fatalf("Background progress = %q", got)
+	}
+	if got := model.input.Height(); got != idleComposerHeight-1 {
+		t.Fatalf("Composer height with background progress = %d, want %d", got, idleComposerHeight-1)
+	}
+	if model.canInterruptTurn() {
+		t.Fatal("Background work alone enabled turn interruption")
+	}
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventTurnStarted, TurnID: "turn-1"})
+	if got := progress(); got != "• Working · 1 background task (0s • esc to interrupt)" {
+		t.Fatalf("Working progress = %q", got)
+	}
+	report(2)
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventInputRequested, InputID: "input-1", TurnID: "turn-1"})
+	if got := progress(); got != "• Waiting for input · 2 background tasks (0s • esc to interrupt)" {
+		t.Fatalf("Input progress = %q", got)
+	}
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventTurnCompleted, TurnID: "turn-1", Status: "completed"})
+	if got := progress(); got != "• 2 background tasks running" {
+		t.Fatalf("Progress after parent turn = %q", got)
+	}
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventHistoryStart, Reset: true})
+	report(1)
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventHistoryEnd, HistoryState: &sessionruntime.HistoryState{}})
+	if got := progress(); got != "• 1 background task running" {
+		t.Fatalf("Reconnected progress = %q", got)
+	}
+	report(0)
+	if got := progress(); got != "" {
+		t.Fatalf("Idle progress = %q", got)
+	}
+	if got := model.input.Height(); got != idleComposerHeight {
+		t.Fatalf("Composer height after background completion = %d, want %d", got, idleComposerHeight)
+	}
+	if got := model.input.Value(); got != draft {
+		t.Fatalf("Draft after background completion = %q, want %q", got, draft)
+	}
+}
+
 func TestSessionTUIRendersTurnDurationSeparator(t *testing.T) {
 	model, _ := newSessionTUITestModel()
 	model.Update(tea.WindowSizeMsg{Width: 48, Height: 12})

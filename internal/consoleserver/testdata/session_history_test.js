@@ -336,6 +336,7 @@ vm.runInThisContext(applicationSlice('function providerLabel', 'function parseSe
 vm.runInThisContext(applicationSlice('function parseSessionTimestamp', 'function safeHTTPURL'), {filename: 'app.js'});
 vm.runInThisContext(applicationSlice('function selectSession', 'function renderHeader'), {filename: 'app.js'});
 vm.runInThisContext(applicationSlice('async function loadSessions', 'async function loadConfig'), {filename: 'app.js'});
+vm.runInThisContext(applicationSlice('function setConnection', 'function usesTouchComposer'), {filename: 'app.js'});
 vm.runInThisContext(applicationSlice('function usesTouchComposer', 'function closeSocket'), {filename: 'app.js'});
 const renderSessionHeader = vm.runInThisContext(
   `(() => {${applicationSlice('function renderHeader', 'function usesTouchComposer')} return renderHeader;})()`,
@@ -681,6 +682,7 @@ function testSessionViewReset() {
 
 function testSessionProgressLifecycle() {
   resetHarness();
+  state.selected = {namespace: 'default', name: 'one', phase: 'Ready'};
   const view = createSessionView();
   activateSessionView(view);
   assert.equal(elements.progress.hidden, true);
@@ -711,6 +713,93 @@ function testSessionProgressLifecycle() {
   handleEvent({type: 'turn.completed', turnId: 'turn-1', status: 'completed'});
   assert.equal(elements.progress.hidden, true);
   assert.equal(state.progressTimer, null);
+}
+
+function testBackgroundTaskProgress() {
+  resetHarness();
+  state.selected = {namespace: 'default', name: 'one', phase: 'Ready'};
+  const view = createSessionView();
+  activateSessionView(view);
+  state.socket = {readyState: WebSocket.OPEN, send() {}};
+  state.sendingMessage = false;
+  elements.input.disabled = false;
+  handleEvent({type: 'runtime.status', runtime: {backgroundTasks: 1}});
+  assert.equal(elements.progress.hidden, false);
+  assert.equal(elements.progress.dataset.state, 'background');
+  assert.equal(elements.progressLabel.textContent, '1 background task running');
+  assert.equal(elements.progressElapsed.textContent, '');
+  assert.equal(state.progressTimer, null);
+  updateComposerAction();
+  assert.equal(elements.send.attributes.get('aria-label'), 'Send message');
+  assert.equal(elements.send.disabled, false);
+
+  handleEvent({type: 'turn.started', turnId: 'turn-1'});
+  assert.equal(elements.progressLabel.textContent, 'Working · 1 background task');
+  handleEvent({type: 'runtime.status', runtime: {backgroundTasks: 2}});
+  assert.equal(elements.progressLabel.textContent, 'Working · 2 background tasks');
+  handleEvent({type: 'input.requested', turnId: 'turn-1', inputId: 'input-1'});
+  assert.equal(elements.progressLabel.textContent, 'Waiting for input · 2 background tasks');
+  handleEvent({type: 'turn.interrupting', turnId: 'turn-1'});
+  assert.equal(elements.progressLabel.textContent, 'Interrupting · 2 background tasks');
+  handleEvent({type: 'turn.completed', turnId: 'turn-1', status: 'completed'});
+  assert.equal(elements.progressLabel.textContent, '2 background tasks running');
+  assert.equal(elements.progressElapsed.textContent, '');
+  assert.equal(state.progressTimer, null);
+
+  saveCurrentSessionView();
+  activateSessionView(createSessionView());
+  assert.equal(elements.progress.hidden, true);
+  activateSessionView(view);
+  assert.equal(elements.progressLabel.textContent, '2 background tasks running');
+
+  handleEvent({type: 'history.start', reset: true, journalId: 'reconnected'});
+  handleEvent({type: 'runtime.status', runtime: {backgroundTasks: 1}});
+  handleEvent({type: 'history.end', historyState: {}});
+  assert.equal(elements.progressLabel.textContent, '1 background task running');
+  handleEvent({type: 'runtime.status', runtime: {backgroundTasks: 0}});
+  assert.equal(elements.progress.hidden, true);
+  handleEvent({type: 'runtime.status', runtime: {model: 'provider-without-task-count'}});
+  assert.equal(elements.progress.hidden, true);
+}
+
+function testSessionProgressRequiresReadyRuntime() {
+  for (const activeTurn of [false, true]) {
+    for (const change of [{phase: 'Pending'}, {phase: 'Suspended'}, {phase: 'Failed'}, {resetting: true}, {userSuspended: true}]) {
+      resetHarness();
+      const session = {namespace: 'default', name: 'one', provider: 'claude-code', phase: 'Ready'};
+      state.selected = {...session};
+      const view = createSessionView();
+      activateSessionView(view);
+      handleEvent({type: 'runtime.status', runtime: {backgroundTasks: 2}});
+      if (activeTurn) handleEvent({type: 'turn.started', turnId: 'turn-1'});
+      assert.equal(elements.progress.hidden, false);
+      assert.equal(progressTimers.size, activeTurn ? 1 : 0);
+
+      Object.assign(state.selected, change);
+      renderSessionHeader();
+
+      assert.equal(elements.progress.hidden, true);
+      assert.equal(elements.progressLabel.textContent, '');
+      assert.equal(elements.progressElapsed.textContent, '');
+      assert.equal(progressTimers.size, 0);
+      saveCurrentSessionView();
+      activateSessionView(view);
+      assert.equal(elements.progress.hidden, true);
+      assert.equal(progressTimers.size, 0);
+
+      state.selected = session;
+      renderSessionHeader();
+      assert.equal(elements.progress.hidden, true);
+      assert.equal(progressTimers.size, 0);
+      activateSessionView(view);
+      assert.equal(elements.progress.hidden, true);
+      assert.equal(state.activeTurn, false);
+      assert.equal(state.activeTurnID, '');
+      assert.equal(state.runtimeStatus.backgroundTasks, undefined);
+      handleEvent({type: 'runtime.status', runtime: {backgroundTasks: 1}});
+      assert.equal(elements.progressLabel.textContent, '1 background task running');
+    }
+  }
 }
 
 function testComposerInterruptsWhileInputIsDisabled() {
@@ -830,6 +919,8 @@ async function testReadySessionDisconnectsWhenItBecomesPending() {
   state.selected = session;
   state.sessions = [session];
   state.socket = {readyState: WebSocket.OPEN};
+  handleEvent({type: 'runtime.status', runtime: {backgroundTasks: 1}});
+  assert.equal(elements.progress.hidden, false);
   global.api = async () => [{...session, phase: 'Pending'}];
   global.renderHeader = renderSessionHeader;
 
@@ -840,6 +931,29 @@ async function testReadySessionDisconnectsWhenItBecomesPending() {
   assert.equal(state.selected.phase, 'Pending');
   assert.equal(elements.input.disabled, false);
   assert.equal(elements.send.disabled, true);
+  assert.equal(elements.progress.hidden, true);
+}
+
+async function testSuspendSessionHidesBackgroundProgress() {
+  resetHarness();
+  const session = {namespace: 'default', name: 'one', uid: 'uid-one', provider: 'claude-code', phase: 'Ready'};
+  state.selected = session;
+  state.sessions = [session];
+  handleEvent({type: 'runtime.status', runtime: {backgroundTasks: 1}});
+  assert.equal(elements.progress.hidden, false);
+  global.renderHeader = renderSessionHeader;
+  global.api = async (url, options) => {
+    assert.equal(url, '/api/sessions/default/one/suspend');
+    assert.equal(options.method, 'POST');
+    return {...session, userSuspended: true};
+  };
+
+  await suspendSession(session);
+
+  assert.equal(closeSocketRequests, 1);
+  assert.equal(state.selected.userSuspended, true);
+  assert.equal(elements.progress.hidden, true);
+  assert.equal(elements.progressLabel.textContent, '');
 }
 
 async function testComposerIgnoresReentrantSubmission() {
@@ -861,6 +975,7 @@ async function testComposerIgnoresReentrantSubmission() {
 
 function testSessionProgressSurvivesCachedViewSwitch() {
   resetHarness();
+  state.selected = {namespace: 'default', name: 'one', phase: 'Ready'};
   const activeView = createSessionView();
   activateSessionView(activeView);
   state.activeTurn = true;
@@ -1476,6 +1591,8 @@ testWorkspaceChangesPreservesUnchangedDOM();
 testSessionViewSaveAndRestore();
 testSessionViewReset();
 testSessionProgressLifecycle();
+testBackgroundTaskProgress();
+testSessionProgressRequiresReadyRuntime();
 testComposerInterruptsWhileInputIsDisabled();
 testComposerLabelsPendingSubmission();
 testPendingSessionComposerAllowsDraft();
@@ -1518,6 +1635,7 @@ testPromptJumpWaitsForInitialHistory();
 testPromptJumpCancellation();
 testPromptJumpUnavailableAndPageError();
 testReadySessionDisconnectsWhenItBecomesPending()
+  .then(testSuspendSessionHidesBackgroundProgress)
   .then(testComposerIgnoresReentrantSubmission)
   .then(testPromptHistoryBrowseAndReuse)
   .then(() => process.stdout.write('Session history tests passed\n'))

@@ -411,12 +411,17 @@ var _ = Describe("Session remote control", func() {
 			HistoryItems: sessionruntime.DefaultHistoryItemLimit, HistoryBytes: sessionruntime.DefaultHistoryByteLimit,
 		})
 		var replayed []string
+		var backgroundTasks *int
 		for event := readSessionEvent(connection); event.Type != sessionruntime.EventHistoryEnd; event = readSessionEvent(connection) {
 			if event.Type == sessionruntime.EventAssistantMessage {
 				replayed = append(replayed, event.Text)
 			}
+			if event.Type == sessionruntime.EventRuntimeStatus && event.Runtime != nil {
+				backgroundTasks = event.Runtime.BackgroundTasks
+			}
 		}
 		Expect(replayed).To(ContainElement(followup.Text))
+		Expect(backgroundTasks).To(HaveValue(Equal(0)))
 
 		By("deleting the Session and its StatefulSet-backed Pod")
 		Expect(f.KelosClientset.ApiV1alpha2().Sessions(f.Namespace).Delete(context.TODO(), sessionName, metav1.DeleteOptions{})).To(Succeed())

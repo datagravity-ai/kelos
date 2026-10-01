@@ -586,6 +586,18 @@ watchers, keep the Session active and prevent idle suspension or deletion until
 they stop. Ask the agent to stop them when they are no longer needed. Tasks
 marked by Claude Code as internal housekeeping do not count as activity.
 
+The Console and interactive terminal keep a progress indicator visible while
+Claude Code reports unfinished background tasks, even after the parent turn
+ends. It shows the number of background tasks running; during a turn, the count
+appears alongside `Working`, `Waiting for input`, or `Interrupting`. Background
+work alone leaves the composer available for another message. The Console clears
+live activity while the Session is suspended, resetting, or not Ready and
+refreshes it from the runtime after resuming. The count is
+refreshed on reconnect and includes reported subagents and background commands,
+not internal housekeeping. It does not indicate that the parent agent is blocked
+on a specific subtask. Providers that do not report a background-task count keep
+their usual turn progress indicator.
+
 `Active=True` means the runtime has an unfinished turn or Claude Code has
 reported unfinished background work. Its reason is `WaitingForInput` when the
 turn needs a user response and `TurnActive` while the agent is working.
