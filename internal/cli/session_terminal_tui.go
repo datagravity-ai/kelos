@@ -647,6 +647,8 @@ func (m *sessionTUIModel) applyEvent(event sessionruntime.Event) sessionTUIComma
 		if event.Runtime != nil {
 			m.runtimeStatus = *event.Runtime
 		}
+		m.resizeComposer()
+		commands.ui = m.scheduleProgress()
 	case sessionruntime.EventHistoryEnd:
 		m.replayingHistory = false
 		m.applyHistoryState(event.HistoryState)
@@ -948,7 +950,8 @@ func (m *sessionTUIModel) scheduleProgress() tea.Cmd {
 func (m *sessionTUIModel) progressVisible() bool {
 	connecting := m.connectionStatus == sessionTerminalStatusReconnecting ||
 		(m.connectionStatus == sessionTerminalStatusConnecting && !m.ready)
-	return connecting || m.historyPageLoading || m.activeTurnID != ""
+	return connecting || m.historyPageLoading || m.activeTurnID != "" ||
+		(m.runtimeStatus.BackgroundTasks != nil && *m.runtimeStatus.BackgroundTasks > 0)
 }
 
 func (m *sessionTUIModel) canInterruptTurn() bool {
@@ -1766,6 +1769,15 @@ func (m *sessionTUIModel) progressView() string {
 	label := ""
 	started := m.activeTurnStarted
 	showInterrupt := false
+	background := ""
+	if count := m.runtimeStatus.BackgroundTasks; count != nil && *count > 0 {
+		noun := "task"
+		if *count != 1 {
+			noun = "tasks"
+		}
+		background = fmt.Sprintf("%d background %s", *count, noun)
+	}
+	backgroundOnly := false
 	switch {
 	case m.connectionStatus == sessionTerminalStatusReconnecting:
 		label = "Reconnecting"
@@ -1781,19 +1793,29 @@ func (m *sessionTUIModel) progressView() string {
 	case m.waitingForInput:
 		label = "Waiting for input"
 		showInterrupt = true
+	case m.activeTurnID == "" && background != "":
+		label = background + " running"
+		backgroundOnly = true
 	default:
 		label = "Working"
 		showInterrupt = true
 	}
-	elapsed := m.now().Sub(started)
-	if elapsed < 0 {
-		elapsed = 0
+	if background != "" && m.activeTurnID != "" && m.connectionStatus == "" && !m.historyPageLoading {
+		label += " · " + background
 	}
-	details := formatSessionTUIElapsed(elapsed)
-	if showInterrupt {
-		details += " • esc to interrupt"
+	text := "• " + label
+	if !backgroundOnly {
+		elapsed := m.now().Sub(started)
+		if elapsed < 0 {
+			elapsed = 0
+		}
+		details := formatSessionTUIElapsed(elapsed)
+		if showInterrupt {
+			details += " • esc to interrupt"
+		}
+		text += " (" + details + ")"
 	}
-	text := truncateSessionTUIProgress("• "+label+" ("+details+")", max(1, m.width))
+	text = truncateSessionTUIProgress(text, max(1, m.width))
 	return m.styles.pending.Width(max(1, m.width)).MaxWidth(max(1, m.width)).Render(text)
 }
 

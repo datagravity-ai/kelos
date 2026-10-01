@@ -7,8 +7,6 @@ import (
 	"sync"
 )
 
-const eventBackgroundActivity = "provider.background"
-
 // sessionEvents routes provider activity for the lifetime of the conversation.
 // A provider may start another turn without a user submission.
 type sessionEvents struct {
@@ -96,12 +94,6 @@ func (s *sessionEvents) Emit(event Event) {
 
 func (s *sessionEvents) emitLocked(event Event) {
 	if s.closed {
-		return
-	}
-	if event.Type == eventBackgroundActivity {
-		s.server.backgroundActive.Store(event.Status == "running")
-		s.server.requestSessionStatusPublish()
-		s.server.signalSessionUpdateReport()
 		return
 	}
 	if event.Type == EventRuntimeStatus && event.Runtime != nil {

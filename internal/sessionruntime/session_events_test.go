@@ -6,10 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"k8s.io/utils/ptr"
 
 	"github.com/kelos-dev/kelos/internal/sessionupdate"
 )
@@ -96,7 +100,7 @@ func TestServerBackgroundTasksOnlyBlockIdleDrain(t *testing.T) {
 			server.idleDrainRequest = &sessionupdate.Request{ID: "idle-drain"}
 			server.outstanding = test.outstanding
 			if test.backgroundActive {
-				server.events.Emit(Event{Type: eventBackgroundActivity, Status: "running"})
+				server.events.Emit(Event{Type: EventRuntimeStatus, Runtime: &RuntimeStatus{BackgroundTasks: ptr.To(1)}})
 			}
 			update, idle := server.sessionDrainReports()
 			if update.Phase != test.updatePhase || idle.Phase != test.idlePhase {
@@ -365,7 +369,7 @@ func TestSessionReceivesEventsWhileCollectingWorkspaceDiff(t *testing.T) {
 		t.Fatal("Provider stream blocked on workspace diff")
 	}
 	<-started
-	server.events.Emit(Event{Type: eventBackgroundActivity, Status: "running"})
+	server.events.Emit(Event{Type: EventRuntimeStatus, Runtime: &RuntimeStatus{BackgroundTasks: ptr.To(1)}})
 	server.events.Emit(Event{Type: EventTurnStarted})
 	server.events.Emit(Event{Type: EventAssistantMessage, Text: "Background work finished"})
 	server.events.Emit(Event{Type: EventTurnCompleted, Status: "completed"})
@@ -486,7 +490,94 @@ func TestClaudeTaskActivityTracksReportedTasks(t *testing.T) {
 			if active := server.backgroundActive.Load(); active != (status == "running") {
 				t.Fatalf("Task status %q: background activity = %t", status, active)
 			}
+			want := 0
+			if status == "running" {
+				want = 1
+			}
+			if count := server.runtimeStatusSnapshot().BackgroundTasks; count == nil || *count != want {
+				t.Fatalf("Background task count = %v, want %d", count, want)
+			}
 		})
+	}
+}
+
+func TestClaudeReportsBackgroundTaskCountChanges(t *testing.T) {
+	provider := &ClaudeProvider{ctx: t.Context(), done: make(chan struct{})}
+	sink := newProviderTestSink(nil)
+	provider.SetEventSink(sink)
+	provider.readLoop(strings.NewReader(strings.Join([]string{
+		`{"type":"system","subtype":"task_started","task_id":"first"}`,
+		`{"type":"system","subtype":"task_started","task_id":"first"}`,
+		`{"type":"system","subtype":"task_started","task_id":"second"}`,
+		`{"type":"system","subtype":"task_updated","task_id":"unknown","patch":{"status":"completed"}}`,
+		`{"type":"system","subtype":"task_updated","task_id":"first","patch":{"status":"completed"}}`,
+		`{"type":"system","subtype":"task_notification","task_id":"second","status":"completed"}`,
+	}, "\n")))
+	if provider.readErr != nil {
+		t.Fatal(provider.readErr)
+	}
+	var counts []int
+	for _, event := range sink.snapshot() {
+		if event.Type == EventRuntimeStatus && event.Runtime != nil && event.Runtime.BackgroundTasks != nil {
+			counts = append(counts, *event.Runtime.BackgroundTasks)
+		}
+	}
+	if want := []int{1, 2, 1, 0}; !reflect.DeepEqual(counts, want) {
+		t.Fatalf("Background task counts = %v, want %v", counts, want)
+	}
+}
+
+func TestServerBackgroundTaskCountStreamsAndReconnects(t *testing.T) {
+	journal := NewJournal()
+	defer journal.Close()
+	server := NewServer(Config{}, journal, &fakeProvider{})
+	report := func(count int) {
+		server.events.Emit(Event{Type: EventRuntimeStatus, Runtime: &RuntimeStatus{BackgroundTasks: &count}})
+	}
+	connect := func() *json.Decoder {
+		serverConnection, clientConnection := net.Pipe()
+		t.Cleanup(func() { _ = clientConnection.Close() })
+		if err := clientConnection.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		go server.handleConnection(t.Context(), serverConnection)
+		if err := json.NewEncoder(clientConnection).Encode(ClientRequest{Type: "subscribe", HistoryBounds: true}); err != nil {
+			t.Fatal(err)
+		}
+		return json.NewDecoder(clientConnection)
+	}
+	readCount := func(decoder *json.Decoder, want int) {
+		t.Helper()
+		for {
+			var event Event
+			if err := decoder.Decode(&event); err != nil {
+				t.Fatal(err)
+			}
+			if event.Type != EventRuntimeStatus {
+				continue
+			}
+			if event.Runtime == nil || event.Runtime.BackgroundTasks == nil || *event.Runtime.BackgroundTasks != want {
+				t.Fatalf("Runtime status = %#v, want background task count %d", event.Runtime, want)
+			}
+			return
+		}
+	}
+	report(1)
+	first := connect()
+	readCount(first, 1)
+	report(2)
+	readCount(first, 2)
+	reconnected := connect()
+	readCount(reconnected, 2)
+	server.updateProviderRuntimeStatus(RuntimeStatus{Model: "test-model"})
+	readCount(reconnected, 2)
+	report(0)
+	readCount(reconnected, 0)
+	if events := journal.Snapshot(); len(events) != 0 {
+		t.Fatalf("Background status added conversation events: %#v", events)
+	}
+	if server.backgroundActive.Load() {
+		t.Fatal("Completed background work still keeps the Session active")
 	}
 }
 
@@ -513,6 +604,9 @@ func TestClaudeHousekeepingEventsLeaveSessionIdle(t *testing.T) {
 				}
 				if events := journal.Snapshot(); len(events) != 0 {
 					t.Fatalf("Housekeeping events started a turn: %#v", events)
+				}
+				if count := server.runtimeStatusSnapshot().BackgroundTasks; count != nil && *count != 0 {
+					t.Fatalf("Housekeeping counted as background work: %v", count)
 				}
 				_, drain := server.sessionDrainReports()
 				if drain.Phase != sessionupdate.PhaseDrained {

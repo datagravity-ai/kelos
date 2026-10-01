@@ -1195,7 +1195,9 @@
         return `${hours}h ${String(minutes).padStart(2, '0')}m ${String(seconds).padStart(2, '0')}s`;
     }
     function renderSessionProgress(now = Date.now()) {
-        if (!state.activeTurn) {
+        const session = state.selected;
+        const backgroundTasks = state.runtimeStatus?.backgroundTasks || 0;
+        if (!session || session.phase !== 'Ready' || session.resetting || session.userSuspended || (!state.activeTurn && !backgroundTasks)) {
             elements.progress.hidden = true;
             elements.progress.dataset.state = 'idle';
             elements.progressLabel.textContent = '';
@@ -1204,7 +1206,11 @@
         }
         let label = 'Working';
         let status = 'working';
-        if (state.interrupting) {
+        if (!state.activeTurn) {
+            label = `${backgroundTasks} background task${backgroundTasks === 1 ? '' : 's'} running`;
+            status = 'background';
+        }
+        else if (state.interrupting) {
             label = 'Interrupting';
             status = 'interrupting';
         }
@@ -1212,20 +1218,37 @@
             label = 'Waiting for input';
             status = 'waiting';
         }
+        if (state.activeTurn && backgroundTasks) {
+            label += ` · ${backgroundTasks} background task${backgroundTasks === 1 ? '' : 's'}`;
+        }
         const startedAt = state.activeTurnStartedAt || now;
         elements.progress.hidden = false;
         elements.progress.dataset.state = status;
         if (elements.progressLabel.textContent !== label)
             elements.progressLabel.textContent = label;
-        elements.progressElapsed.textContent = `(${formatSessionProgressElapsed(now - startedAt)})`;
+        elements.progressElapsed.textContent = state.activeTurn ? `(${formatSessionProgressElapsed(now - startedAt)})` : '';
     }
     function refreshSessionProgress() {
+        const session = state.selected;
+        if (session && (session.phase !== 'Ready' || session.resetting || session.userSuspended)) {
+            const activity = {
+                activeTurn: false,
+                activeTurnID: '',
+                activeTurnStartedAt: 0,
+                waitingForInput: false,
+                interrupting: false,
+                runtimeStatus: state.runtimeStatus ? { ...state.runtimeStatus, backgroundTasks: undefined } : null,
+            };
+            Object.assign(state, activity);
+            if (state.currentView)
+                Object.assign(state.currentView, activity);
+        }
         if (state.progressTimer !== null) {
             window.clearInterval(state.progressTimer);
             state.progressTimer = null;
         }
         renderSessionProgress();
-        if (state.activeTurn) {
+        if (state.activeTurn && !elements.progress.hidden) {
             state.progressTimer = window.setInterval(() => renderSessionProgress(), 1000);
         }
     }
@@ -2603,6 +2626,7 @@ spec:
     }
     function renderHeader() {
         const session = state.selected;
+        refreshSessionProgress();
         elements.terminalTab.disabled = !sessionTerminal.available(session);
         elements.viewChoice.disabled = !session;
         elements.terminalChoice.disabled = elements.terminalTab.disabled;
@@ -3871,6 +3895,7 @@ spec:
                 if (state.currentView)
                     state.currentView.runtimeStatus = state.runtimeStatus;
                 renderRuntimeStatus();
+                refreshSessionProgress();
                 break;
             case 'runtime.recovered':
                 state.runtimeRecoveryActive = true;

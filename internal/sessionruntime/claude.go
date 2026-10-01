@@ -378,12 +378,8 @@ func (p *ClaudeProvider) recordTaskActivity(event claudeEventEnvelope) {
 	}
 	after, sink := len(p.tasks), p.eventSink
 	p.activeMu.Unlock()
-	if sink != nil && (before == 0) != (after == 0) {
-		status := "idle"
-		if after > 0 {
-			status = "running"
-		}
-		sink.Emit(Event{Type: eventBackgroundActivity, Status: status})
+	if sink != nil && before != after {
+		sink.Emit(Event{Type: EventRuntimeStatus, Runtime: &RuntimeStatus{BackgroundTasks: &after}})
 	}
 }
 

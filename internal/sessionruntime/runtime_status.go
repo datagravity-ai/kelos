@@ -32,10 +32,15 @@ func (s RuntimeStatus) empty() bool {
 		s.Branch == "" &&
 		s.PullRequestNumber == 0 &&
 		s.Usage == nil &&
-		s.WeeklyLimit == nil
+		s.WeeklyLimit == nil &&
+		s.BackgroundTasks == nil
 }
 
 func cloneRuntimeStatus(status RuntimeStatus) RuntimeStatus {
+	if status.BackgroundTasks != nil {
+		count := *status.BackgroundTasks
+		status.BackgroundTasks = &count
+	}
 	if status.Usage != nil {
 		usage := *status.Usage
 		status.Usage = &usage
@@ -83,6 +88,13 @@ func (s *Server) updateWorkspaceRuntimeStatus(status WorkspaceStatus) {
 
 func (s *Server) updateProviderRuntimeStatus(update RuntimeStatus) {
 	s.runtimeStatusMu.Lock()
+	backgroundChanged := false
+	if update.BackgroundTasks != nil {
+		count := *update.BackgroundTasks
+		backgroundChanged = s.runtimeStatus.BackgroundTasks == nil || *s.runtimeStatus.BackgroundTasks != count
+		s.runtimeStatus.BackgroundTasks = &count
+		s.backgroundActive.Store(count > 0)
+	}
 	if update.Model != "" {
 		s.runtimeStatus.Model = update.Model
 	}
@@ -99,6 +111,10 @@ func (s *Server) updateProviderRuntimeStatus(update RuntimeStatus) {
 	}
 	s.broadcastRuntimeStatusLocked()
 	s.runtimeStatusMu.Unlock()
+	if backgroundChanged {
+		s.requestSessionStatusPublish()
+		s.signalSessionUpdateReport()
+	}
 }
 
 func (s *Server) broadcastRuntimeStatusLocked() {
