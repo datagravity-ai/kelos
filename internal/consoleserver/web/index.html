@@ -203,7 +203,7 @@
         </button>
       </div>
 
-      <section class="messages" id="messages" role="tabpanel" aria-labelledby="conversation-tab" aria-live="polite">
+      <section class="messages" id="messages" role="tabpanel" aria-labelledby="conversation-tab" aria-live="polite" tabindex="-1">
         <div class="welcome" id="welcome">
           <div class="welcome-orbit"><span>K</span></div>
           <h1>What should we work on?</h1>
@@ -211,6 +211,10 @@
           <button class="primary-button" id="welcome-new">Create your first session</button>
         </div>
       </section>
+
+      <button class="jump-to-latest" id="jump-to-latest" type="button" aria-controls="messages" hidden>
+        <span aria-hidden="true">↓</span> Jump to latest
+      </button>
 
       <section class="changes-view" id="changes-view" role="tabpanel" aria-labelledby="changes-tab" hidden>
         <header class="changes-header">
