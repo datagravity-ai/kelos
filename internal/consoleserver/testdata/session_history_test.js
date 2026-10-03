@@ -16,6 +16,7 @@ class TestNode {
     this.listeners = new Map();
     this.style = {};
     this.scrollTop = 0;
+    this.clientHeight = 100;
     this.bounds = {top: 0, bottom: 0};
     this.scrollIntoViewOptions = null;
     this.classList = {
@@ -122,7 +123,7 @@ class TestNode {
 
   showModal() { this.open = true; }
   close() { this.open = false; }
-  focus(options) { this.focused = true; this.focusOptions = options; }
+  focus(options) { this.focused = true; this.focusOptions = options; document.activeElement = this; }
   select() { this.selected = true; }
 
   getBoundingClientRect() {
@@ -185,6 +186,7 @@ global.WebSocket = {OPEN: 1};
 global.sessionTerminal = {available: session => session?.phase === 'Ready' && !session.resetting && !session.userSuspended, sync() {}};
 
 function resetHarness() {
+  document.activeElement = document.body;
   global.elements = {
     messages: new TestNode('div'),
     pending: new TestNode('div'),
@@ -194,6 +196,7 @@ function resetHarness() {
     currentRequest: new TestNode('div'),
     currentRequestButton: new TestNode('button'),
     currentRequestText: new TestNode('span'),
+    jumpToLatest: new TestNode('button'),
     sessionsView: new TestNode('main'),
     composerHint: new TestNode('span'),
     input: new TestNode('textarea'),
@@ -228,6 +231,7 @@ function resetHarness() {
     welcome: null,
   };
   elements.currentRequest.hidden = true;
+  elements.jumpToLatest.hidden = true;
   elements.terminalView.hidden = true;
   elements.connection.append(new TestNode('span'), new TestNode('span'));
   global.state = {
@@ -236,6 +240,7 @@ function resetHarness() {
     currentView: null,
     sessionViews: new Map(),
     socket: null,
+    socketGeneration: 0,
     bottomScrollFrame: null,
     promptDrafts: new Map(),
     attachmentDrafts: new Map(),
@@ -312,7 +317,6 @@ global.acceptPendingMessage = () => {};
 global.renderInputRequest = () => {};
 global.resolveInputCard = () => {};
 global.scrollToBottom = () => {};
-global.messagesNearBottom = () => true;
 global.interruptActiveTurn = () => { interruptRequests++; };
 global.showToast = (message) => { toasts.push(message); };
 global.notifySessionEvent = () => {};
@@ -342,6 +346,18 @@ const renderSessionHeader = vm.runInThisContext(
   `(() => {${applicationSlice('function renderHeader', 'function usesTouchComposer')} return renderHeader;})()`,
   {filename: 'app.js'},
 );
+const connectSessionSocket = vm.runInThisContext(
+  `(WebSocket, location) => {
+    ${applicationSlice('const sessionHistoryItemLimit', 'const sectionOrderStoragePrefix')}
+    ${applicationSlice('function connectSocket', 'function ensureConversation')}
+    connectSocket();
+  }`,
+  {filename: 'app.js'},
+);
+const anchorSessionBottom = vm.runInThisContext(
+  `(() => {${applicationSlice('function scheduleBottomAnchor', 'function currentAttachmentFiles')} return scheduleBottomAnchor;})()`,
+  {filename: 'app.js'},
+);
 vm.runInThisContext(applicationSlice('function ensureConversation', 'function trimURLSuffix'), {filename: 'app.js'});
 vm.runInThisContext(applicationSlice('async function writeClipboardText', 'async function copyCodeBlock'), {filename: 'app.js'});
 vm.runInThisContext(applicationSlice('function completedAssistantText', 'function handleEvent'), {filename: 'app.js'});
@@ -350,6 +366,7 @@ vm.runInThisContext(applicationSlice('function renderUser', 'function renderTool
 vm.runInThisContext(applicationSlice('function renderTool', 'function renderInputRequest'), {filename: 'app.js'});
 vm.runInThisContext(applicationSlice('function renderDiff', 'function setActiveView'), {filename: 'app.js'});
 vm.runInThisContext(applicationSlice('function renderError', 'function scrollToBottom'), {filename: 'app.js'});
+vm.runInThisContext(applicationSlice('function messagesBottomDistance', 'function scheduleBottomAnchor'), {filename: 'app.js'});
 vm.runInThisContext(applicationSlice('function currentAttachmentFiles', "elements.composer.addEventListener('submit'"), {filename: 'app.js'});
 
 async function testPromptHistoryBrowseAndReuse() {
@@ -538,10 +555,17 @@ function testPromptJumpLoadsEarlierPages() {
   assert.equal(sent.length, 3);
   assert.equal(sent[2].type, 'history');
   assert.equal(sent[2].historyCursor, 'older-cursor');
-  receiveTranscriptPage(sent[2], [{type: 'user.message', id: 5, text: 'earliest prompt'}], 'more-cursor');
+  receiveTranscriptPage(sent[2], [
+    {type: 'user.message', id: 5, text: 'earliest prompt'},
+    {type: 'assistant.message', id: 6, text: 'earliest reply'},
+  ], 'more-cursor');
 
   const rows = elements.messages.querySelectorAll('.event-row.user');
   assert.deepEqual(rows.map(row => row.dataset.eventId), ['5', '50', '90']);
+  assert.equal(rows[0].style.animation, 'none', 'The jump target must not move after scrolling');
+  assert.equal(rows[1].style.animation, 'none');
+  assert.equal(elements.messages.querySelectorAll('.event-row.assistant')[0].style.animation, 'none');
+  assert.equal(rows[2].style.animation, undefined, 'Live messages retain their entrance animation');
   assert.deepEqual(rows[0].scrollIntoViewOptions, {behavior: 'instant', block: 'start'});
   assert.equal(rows[1].scrollIntoViewOptions, null);
   assert.equal(rows[2].scrollIntoViewOptions, null);
@@ -551,6 +575,8 @@ function testPromptJumpLoadsEarlierPages() {
   assert.equal(state.lastEventID, 100);
   assert.equal(state.historyCursor, 'more-cursor');
   assert.equal(sent.length, 3, 'Stop loading as soon as the target is found');
+  handleEvent({type: 'assistant.message', id: 101, turnId: 'live-turn', text: 'live reply'});
+  assert.equal(elements.messages.querySelectorAll('.event-row.assistant')[1].style.animation, undefined);
 }
 
 function testPromptJumpToEditedPendingMessage() {
@@ -579,9 +605,11 @@ function testPromptJumpWaitsForInitialHistory() {
   clickPromptJump();
   assert.equal(sent.length, 1);
   handleEvent({type: 'user.message', id: 5, text: 'prompt'});
+  handleEvent({type: 'assistant.message', id: 6, text: 'reply'});
   handleEvent({type: 'history.end', historyState: {}});
   assert.equal(elements.promptsDialog.open, false);
   assert.equal(elements.messages.querySelectorAll('.event-row.user')[0].focused, true);
+  for (const row of elements.messages.querySelectorAll('.event-row')) assert.equal(row.style.animation, 'none');
   assert.equal(sent.filter(request => request.type === 'prompts').length, 1);
   assert.equal(sent.filter(request => request.type === 'workspace.changes').length, 1);
 }
@@ -1456,6 +1484,133 @@ function testCurrentRequestScrollUpdatesAreThrottled() {
   animationFrames.shift()();
 }
 
+function testJumpToLatestVisibility() {
+  resetHarness();
+  state.selected = {namespace: 'default', name: 'one'};
+  Object.defineProperty(elements.messages, 'scrollHeight', {value: 1000});
+  elements.messages.clientHeight = 400;
+  elements.messages.scrollTop = 600;
+  updateJumpToLatest();
+  assert.equal(elements.jumpToLatest.hidden, true);
+
+  elements.messages.scrollTop = 359;
+  updateJumpToLatest();
+  assert.equal(elements.jumpToLatest.hidden, false);
+
+  elements.messages.scrollTop = 361;
+  updateJumpToLatest();
+  assert.equal(elements.jumpToLatest.hidden, true);
+
+  elements.messages.scrollTop = 0;
+  elements.messages.hidden = true;
+  updateJumpToLatest();
+  assert.equal(elements.jumpToLatest.hidden, true);
+  elements.messages.hidden = false;
+  updateJumpToLatest();
+  assert.equal(elements.jumpToLatest.hidden, false);
+
+  elements.sessionsView.hidden = true;
+  updateJumpToLatest();
+  assert.equal(elements.jumpToLatest.hidden, true);
+  elements.sessionsView.hidden = false;
+  state.selected = null;
+  updateJumpToLatest();
+  assert.equal(elements.jumpToLatest.hidden, true);
+}
+
+function testJumpToLatestReturnsToBottom() {
+  for (const replayingHistory of [false, true]) {
+    resetHarness();
+    state.replayingHistory = replayingHistory;
+    elements.jumpToLatest.hidden = false;
+
+    jumpToLatest();
+
+    assert.equal(bottomAnchors, 1);
+    assert.equal(state.pinHistoryToBottom, replayingHistory);
+    assert.equal(elements.jumpToLatest.hidden, true);
+    assert.equal(elements.messages.focused, true);
+    assert.deepEqual(elements.messages.focusOptions, {preventScroll: true});
+    assert.equal(elements.input.focused, undefined, 'Returning to latest must not open the mobile keyboard');
+  }
+}
+
+function testConnectionPreservesTranscriptFocus() {
+  for (const focusTarget of ['composer', 'transcript', 'message']) {
+    resetHarness();
+    state.selected = {namespace: 'default', name: 'one', phase: 'Ready'};
+    state.currentView = {historyLoaded: true, journalID: 'journal'};
+    state.lastEventID = 50;
+    class SessionSocket extends TestNode {
+      constructor(url) {
+        super('socket');
+        this.url = url;
+        this.sent = [];
+        this.readyState = WebSocket.OPEN;
+      }
+      send(payload) { this.sent.push(JSON.parse(payload)); }
+    }
+    connectSessionSocket(SessionSocket, {protocol: 'http:', host: 'console.test'});
+    let expectedFocus = elements.input;
+    if (focusTarget === 'transcript') {
+      jumpToLatest();
+      expectedFocus = elements.messages;
+    } else if (focusTarget === 'message') {
+      renderAcceptedUser({id: 5, text: 'Read this prompt'});
+      expectedFocus = elements.messages.querySelectorAll('.event-row.user')[0];
+      expectedFocus.focus({preventScroll: true});
+    }
+
+    const socket = state.socket;
+    socket.listeners.get('open')();
+
+    assert.equal(socket.url, 'ws://console.test/api/sessions/default/one/connect');
+    assert.equal(socket.sent.length, 1);
+    assert.equal(socket.sent[0].type, 'subscribe');
+    assert.equal(socket.sent[0].since, 50);
+    assert.equal(socket.sent[0].journalId, 'journal');
+    assert.equal(document.activeElement, expectedFocus);
+    assert.equal(elements.input.disabled, false);
+  }
+}
+
+function testJumpToLatestUpdatesAfterImageLoad() {
+  resetHarness();
+  state.selected = {namespace: 'default', name: 'one'};
+  renderAcceptedUser({id: 5, text: 'Screenshots', attachments: [{id: 'image', name: 'screen.png', mediaType: 'image/png'}]});
+  let height = 1000;
+  Object.defineProperty(elements.messages, 'scrollHeight', {get: () => height});
+  elements.messages.clientHeight = 400;
+  elements.messages.scrollTop = 600;
+  jumpToLatest();
+  assert.equal(elements.jumpToLatest.hidden, true);
+
+  height = 1400;
+  elements.messages.querySelector('img').listeners.get('load')();
+
+  assert.equal(elements.jumpToLatest.hidden, false);
+  assert.equal(elements.messages.scrollTop, 600, 'Image loading must preserve the reading position');
+}
+
+function testBottomAnchorUpdatesButtonBeforePaint() {
+  resetHarness();
+  state.selected = {namespace: 'default', name: 'one'};
+  Object.defineProperty(elements.messages, 'scrollHeight', {value: 1000});
+  elements.messages.style.scrollBehavior = 'smooth';
+  updateJumpToLatest();
+  assert.equal(elements.jumpToLatest.hidden, false);
+
+  anchorSessionBottom();
+  anchorSessionBottom();
+  assert.equal(animationFrames.length, 1);
+  animationFrames[0]();
+
+  assert.ok(messagesBottomDistance() <= 0);
+  assert.equal(elements.jumpToLatest.hidden, true);
+  assert.equal(elements.messages.style.scrollBehavior, 'smooth');
+  assert.equal(state.bottomScrollFrame, null);
+}
+
 function testPendingMessageEditing() {
   resetHarness();
   const sent = [];
@@ -1623,6 +1778,11 @@ testHistoryToolCompletionRendersOutputWithoutStart();
 testUserAttachmentRendering();
 testCurrentRequestTracksScrolledTurn();
 testCurrentRequestScrollUpdatesAreThrottled();
+testJumpToLatestVisibility();
+testJumpToLatestReturnsToBottom();
+testConnectionPreservesTranscriptFocus();
+testJumpToLatestUpdatesAfterImageLoad();
+testBottomAnchorUpdatesButtonBeforePaint();
 testPendingMessageEditing();
 testPendingMessageRemoval();
 testPendingMessageSurvivesCompletedHistoryReplay();

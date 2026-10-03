@@ -208,6 +208,7 @@ global.state = {selected: session};
 let currentRequestHidden = false;
 global.hideCurrentRequest = () => { currentRequestHidden = true; };
 global.updateCurrentRequest = () => { currentRequestHidden = false; };
+global.updateJumpToLatest = () => {};
 vm.runInThisContext(app.slice(app.indexOf('function setActiveView('), app.indexOf('function renderError(')), {filename: 'app.js'});
 const choiceListener = app.indexOf("elements.viewChoice.addEventListener('change'");
 assert.notEqual(choiceListener, -1);

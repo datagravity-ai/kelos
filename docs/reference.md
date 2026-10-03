@@ -378,6 +378,9 @@ Session clears its prompt history.
 
 On phones, Prompt history keeps its text label and a 44-pixel touch target.
 
+Select **Jump to latest** at the bottom of the console conversation to return to
+the latest messages. The button appears when you are scrolled away from the bottom.
+
 Attach a local file with `/attach PATH`; the next message includes all staged
 files. In the interactive terminal UI, dragging a file into a terminal that
 supports bracketed paste stages the file directly. Use `/send` in the plain

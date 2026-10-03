@@ -79,6 +79,7 @@
         currentRequest: document.querySelector('#current-request'),
         currentRequestButton: document.querySelector('#current-request-button'),
         currentRequestText: document.querySelector('#current-request-text'),
+        jumpToLatest: document.querySelector('#jump-to-latest'),
         messages: document.querySelector('#messages'),
         changes: document.querySelector('#changes-view'),
         changesList: document.querySelector('#changes-list'),
@@ -467,6 +468,7 @@
             selectSession(state.sessions[0]);
         if (state.consoleView === 'sessions')
             updateCurrentRequest();
+        updateJumpToLatest();
         setSidebarOpen(false);
     }
     function resourceAge(createdAt) {
@@ -1102,6 +1104,7 @@
         renderRuntimeStatus();
         renderHistoryControl();
         updateCurrentRequest();
+        updateJumpToLatest();
     }
     function cachedSessionView(session) {
         const key = sessionViewKey(session);
@@ -1155,6 +1158,7 @@
         elements.pending.replaceChildren();
         elements.pending.hidden = true;
         hideCurrentRequest();
+        elements.jumpToLatest.hidden = true;
         renderFileChanges();
         if (view) {
             view.historyLoaded = false;
@@ -2788,7 +2792,7 @@ spec:
             setComposer(true);
             updateComposerAction();
             renderHistoryControl();
-            if (!elements.messages.hidden)
+            if (!elements.messages.hidden && !elements.messages.contains(document.activeElement))
                 elements.input.focus();
         });
         socket.addEventListener('message', event => {
@@ -3650,6 +3654,7 @@ spec:
         messages.scrollTop = Math.max(0, previousTop + (Number(messages.scrollHeight) || 0) - previousHeight);
         messages.style.scrollBehavior = scrollBehavior;
         updateCurrentRequest();
+        updateJumpToLatest();
         refreshSessionProgress();
         updateComposerAction();
     }
@@ -3685,6 +3690,7 @@ spec:
             scheduleBottomAnchor();
         state.pinHistoryToBottom = false;
         updateCurrentRequest();
+        updateJumpToLatest();
         continuePromptJump();
     }
     function openPromptHistory() {
@@ -4052,10 +4058,22 @@ spec:
         hideCurrentRequest();
         request.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
+    function updateJumpToLatest() {
+        elements.jumpToLatest.hidden = !state.selected || elements.sessionsView.hidden ||
+            elements.messages.hidden || messagesNearBottom();
+    }
+    function jumpToLatest() {
+        state.pinHistoryToBottom = state.replayingHistory;
+        scheduleBottomAnchor();
+        elements.jumpToLatest.hidden = true;
+        elements.messages.focus({ preventScroll: true });
+    }
     function renderAcceptedUser(event) {
         ensureConversation();
         const row = document.createElement('div');
         row.className = 'event-row user';
+        if (state.replayingHistory)
+            row.style.animation = 'none';
         if (event.id)
             row.dataset.eventId = String(event.id);
         if (event.turnId)
@@ -4199,6 +4217,7 @@ spec:
                 preview.src = link.href;
                 preview.alt = attachment.name;
                 preview.loading = 'lazy';
+                preview.addEventListener('load', updateJumpToLatest);
                 link.append(preview);
             }
             const label = document.createElement('span');
@@ -4234,6 +4253,8 @@ spec:
         ensureConversation();
         const row = document.createElement('div');
         row.className = 'event-row assistant';
+        if (state.replayingHistory)
+            row.style.animation = 'none';
         const avatar = document.createElement('div');
         avatar.className = 'agent-avatar';
         avatar.textContent = providerInitials(state.selected?.provider);
@@ -4775,6 +4796,7 @@ spec:
             updateCurrentRequest();
         else
             hideCurrentRequest();
+        updateJumpToLatest();
         if (terminalActive)
             sessionTerminal.show(state.selected);
     }
@@ -4858,6 +4880,7 @@ spec:
         if (distance < 240 || !smooth) {
             elements.messages.scrollTo({ top: elements.messages.scrollHeight, behavior: smooth ? 'smooth' : 'auto' });
         }
+        updateJumpToLatest();
     }
     function messagesBottomDistance() {
         return elements.messages.scrollHeight - elements.messages.scrollTop - elements.messages.clientHeight;
@@ -4874,6 +4897,7 @@ spec:
             elements.messages.style.scrollBehavior = 'auto';
             elements.messages.scrollTop = elements.messages.scrollHeight;
             elements.messages.style.scrollBehavior = scrollBehavior;
+            updateJumpToLatest();
         });
     }
     function currentAttachmentFiles() {
@@ -5455,6 +5479,8 @@ spec:
     elements.viewTabs.addEventListener('keydown', handleViewTabKeydown);
     elements.currentRequestButton.addEventListener('click', jumpToCurrentRequest);
     elements.messages.addEventListener('scroll', scheduleCurrentRequestUpdate);
+    elements.jumpToLatest.addEventListener('click', jumpToLatest);
+    elements.messages.addEventListener('scroll', updateJumpToLatest);
     window.addEventListener('pagehide', () => {
         sessionTerminal.close();
         if (!elements.terminalView.hidden)
@@ -5512,6 +5538,7 @@ spec:
     window.addEventListener('resize', () => {
         closeSessionActionsMenu();
         scheduleCurrentRequestUpdate();
+        updateJumpToLatest();
     });
     document.addEventListener('pointerdown', event => {
         if (elements.sessionActionsMenu.hidden)

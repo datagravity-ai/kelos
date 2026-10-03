@@ -32,6 +32,7 @@ function testReturningToSessionsRefreshesCurrentRequest() {
     resourcesButton: navigationButton(),
   };
   global.updateCurrentRequest = () => { updates++; };
+  global.updateJumpToLatest = () => {};
   global.setSidebarOpen = () => {};
 
   setConsoleView('sessions');
