@@ -715,6 +715,48 @@ and can be refreshed while the Task is running. WorkerPool-backed Task views
 include only the selected Task's segment from the recent shared worker Pod log.
 The Console reports that the segment is unavailable when its markers are
 outside the bounded log window.
+
+The **Admin** page manages namespace members and lists Workspaces, AgentConfigs, and
+WorkerPools in the active namespace. Use **Create** or **Edit YAML** to save one `kelos.dev/v1alpha2` manifest,
+or **Delete** to remove a resource after confirmation. The editor supports the
+spec, labels, and annotations. Updates must preserve the name and resource version;
+if the resource changes while you edit, reopen it and reapply your changes.
+Actions follow Kubernetes permissions in OIDC and GitHub modes, with **View YAML** for resources
+you can read but cannot update. The `kelos-console-user` role grants read access
+to these resources; administrators need additional `create`, `update`, and `delete`
+permissions. Changing or deleting configuration can affect workloads that use it.
+
+The **Namespace** dropdown lists namespaces where you can list at least one
+Console resource type, including access granted through groups or custom roles.
+The Console remembers your selection in this browser. If it is unavailable at
+sign-in, the Console selects the configured default when accessible, otherwise
+the first accessible namespace. Use the refresh button beside the dropdown after
+an administrator changes your access. If you have no accessible namespaces, ask
+an administrator to add you as a member and refresh.
+
+With OIDC sign-in, **Admin → Members** shows each direct member once in the active
+namespace. Use **Add member** to enter an OIDC subject ID and choose **User**
+(the default) or **Admin**. User members can use Sessions and inspect resources;
+Admin members can also manage configuration and membership in that namespace.
+The configured username prefix is added automatically. The Console does not query
+an identity provider's directory, so name and email lookup are unavailable.
+
+**Change role** promotes or demotes a direct member in one action. **Remove
+member** removes their Console-managed membership. With external user assignments,
+this action is labeled **Remove direct access**. Both operations reject stale
+membership details; refresh Members after a conflict.
+A failed role change can leave multiple direct grants, shown as one member with
+Admin taking precedence. Refresh Members to see the current role before retrying.
+Changing or removing your own membership can remove your administrative access.
+
+External User assignments are labeled with their source and cannot be changed
+here. Namespace group grants to the Console roles appear under **Access through
+groups**; individual group members are not listed. Removing direct membership
+preserves external assignments and group access. Other roles and
+ClusterRoleBindings must be managed separately. Membership management requires
+OIDC. A cluster administrator must bind the first Console administrator; see the
+[Console setup guide](../internal/manifests/charts/kelos/README.md#console-oidc-authentication).
+
 Selecting an existing Session as a source populates both the form fields and the
 editable YAML manifest. Settings that the form cannot represent remain editable
 in YAML mode.
@@ -752,6 +794,11 @@ namespace. Named reads and actions are checked against the exact resource name.
 | Console operation | Required permissions |
 | --- | --- |
 | Inventory and relationship graph | `list` each displayed resource kind |
+| Admin inventory | `list` each displayed resource kind |
+| Admin manifest | `get` the named Workspace, AgentConfig, or WorkerPool |
+| Admin create | `create` the resource kind |
+| Admin update | `get` and `update` the named resource |
+| Admin delete | `delete` the named resource |
 | Resource YAML | `get` the resource |
 | Task logs | `get tasks` and `get tasks/logs` |
 | Session list | `list sessions` |
@@ -767,6 +814,21 @@ namespace. Named reads and actions are checked against the exact resource name.
 | Chat or terminal connection | `get sessions` and `create sessions/connect` |
 | Upload an attachment | `get sessions` and `create sessions/attachments` |
 | Download an attachment | `get sessions` and `get sessions/attachments` |
+
+Membership administration uses the `rbac.authorization.k8s.io` API group in the
+active namespace:
+
+| Console operation | Required permissions |
+| --- | --- |
+| List members and namespace group grants | `list rolebindings` |
+| Add a member | `list` and `create rolebindings`, plus `bind clusterroles` for the selected `kelos-console-user` or `kelos-console-admin` role |
+| Change a member's role | Add-member permissions plus `delete` each Console-managed RoleBinding for that member |
+| Remove direct membership | `list rolebindings`, plus `delete` each Console-managed RoleBinding for that member |
+
+Only the two Console roles can be assigned. The Console ServiceAccount needs
+`list namespaces` for the namespace picker; signed-in users do not need that
+cluster-wide permission. Each namespace is filtered using the user's resource
+permissions before it is returned.
 
 The slash-separated permissions are authorization subresources; they are not
 served CRD endpoints. Human users do not need `pods/log` or `pods/exec`.

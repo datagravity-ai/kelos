@@ -18,6 +18,7 @@ type ConsoleElement = HTMLElement & {
   selectedIndex: number;
   disabled: boolean;
   required: boolean;
+  readOnly: boolean;
   type: string;
   name: string;
   placeholder: string;
@@ -32,6 +33,7 @@ type ConsoleElement = HTMLElement & {
   requestSubmit(): void;
   setCustomValidity(message: string): void;
   select(): void;
+  setSelectionRange(start: number, end: number): void;
 };
 
 type RequiredElements<T> = {
@@ -123,6 +125,36 @@ interface ResourceRelationship {
 interface ResourceInventory {
   groups?: ResourceGroup[];
   relationships?: ResourceRelationship[];
+}
+
+interface AdminResourceItem extends ResourceSummary {
+  canGet: boolean;
+  canUpdate: boolean;
+  canDelete: boolean;
+}
+
+interface AdminResourceCollection extends ResourceDescriptor {
+  canCreate: boolean;
+  items: AdminResourceItem[];
+}
+
+interface ConsoleMember {
+  id: string;
+  username: string;
+  role: string;
+  version: string;
+  sources: Array<{binding: string; role: string; managed: boolean}>;
+  canChange: boolean;
+  canRemove: boolean;
+}
+
+interface ConsoleMemberInventory {
+  enabled: boolean;
+  usernamePrefix?: string;
+  currentUser?: string;
+  roles: Array<{name: string; label: string; description: string; canAssign: boolean}>;
+  members: ConsoleMember[];
+  groups: Array<{name: string; role: string; binding: string}>;
 }
 
 interface WorkerCredentials {
@@ -362,6 +394,31 @@ const elements = requireElements({
   overviewButton: document.querySelector('#console-overview'),
   sessionsButton: document.querySelector('#console-sessions'),
   resourcesButton: document.querySelector('#console-resources'),
+  adminButton: document.querySelector('#console-admin'),
+  adminView: document.querySelector('#admin-view'),
+  adminCollections: document.querySelector('#admin-collections'),
+  adminStatus: document.querySelector('#admin-status'),
+  adminEditor: document.querySelector('#admin-editor'),
+  adminEditorTitle: document.querySelector('#admin-editor-title'),
+  adminEditorDescription: document.querySelector('#admin-editor-description'),
+  adminEditorError: document.querySelector('#admin-editor-error'),
+  adminForm: document.querySelector('#admin-form'),
+  adminYAML: document.querySelector('#admin-yaml'),
+  adminSave: document.querySelector('#save-admin-resource'),
+  memberStatus: document.querySelector('#member-status'),
+  memberList: document.querySelector('#member-list'),
+  memberGroups: document.querySelector('#member-groups'),
+  memberError: document.querySelector('#member-error'),
+  addMember: document.querySelector('#add-member'),
+  memberDialog: document.querySelector('#member-dialog'),
+  memberDialogTitle: document.querySelector('#member-dialog-title'),
+  memberDialogDescription: document.querySelector('#member-dialog-description'),
+  memberForm: document.querySelector('#member-form'),
+  memberSubject: document.querySelector('#member-subject'),
+  memberRole: document.querySelector('#member-role'),
+  memberHelp: document.querySelector('#member-help'),
+  memberDialogError: document.querySelector('#member-dialog-error'),
+  memberSave: document.querySelector('#save-member'),
   overviewView: document.querySelector('#overview-view'),
   sessionsView: document.querySelector('#sessions-view'),
   resourcesView: document.querySelector('#resources-view'),
@@ -395,6 +452,7 @@ const elements = requireElements({
   resourceDetailYAML: document.querySelector('#resource-detail-yaml'),
   namespaceLabels: document.querySelectorAll('.console-namespace'),
   newSessionButton: document.querySelector('#new-session'),
+  welcomeNew: document.querySelector('#welcome-new'),
   sectionSelect: document.querySelector('#session-section-select'),
   sectionCustom: document.querySelector('#session-section-custom'),
   sectionForm: document.querySelector('#session-section-form'),
@@ -445,6 +503,8 @@ const elements = requireElements({
   form: document.querySelector('#session-form'),
   dialogError: document.querySelector('#dialog-error'),
   namespaceForm: document.querySelector('#namespace-form'),
+  namespaceStatus: document.querySelector('#namespace-status'),
+  refreshNamespaces: document.querySelector('#refresh-namespaces'),
   activeNamespace: document.querySelector('#active-namespace'),
   namespace: document.querySelector('[name="namespace"]'),
   sessionSource: document.querySelector('#session-source'),
@@ -528,7 +588,8 @@ const state = {
   runtimeRecoveryActive: false,
   pinHistoryToBottom: false,
   defaultNamespace: 'default',
-  namespace: 'default',
+  namespace: '',
+  namespaces: [] as string[],
   namespaceGeneration: 0,
   sessionListGeneration: 0,
   options: {credentials: [], workspaces: [], agentConfigs: [], sessions: []} as SessionOptions,
@@ -540,6 +601,14 @@ const state = {
   suspendingSession: false,
   resumingSession: false,
   consoleView: 'overview',
+  adminGeneration: 0,
+  memberGeneration: 0,
+  memberSaving: false,
+  memberInventory: null as ConsoleMemberInventory | null,
+  memberEditing: null as {member: ConsoleMember | null; namespace: string} | null,
+  adminEditorGeneration: 0,
+  adminEditing: null as {resource: string; namespace: string; name?: string} | null,
+  adminSaving: false,
   resourceGroups: [] as ResourceGroup[],
   resourceRelationships: [] as ResourceRelationship[],
   resourceListGeneration: 0,
@@ -769,21 +838,24 @@ function resourceCollections() {
 }
 
 function setConsoleView(view: string) {
-  state.consoleView = ['overview', 'sessions', 'resources'].includes(view) ? view : 'overview';
+  state.consoleView = ['overview', 'sessions', 'resources', 'admin'].includes(view) ? view : 'overview';
   elements.overviewView.hidden = state.consoleView !== 'overview';
   elements.sessionsView.hidden = state.consoleView !== 'sessions';
   elements.resourcesView.hidden = state.consoleView !== 'resources';
+  elements.adminView.hidden = state.consoleView !== 'admin';
   elements.sessionSidebar.hidden = state.consoleView !== 'sessions';
   for (const [button, name] of [
     [elements.overviewButton, 'overview'],
     [elements.sessionsButton, 'sessions'],
     [elements.resourcesButton, 'resources'],
+    [elements.adminButton, 'admin'],
   ] as Array<[ConsoleElement, string]>) {
     if (name === state.consoleView) button.setAttribute('aria-current', 'page');
     else button.removeAttribute('aria-current');
   }
   if (state.consoleView === 'sessions' && !state.selected && state.sessions.length) selectSession(state.sessions[0]);
   if (state.consoleView === 'sessions') updateCurrentRequest();
+  if (state.consoleView === 'admin') void loadAdmin();
   updateJumpToLatest();
   setSidebarOpen(false);
 }
@@ -798,7 +870,7 @@ function resourceStatus(item: ResourceSummary) {
 
 type ResourceEntry = {collection: ResourceDescriptor; item: ResourceSummary};
 
-function createResourceTable(entries: ResourceEntry[], emptyMessage = `No resources in ${state.namespace}.`) {
+function createResourceTable(entries: ResourceEntry[], emptyMessage = state.namespace ? `No resources in ${state.namespace}.` : 'Select a namespace to view resources.') {
   if (!entries.length) {
     const empty = document.createElement('div');
     empty.className = 'resource-empty';
@@ -882,7 +954,7 @@ function renderOverview() {
   if (!collections.length) {
     const loading = document.createElement('div');
     loading.className = 'resource-empty';
-    loading.textContent = 'Loading Kelos resources…';
+    loading.textContent = state.namespace ? 'Loading Kelos resources…' : 'Select a namespace to view resources.';
     elements.summaryGrid.append(loading);
   }
   const recent = collections
@@ -1096,7 +1168,7 @@ function renderResourceDiagram() {
   if (!focusKey) {
     const empty = document.createElement('div');
     empty.className = 'resource-empty';
-    empty.textContent = `No resources in ${state.namespace}.`;
+    empty.textContent = state.namespace ? `No resources in ${state.namespace}.` : 'Select a namespace to view resources.';
     elements.resourceDiagram.replaceChildren(empty);
     return;
   }
@@ -1203,13 +1275,404 @@ function renderResources() {
     if (button.dataset.resource === resource) button.setAttribute('aria-current', 'true');
     else button.removeAttribute('aria-current');
   }
-  const emptyMessage = query
+  const emptyMessage = !state.namespace ? 'Select a namespace to view resources.' : query
     ? `No resources match “${query}”.`
     : `No ${collection?.label.toLowerCase() || 'resources'} in ${state.namespace}.`;
   elements.resourceList.replaceChildren(createResourceTable(filteredEntries, emptyMessage));
 }
 
+function memberName(member: ConsoleMember) {
+  return member.username.startsWith(state.memberInventory?.usernamePrefix || '')
+    ? member.username.slice(state.memberInventory?.usernamePrefix?.length || 0) : member.username;
+}
+
+async function loadMembers({preserveError = false} = {}) {
+  if (!preserveError) elements.memberError.hidden = true;
+  const namespace = state.namespace;
+  const generation = ++state.memberGeneration;
+  state.memberInventory = null;
+  elements.memberStatus.hidden = false;
+  elements.memberStatus.textContent = namespace ? 'Loading members…' : 'Select a namespace to manage members.';
+  elements.addMember.hidden = true;
+  elements.memberList.replaceChildren();
+  elements.memberGroups.replaceChildren();
+  if (!namespace) return;
+  try {
+    const inventory = await api<ConsoleMemberInventory>(`/api/admin/members?namespace=${encodeURIComponent(namespace)}`);
+    if (generation !== state.memberGeneration || namespace !== state.namespace) return;
+    if (!inventory.enabled) {
+      elements.memberStatus.textContent = 'Members require OIDC sign-in. Static-token mode uses one shared identity.';
+      return;
+    }
+    state.memberInventory = inventory;
+    elements.memberStatus.hidden = true;
+    elements.addMember.hidden = !inventory.roles.some(role => role.canAssign);
+    renderMembers();
+  } catch (error) {
+    if (generation !== state.memberGeneration || namespace !== state.namespace) return;
+    elements.memberStatus.textContent = `Unable to load members: ${errorMessage(error)}`;
+  }
+}
+
+function renderMembers() {
+  const inventory = state.memberInventory;
+  elements.memberList.replaceChildren();
+  elements.memberGroups.replaceChildren();
+  if (!inventory) return;
+  const namespace = state.namespace;
+  if (!inventory.members.length) {
+    const empty = document.createElement('div');
+    empty.className = 'resource-empty';
+    empty.textContent = `No direct members in ${namespace}. Add a member to give them access.`;
+    elements.memberList.append(empty);
+  }
+  for (const member of inventory.members) {
+    const row = document.createElement('div');
+    row.className = 'admin-resource-row';
+    const info = document.createElement('div');
+    const name = document.createElement('div');
+    name.className = 'admin-resource-name';
+    name.textContent = memberName(member) + (member.username === inventory.currentUser ? ' (you)' : '');
+    const source = document.createElement('div');
+    source.className = 'admin-resource-status';
+    const external = member.sources.filter(source => !source.managed);
+    source.textContent = external.length
+      ? `External access: ${external.map(source => `${source.binding} (${source.role === 'admin' ? 'Admin' : 'User'})`).join(', ')}`
+      : 'Direct member';
+    info.append(name, source);
+    const actions = document.createElement('div');
+    actions.className = 'admin-resource-actions';
+    const badge = document.createElement('span');
+    badge.className = 'member-role-badge';
+    badge.textContent = member.role === 'admin' ? 'Admin' : 'User';
+    actions.append(badge);
+    if (member.canChange && inventory.roles.some(role => role.canAssign)) {
+      const change = document.createElement('button');
+      change.type = 'button';
+      change.className = 'secondary-button';
+      change.textContent = 'Change role';
+      change.setAttribute('aria-label', `Change role for ${memberName(member)}`);
+      change.addEventListener('click', () => openMemberDialog(member));
+      actions.append(change);
+    }
+    if (member.canRemove) {
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'secondary-button danger';
+      remove.textContent = external.length ? 'Remove direct access' : 'Remove member';
+      remove.setAttribute('aria-label', `Remove direct membership for ${memberName(member)}`);
+      remove.addEventListener('click', () => { void removeMember(member, namespace, remove); });
+      actions.append(remove);
+    }
+    row.append(info, actions);
+    elements.memberList.append(row);
+  }
+  if (inventory.groups.length) {
+    const title = document.createElement('h3');
+    title.textContent = 'Access through groups';
+    const description = document.createElement('p');
+    description.textContent = 'These groups grant access in this namespace and are managed outside Console. Individual group members are not listed.';
+    elements.memberGroups.append(title, description);
+    for (const group of inventory.groups) {
+      const row = document.createElement('p');
+      row.textContent = `${group.name} · ${group.role === 'admin' ? 'Admin' : 'User'} · ${group.binding}`;
+      elements.memberGroups.append(row);
+    }
+  }
+}
+
+function openMemberDialog(member: ConsoleMember | null = null) {
+  const inventory = state.memberInventory;
+  if (!inventory?.enabled || state.memberSaving || (member && !member.canChange)) return;
+  const roles = inventory.roles.filter(role => role.canAssign);
+  if (!roles.length) return;
+  state.memberEditing = {member, namespace: state.namespace};
+  elements.memberDialogTitle.textContent = member ? `Change role for ${memberName(member)}` : 'Add member';
+  elements.memberDialogDescription.textContent = `Membership in ${state.namespace}`;
+  elements.memberSubject.value = member ? memberName(member) : '';
+  elements.memberSubject.disabled = Boolean(member);
+  elements.memberRole.disabled = false;
+  elements.memberRole.replaceChildren();
+  for (const role of roles) addOption(elements.memberRole, role.name, role.label);
+  elements.memberRole.value = member && roles.some(role => role.name === member.role) ? member.role : roles[0].name;
+  elements.memberHelp.textContent = member ? 'This changes their direct role in this namespace.' : `Enter the identity provider's subject ID. The Console adds “${inventory.usernamePrefix}” automatically. Name and email lookup is not available yet.`;
+  elements.memberDialogError.hidden = true;
+  elements.memberSave.textContent = member ? 'Save role' : 'Add member';
+  elements.memberSave.disabled = false;
+  elements.memberDialog.showModal();
+  (member ? elements.memberRole : elements.memberSubject).focus();
+}
+
+function memberPath(member: ConsoleMember, namespace: string) {
+  return `/api/admin/members/${encodeURIComponent(namespace)}/${encodeURIComponent(member.id)}?version=${encodeURIComponent(member.version)}`;
+}
+
+async function saveMember() {
+  const editing = state.memberEditing;
+  if (!editing || state.memberSaving) return;
+  const role = elements.memberRole.value;
+  const subject = elements.memberSubject.value.trim();
+  if (!state.memberInventory?.roles.some(option => option.name === role && option.canAssign) || (!editing.member && !subject)) return;
+  if (editing.member && editing.member.username === state.memberInventory.currentUser && editing.member.role === 'admin' && role === 'user' && !window.confirm(`Change your role to User in ${editing.namespace}? You may lose permission to manage members and configuration.`)) return;
+  state.memberSaving = true;
+  elements.memberSave.disabled = true;
+  elements.memberSubject.disabled = true;
+  elements.memberRole.disabled = true;
+  elements.memberDialogError.hidden = true;
+  try {
+    await api(editing.member ? memberPath(editing.member, editing.namespace) : `/api/admin/members?namespace=${encodeURIComponent(editing.namespace)}`, {
+      method: editing.member ? 'PUT' : 'POST', body: JSON.stringify(editing.member ? {role} : {subject, role}),
+    });
+    showToast(editing.member ? `Role updated in ${editing.namespace}.` : `Member added to ${editing.namespace}.`);
+    if (state.memberEditing === editing) {
+      elements.memberDialog.close();
+      state.memberEditing = null;
+    }
+    if (editing.namespace === state.namespace) await loadAdmin();
+  } catch (error) {
+    if (state.memberEditing !== editing) return;
+    elements.memberDialogError.textContent = errorMessage(error);
+    elements.memberDialogError.hidden = false;
+    if (editing.member) {
+      await loadAdmin();
+      if (state.memberEditing !== editing) return;
+      state.memberEditing = null;
+      elements.memberDialogError.textContent += ' Close this dialog and check the member’s current role before trying again.';
+    }
+  } finally {
+    state.memberSaving = false;
+    if (state.memberEditing === editing) {
+      elements.memberSave.disabled = false;
+      elements.memberSubject.disabled = Boolean(editing.member);
+      elements.memberRole.disabled = false;
+    }
+  }
+}
+
+async function removeMember(member: ConsoleMember, namespace: string, button: HTMLButtonElement) {
+  const ownMembership = member.username === state.memberInventory?.currentUser;
+  if (!window.confirm(`Remove ${memberName(member)} from ${namespace}?${ownMembership ? ' This may remove your access to this namespace.' : ''} Access through groups or external assignments remains.`)) return;
+  button.disabled = true;
+  elements.memberError.hidden = true;
+  try {
+    await api(memberPath(member, namespace), {method: 'DELETE'});
+    showToast(`Direct membership removed from ${namespace}.`);
+  } catch (error) {
+    if (namespace !== state.namespace) return;
+    elements.memberError.textContent = errorMessage(error);
+    elements.memberError.hidden = false;
+  } finally {
+    if (namespace === state.namespace) await Promise.all([loadMembers({preserveError: true}), loadAdminResources()]);
+    button.disabled = false;
+  }
+}
+
+function adminResourcePath(resource: string, namespace: string, name?: string) {
+  const path = `/api/admin/${encodeURIComponent(resource)}/${encodeURIComponent(namespace)}`;
+  return name ? `${path}/${encodeURIComponent(name)}` : path;
+}
+
+async function loadAdmin() {
+  await Promise.all([loadMembers(), loadAdminResources()]);
+}
+
+async function loadAdminResources() {
+  if (!state.namespace) {
+    elements.adminCollections.replaceChildren();
+    elements.adminStatus.hidden = false;
+    elements.adminStatus.textContent = 'Select a namespace to manage configuration.';
+    return;
+  }
+  const namespace = state.namespace;
+  const generation = ++state.adminGeneration;
+  elements.adminStatus.hidden = false;
+  elements.adminStatus.textContent = 'Loading configuration…';
+  elements.adminCollections.replaceChildren();
+  try {
+    const collections = await api<AdminResourceCollection[]>(`/api/admin?namespace=${encodeURIComponent(namespace)}`);
+    if (generation !== state.adminGeneration || namespace !== state.namespace) return;
+    elements.adminStatus.hidden = collections.length > 0;
+    elements.adminStatus.textContent = 'You do not have permission to list configuration resources in this namespace.';
+    for (const collection of collections) {
+      const card = document.createElement('section');
+      card.className = 'admin-card';
+      const header = document.createElement('div');
+      header.className = 'admin-card-header';
+      const heading = document.createElement('div');
+      const title = document.createElement('h2');
+      title.textContent = `${collection.label} · ${collection.items.length}`;
+      const description = document.createElement('p');
+      description.textContent = resourceDescriptions[collection.resource];
+      heading.append(title, description);
+      header.append(heading);
+      if (collection.canCreate) {
+        const create = document.createElement('button');
+        create.type = 'button';
+        create.className = 'secondary-button';
+        create.textContent = 'Create';
+        create.setAttribute('aria-label', `Create ${collection.kind}`);
+        create.addEventListener('click', () => { void openAdminEditor(collection); });
+        header.append(create);
+      }
+      card.append(header);
+      for (const item of collection.items) {
+        const row = document.createElement('div');
+        row.className = 'admin-resource-row';
+        const info = document.createElement('div');
+        const name = document.createElement('div');
+        name.className = 'admin-resource-name';
+        name.textContent = item.name;
+        const status = document.createElement('div');
+        status.className = 'admin-resource-status';
+        status.textContent = resourceStatus(item);
+        info.append(name, status);
+        const actions = document.createElement('div');
+        actions.className = 'admin-resource-actions';
+        if (item.canGet) {
+          const edit = document.createElement('button');
+          edit.type = 'button';
+          edit.className = 'secondary-button';
+          edit.textContent = item.canUpdate ? 'Edit YAML' : 'View YAML';
+          edit.setAttribute('aria-label', `${edit.textContent} for ${collection.kind} ${item.name}`);
+          edit.addEventListener('click', () => { void openAdminEditor(collection, item); });
+          actions.append(edit);
+        }
+        if (item.canDelete) {
+          const remove = document.createElement('button');
+          remove.type = 'button';
+          remove.className = 'secondary-button danger';
+          remove.textContent = 'Delete';
+          remove.setAttribute('aria-label', `Delete ${collection.kind} ${item.name}`);
+          remove.addEventListener('click', () => { void deleteAdminResource(collection, item, remove); });
+          actions.append(remove);
+        }
+        row.append(info, actions);
+        card.append(row);
+      }
+      if (!collection.items.length) {
+        const empty = document.createElement('div');
+        empty.className = 'resource-empty';
+        empty.textContent = `No ${collection.label.toLowerCase()} in ${namespace}.`;
+        card.append(empty);
+      }
+      elements.adminCollections.append(card);
+    }
+  } catch (error) {
+    if (generation !== state.adminGeneration || namespace !== state.namespace) return;
+    elements.adminStatus.textContent = `Unable to load configuration: ${errorMessage(error)}`;
+  }
+}
+
+function defaultAdminYAML(collection: ResourceDescriptor) {
+  const specs: Record<string, string> = {
+    workspaces: '  repo: https://github.com/your-org/your-repo\n',
+    agentconfigs: '  agentsMD: |\n    Describe the shared instructions for your agents.\n',
+    workerpools: `  replicas: 1
+  worker:
+    type: codex
+    credentials:
+      type: api-key
+      secretRef:
+        name: codex-credentials
+    workspaceRef:
+      name: my-workspace
+  volumeClaimTemplate:
+    accessModes: [ReadWriteOnce]
+    resources:
+      requests:
+        storage: 10Gi
+`,
+  };
+  return `apiVersion: kelos.dev/v1alpha2
+kind: ${collection.kind}
+metadata:
+  name: my-${collection.kind.toLowerCase()}
+  namespace: ${JSON.stringify(state.namespace)}
+spec:
+${specs[collection.resource]}`;
+}
+
+async function openAdminEditor(collection: AdminResourceCollection, item?: AdminResourceItem) {
+  const generation = ++state.adminEditorGeneration;
+  const namespace = state.namespace;
+  const editable = item ? item.canUpdate : collection.canCreate;
+  state.adminEditing = null;
+  elements.adminEditorTitle.textContent = item ? `${editable ? 'Edit' : 'View'} ${collection.kind} ${item.name}` : `Create ${collection.kind}`;
+  elements.adminEditorDescription.textContent = `Namespace: ${namespace}. ${editable ? 'Edit the manifest, then save to the cluster.' : 'You have read-only access to this resource.'}`;
+  elements.adminEditorError.hidden = true;
+  elements.adminYAML.value = '';
+  elements.adminYAML.disabled = true;
+  elements.adminSave.hidden = !editable;
+  elements.adminSave.disabled = true;
+  elements.adminSave.textContent = item ? 'Save changes' : 'Create resource';
+  elements.adminEditor.showModal();
+  try {
+    const yaml = item
+      ? (await api<{yaml: string}>(adminResourcePath(collection.resource, namespace, item.name))).yaml
+      : defaultAdminYAML(collection);
+    if (generation !== state.adminEditorGeneration || namespace !== state.namespace) return;
+    elements.adminYAML.value = yaml;
+    elements.adminYAML.disabled = false;
+    elements.adminYAML.readOnly = !editable;
+    elements.adminSave.disabled = !editable || state.adminSaving;
+    if (editable) state.adminEditing = {resource: collection.resource, namespace, name: item?.name};
+    elements.adminYAML.focus();
+    elements.adminYAML.setSelectionRange(0, 0);
+    elements.adminYAML.scrollTop = 0;
+  } catch (error) {
+    if (generation !== state.adminEditorGeneration) return;
+    elements.adminEditorError.textContent = errorMessage(error);
+    elements.adminEditorError.hidden = false;
+  }
+}
+
+async function saveAdminResource() {
+  const editing = state.adminEditing;
+  if (!editing || state.adminSaving) return;
+  const generation = state.adminEditorGeneration;
+  state.adminSaving = true;
+  elements.adminSave.disabled = true;
+  elements.adminEditorError.hidden = true;
+  try {
+    const saved = await api<{name: string}>(adminResourcePath(editing.resource, editing.namespace, editing.name), {
+      method: editing.name ? 'PUT' : 'POST',
+      headers: {'Content-Type': 'application/yaml'},
+      body: elements.adminYAML.value,
+    });
+    if (generation === state.adminEditorGeneration) elements.adminEditor.close();
+    showToast(`Resource ${saved.name} saved in ${editing.namespace}.`);
+    if (editing.namespace === state.namespace) {
+      await Promise.all([loadAdmin(), loadResources(), loadOptions().catch(error => showToast(errorMessage(error)))]);
+    }
+  } catch (error) {
+    if (generation !== state.adminEditorGeneration) return;
+    elements.adminEditorError.textContent = errorMessage(error);
+    elements.adminEditorError.hidden = false;
+  } finally {
+    state.adminSaving = false;
+    elements.adminSave.disabled = !state.adminEditing;
+  }
+}
+
+async function deleteAdminResource(collection: AdminResourceCollection, item: AdminResourceItem, button: HTMLButtonElement) {
+  const namespace = state.namespace;
+  if (!window.confirm(`Delete ${collection.kind} "${item.name}" in ${namespace}? Resources that use it may stop working. This cannot be undone.`)) return;
+  button.disabled = true;
+  try {
+    await api(adminResourcePath(collection.resource, namespace, item.name), {method: 'DELETE'});
+    showToast(`${collection.kind} ${item.name} deleted from ${namespace}.`);
+    if (namespace === state.namespace) {
+      await Promise.all([loadAdmin(), loadResources(), loadOptions().catch(error => showToast(errorMessage(error)))]);
+    }
+  } catch (error) {
+    showToast(errorMessage(error));
+  } finally {
+    button.disabled = false;
+  }
+}
+
 async function loadResources({quiet = false} = {}) {
+  if (!state.namespace) return;
   const namespace = state.namespace;
   const generation = state.namespaceGeneration;
   const listGeneration = ++state.resourceListGeneration;
@@ -1228,6 +1691,7 @@ async function loadResources({quiet = false} = {}) {
 
 async function refreshConsole() {
   try {
+    if (state.consoleView === 'admin') await loadAdmin();
     await Promise.all([loadSessions(), loadOptions(), loadResources()]);
   } catch (error) {
     showToast(errorMessage(error));
@@ -1814,7 +2278,7 @@ function renderSessions() {
   if (!state.sessions.length) {
     const empty = document.createElement('div');
     empty.className = 'sidebar-empty';
-    empty.textContent = `No Sessions in ${state.namespace}.`;
+    empty.textContent = state.namespace ? `No Sessions in ${state.namespace}.` : 'Select a namespace to view Sessions.';
     elements.list.append(empty);
     syncSessionActionsMenu();
     return;
@@ -2348,6 +2812,7 @@ function resetSectionSelection() {
 }
 
 async function loadSessions({quiet = false} = {}) {
+  if (!state.namespace) return;
   const namespace = state.namespace;
   const generation = state.namespaceGeneration;
   const listGeneration = ++state.sessionListGeneration;
@@ -2395,13 +2860,60 @@ async function loadIdentity() {
   return config;
 }
 
+async function loadNamespaceOptions(preferred = state.namespace) {
+  const generation = state.namespaceGeneration;
+  elements.refreshNamespaces.disabled = true;
+  elements.newSessionButton.disabled = !state.namespace;
+  elements.welcomeNew.disabled = !state.namespace;
+  try {
+    const result = await api<{namespaces: string[]}>('/api/namespaces');
+    if (generation !== state.namespaceGeneration) return null;
+    state.namespaces = result.namespaces;
+    elements.activeNamespace.replaceChildren();
+    for (const namespace of state.namespaces) addOption(elements.activeNamespace, namespace, namespace);
+    const selected = state.namespaces.includes(preferred) ? preferred
+      : state.namespaces.includes(state.defaultNamespace) ? state.defaultNamespace : state.namespaces[0] || '';
+    if (!selected) addOption(elements.activeNamespace, '', 'No accessible namespaces');
+    elements.activeNamespace.value = selected;
+    elements.activeNamespace.disabled = !selected;
+    elements.newSessionButton.disabled = !selected;
+    elements.welcomeNew.disabled = !selected;
+    elements.namespaceStatus.hidden = Boolean(selected);
+    elements.namespaceStatus.textContent = 'No namespace access. Ask an administrator to add you as a member, then refresh.';
+    return selected;
+  } catch (error) {
+    if (generation !== state.namespaceGeneration) return null;
+    elements.namespaceStatus.hidden = false;
+    elements.namespaceStatus.textContent = `Unable to load namespaces: ${errorMessage(error)}`;
+    throw error;
+  } finally {
+    elements.refreshNamespaces.disabled = false;
+  }
+}
+
 async function loadConfig() {
   const config = await loadIdentity();
   state.defaultNamespace = config.defaultNamespace;
-  state.namespace = window.localStorage.getItem('kelos-console-namespace') || state.defaultNamespace;
-  elements.activeNamespace.value = state.namespace;
+  try {
+    const namespace = await loadNamespaceOptions(window.localStorage.getItem('kelos-console-namespace') || state.defaultNamespace);
+    if (namespace !== null) state.namespace = namespace;
+  } catch {
+    state.namespace = '';
+  }
   elements.namespace.value = state.namespace;
-  for (const label of elements.namespaceLabels) label.textContent = state.namespace;
+  for (const label of elements.namespaceLabels) label.textContent = state.namespace || 'No namespace selected';
+  if (state.namespace) window.localStorage.setItem('kelos-console-namespace', state.namespace);
+  else {
+    window.localStorage.removeItem('kelos-console-namespace');
+    renderOverview();
+    renderResources();
+    renderSessions();
+  }
+}
+
+async function refreshNamespaces() {
+  const namespace = await loadNamespaceOptions();
+  if (namespace !== null) await switchNamespace(namespace);
 }
 
 function defaultSessionYAML() {
@@ -2442,6 +2954,7 @@ function updateVolumeClaimFields() {
 }
 
 async function loadOptions() {
+  if (!state.namespace) return;
   const namespace = state.namespace;
   const generation = state.namespaceGeneration;
   let options;
@@ -2477,19 +2990,34 @@ function resetNamespaceReferences() {
 
 async function switchNamespace(namespace) {
   namespace = namespace.trim();
-  if (!namespace || namespace === state.namespace) return;
+  if (namespace === state.namespace) return;
+  if (namespace && !state.namespaces.includes(namespace)) throw new Error('Choose an accessible namespace.');
   closeBrowserNotifications();
   const hadLoadedSource = Boolean(state.loadedSource);
   state.namespace = namespace;
   state.namespaceGeneration += 1;
+  state.adminGeneration += 1;
+  state.memberGeneration += 1;
+  state.memberInventory = null;
+  state.memberEditing = null;
+  elements.memberDialog.close();
+  elements.memberList.replaceChildren();
+  elements.memberGroups.replaceChildren();
+  elements.memberError.hidden = true;
+  state.adminEditorGeneration += 1;
+  state.adminEditing = null;
+  elements.adminEditor.close();
+  elements.adminCollections.replaceChildren();
+  if (state.consoleView === 'admin') void loadAdmin();
   state.sessions = [];
   state.resourceGroups = [];
   state.resourceRelationships = [];
   state.options = {credentials: [], workspaces: [], agentConfigs: [], sessions: []};
-  window.localStorage.setItem('kelos-console-namespace', namespace);
+  if (namespace) window.localStorage.setItem('kelos-console-namespace', namespace);
+  else window.localStorage.removeItem('kelos-console-namespace');
   elements.activeNamespace.value = namespace;
   elements.namespace.value = namespace;
-  for (const label of elements.namespaceLabels) label.textContent = namespace;
+  for (const label of elements.namespaceLabels) label.textContent = namespace || 'No namespace selected';
   resetNamespaceReferences();
   elements.yaml.value = '';
   if (hadLoadedSource) resetSourceValues();
@@ -5357,6 +5885,7 @@ async function openDialog() {
     showToast(errorMessage(error));
     return;
   }
+  if (!state.namespace) return;
   setConsoleView('sessions');
   elements.dialogError.textContent = '';
   setCreationMode(state.creationMode);
@@ -5366,15 +5895,14 @@ async function openDialog() {
 }
 
 elements.newSessionButton.addEventListener('click', openDialog);
-requiredElement('#welcome-new').addEventListener('click', openDialog);
+elements.welcomeNew.addEventListener('click', openDialog);
 document.querySelectorAll('.close-dialog').forEach(button => button.addEventListener('click', () => elements.dialog.close()));
-elements.namespaceForm.addEventListener('submit', async event => {
-  event.preventDefault();
-  try {
-    await switchNamespace(elements.activeNamespace.value);
-  } catch (error) {
-    showToast(errorMessage(error));
-  }
+elements.namespaceForm.addEventListener('submit', event => event.preventDefault());
+elements.activeNamespace.addEventListener('change', () => {
+  void switchNamespace(elements.activeNamespace.value).catch(error => showToast(errorMessage(error)));
+});
+elements.refreshNamespaces.addEventListener('click', () => {
+  void refreshNamespaces().catch(error => showToast(errorMessage(error)));
 });
 elements.sessionSource.addEventListener('change', () => loadSessionSource(elements.sessionSource.value));
 elements.credentialType.addEventListener('change', () => {
@@ -5779,6 +6307,26 @@ function interruptActiveTurn() {
 elements.overviewButton.addEventListener('click', () => setConsoleView('overview'));
 elements.sessionsButton.addEventListener('click', () => setConsoleView('sessions'));
 elements.resourcesButton.addEventListener('click', () => setConsoleView('resources'));
+elements.adminButton.addEventListener('click', () => setConsoleView('admin'));
+elements.addMember.addEventListener('click', () => openMemberDialog());
+elements.memberForm.addEventListener('submit', event => {
+  event.preventDefault();
+  void saveMember();
+});
+requiredElement('#cancel-member').addEventListener('click', () => elements.memberDialog.close());
+elements.memberDialog.addEventListener('close', () => { state.memberEditing = null; });
+requiredElement('#refresh-admin').addEventListener('click', () => { void loadAdmin(); });
+elements.adminForm.addEventListener('submit', event => {
+  event.preventDefault();
+  void saveAdminResource();
+});
+document.querySelectorAll('.close-admin-editor').forEach(button => {
+  button.addEventListener('click', () => elements.adminEditor.close());
+});
+elements.adminEditor.addEventListener('close', () => {
+  state.adminEditorGeneration += 1;
+  state.adminEditing = null;
+});
 elements.resourceDiagramTab.addEventListener('click', () => setResourceView('diagram'));
 elements.resourceInventoryTab.addEventListener('click', () => setResourceView('inventory'));
 requiredElement('.resource-view-tabs').addEventListener('keydown', event => handleResourceViewTabKeydown(event as KeyboardEvent));
