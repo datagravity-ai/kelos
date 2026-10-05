@@ -74,6 +74,7 @@ consoleServer:
   auth:
     mode: staticToken
     oidc: {}
+    github: {}
   # Initial active namespace in the Console.
   defaultNamespace: default
   secureCookie: false

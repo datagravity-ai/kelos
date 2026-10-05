@@ -3,16 +3,16 @@
 {{- end }}
 {{- if .Values.consoleServer.enabled }}
 {{- $auth := .Values.consoleServer.auth }}
-{{- $oidcMode := eq $auth.mode "oidc" }}
-{{- $oidc := $auth.oidc }}
+{{- $proxyMode := or (eq $auth.mode "oidc") (eq $auth.mode "github") }}
+{{- $provider := get $auth $auth.mode | default dict }}
 {{- include "kelos.console.validateAuth" . }}
 {{- $secretName := .Values.consoleServer.secretName }}
-{{- if $oidcMode }}
+{{- if $proxyMode }}
 ---
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: kelos-console-oidc
+  name: kelos-console-{{ $auth.mode }}
   namespace: {{ .Release.Namespace }}
 data:
   oauth2-proxy.yaml: |
@@ -35,16 +35,16 @@ spec:
       app.kubernetes.io/component: console-server
   template:
     metadata:
-      {{- if $oidcMode }}
+      {{- if $proxyMode }}
       annotations:
-        checksum/oidc-config: {{ include "kelos.console.proxyConfig" . | sha256sum }}
+        checksum/proxy-config: {{ include "kelos.console.proxyConfig" . | sha256sum }}
       {{- end }}
       labels:
         app.kubernetes.io/name: kelos
         app.kubernetes.io/component: console-server
     spec:
       serviceAccountName: kelos-console-server
-      {{- if $oidcMode }}
+      {{- if $proxyMode }}
       automountServiceAccountToken: false
       {{- end }}
       securityContext:
@@ -56,12 +56,12 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           {{- end }}
           args:
-            {{- if $oidcMode }}
+            {{- if $proxyMode }}
             - --bind-address=127.0.0.1:8080
-            - --auth-mode=oidc
-            - {{ printf "--external-url=https://%s" (urlParse $oidc.redirectURL).host | quote }}
-            - {{ printf "--username-prefix=%s" $oidc.usernamePrefix | quote }}
-            - {{ printf "--groups-prefix=%s" $oidc.groupsPrefix | quote }}
+            - --auth-mode={{ $auth.mode }}
+            - {{ printf "--external-url=https://%s" (urlParse $provider.redirectURL).host | quote }}
+            - {{ printf "--username-prefix=%s" $provider.usernamePrefix | quote }}
+            - {{ printf "--groups-prefix=%s" $provider.groupsPrefix | quote }}
             {{- else }}
             - --bind-address=:8080
             - --token-file=/var/run/secrets/kelos-console/token
@@ -70,7 +70,7 @@ spec:
             {{- if .Values.consoleServer.secureCookie }}
             - --secure-cookie
             {{- end }}
-          {{- if not $oidcMode }}
+          {{- if not $proxyMode }}
           ports:
             - name: http
               containerPort: 8080
@@ -83,7 +83,7 @@ spec:
                 - ALL
             readOnlyRootFilesystem: true
           volumeMounts:
-            {{- if $oidcMode }}
+            {{- if $proxyMode }}
             - name: kube-api-access
               mountPath: /var/run/secrets/kubernetes.io/serviceaccount
               readOnly: true
@@ -95,25 +95,25 @@ spec:
           readinessProbe:
             httpGet:
               path: /readyz
-              port: {{ ternary "4180" "http" $oidcMode }}
+              port: {{ ternary "4180" "http" $proxyMode }}
             initialDelaySeconds: 2
             periodSeconds: 5
           livenessProbe:
             httpGet:
               path: /healthz
-              port: {{ ternary "4180" "http" $oidcMode }}
+              port: {{ ternary "4180" "http" $proxyMode }}
             initialDelaySeconds: 5
             periodSeconds: 10
           resources:
             {{- toYaml .Values.consoleServer.resources | nindent 12 }}
-        {{- if $oidcMode }}
+        {{- if $proxyMode }}
         - name: oauth2-proxy
-          image: {{ default "quay.io/oauth2-proxy/oauth2-proxy:v7.15.5" $oidc.image | quote }}
+          image: {{ default "quay.io/oauth2-proxy/oauth2-proxy:v7.15.5" $provider.image | quote }}
           args:
             - --alpha-config=/etc/oauth2-proxy/oauth2-proxy.yaml
-            - {{ printf "--redirect-url=%s" $oidc.redirectURL | quote }}
+            - {{ printf "--redirect-url=%s" $provider.redirectURL | quote }}
             - --email-domain=*
-            - --cookie-name=__Host-kelos-console
+            - --cookie-name={{ ternary "__Host-kelos-console-github" "__Host-kelos-console" (eq $auth.mode "github") }}
             - --cookie-secure=true
             - --cookie-httponly=true
             - --cookie-samesite=lax
@@ -123,9 +123,9 @@ spec:
             - --skip-auth-route=GET=^/(healthz|readyz)$
             - --request-logging=false
             - --auth-logging=false
-            {{- if $oidc.reverseProxy }}
+            {{- if $provider.reverseProxy }}
             - --reverse-proxy=true
-            {{- range $oidc.trustedProxyIPs }}
+            {{- range $provider.trustedProxyIPs }}
             - {{ printf "--trusted-proxy-ip=%s" . | quote }}
             {{- end }}
             {{- end }}
@@ -133,8 +133,8 @@ spec:
             - name: OAUTH2_PROXY_COOKIE_SECRET
               valueFrom:
                 secretKeyRef:
-                  name: {{ $oidc.secretName }}
-                  key: {{ default "cookie-secret" $oidc.cookieSecretKey }}
+                  name: {{ $provider.secretName }}
+                  key: {{ default "cookie-secret" $provider.cookieSecretKey }}
           ports:
             - name: http
               containerPort: 4180
@@ -146,12 +146,17 @@ spec:
                 - ALL
             readOnlyRootFilesystem: true
           volumeMounts:
-            - name: oidc-config
+            - name: proxy-config
               mountPath: /etc/oauth2-proxy
               readOnly: true
-            - name: oidc-secret
-              mountPath: /var/run/secrets/oidc
+            - name: proxy-secret
+              mountPath: /var/run/secrets/oauth2-proxy
               readOnly: true
+            {{- if and (eq $auth.mode "github") $provider.caSecretName }}
+            - name: proxy-ca
+              mountPath: /var/run/secrets/oauth2-proxy-ca
+              readOnly: true
+            {{- end }}
           readinessProbe:
             httpGet:
               path: /readyz
@@ -169,7 +174,7 @@ spec:
               memory: 128Mi
         {{- end }}
       volumes:
-        {{- if $oidcMode }}
+        {{- if $proxyMode }}
         - name: kube-api-access
           projected:
             sources:
@@ -187,15 +192,23 @@ spec:
                       fieldRef:
                         apiVersion: v1
                         fieldPath: metadata.namespace
-        - name: oidc-config
+        - name: proxy-config
           configMap:
-            name: kelos-console-oidc
-        - name: oidc-secret
+            name: kelos-console-{{ $auth.mode }}
+        - name: proxy-secret
           secret:
-            secretName: {{ $oidc.secretName }}
+            secretName: {{ $provider.secretName }}
             items:
-              - key: {{ default "client-secret" $oidc.clientSecretKey }}
+              - key: {{ default "client-secret" $provider.clientSecretKey }}
                 path: client-secret
+        {{- if and (eq $auth.mode "github") $provider.caSecretName }}
+        - name: proxy-ca
+          secret:
+            secretName: {{ $provider.caSecretName }}
+            items:
+              - key: ca.crt
+                path: ca.crt
+        {{- end }}
         {{- else }}
         - name: auth-token
           secret:

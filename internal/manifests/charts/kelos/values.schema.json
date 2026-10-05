@@ -13,7 +13,8 @@
               "type": "string",
               "enum": [
                 "staticToken",
-                "oidc"
+                "oidc",
+                "github"
               ]
             },
             "oidc": {
@@ -73,6 +74,66 @@
                     "type": "string",
                     "minLength": 1
                   }
+                }
+              }
+            },
+            "github": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "clientID": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "redirectURL": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "secretName": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "usernamePrefix": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "groupsPrefix": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "image": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "clientSecretKey": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "cookieSecretKey": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "reverseProxy": {
+                  "type": "boolean"
+                },
+                "trustedProxyIPs": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "enterpriseURL": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "org": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "caSecretName": {
+                  "type": "string",
+                  "minLength": 1
                 }
               }
             }

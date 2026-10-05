@@ -8,7 +8,7 @@ import (
 //go:embed install-crd.yaml
 var InstallCRD []byte
 
-//go:embed charts/kelos charts/kelos/templates/_console-oidc.tpl
+//go:embed charts/kelos charts/kelos/templates/_console-auth.tpl
 var chartFS embed.FS
 
 // ChartFS is a filesystem rooted at the embedded Helm chart directory.

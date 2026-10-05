@@ -36,14 +36,20 @@ func TestValidateAuthFlags(t *testing.T) {
 		{"oidc", "localhost:8080", "", false, false},
 		{"oidc", "127.0.0.1:8080", "token", false, false},
 		{"oidc", "127.0.0.1:8080", "", true, false},
+		{"github", "127.0.0.1:8080", "", false, true},
+		{"github", "[::1]:8080", "", false, true},
+		{"github", ":8080", "", false, false},
+		{"github", "localhost:8080", "", false, false},
+		{"github", "127.0.0.1:8080", "token", false, false},
+		{"github", "127.0.0.1:8080", "", true, false},
 		{"unknown", ":8080", "token", false, false},
 	} {
-		err := validateAuthFlags(test.mode, test.address, test.token, test.secure, consoleserver.OIDCConfig{})
+		err := validateAuthFlags(test.mode, test.address, test.token, test.secure, consoleserver.ProxyAuthConfig{})
 		if (err == nil) != test.valid {
 			t.Errorf("%#v: error = %v", test, err)
 		}
 	}
-	for _, oidc := range []consoleserver.OIDCConfig{
+	for _, oidc := range []consoleserver.ProxyAuthConfig{
 		{ExternalURL: "https://console.example"},
 		{UsernamePrefix: "oidc:"},
 		{GroupsPrefix: "oidc:"},

@@ -50,9 +50,23 @@ import (
 	"github.com/kelos-dev/kelos/internal/manifests"
 )
 
-// TestConsoleOIDC exercises the rendered proxy configuration, real OIDC callbacks,
-// and Kubernetes RBAC without depending on an external identity provider.
 func TestConsoleOIDC(t *testing.T) {
+	testConsoleProxy(t, consoleserver.AuthModeOIDC)
+}
+
+func TestConsoleGitHub(t *testing.T) {
+	testConsoleProxy(t, consoleserver.AuthModeGitHub)
+}
+
+// testConsoleProxy exercises the rendered proxy configuration, authentication
+// callbacks, and Kubernetes RBAC without an external identity provider.
+func testConsoleProxy(t *testing.T, mode string) {
+	t.Helper()
+	prefix := mode + ":"
+	groupPrefix := prefix
+	if mode == consoleserver.AuthModeGitHub {
+		groupPrefix += "kelos:"
+	}
 	proxyBinary := os.Getenv("OAUTH2_PROXY_BIN")
 	if proxyBinary == "" {
 		t.Fatal("OAUTH2_PROXY_BIN is required; run make test-integration")
@@ -94,7 +108,7 @@ func TestConsoleOIDC(t *testing.T) {
 				{APIGroups: []string{"kelos.dev"}, Resources: []string{"sessions"}, Verbs: []string{"create", "patch", "delete"}},
 				{APIGroups: []string{"kelos.dev"}, Resources: []string{"sessions/suspend", "sessions/resume", "sessions/connect"}, Verbs: []string{"create"}},
 			}},
-			&rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Name: "console", Namespace: namespace}, RoleRef: rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "Role", Name: "console"}, Subjects: []rbacv1.Subject{{APIGroup: "rbac.authorization.k8s.io", Kind: "Group", Name: "oidc:developers-" + team}}},
+			&rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Name: "console", Namespace: namespace}, RoleRef: rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "Role", Name: "console"}, Subjects: []rbacv1.Subject{{APIGroup: "rbac.authorization.k8s.io", Kind: "Group", Name: groupPrefix + "developers-" + team}}},
 		} {
 			if err := kube.Create(ctx, object); err != nil {
 				t.Fatal(err)
@@ -102,7 +116,12 @@ func TestConsoleOIDC(t *testing.T) {
 		}
 	}
 
-	issuer := newConsoleTestIssuer(t)
+	var issuer *consoleTestProvider
+	if mode == consoleserver.AuthModeGitHub {
+		issuer = newConsoleTestGitHub(t)
+	} else {
+		issuer = newConsoleTestIssuer(t)
+	}
 	proxyAddress := unusedConsoleAddress(t)
 	proxyURL, _ := url.Parse("http://" + proxyAddress)
 	edgeProxy := httputil.NewSingleHostReverseProxy(proxyURL)
@@ -116,9 +135,9 @@ func TestConsoleOIDC(t *testing.T) {
 	edge := httptest.NewTLSServer(edgeProxy)
 	t.Cleanup(edge.Close)
 	server, err := consoleserver.New(consoleserver.Config{
-		AuthMode: consoleserver.AuthModeOIDC,
-		OIDC:     &consoleserver.OIDCConfig{ExternalURL: edge.URL, UsernamePrefix: "oidc:", GroupsPrefix: "oidc:", Reviewer: clientset.AuthorizationV1().SubjectAccessReviews(), Logger: slog.New(slog.NewJSONHandler(io.Discard, nil))},
-		Client:   kube, Clientset: clientset, RESTConfig: config, DefaultNamespace: "team-a",
+		AuthMode:  mode,
+		ProxyAuth: &consoleserver.ProxyAuthConfig{ExternalURL: edge.URL, UsernamePrefix: prefix, GroupsPrefix: prefix, Reviewer: clientset.AuthorizationV1().SubjectAccessReviews(), Logger: slog.New(slog.NewJSONHandler(io.Discard, nil))},
+		Client:    kube, Clientset: clientset, RESTConfig: config, DefaultNamespace: "team-a",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -141,7 +160,7 @@ func TestConsoleOIDC(t *testing.T) {
 	if err := os.WriteFile(secretPath, []byte("test-client-secret"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	proxyArgs, proxyHeaders := renderConsoleTestProxy(t, issuer.server.URL, edge.URL)
+	proxyArgs, proxyHeaders := renderConsoleTestProxy(t, mode, issuer.server.URL, edge.URL)
 	headerPath := filepath.Join(directory, "oauth2-proxy.yaml")
 	var proxyConfig map[string]interface{}
 	if err := yaml.Unmarshal([]byte(proxyHeaders), &proxyConfig); err != nil {
@@ -152,6 +171,9 @@ func TestConsoleOIDC(t *testing.T) {
 	upstream["uri"] = backend.URL + "/"
 	provider := proxyConfig["providers"].([]interface{})[0].(map[string]interface{})
 	provider["clientSecretFile"] = secretPath
+	if mode == consoleserver.AuthModeGitHub && provider["caFiles"] == nil {
+		t.Fatal("GitHub proxy has no configured CA mount")
+	}
 	provider["caFiles"] = []string{caPath}
 	configYAML, err := yaml.Marshal(proxyConfig)
 	if err != nil {
@@ -274,8 +296,18 @@ func TestConsoleOIDC(t *testing.T) {
 			}
 		}
 	}
-	if status, body := request(alice, "GET", "/api/config", "", true); status != 200 || !strings.Contains(body, `"username":"oidc:alice"`) {
+	if status, body := request(alice, "GET", "/api/config", "", true); status != 200 || !strings.Contains(body, `"username":"`+prefix+`alice"`) || !strings.Contains(body, `"authMode":"`+mode+`"`) {
 		t.Fatalf("verified principal = %d %s", status, body)
+	}
+	if mode == consoleserver.AuthModeGitHub {
+		issuer.setIdentity("outsider", "outside")
+		browser := newBrowser()
+		if status, body := request(browser, "GET", "/oauth2/start?rd=/", "", false); status < http.StatusBadRequest {
+			t.Fatalf("non-member login = %d %s", status, body)
+		}
+		if status, _ := request(browser, "GET", "/api/config", "", true); status != http.StatusUnauthorized {
+			t.Fatalf("non-member authenticated: %d", status)
+		}
 	}
 	manifest := `{"name":"chat","namespace":"team-a","worker":{"type":"codex","credentials":{"type":"none"},"workspaceRef":{"name":"workspace-a"}}}`
 	if status, body := request(alice, "POST", "/api/sessions", manifest, false); status != 201 {
@@ -393,14 +425,20 @@ func unusedConsoleAddress(t *testing.T) string {
 	return address
 }
 
-func renderConsoleTestProxy(t *testing.T, issuerURL, externalURL string) ([]string, string) {
+func renderConsoleTestProxy(t *testing.T, mode, issuerURL, externalURL string) ([]string, string) {
 	t.Helper()
+	provider := map[string]interface{}{
+		"clientID": "kelos-console", "redirectURL": externalURL + "/oauth2/callback", "secretName": "proxy",
+		"usernamePrefix": mode + ":", "groupsPrefix": mode + ":",
+		"reverseProxy": true, "trustedProxyIPs": []interface{}{"127.0.0.1"},
+	}
+	if mode == consoleserver.AuthModeGitHub {
+		provider["enterpriseURL"], provider["org"], provider["caSecretName"] = issuerURL, "kelos", "ghes-ca"
+	} else {
+		provider["issuerURL"] = issuerURL
+	}
 	data, err := helmchart.Render(manifests.ChartFS, map[string]interface{}{"crds": map[string]interface{}{"install": false}, "consoleServer": map[string]interface{}{
-		"enabled": true, "auth": map[string]interface{}{"mode": "oidc", "oidc": map[string]interface{}{
-			"issuerURL": issuerURL, "clientID": "kelos-console", "redirectURL": externalURL + "/oauth2/callback", "secretName": "oidc",
-			"usernamePrefix": "oidc:", "groupsPrefix": "oidc:",
-			"reverseProxy": true, "trustedProxyIPs": []interface{}{"127.0.0.1"},
-		}},
+		"enabled": true, "auth": map[string]interface{}{"mode": mode, mode: provider},
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -426,7 +464,7 @@ func renderConsoleTestProxy(t *testing.T, issuerURL, externalURL string) ([]stri
 				}
 			}
 		}
-		if object.GetKind() == "ConfigMap" && object.GetName() == "kelos-console-oidc" {
+		if object.GetKind() == "ConfigMap" && object.GetName() == "kelos-console-"+mode {
 			headers, _, _ = unstructured.NestedString(object.Object, "data", "oauth2-proxy.yaml")
 		}
 	}
@@ -436,26 +474,26 @@ func renderConsoleTestProxy(t *testing.T, issuerURL, externalURL string) ([]stri
 	return args, headers
 }
 
-type consoleTestIssuer struct {
+type consoleTestProvider struct {
 	server      *httptest.Server
 	mu          sync.Mutex
 	user, group string
 	codes       map[string]map[string]string
 }
 
-func (issuer *consoleTestIssuer) setIdentity(user, group string) {
+func (issuer *consoleTestProvider) setIdentity(user, group string) {
 	issuer.mu.Lock()
 	defer issuer.mu.Unlock()
 	issuer.user, issuer.group = user, group
 }
 
-func newConsoleTestIssuer(t *testing.T) *consoleTestIssuer {
+func newConsoleTestIssuer(t *testing.T) *consoleTestProvider {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatal(err)
 	}
-	issuer := &consoleTestIssuer{codes: map[string]map[string]string{}}
+	issuer := &consoleTestProvider{codes: map[string]map[string]string{}}
 	write := func(w http.ResponseWriter, value interface{}) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(value)

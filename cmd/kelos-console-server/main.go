@@ -30,18 +30,18 @@ func main() {
 	var defaultNamespace string
 	var secureCookie bool
 	var authMode string
-	var oidc consoleserver.OIDCConfig
+	var proxyAuth consoleserver.ProxyAuthConfig
 	flag.StringVar(&address, "bind-address", ":8080", "HTTP listen address")
 	flag.StringVar(&tokenFile, "token-file", "", "Path to the static authentication token")
-	flag.StringVar(&authMode, "auth-mode", consoleserver.AuthModeStaticToken, "Authentication mode: staticToken or oidc")
-	flag.StringVar(&oidc.ExternalURL, "external-url", "", "HTTPS origin of the OIDC Console")
-	flag.StringVar(&oidc.UsernamePrefix, "username-prefix", "", "Prefix for OIDC user identities")
-	flag.StringVar(&oidc.GroupsPrefix, "groups-prefix", "", "Prefix for OIDC group identities")
+	flag.StringVar(&authMode, "auth-mode", consoleserver.AuthModeStaticToken, "Authentication mode: staticToken, oidc or github")
+	flag.StringVar(&proxyAuth.ExternalURL, "external-url", "", "HTTPS origin of the Console")
+	flag.StringVar(&proxyAuth.UsernamePrefix, "username-prefix", "", "Prefix for authenticated user identities")
+	flag.StringVar(&proxyAuth.GroupsPrefix, "groups-prefix", "", "Prefix for authenticated group identities")
 	flag.StringVar(&defaultNamespace, "default-namespace", "default", "Initial namespace in the Console")
 	flag.BoolVar(&secureCookie, "secure-cookie", false, "Mark the authentication cookie as HTTPS-only")
 	flag.Parse()
 
-	if err := validateAuthFlags(authMode, address, tokenFile, secureCookie, oidc); err != nil {
+	if err := validateAuthFlags(authMode, address, tokenFile, secureCookie, proxyAuth); err != nil {
 		fmt.Fprintf(os.Stderr, "Invalid configuration: %v\n", err)
 		os.Exit(1)
 	}
@@ -82,10 +82,10 @@ func main() {
 		DefaultNamespace: defaultNamespace,
 		SecureCookie:     secureCookie,
 	}
-	if authMode == consoleserver.AuthModeOIDC {
-		oidc.Reviewer = clientset.AuthorizationV1().SubjectAccessReviews()
-		oidc.Logger = slog.New(slog.NewJSONHandler(os.Stdout, nil))
-		config.OIDC = &oidc
+	if authMode == consoleserver.AuthModeOIDC || authMode == consoleserver.AuthModeGitHub {
+		proxyAuth.Reviewer = clientset.AuthorizationV1().SubjectAccessReviews()
+		proxyAuth.Logger = slog.New(slog.NewJSONHandler(os.Stdout, nil))
+		config.ProxyAuth = &proxyAuth
 	}
 	handler, err := consoleserver.New(config)
 	if err != nil {
@@ -115,22 +115,22 @@ func main() {
 	}
 }
 
-func validateAuthFlags(mode, address, tokenFile string, secureCookie bool, oidc consoleserver.OIDCConfig) error {
+func validateAuthFlags(mode, address, tokenFile string, secureCookie bool, proxyAuth consoleserver.ProxyAuthConfig) error {
 	switch mode {
 	case consoleserver.AuthModeStaticToken:
 		if tokenFile == "" {
 			return fmt.Errorf("--token-file is required")
 		}
-		if oidc.ExternalURL != "" || oidc.UsernamePrefix != "" || oidc.GroupsPrefix != "" {
-			return fmt.Errorf("OIDC flags require --auth-mode=oidc")
+		if proxyAuth.ExternalURL != "" || proxyAuth.UsernamePrefix != "" || proxyAuth.GroupsPrefix != "" {
+			return fmt.Errorf("proxy flags require --auth-mode=oidc or github")
 		}
-	case consoleserver.AuthModeOIDC:
+	case consoleserver.AuthModeOIDC, consoleserver.AuthModeGitHub:
 		if tokenFile != "" || secureCookie {
-			return fmt.Errorf("static token flags cannot be used with --auth-mode=oidc")
+			return fmt.Errorf("static token flags cannot be used with proxy authentication")
 		}
 		host, _, err := net.SplitHostPort(address)
 		if err != nil || !net.ParseIP(host).IsLoopback() {
-			return fmt.Errorf("OIDC requires a loopback IP in --bind-address")
+			return fmt.Errorf("proxy authentication requires a loopback IP in --bind-address")
 		}
 	default:
 		return fmt.Errorf("unsupported authentication mode %q", mode)

@@ -48,7 +48,7 @@ func oidcTestServer(t *testing.T, reviewer AccessReviewer) *Server {
 	s := testServer(t)
 	server, err := New(Config{
 		AuthMode: AuthModeOIDC,
-		OIDC: &OIDCConfig{
+		ProxyAuth: &ProxyAuthConfig{
 			ExternalURL: "https://console.example", UsernamePrefix: "oidc:", GroupsPrefix: "oidc:",
 			Reviewer: reviewer, Logger: slog.New(slog.NewJSONHandler(io.Discard, nil)),
 		},
@@ -120,7 +120,7 @@ func TestOIDCPrincipalAndAudit(t *testing.T) {
 		r.Status.Allowed = true
 		return r, nil
 	}))
-	s.oidc.Logger = slog.New(slog.NewJSONHandler(&logs, nil))
+	s.proxyAuth.Logger = slog.New(slog.NewJSONHandler(&logs, nil))
 	r := oidcRequest(http.MethodGet, "/api/sessions", "private prompt")
 	r.Header.Set("Cookie", "private-cookie")
 	r.Header.Set("Authorization", "Bearer private-token")
@@ -138,7 +138,7 @@ func TestOIDCPrincipalAndAudit(t *testing.T) {
 		t.Fatalf("audit leaked request data: %s", logs.String())
 	}
 	// User RoleBindings also work for identities with no group claim.
-	s.oidc.Reviewer = reviewFunc(allowReview)
+	s.proxyAuth.Reviewer = reviewFunc(allowReview)
 	r.Header.Del("X-Kelos-Groups")
 	w = httptest.NewRecorder()
 	s.ServeHTTP(w, r)
@@ -342,7 +342,7 @@ func TestOIDCInventoryFiltersRelationships(t *testing.T) {
 		t.Fatalf("inventory = %d %s", w.Code, w.Body.String())
 	}
 	for _, failure := range []string{"denied", "error"} {
-		s.oidc.Reviewer = reviewFunc(func(context.Context, *authorizationv1.SubjectAccessReview, metav1.CreateOptions) (*authorizationv1.SubjectAccessReview, error) {
+		s.proxyAuth.Reviewer = reviewFunc(func(context.Context, *authorizationv1.SubjectAccessReview, metav1.CreateOptions) (*authorizationv1.SubjectAccessReview, error) {
 			if failure == "error" {
 				return nil, errors.New("offline")
 			}
@@ -493,29 +493,29 @@ func TestOIDCAttachmentsAndTaskLogs(t *testing.T) {
 	}
 }
 
-func TestOIDCConfigurationValidation(t *testing.T) {
+func TestProxyAuthConfigurationValidation(t *testing.T) {
 	base := oidcTestServer(t, reviewFunc(allowReview))
 	for _, test := range []struct {
 		name   string
 		change func(*Config)
 	}{
-		{"missing OIDC config", func(c *Config) { c.OIDC = nil }},
-		{"missing reviewer", func(c *Config) { c.OIDC.Reviewer = nil }},
-		{"missing logger", func(c *Config) { c.OIDC.Logger = nil }},
-		{"empty username prefix", func(c *Config) { c.OIDC.UsernamePrefix = "" }},
-		{"reserved group prefix", func(c *Config) { c.OIDC.GroupsPrefix = "system:" }},
-		{"partial reserved username prefix", func(c *Config) { c.OIDC.UsernamePrefix = "sys" }},
-		{"partial reserved group prefix", func(c *Config) { c.OIDC.GroupsPrefix = "system" }},
-		{"empty group prefix", func(c *Config) { c.OIDC.GroupsPrefix = "" }},
-		{"HTTP origin", func(c *Config) { c.OIDC.ExternalURL = "http://console.example" }},
-		{"origin path", func(c *Config) { c.OIDC.ExternalURL = "https://console.example/path" }},
+		{"missing OIDC config", func(c *Config) { c.ProxyAuth = nil }},
+		{"missing reviewer", func(c *Config) { c.ProxyAuth.Reviewer = nil }},
+		{"missing logger", func(c *Config) { c.ProxyAuth.Logger = nil }},
+		{"empty username prefix", func(c *Config) { c.ProxyAuth.UsernamePrefix = "" }},
+		{"reserved group prefix", func(c *Config) { c.ProxyAuth.GroupsPrefix = "system:" }},
+		{"partial reserved username prefix", func(c *Config) { c.ProxyAuth.UsernamePrefix = "sys" }},
+		{"partial reserved group prefix", func(c *Config) { c.ProxyAuth.GroupsPrefix = "system" }},
+		{"empty group prefix", func(c *Config) { c.ProxyAuth.GroupsPrefix = "" }},
+		{"HTTP origin", func(c *Config) { c.ProxyAuth.ExternalURL = "http://console.example" }},
+		{"origin path", func(c *Config) { c.ProxyAuth.ExternalURL = "https://console.example/path" }},
 		{"mixed token", func(c *Config) { c.Token = "secret" }},
 		{"mixed mode", func(c *Config) { c.AuthMode = AuthModeStaticToken }},
 		{"unknown mode", func(c *Config) { c.AuthMode = "unknown" }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			oidc := *base.oidc
-			config := Config{AuthMode: AuthModeOIDC, OIDC: &oidc, Client: base.client, Clientset: base.clientset, RESTConfig: base.restConfig, DefaultNamespace: "team-a"}
+			oidc := *base.proxyAuth
+			config := Config{AuthMode: AuthModeOIDC, ProxyAuth: &oidc, Client: base.client, Clientset: base.clientset, RESTConfig: base.restConfig, DefaultNamespace: "team-a"}
 			test.change(&config)
 			if _, err := New(config); err == nil {
 				t.Fatal("invalid authentication configuration accepted")
@@ -528,9 +528,9 @@ func TestOIDCCanonicalOrigin(t *testing.T) {
 	for _, externalURL := range []string{"https://Console.Example", "https://console.example:443", "https://Console.Example:443", "https://Console.Example:8443"} {
 		t.Run(externalURL, func(t *testing.T) {
 			base := oidcTestServer(t, reviewFunc(allowReview))
-			oidc := *base.oidc
+			oidc := *base.proxyAuth
 			oidc.ExternalURL = externalURL
-			server, err := New(Config{AuthMode: AuthModeOIDC, OIDC: &oidc, Client: base.client, Clientset: base.clientset, RESTConfig: base.restConfig, DefaultNamespace: base.defaultNamespace})
+			server, err := New(Config{AuthMode: AuthModeOIDC, ProxyAuth: &oidc, Client: base.client, Clientset: base.clientset, RESTConfig: base.restConfig, DefaultNamespace: base.defaultNamespace})
 			if err != nil {
 				t.Fatal(err)
 			}

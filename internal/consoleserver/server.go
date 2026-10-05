@@ -77,7 +77,7 @@ var webFiles embed.FS
 // Config contains dependencies and authentication configuration for the Console server.
 type Config struct {
 	AuthMode         string
-	OIDC             *OIDCConfig
+	ProxyAuth        *ProxyAuthConfig
 	Token            string
 	Client           client.Client
 	Clientset        *kubernetes.Clientset
@@ -88,7 +88,8 @@ type Config struct {
 
 // Server serves the Kelos Console and its Kubernetes-backed API.
 type Server struct {
-	oidc             *OIDCConfig
+	authMode         string
+	proxyAuth        *ProxyAuthConfig
 	token            []byte
 	cookieValue      string
 	client           client.Client
@@ -285,6 +286,7 @@ func New(config Config) (*Server, error) {
 	digest := hmac.New(sha256.New, []byte(config.Token))
 	_, _ = digest.Write([]byte("kelos-console-cookie-v1"))
 	server := &Server{
+		authMode:         config.AuthMode,
 		token:            []byte(config.Token),
 		cookieValue:      base64.RawURLEncoding.EncodeToString(digest.Sum(nil)),
 		client:           config.Client,
@@ -301,16 +303,16 @@ func New(config Config) (*Server, error) {
 			},
 		},
 	}
-	if config.OIDC != nil {
-		oidc := *config.OIDC
-		origin, _ := url.Parse(oidc.ExternalURL)
+	if config.ProxyAuth != nil {
+		proxyAuth := *config.ProxyAuth
+		origin, _ := url.Parse(proxyAuth.ExternalURL)
 		origin.Host = strings.ToLower(origin.Host)
 		if origin.Port() == "443" {
 			origin.Host = strings.TrimSuffix(origin.Host, ":443")
 		}
-		oidc.ExternalURL = origin.String()
-		server.oidc = &oidc
-		server.upgrader.CheckOrigin = func(request *http.Request) bool { return request.Header.Get("Origin") == oidc.ExternalURL }
+		proxyAuth.ExternalURL = origin.String()
+		server.proxyAuth = &proxyAuth
+		server.upgrader.CheckOrigin = func(request *http.Request) bool { return request.Header.Get("Origin") == proxyAuth.ExternalURL }
 	}
 	server.bridge = server.bridgeExec
 	server.terminalExecutor = remotecommand.NewSPDYExecutor
@@ -348,7 +350,7 @@ func securityHeaders(next http.Handler) http.Handler {
 }
 
 func (s *Server) login(writer http.ResponseWriter, request *http.Request) {
-	if s.oidc != nil {
+	if s.proxyAuth != nil {
 		writeError(writer, http.StatusNotFound, "static login is disabled")
 		return
 	}
@@ -395,8 +397,8 @@ func (s *Server) authenticated(request *http.Request) bool {
 }
 
 func (s *Server) requireAuth(next http.Handler) http.Handler {
-	if s.oidc != nil {
-		return s.requireOIDC(next)
+	if s.proxyAuth != nil {
+		return s.requireProxyAuth(next)
 	}
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if s.authenticated(request) {
@@ -415,10 +417,10 @@ func (s *Server) api(writer http.ResponseWriter, request *http.Request) {
 	path := strings.TrimPrefix(request.URL.Path, "/api/")
 	if path == "config" && request.Method == http.MethodGet {
 		config := map[string]string{"defaultNamespace": s.defaultNamespace}
-		if s.oidc != nil {
+		if s.proxyAuth != nil {
 			identity := request.Context().Value(principalKey{}).(principal)
 			config["username"] = identity.username
-			config["authMode"] = AuthModeOIDC
+			config["authMode"] = s.authMode
 		}
 		writeJSON(writer, http.StatusOK, config)
 		return
@@ -428,7 +430,7 @@ func (s *Server) api(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 	if path == "logout" && request.Method == http.MethodPost {
-		if s.oidc != nil {
+		if s.proxyAuth != nil {
 			writeJSON(writer, http.StatusOK, map[string]string{"logoutURL": "/oauth2/sign_out?rd=/oauth2/sign_in"})
 			return
 		}
@@ -1967,7 +1969,7 @@ func (s *Server) index(writer http.ResponseWriter, request *http.Request) {
 }
 
 func (s *Server) loginPage(writer http.ResponseWriter, request *http.Request) {
-	if s.oidc != nil {
+	if s.proxyAuth != nil {
 		http.Redirect(writer, request, "/", http.StatusFound)
 		return
 	}

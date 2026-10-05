@@ -30,7 +30,12 @@ func consoleOIDCValues() map[string]interface{} {
 }
 
 func TestRenderConsoleOIDC(t *testing.T) {
-	data, err := Render(manifests.ChartFS, map[string]interface{}{"consoleServer": consoleOIDCValues()})
+	testRenderConsoleProxy(t, "oidc", consoleOIDCValues())
+}
+
+func testRenderConsoleProxy(t *testing.T, mode string, values map[string]interface{}) (appsv1.Deployment, map[string]interface{}) {
+	t.Helper()
+	data, err := Render(manifests.ChartFS, map[string]interface{}{"consoleServer": values})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +57,7 @@ func TestRenderConsoleOIDC(t *testing.T) {
 			target = &deployment
 		case "Service/kelos-console-server":
 			target = &service
-		case "ConfigMap/kelos-console-oidc":
+		case "ConfigMap/kelos-console-" + mode:
 			target = &headers
 		case "ClusterRole/kelos-console-user":
 			target = &userRole
@@ -76,10 +81,10 @@ func TestRenderConsoleOIDC(t *testing.T) {
 	}
 	console, proxy := deployment.Spec.Template.Spec.Containers[0], deployment.Spec.Template.Spec.Containers[1]
 	if len(console.Ports) != 0 {
-		t.Fatal("OIDC console exposes a port")
+		t.Fatal("proxy-authenticated console exposes a port")
 	}
 	if deployment.Spec.Template.Spec.AutomountServiceAccountToken == nil || *deployment.Spec.Template.Spec.AutomountServiceAccountToken {
-		t.Fatal("OIDC pod automatically mounts its service account token")
+		t.Fatal("proxy pod automatically mounts its service account token")
 	}
 	if len(console.VolumeMounts) != 1 || console.VolumeMounts[0].Name != "kube-api-access" || console.VolumeMounts[0].MountPath != "/var/run/secrets/kubernetes.io/serviceaccount" || !console.VolumeMounts[0].ReadOnly {
 		t.Fatalf("console service account mount = %#v", console.VolumeMounts)
@@ -108,7 +113,7 @@ func TestRenderConsoleOIDC(t *testing.T) {
 	if namespace == nil || len(namespace.Items) != 1 || namespace.Items[0].Path != "namespace" || namespace.Items[0].FieldRef == nil || namespace.Items[0].FieldRef.FieldPath != "metadata.namespace" {
 		t.Fatalf("namespace projection = %#v", namespace)
 	}
-	for _, expected := range []string{"--bind-address=127.0.0.1:8080", "--auth-mode=oidc", "--external-url=https://console.example"} {
+	for _, expected := range []string{"--bind-address=127.0.0.1:8080", "--auth-mode=" + mode, "--external-url=https://console.example"} {
 		if !containsArgument(console.Args, expected) {
 			t.Errorf("console missing %s", expected)
 		}
@@ -128,9 +133,13 @@ func TestRenderConsoleOIDC(t *testing.T) {
 	if proxy.ReadinessProbe.HTTPGet.Path != "/readyz" || proxy.LivenessProbe.HTTPGet.Path != "/healthz" {
 		t.Fatal("proxy probes must reach Kelos")
 	}
+	cookieName := "__Host-kelos-console"
+	if mode == "github" {
+		cookieName += "-github"
+	}
 	for _, expected := range []string{
 		"--alpha-config=/etc/oauth2-proxy/oauth2-proxy.yaml", "--skip-auth-route=GET=^/(healthz|readyz)$",
-		"--cookie-secure=true", "--cookie-httponly=true", "--cookie-name=__Host-kelos-console",
+		"--cookie-secure=true", "--cookie-httponly=true", "--cookie-name=" + cookieName,
 		"--cookie-samesite=lax", "--cookie-expire=8h", "--cookie-refresh=5m", "--api-route=^/api/",
 		"--reverse-proxy=true", "--trusted-proxy-ip=10.1.0.0/24", "--auth-logging=false", "--request-logging=false",
 	} {
@@ -146,13 +155,18 @@ func TestRenderConsoleOIDC(t *testing.T) {
 			t.Fatalf("unexpected exemption: %s", arg)
 		}
 	}
-	for _, expected := range []string{"bindAddress: 0.0.0.0:4180", "uri: http://127.0.0.1:8080/", "proxyWebSockets: true", "code_challenge_method: S256", "insecureSkipNonce: false", "insecureSkipIssuerVerification: false", "insecureAllowUnverifiedEmail: false"} {
+	expectedConfig := []string{"bindAddress: 0.0.0.0:4180", "uri: http://127.0.0.1:8080/", "proxyWebSockets: true"}
+	if mode == "oidc" {
+		expectedConfig = append(expectedConfig, "code_challenge_method: S256", "insecureSkipNonce: false", "insecureSkipIssuerVerification: false", "insecureAllowUnverifiedEmail: false")
+	}
+	for _, expected := range expectedConfig {
 		if !strings.Contains(headers.Data["oauth2-proxy.yaml"], expected) {
 			t.Errorf("proxy configuration missing %s", expected)
 		}
 	}
 	var headerConfig struct {
-		Headers []struct {
+		Providers []map[string]interface{} `json:"providers"`
+		Headers   []struct {
 			Name     string `json:"name"`
 			Preserve bool   `json:"preserveRequestValue"`
 			Values   []struct {
@@ -202,6 +216,10 @@ func TestRenderConsoleOIDC(t *testing.T) {
 	if !foundReview {
 		t.Fatal("missing access review permission")
 	}
+	if len(headerConfig.Providers) != 1 || headerConfig.Providers[0]["provider"] != mode {
+		t.Fatalf("providers = %#v", headerConfig.Providers)
+	}
+	return deployment, headerConfig.Providers[0]
 }
 
 func containsArgument(values []string, expected string) bool {
@@ -218,6 +236,9 @@ func TestRenderConsoleOIDCRejectsInvalidConfiguration(t *testing.T) {
 		name   string
 		change func(map[string]interface{}, map[string]interface{})
 	}{
+		{"GitHub settings", func(c, o map[string]interface{}) {
+			c["auth"].(map[string]interface{})["github"] = map[string]interface{}{"clientID": "github"}
+		}},
 		{"static secret", func(c, o map[string]interface{}) { c["secretName"] = "static-secret" }},
 		{"static cookie", func(c, o map[string]interface{}) { c["secureCookie"] = true }},
 		{"static key", func(c, o map[string]interface{}) { c["tokenKey"] = "other" }},
