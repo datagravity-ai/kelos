@@ -239,7 +239,7 @@ beyond a local port-forward,
 terminate TLS at a trusted proxy, set `consoleServer.secureCookie=true`, and
 restrict access to the endpoint at the network or proxy layer. The Console does
 not provide separate user identities or per-user authorization in static-token
-mode. Use OIDC mode for shared team access.
+mode. Use OIDC or GitHub mode for shared team access.
 
 ### Console OIDC authentication
 
@@ -344,6 +344,119 @@ configuration to strip credential headers and preserve only the required
 identity claims. Validate this configuration with `make test-integration` when
 updating the proxy version. This target downloads the pinned proxy release
 with the GitHub CLI and requires `gh` authentication (or `GH_TOKEN`).
+
+### Console GitHub and GHES authentication
+
+GitHub mode uses the managed OAuth2 Proxy sidecar's GitHub provider directly.
+It supports GitHub.com and GitHub Enterprise Server (GHES), without requiring
+an OIDC issuer or Dex. HTTPS ingress and namespace RoleBindings are required,
+as in OIDC mode; the chart does not create an Ingress or certificate.
+
+Register an OAuth application on the GitHub instance with callback URL
+`https://console.example.com/oauth2/callback`. Create a Secret in the release
+namespace with `client-secret` containing the OAuth application's secret and
+`cookie-secret` containing 32 random bytes encoded as URL-safe base64. Keep
+secret values out of Helm values and command-line arguments; supply protected
+files to `kubectl create secret`:
+
+```bash
+kubectl -n kelos-system create secret generic kelos-console-github \
+  --from-file=client-secret=/secure/path/github-client-secret \
+  --from-file=cookie-secret=/secure/path/cookie-secret
+```
+
+The cookie secret can be generated with
+`openssl rand -base64 32 | tr -- '+/' '-_'`. Save the following as
+`console-github.yaml` and replace the example values:
+
+```yaml
+consoleServer:
+  enabled: true
+  defaultNamespace: team-frontend
+  auth:
+    mode: github
+    github:
+      enterpriseURL: https://github.company.example
+      clientID: kelos-console-oauth-client
+      redirectURL: https://console.example.com/oauth2/callback
+      secretName: kelos-console-github
+      usernamePrefix: "github:company:"
+      groupsPrefix: "github:company:"
+      org: my-org
+      reverseProxy: true
+      trustedProxyIPs:
+        - 10.20.1.0/24
+```
+
+Set `trustedProxyIPs` to your actual ingress proxy addresses and trusted
+forwarding hops. Configure the ingress to forward HTTP and WebSocket requests
+to `kelos-console-server:80`. Then install with the values file:
+
+```bash
+kelos install --values console-github.yaml
+```
+
+Omit `enterpriseURL` to use GitHub.com. For GHES it must be an HTTPS origin,
+optionally including a port, without credentials, a query, fragment, or path
+other than `/`. The chart derives `/login/oauth/authorize`,
+`/login/oauth/access_token`, and `/api/v3` from this origin.
+
+For a private GHES certificate authority, create a Secret containing `ca.crt`
+and set `consoleServer.auth.github.caSecretName` to its name. Only the proxy
+mounts this certificate; it adds the CA to the system trust store and keeps
+TLS verification enabled:
+
+```bash
+kubectl -n kelos-system create secret generic ghes-ca \
+  --from-file=ca.crt=/secure/path/company-ca.pem
+kelos install --values console-github.yaml \
+  --set consoleServer.auth.github.caSecretName=ghes-ca
+```
+
+The provider requests `user:email read:org` and requires a verified primary
+email. `org` optionally restricts sign-in to members of one organization;
+authorize the OAuth application to read that organization's membership.
+Login restrictions grant no Kubernetes permissions. To grant the
+`my-org:frontend-developers` group Console access in an existing namespace:
+
+```bash
+kubectl -n team-frontend create rolebinding kelos-console-developers \
+  --clusterrole=kelos-console-user \
+  --group=github:company:my-org:frontend-developers
+```
+
+User identities use the prefixed GitHub login name, such as
+`github:company:alice`, rather than an immutable numeric account ID. Login
+names can change and be reused. Update User RoleBindings when accounts are
+renamed or removed, and choose identity prefixes unique to each GitHub/GHES
+instance. For immutable personal identities, use OIDC with stable subjects.
+GitHub groups include all organization names and `org:team-slug` values
+returned by the GitHub API for the user's OAuth token; `org` does not filter
+these groups. Kelos accepts at most 128 groups, 256 bytes per group, and
+8192 bytes for the comma-separated group header. Exceeding any of these limits
+returns 401 even after a successful sign-in. Groups are loaded at sign-in;
+the proxy's five-minute token validation does not reload organization or team
+membership. Sign out and sign in again to update these claims.
+
+Removing a user from a GitHub organization or team does not end their existing
+Console login or update its groups. Activity can keep renewing the eight-hour
+cookie, so waiting eight hours does not guarantee access ends. To invalidate
+an existing login, [revoke the user's OAuth grant or access token for the app](https://docs.github.com/en/rest/apps/oauth-applications#delete-an-app-authorization);
+the proxy rejects that session on its next request after the five-minute
+validation interval elapses. To invalidate all Console logins, rotate the
+configured cookie secret and restart all Console server Pods; updating the
+Secret alone does not reload the proxy's cookie secret. Kubernetes RoleBinding
+changes affect subsequent requests. Token revocation and RBAC changes do not
+terminate established WebSockets; restart the Console server Pods to disconnect
+them.
+
+GitHub mode accepts the same `clientSecretKey`, `cookieSecretKey`, `image`,
+`reverseProxy`, and `trustedProxyIPs` settings as OIDC mode. Its cookies are
+Secure, HttpOnly, and use a separate name from OIDC cookies. Do not combine
+`auth.github` with `auth.oidc` or static-token settings. When changing the
+provider instance, use a separate cookie secret and identity prefixes.
+
+### Console namespaces
 
 The Console operates on one active namespace at a time and can switch it live
 from the sidebar. `consoleServer.defaultNamespace` (`default` unless

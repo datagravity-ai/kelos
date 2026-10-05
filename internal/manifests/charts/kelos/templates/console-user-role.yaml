@@ -1,4 +1,4 @@
-{{- if and .Values.consoleServer.enabled (eq .Values.consoleServer.auth.mode "oidc") }}
+{{- if and .Values.consoleServer.enabled (or (eq .Values.consoleServer.auth.mode "oidc") (eq .Values.consoleServer.auth.mode "github")) }}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:

@@ -20,6 +20,7 @@ import (
 const (
 	AuthModeStaticToken = "staticToken"
 	AuthModeOIDC        = "oidc"
+	AuthModeGitHub      = "github"
 )
 
 // AccessReviewer delegates authorization to the Kubernetes API server.
@@ -27,9 +28,9 @@ type AccessReviewer interface {
 	Create(context.Context, *authorizationv1.SubjectAccessReview, metav1.CreateOptions) (*authorizationv1.SubjectAccessReview, error)
 }
 
-// OIDCConfig configures identities supplied by the managed loopback proxy.
+// ProxyAuthConfig configures identities supplied by the managed loopback proxy.
 // ExternalURL is the HTTPS origin of the Console, without a path.
-type OIDCConfig struct {
+type ProxyAuthConfig struct {
 	ExternalURL    string
 	UsernamePrefix string
 	GroupsPrefix   string
@@ -47,27 +48,27 @@ type principalKey struct{}
 func validateAuth(config Config) error {
 	switch config.AuthMode {
 	case "", AuthModeStaticToken:
-		if config.OIDC != nil {
-			return errors.New("OIDC configuration requires oidc authentication mode")
+		if config.ProxyAuth != nil {
+			return errors.New("proxy configuration requires oidc or github authentication mode")
 		}
 		if strings.TrimSpace(config.Token) == "" {
 			return errors.New("static authentication token must not be empty")
 		}
-	case AuthModeOIDC:
+	case AuthModeOIDC, AuthModeGitHub:
 		if config.Token != "" || config.SecureCookie {
-			return errors.New("static token settings cannot be used with oidc authentication")
+			return errors.New("static token settings cannot be used with proxy authentication")
 		}
-		if config.OIDC == nil || config.OIDC.Reviewer == nil || config.OIDC.Logger == nil {
-			return errors.New("OIDC configuration, access reviewer and audit logger are required")
+		if config.ProxyAuth == nil || config.ProxyAuth.Reviewer == nil || config.ProxyAuth.Logger == nil {
+			return errors.New("proxy configuration, access reviewer and audit logger are required")
 		}
-		for _, prefix := range []string{config.OIDC.UsernamePrefix, config.OIDC.GroupsPrefix} {
+		for _, prefix := range []string{config.ProxyAuth.UsernamePrefix, config.ProxyAuth.GroupsPrefix} {
 			if !validIdentityValue(prefix, 128) || strings.HasPrefix(prefix, "system:") || strings.HasPrefix("system:", prefix) {
 				return errors.New("identity prefixes must be non-empty, at most 128 bytes and must not overlap the reserved system: prefix")
 			}
 		}
-		origin, err := url.Parse(config.OIDC.ExternalURL)
+		origin, err := url.Parse(config.ProxyAuth.ExternalURL)
 		if err != nil || origin.Scheme != "https" || origin.Hostname() == "" || origin.User != nil || origin.Path != "" || origin.RawQuery != "" || origin.Fragment != "" || origin.ForceQuery {
-			return errors.New("OIDC external URL must be an HTTPS origin without credentials, path, query or fragment")
+			return errors.New("proxy external URL must be an HTTPS origin without credentials, path, query or fragment")
 		}
 	default:
 		return fmt.Errorf("unsupported authentication mode %q", config.AuthMode)
@@ -90,7 +91,7 @@ func (s *Server) proxyPrincipal(request *http.Request) (principal, bool) {
 	if len(users) != 1 || !validIdentityValue(users[0], 1024) {
 		return principal{}, false
 	}
-	identity := principal{username: s.oidc.UsernamePrefix + users[0], groups: []string{}}
+	identity := principal{username: s.proxyAuth.UsernamePrefix + users[0], groups: []string{}}
 	groups := request.Header.Values("X-Kelos-Groups")
 	if len(groups) > 1 {
 		return principal{}, false
@@ -107,13 +108,13 @@ func (s *Server) proxyPrincipal(request *http.Request) (principal, bool) {
 			if !validIdentityValue(group, 256) {
 				return principal{}, false
 			}
-			identity.groups = append(identity.groups, s.oidc.GroupsPrefix+group)
+			identity.groups = append(identity.groups, s.proxyAuth.GroupsPrefix+group)
 		}
 	}
 	return identity, true
 }
 
-func (s *Server) requireOIDC(next http.Handler) http.Handler {
+func (s *Server) requireProxyAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		identity, ok := s.proxyPrincipal(request)
 		if !ok {
@@ -123,7 +124,7 @@ func (s *Server) requireOIDC(next http.Handler) http.Handler {
 		// The proxy owns cookies; bind browser writes and upgrades to the configured origin.
 		if request.Method != http.MethodGet && request.Method != http.MethodHead || strings.EqualFold(request.Header.Get("Upgrade"), "websocket") {
 			origins := request.Header.Values("Origin")
-			if len(origins) != 1 || origins[0] != s.oidc.ExternalURL {
+			if len(origins) != 1 || origins[0] != s.proxyAuth.ExternalURL {
 				writeError(writer, http.StatusForbidden, "request origin is not allowed")
 				return
 			}
@@ -138,7 +139,7 @@ func access(verb, resource, namespace, name string) authorizationv1.ResourceAttr
 }
 
 func (s *Server) allowed(request *http.Request, attributes authorizationv1.ResourceAttributes) (bool, error) {
-	if s.oidc == nil {
+	if s.proxyAuth == nil {
 		return true, nil
 	}
 	identity, ok := request.Context().Value(principalKey{}).(principal)
@@ -147,7 +148,7 @@ func (s *Server) allowed(request *http.Request, attributes authorizationv1.Resou
 	}
 	ctx, cancel := context.WithTimeout(request.Context(), 5*time.Second)
 	defer cancel()
-	review, err := s.oidc.Reviewer.Create(ctx, &authorizationv1.SubjectAccessReview{
+	review, err := s.proxyAuth.Reviewer.Create(ctx, &authorizationv1.SubjectAccessReview{
 		Spec: authorizationv1.SubjectAccessReviewSpec{User: identity.username, Groups: identity.groups, ResourceAttributes: &attributes},
 	}, metav1.CreateOptions{})
 	allowed := false
@@ -161,7 +162,7 @@ func (s *Server) allowed(request *http.Request, attributes authorizationv1.Resou
 		allowed = true
 		decision = "allowed"
 	}
-	s.oidc.Logger.InfoContext(request.Context(), "Console access reviewed",
+	s.proxyAuth.Logger.InfoContext(request.Context(), "Console access reviewed",
 		"username", identity.username, "groups", identity.groups, "action", attributes.Verb,
 		"decision", decision, "namespace", attributes.Namespace, "resource", attributes.Resource,
 		"subresource", attributes.Subresource, "name", attributes.Name)

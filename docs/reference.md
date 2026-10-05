@@ -727,18 +727,24 @@ manifest may include labels, annotations, `initialBranch`, `initialPrompt`, the 
 
 ### Console authentication and authorization
 
-The Console chart supports `consoleServer.auth.mode: staticToken` (default)
-and `oidc`. Static-token mode represents one shared user with the Console
-ServiceAccount's permissions. OIDC mode authenticates individuals through an
-OAuth2 Proxy sidecar and checks Kubernetes authorization for each API operation
+The Console chart supports `consoleServer.auth.mode: staticToken` (default),
+`oidc`, and `github`. Static-token mode represents one shared user with the Console
+ServiceAccount's permissions. OIDC and GitHub modes authenticate individuals through an
+OAuth2 Proxy sidecar and check Kubernetes authorization for each API operation
 and each new chat or terminal connection. See the
-[chart setup guide](../internal/manifests/charts/kelos/README.md#console-oidc-authentication)
+[OIDC setup guide](../internal/manifests/charts/kelos/README.md#console-oidc-authentication)
+and [GitHub/GHES setup guide](../internal/manifests/charts/kelos/README.md#console-github-and-ghes-authentication)
 for HTTPS, client registration, secrets, identity prefixes, and RoleBindings.
 
 OIDC usernames are the configured prefix followed by the verified OIDC subject.
+GitHub usernames are the prefix followed by the GitHub login name, which can
+change and be reused by another account. Update User RoleBindings when accounts
+are renamed or removed; use OIDC with stable subjects if immutable per-user
+identity is required. GitHub groups contain organization names and `org:team-slug`
+values. Choose distinct identity prefixes for each provider and GHES instance.
 Groups receive their own prefix. The IdP must supply comma-free group identifiers.
 Only the managed loopback proxy may provide identities. Static tokens and static
-cookies cannot authenticate requests in OIDC mode.
+cookies cannot authenticate requests in OIDC or GitHub mode.
 
 All permissions below are in the `kelos.dev` API group and the requested
 namespace. Named reads and actions are checked against the exact resource name.
@@ -791,8 +797,18 @@ affect subsequent requests once observed by Kubernetes authorization. An
 established WebSocket retains access for its connection lifetime; reconnects
 are checked again. IdP disablement and group changes also depend on the proxy
 session's refresh/expiry behavior. Proxy cookies expire after eight hours and
-are refreshed after five minutes; refresh can renew their lifetime. Signing
-out clears the proxy session, not necessarily the IdP's SSO session.
+are refreshed after five minutes; refresh can renew their lifetime. The GitHub
+provider validates its access token during refresh but does not reload group
+membership. Removing a user from a GitHub organization or team does not end
+their Console login or update its group identities; activity can keep renewing
+the cookie beyond eight hours. A fresh login is required to update groups.
+Revoking the user's OAuth grant or access token for the app invalidates that
+session on its next request after the five-minute validation interval elapses.
+To invalidate all Console logins, rotate the configured cookie secret and
+restart all Console server Pods; the proxy reads the cookie secret only at
+startup. Token revocation and RBAC changes do not terminate established
+WebSockets; restart the Console server Pods to disconnect them. Signing out
+clears the proxy session, not necessarily the IdP's SSO session.
 
 State-changing requests and WebSocket upgrades require an `Origin` matching
 the configured HTTPS Console origin. Authorization audit events record the

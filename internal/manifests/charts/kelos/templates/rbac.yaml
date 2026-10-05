@@ -295,7 +295,7 @@ rules:
       - delete
       - patch
       - watch
-  {{- if eq .Values.consoleServer.auth.mode "oidc" }}
+  {{- if or (eq .Values.consoleServer.auth.mode "oidc") (eq .Values.consoleServer.auth.mode "github") }}
   - apiGroups:
       - authorization.k8s.io
     resources:
