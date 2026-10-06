@@ -231,7 +231,8 @@ kubectl port-forward -n kelos-system service/kelos-console-server 8080:80
 ```
 
 Then open `http://localhost:8080` and enter the token. The token represents one
-shared user that can inspect Kelos resources and create, reset, delete, and
+shared user that can inspect Kelos resources, manage Workspaces, AgentConfigs,
+and WorkerPools through the Admin page, and create, reset, delete, and
 connect to Sessions in any namespace. It also grants interactive shell access
 to Ready Sessions' agent containers, including their workspaces and mounted
 credentials. Treat it as a credential. For access
@@ -301,8 +302,8 @@ supported and must be mapped to identifiers at the IdP. Kelos accepts at most
 for the subject. Empty, repeated, or malformed identity headers are rejected;
 a user may have no groups and receive permissions through a User RoleBinding.
 
-The chart creates the unbound `kelos-console-user` ClusterRole. To grant its
-full Console access in one namespace:
+The chart creates unbound `kelos-console-user` and `kelos-console-admin`
+ClusterRoles. To grant Session access and resource inspection in one namespace:
 
 ```yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -324,6 +325,69 @@ Use narrower Roles for read-only or limited access. The permission table and
 limitations are in [the Console authentication reference](../../../../docs/reference.md#console-authentication-and-authorization).
 The generated user role grants no Pod permissions. The Console ServiceAccount
 performs the underlying Pod operations after checking the caller's permissions.
+
+The Admin page uses the same namespace RoleBindings. To bootstrap an
+administrator who can manage configuration and assign User or Admin roles,
+bind `kelos-console-admin` in the namespace:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kelos-console-administrators
+  namespace: team-frontend
+subjects:
+  - kind: Group
+    name: oidc:example:frontend-administrators
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: kelos-console-admin
+  apiGroup: rbac.authorization.k8s.io
+```
+
+The Admin role grants `list`, `create`, and `delete` on every RoleBinding in
+its bound namespace, including bindings for other applications. The Console
+ServiceAccount has those permissions across all namespaces. Kubernetes RBAC
+cannot restrict them to bindings with the Console's membership label; the
+Console's HTTP handlers enforce that restriction for membership changes. A
+compromised Console server could read, delete, or create RoleBindings in any
+namespace, including bindings that grant other identities permissions the Console
+ServiceAccount already holds, such as `pods/exec`. Kubernetes allows creating a
+binding to a role whose permissions the caller already holds without explicit
+`bind` permission. A user with the Admin role can also manage RoleBindings
+directly through the Kubernetes API, including granting permissions they hold.
+Grant Admin access only to people trusted to manage the namespace's RoleBindings.
+Explicit `bind` permission is restricted to the two Console ClusterRoles; neither
+role grants permission to edit or escalate ClusterRoles.
+
+Choose an accessible namespace from the sidebar dropdown, then open **Admin →
+Members**. **Add member** takes an OIDC subject ID and defaults to **User**.
+The Console adds the configured username prefix and grants membership in the
+selected namespace. User members can use Sessions and inspect resources;
+Admin members can also manage configuration and members. The Console remembers
+the selected namespace. Refresh the dropdown after access changes.
+
+Use **Change role** to promote or demote a member, or **Remove member** to remove
+their direct membership. When external user assignments remain, the action is
+labeled **Remove direct access**. Role changes require permission to create RoleBindings
+and bind the selected Console ClusterRole, plus delete permission for the
+member's Console-managed bindings. The page shows each direct member once and
+rejects changes based on stale membership versions. If a role change fails,
+refresh Members to inspect the resulting role before retrying.
+
+External User assignments and namespace group grants to the Console roles are
+shown with their sources. External assignments cannot be changed here, and
+removing direct membership preserves external and group access. The Console does
+not query the identity provider for user names, email addresses, or individual
+group members. Other roles and ClusterRoleBindings remain managed separately.
+Membership management requires OIDC; it is unavailable with GitHub authentication
+or a shared static token.
+The Console ServiceAccount lists namespaces and filters them by the signed-in
+user's permissions; human users do not need permission to list namespaces.
+Discovery runs at most eight authorization checks concurrently per request. The
+number of checks still grows with namespace count and the resource permissions
+that must be evaluated.
 
 `secretName`, `tokenKey`, and `secureCookie` at the `consoleServer` level belong
 to static-token mode; do not combine static settings with OIDC. OIDC cookies
@@ -497,6 +561,12 @@ already removed the controller that clears custom-resource finalizers.
 For a full cleanup, use `kelos uninstall` instead of `helm uninstall`, or delete
 all Kelos custom resources while the controller is still running, upgrade the
 release with `crds.keep=false`, and then uninstall the chart.
+
+`kelos uninstall` also removes Console membership RoleBindings labeled
+`kelos.dev/console-membership=true` across all namespaces. Unlabeled bootstrap
+and externally managed bindings remain; remove them separately if their grants
+should not become active again when the Console roles are reinstalled. Helm
+uninstall does not remove membership bindings created through Console.
 
 ## Webhook Server Configuration
 

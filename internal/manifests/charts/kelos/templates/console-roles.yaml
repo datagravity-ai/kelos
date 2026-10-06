@@ -1,8 +1,14 @@
 {{- if and .Values.consoleServer.enabled (or (eq .Values.consoleServer.auth.mode "oidc") (eq .Values.consoleServer.auth.mode "github")) }}
+{{- $roles := list "kelos-console-user" }}
+{{- if eq .Values.consoleServer.auth.mode "oidc" }}
+{{- $roles = append $roles "kelos-console-admin" }}
+{{- end }}
+{{- range $name := $roles }}
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: kelos-console-user
+  name: {{ $name }}
 rules:
   - apiGroups: [kelos.dev]
     resources:
@@ -29,4 +35,17 @@ rules:
   - apiGroups: [kelos.dev]
     resources: [tasks/logs]
     verbs: [get]
+  {{- if eq $name "kelos-console-admin" }}
+  - apiGroups: [kelos.dev]
+    resources: [workspaces, agentconfigs, workerpools]
+    verbs: [create, update, delete]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [rolebindings]
+    verbs: [list, create, delete]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [clusterroles]
+    resourceNames: [kelos-console-user, kelos-console-admin]
+    verbs: [bind]
+  {{- end }}
+{{- end }}
 {{- end }}

@@ -18,6 +18,26 @@ vm.runInThisContext(applicationSlice('const allResourceKind', 'async function lo
 vm.runInThisContext(applicationSlice('async function refreshConsole', 'async function openResourceDetail'), {filename: 'app.js'});
 vm.runInThisContext(applicationSlice('function setResourceDetailView', 'function sessionKey'), {filename: 'app.js'});
 
+vm.runInThisContext(applicationSlice('function renderSessions(', 'function createSessionListItem('), {filename: 'app.js'});
+
+function testViewsWithoutNamespace() {
+  const element = () => ({children: [], textContent: '', replaceChildren(...items) { this.children = items; }, append(...items) { this.children.push(...items); }});
+  global.document = {createElement: element};
+  global.state = {namespace: '', sessions: [], resourceGroups: []};
+  global.elements = {summaryGrid: element(), recentResources: element(), list: element()};
+  global.syncSessionActionsMenu = () => {};
+  try {
+    assert.equal(createResourceTable([]).textContent, 'Select a namespace to view resources.');
+    renderSessions();
+    assert.equal(elements.list.children[0].textContent, 'Select a namespace to view Sessions.');
+  } finally {
+    delete global.document;
+    delete global.syncSessionActionsMenu;
+    delete global.state;
+    delete global.elements;
+  }
+}
+
 function testReturningToSessionsRefreshesCurrentRequest() {
   let updates = 0;
   const navigationButton = () => ({setAttribute() {}, removeAttribute() {}});
@@ -26,10 +46,12 @@ function testReturningToSessionsRefreshesCurrentRequest() {
     overviewView: {hidden: false},
     sessionsView: {hidden: true},
     resourcesView: {hidden: true},
+    adminView: {hidden: true},
     sessionSidebar: {hidden: true},
     overviewButton: navigationButton(),
     sessionsButton: navigationButton(),
     resourcesButton: navigationButton(),
+    adminButton: navigationButton(),
   };
   global.updateCurrentRequest = () => { updates++; };
   global.updateJumpToLatest = () => {};
@@ -234,6 +256,7 @@ function testResourceDetailTabsSupportKeyboardNavigation() {
   assert.equal(prevented, true);
 }
 
+testViewsWithoutNamespace();
 testReturningToSessionsRefreshesCurrentRequest();
 testResourceInventorySupportsAllTypesAndSearch();
 testResourceRelationshipHelpersResolveExistingAndMissingResources();

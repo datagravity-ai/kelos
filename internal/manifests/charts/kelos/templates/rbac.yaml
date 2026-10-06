@@ -270,6 +270,9 @@ kind: ClusterRole
 metadata:
   name: kelos-console-server-role
 rules:
+  - apiGroups: [""]
+    resources: [namespaces]
+    verbs: [list]
   - apiGroups:
       - kelos.dev
     resources:
@@ -295,6 +298,25 @@ rules:
       - delete
       - patch
       - watch
+  - apiGroups:
+      - kelos.dev
+    resources:
+      - workspaces
+      - agentconfigs
+      - workerpools
+    verbs:
+      - create
+      - update
+      - delete
+  {{- if eq .Values.consoleServer.auth.mode "oidc" }}
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [rolebindings]
+    verbs: [list, create, delete]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [clusterroles]
+    resourceNames: [kelos-console-user, kelos-console-admin]
+    verbs: [get, bind]
+  {{- end }}
   {{- if or (eq .Values.consoleServer.auth.mode "oidc") (eq .Values.consoleServer.auth.mode "github") }}
   - apiGroups:
       - authorization.k8s.io

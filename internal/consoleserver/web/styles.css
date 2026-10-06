@@ -45,8 +45,8 @@ button { color: inherit; }
 .namespace-form { margin: 8px 0; padding: 0 3px; }
 .namespace-form label { display: block; margin: 0 7px 6px; color: var(--faint); font-size: 10px; font-weight: 600; }
 .namespace-form div { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
-.namespace-form input { min-width: 0; padding: 8px 10px; border: 1px solid var(--line); border-right: 0; border-radius: 9px 0 0 9px; outline: 0; background: var(--card); color: var(--ink); font-size: 12px; }
-.namespace-form input:focus { border-color: #9b9b9b; box-shadow: 0 0 0 2px rgba(0,0,0,.05); }
+.namespace-form select { min-width: 0; padding: 8px 10px; border: 1px solid var(--line); border-right: 0; border-radius: 9px 0 0 9px; outline: 0; background: var(--card); color: var(--ink); font-size: 12px; }
+.namespace-form select:focus { border-color: #9b9b9b; box-shadow: 0 0 0 2px rgba(0,0,0,.05); }
 .namespace-form button { padding: 8px 10px; border: 1px solid var(--accent); border-radius: 0 9px 9px 0; background: var(--accent); color: white; font-size: 11px; font-weight: 600; cursor: pointer; }
 .console-nav { display: grid; gap: 2px; margin: 0 0 7px; padding-bottom: 7px; border-bottom: 1px solid var(--line); }
 .console-nav button { width: 100%; display: grid; grid-template-columns: 24px minmax(0, 1fr); align-items: center; gap: 8px; min-height: 40px; padding: 8px 10px; border: 0; border-radius: 9px; background: transparent; color: var(--ink); font-size: 13px; font-weight: 450; text-align: left; cursor: pointer; }
@@ -142,6 +142,43 @@ button { color: inherit; }
 .console-page-header h1 { margin: 1px 0 0; font-size: 22px; font-weight: 600; line-height: 1.25; letter-spacing: -.02em; }
 .console-page-header p { margin: 3px 0 0; color: var(--muted); font-size: 12px; }
 .console-page-body { min-height: 0; overflow-y: auto; padding: 24px max(24px, calc((100% - 1080px) / 2)) 48px; }
+.admin-intro { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
+.admin-intro h2 { margin: 0; font-size: 20px; font-weight: 600; letter-spacing: -.02em; }
+.admin-intro p { max-width: 620px; margin: 8px 0 0; color: var(--muted); font-size: 13px; line-height: 1.6; }
+.admin-intro > button { flex: none; }
+.admin-status { color: var(--muted); font-size: 13px; }
+.admin-card { margin-top: 22px; overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: var(--card); }
+.admin-card-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 20px; background: var(--panel); border-bottom: 1px solid var(--line); }
+.admin-card-header h2 { margin: 0; font-size: 16px; font-weight: 600; }
+.admin-card-header p { margin: 5px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.admin-card-header button { flex: none; }
+.admin-resource-row { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 14px; padding: 16px 20px; }
+.admin-resource-row + .admin-resource-row { border-top: 1px solid var(--line-soft); }
+.admin-resource-name { overflow-wrap: anywhere; font-size: 13px; font-weight: 600; }
+.admin-resource-status { margin-top: 4px; color: var(--muted); font-size: 12px; }
+.admin-resource-actions { display: flex; gap: 8px; }
+.admin-resource-actions button { min-height: 38px; }
+.admin-resource-actions .danger { color: var(--danger); }
+.admin-card .resource-empty { min-height: 110px; }
+.namespace-form p { margin: 8px 7px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.member-status { margin: 16px 20px; color: var(--muted); font-size: 13px; }
+.member-role-badge { display: inline-flex; align-items: center; padding: 6px 10px; border-radius: 8px; background: var(--panel); font-size: 12px; font-weight: 600; }
+.member-note, .member-groups { padding: 16px 20px; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
+.member-groups:empty { display: none; }
+.member-groups h3 { margin: 0 0 8px; color: var(--ink); font-size: 13px; }
+.member-groups p { margin: 8px 0 0; }
+.session-dialog.member-dialog { width: min(94vw, 520px); }
+.member-dialog .dialog-header { display: block; }
+.member-dialog label { display: block; margin: 18px 0 8px; font-size: 12px; font-weight: 600; }
+.member-dialog input, .member-dialog select { width: 100%; padding: 12px; border: 1px solid var(--line); border-radius: 8px; color: var(--ink); background: var(--card); font-size: 14px; }
+.member-dialog p { font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+.member-dialog #member-help, .member-dialog #member-permissions { color: var(--muted); }
+.session-dialog.admin-editor { width: min(94vw, 800px); }
+.admin-editor .dialog-header { margin-bottom: 20px; }
+.admin-editor label { display: block; margin-bottom: 8px; font-size: 12px; font-weight: 600; }
+.admin-editor textarea { width: 100%; min-height: 330px; max-height: 55dvh; resize: vertical; padding: 14px; border: 1px solid var(--line); border-radius: 10px; color: var(--code-ink); background: var(--code-bg); font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; tab-size: 2; }
+.admin-editor-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.admin-error { color: var(--danger); font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .resource-summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
 .resource-summary-card { min-width: 0; display: grid; gap: 10px; padding: 17px; border: 1px solid var(--line); border-radius: 12px; background: var(--card); text-align: left; cursor: pointer; transition: background .15s, border-color .15s; }
 .resource-summary-card:hover { border-color: #c9c9c9; background: var(--panel); }
@@ -546,6 +583,8 @@ button { color: inherit; }
 .mobile-only { display: none; }
 
 @media (max-width: 800px), (max-height: 500px) and (pointer: coarse) {
+  .member-dialog input, .member-dialog select, .admin-editor textarea { font-size: 16px; }
+  .member-dialog button { min-height: 44px; }
   .app-shell { display: block; }
   .sidebar { position: fixed; inset: 0 auto 0 0; width: min(88vw, 320px); padding: calc(8px + env(safe-area-inset-top)) 8px calc(8px + env(safe-area-inset-bottom)) calc(8px + env(safe-area-inset-left)); visibility: hidden; transform: translateX(-103%); transition: transform .22s ease, visibility 0s linear .22s; box-shadow: 16px 0 48px rgba(0,0,0,.16); }
   .sidebar.open { visibility: visible; transform: translateX(0); transition-delay: 0s; }
@@ -557,7 +596,7 @@ button { color: inherit; }
   .new-session-button { min-height: 44px; margin-top: 4px; padding: 8px 10px; }
   .namespace-form { margin: 8px 0; padding: 0 3px; }
   .namespace-form label { display: none; }
-  .namespace-form input, .namespace-form button { min-height: 44px; }
+  .namespace-form select, .namespace-form button { min-height: 44px; }
   .namespace-form button { padding-right: 11px; padding-left: 11px; font-size: 11px; }
   .console-nav { gap: 2px; margin-bottom: 6px; padding-bottom: 7px; }
   .console-nav button { min-height: 44px; padding: 8px 10px; font-size: 14px; }
@@ -635,7 +674,7 @@ button { color: inherit; }
   .changes-view { padding: 20px calc(12px + env(safe-area-inset-right)) 32px calc(12px + env(safe-area-inset-left)); overscroll-behavior: contain; }
   .composer-wrap { padding: 8px calc(8px + env(safe-area-inset-right)) calc(7px + env(safe-area-inset-bottom)) calc(8px + env(safe-area-inset-left)); }
   .composer { padding: 8px; }
-  .composer textarea, .pending-message-input, .yaml-panel textarea, .form-grid input, .form-grid select, .source-picker select, .section-field input, .session-section-control input, .session-section-control select, .namespace-form input, .input-other { font-size: 16px; }
+  .composer textarea, .pending-message-input, .yaml-panel textarea, .form-grid input, .form-grid select, .source-picker select, .section-field input, .session-section-control input, .session-section-control select, .namespace-form select, .input-other { font-size: 16px; }
   .composer textarea { min-height: 44px; padding: 10px 8px; line-height: 24px; }
   .attach-button, .send-button { width: 44px; height: 44px; }
   .message-bubble, .user-message { max-width: 92%; }

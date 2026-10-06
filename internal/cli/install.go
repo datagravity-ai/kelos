@@ -941,11 +941,14 @@ func deleteConsoleServerRBAC(ctx context.Context, dyn dynamic.Interface) error {
 		name       string
 		kind       string
 		namespaced bool
+		selector   string
 	}{
+		{gvr: roleBindingGVR, kind: "RoleBinding", namespaced: true, selector: "kelos.dev/console-membership=true"},
 		{gvr: clusterRoleBindingGVR, name: "kelos-console-server-rolebinding", kind: "ClusterRoleBinding"},
 		{gvr: clusterRoleBindingGVR, name: "kelos-session-server-rolebinding", kind: "ClusterRoleBinding"},
 		{gvr: clusterRoleGVR, name: "kelos-console-server-role", kind: "ClusterRole"},
 		{gvr: clusterRoleGVR, name: "kelos-console-user", kind: "ClusterRole"},
+		{gvr: clusterRoleGVR, name: "kelos-console-admin", kind: "ClusterRole"},
 		{gvr: clusterRoleGVR, name: "kelos-session-server-role", kind: "ClusterRole"},
 		{gvr: roleBindingGVR, name: "kelos-console-server-rolebinding", kind: "RoleBinding", namespaced: true},
 		{gvr: roleBindingGVR, name: "kelos-session-server-rolebinding", kind: "RoleBinding", namespaced: true},
@@ -953,7 +956,7 @@ func deleteConsoleServerRBAC(ctx context.Context, dyn dynamic.Interface) error {
 		{gvr: roleGVR, name: "kelos-session-server-role", kind: "Role", namespaced: true},
 	}
 	for _, resource := range resources {
-		list, err := dyn.Resource(resource.gvr).List(ctx, metav1.ListOptions{})
+		list, err := dyn.Resource(resource.gvr).List(ctx, metav1.ListOptions{LabelSelector: resource.selector})
 		if err != nil {
 			if errors.IsNotFound(err) {
 				continue
@@ -962,7 +965,7 @@ func deleteConsoleServerRBAC(ctx context.Context, dyn dynamic.Interface) error {
 		}
 		for i := range list.Items {
 			item := &list.Items[i]
-			if item.GetName() != resource.name {
+			if resource.name != "" && item.GetName() != resource.name {
 				continue
 			}
 			var err error

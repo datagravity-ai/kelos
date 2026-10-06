@@ -1193,9 +1193,24 @@ func TestDeleteAllCustomResources_DeletesExistingResources(t *testing.T) {
 
 func TestDeleteConsoleServerRBACAcrossNamespaces(t *testing.T) {
 	scheme := runtime.NewScheme()
+	membership := func(name, namespace, label, role string) *unstructured.Unstructured {
+		binding := rbacObject("RoleBinding", name, namespace)
+		if label != "" {
+			binding.SetLabels(map[string]string{"kelos.dev/console-membership": label})
+		}
+		binding.Object["roleRef"] = map[string]interface{}{"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": role}
+		binding.Object["subjects"] = []interface{}{map[string]interface{}{"apiGroup": "rbac.authorization.k8s.io", "kind": "User", "name": "oidc:bob"}}
+		return binding
+	}
 	objects := []runtime.Object{
+		membership("kelos-console-member-admin", "team-a", "true", "kelos-console-admin"),
+		membership("kelos-console-member-user", "team-b", "true", "kelos-console-user"),
+		membership("kelos-console-member-external", "team-a", "", "kelos-console-admin"),
+		membership("kelos-console-member-detached", "team-b", "false", "kelos-console-user"),
+		membership("bootstrap-admin", "team-a", "", "kelos-console-admin"),
 		rbacObject("ClusterRole", "kelos-console-server-role", ""),
 		rbacObject("ClusterRole", "kelos-console-user", ""),
+		rbacObject("ClusterRole", "kelos-console-admin", ""),
 		rbacObject("ClusterRoleBinding", "kelos-console-server-rolebinding", ""),
 		rbacObject("Role", "kelos-console-server-role", "team-a"),
 		rbacObject("RoleBinding", "kelos-console-server-rolebinding", "team-a"),
@@ -1224,8 +1239,11 @@ func TestDeleteConsoleServerRBACAcrossNamespaces(t *testing.T) {
 		name      string
 		namespace string
 	}{
+		{gvr: roleBindingGVR, name: "kelos-console-member-admin", namespace: "team-a"},
+		{gvr: roleBindingGVR, name: "kelos-console-member-user", namespace: "team-b"},
 		{gvr: clusterRoleGVR, name: "kelos-console-server-role"},
 		{gvr: clusterRoleGVR, name: "kelos-console-user"},
+		{gvr: clusterRoleGVR, name: "kelos-console-admin"},
 		{gvr: clusterRoleBindingGVR, name: "kelos-console-server-rolebinding"},
 		{gvr: roleGVR, name: "kelos-console-server-role", namespace: "team-a"},
 		{gvr: roleBindingGVR, name: "kelos-console-server-rolebinding", namespace: "team-a"},
@@ -1244,6 +1262,9 @@ func TestDeleteConsoleServerRBACAcrossNamespaces(t *testing.T) {
 			t.Fatalf("%s still exists: %v", resource.name, err)
 		}
 	}
+	if err := deleteConsoleServerRBAC(t.Context(), client); err != nil {
+		t.Fatalf("repeated RBAC cleanup: %v", err)
+	}
 	if _, err := client.Resource(clusterRoleGVR).Get(context.Background(), "unrelated-cluster-role", metav1.GetOptions{}); err != nil {
 		t.Fatalf("unrelated ClusterRole was removed: %v", err)
 	}
@@ -1255,6 +1276,15 @@ func TestDeleteConsoleServerRBACAcrossNamespaces(t *testing.T) {
 	}
 	if _, err := client.Resource(roleBindingGVR).Namespace("team-a").Get(context.Background(), "unrelated-rolebinding", metav1.GetOptions{}); err != nil {
 		t.Fatalf("unrelated RoleBinding was removed: %v", err)
+	}
+	for _, external := range []struct{ name, namespace string }{
+		{"kelos-console-member-external", "team-a"},
+		{"kelos-console-member-detached", "team-b"},
+		{"bootstrap-admin", "team-a"},
+	} {
+		if _, err := client.Resource(roleBindingGVR).Namespace(external.namespace).Get(t.Context(), external.name, metav1.GetOptions{}); err != nil {
+			t.Fatalf("external RoleBinding %s/%s was removed: %v", external.namespace, external.name, err)
+		}
 	}
 }
 
