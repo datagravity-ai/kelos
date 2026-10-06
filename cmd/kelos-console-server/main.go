@@ -17,6 +17,7 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	authorizationclient "k8s.io/client-go/kubernetes/typed/authorization/v1"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -83,7 +84,12 @@ func main() {
 		SecureCookie:     secureCookie,
 	}
 	if authMode == consoleserver.AuthModeOIDC || authMode == consoleserver.AuthModeGitHub {
-		proxyAuth.Reviewer = clientset.AuthorizationV1().SubjectAccessReviews()
+		authorizationClient, err := newAuthorizationClient(restConfig)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to create authorization client: %v\n", err)
+			os.Exit(1)
+		}
+		proxyAuth.Reviewer = authorizationClient.SubjectAccessReviews()
 		proxyAuth.Logger = slog.New(slog.NewJSONHandler(os.Stdout, nil))
 		config.ProxyAuth = &proxyAuth
 	}
@@ -113,6 +119,14 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Console server failed: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func newAuthorizationClient(config *rest.Config) (*authorizationclient.AuthorizationV1Client, error) {
+	config = rest.CopyConfig(config)
+	// Namespace discovery can require ten authorization requests per namespace.
+	config.QPS = 50
+	config.Burst = 100
+	return authorizationclient.NewForConfig(config)
 }
 
 func validateAuthFlags(mode, address, tokenFile string, secureCookie bool, proxyAuth consoleserver.ProxyAuthConfig) error {

@@ -1,12 +1,59 @@
 package main
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
+
+	authorizationv1 "k8s.io/api/authorization/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/rest"
 
 	"github.com/kelos-dev/kelos/internal/consoleserver"
 )
+
+func TestAuthorizationClient(t *testing.T) {
+	received := make(chan authorizationv1.SubjectAccessReviewSpec, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost || request.URL.Path != "/apis/authorization.k8s.io/v1/subjectaccessreviews" {
+			t.Errorf("unexpected request: %s %s", request.Method, request.URL.Path)
+		}
+		var review authorizationv1.SubjectAccessReview
+		if err := json.NewDecoder(request.Body).Decode(&review); err != nil {
+			t.Error(err)
+		}
+		received <- review.Spec
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"apiVersion":"authorization.k8s.io/v1","kind":"SubjectAccessReview","status":{"allowed":true}}`))
+	}))
+	defer server.Close()
+	config := &rest.Config{Host: server.URL, QPS: 5, Burst: 10, ContentConfig: rest.ContentConfig{ContentType: "application/json"}}
+	client, err := newAuthorizationClient(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := client.RESTClient().GetRateLimiter().QPS(); got != 50 {
+		t.Fatalf("authorization QPS = %v, want 50", got)
+	}
+	if config.QPS != 5 || config.Burst != 10 {
+		t.Fatal("authorization client changed the shared REST configuration")
+	}
+	spec := authorizationv1.SubjectAccessReviewSpec{
+		User: "oidc:alice", Groups: []string{"oidc:developers"},
+		ResourceAttributes: &authorizationv1.ResourceAttributes{Group: "kelos.dev", Resource: "sessions", Verb: "list", Namespace: "team-a"},
+	}
+	review, err := client.SubjectAccessReviews().Create(t.Context(), &authorizationv1.SubjectAccessReview{Spec: spec}, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := <-received; !review.Status.Allowed || !reflect.DeepEqual(got, spec) {
+		t.Fatalf("unexpected review: request=%#v response=%#v", got, review.Status)
+	}
+}
 
 func TestReadToken(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "token")

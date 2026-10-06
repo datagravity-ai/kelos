@@ -15,17 +15,21 @@ extract('async function openDialog(', 'elements.newSessionButton.addEventListene
 function element() {
   return {
     hidden: false, disabled: false, value: '', textContent: '', children: [], open: false,
+    listeners: new Map(), attributes: new Map(),
+    get options() { return this.children; },
     append(...children) { this.children.push(...children); },
     replaceChildren(...children) { this.children = children; },
-    addEventListener() {}, setAttribute() {}, focus() {},
+    addEventListener(name, listener) { this.listeners.set(name, listener); },
+    setAttribute(name, value) { this.attributes.set(name, value); },
+    getAttribute(name) { return this.attributes.get(name); }, focus() {},
     showModal() { this.open = true; }, close() { this.open = false; },
   };
 }
 const member = {id: 'Ym9i', username: 'oidc:bob', role: 'admin', version: '3', sources: [{binding: 'binding', role: 'admin', managed: true}], canChange: true, canRemove: true};
 const inventory = {enabled: true, usernamePrefix: 'oidc:', currentUser: 'oidc:alice', roles: [{name: 'user', label: 'User', description: 'Use Sessions', canAssign: true}, {name: 'admin', label: 'Admin', description: 'Manage members', canAssign: true}], members: [member], groups: [{name: 'oidc:developers', role: 'user', binding: 'developers'}]};
 function reset() {
-  global.state = {namespace: 'team-a', namespaceGeneration: 0, defaultNamespace: 'team-a', memberGeneration: 0, memberInventory: null, memberSaving: false, memberEditing: null};
-  global.elements = Object.fromEntries(['memberStatus', 'memberList', 'memberGroups', 'memberError', 'addMember', 'memberDialog', 'memberDialogTitle', 'memberDialogDescription', 'memberSubject', 'memberRole', 'memberHelp', 'memberDialogError', 'memberSave', 'activeNamespace', 'namespace', 'namespaceStatus', 'refreshNamespaces', 'newSessionButton', 'welcomeNew', 'dialog', 'dialogError'].map(key => [key, element()]));
+  global.state = {namespace: 'team-a', namespaces: [], namespaceGeneration: 0, namespaceRefresh: null, defaultNamespace: 'team-a', memberGeneration: 0, memberInventory: null, memberSaving: false, memberEditing: null};
+  global.elements = Object.fromEntries(['memberStatus', 'memberList', 'memberGroups', 'memberError', 'addMember', 'memberDialog', 'memberDialogTitle', 'memberDialogDescription', 'memberSubject', 'memberRole', 'memberHelp', 'memberDialogError', 'memberSave', 'activeNamespace', 'namespace', 'namespaceForm', 'namespaceStatus', 'newSessionButton', 'welcomeNew', 'dialog', 'dialogError'].map(key => [key, element()]));
   elements.namespaceLabels = [element()];
   global.document = {createElement: element};
   global.addOption = (select, value, label) => { const option = element(); option.value = value; option.textContent = label; select.append(option); };
@@ -138,25 +142,119 @@ async function testStaleNamespace() {
 async function testNamespacePicker() {
   reset();
   global.loadIdentity = async () => ({defaultNamespace: 'team-a'});
-  global.api = async url => { assert.equal(url, '/api/namespaces'); return {namespaces: ['team-a', 'team-b']}; };
+  const requests = [];
+  let available = ['team-a', 'team-b'];
+  global.api = async url => {
+    requests.push(url);
+    const parsed = new URL(url, 'https://console.example');
+    assert.equal(parsed.pathname, '/api/namespaces');
+    const namespace = parsed.searchParams.get('namespace');
+    return {namespaces: available.filter(name => !namespace || name === namespace)};
+  };
   window.localStorage.setItem('kelos-console-namespace', 'team-b');
-  await loadConfig();
+  assert.equal(await loadConfig(), true);
   assert.equal(state.namespace, 'team-b');
   assert.equal(elements.activeNamespace.value, 'team-b');
+  assert.deepEqual(elements.activeNamespace.children.map(option => option.value), ['team-b']);
+  assert.deepEqual(requests, ['/api/namespaces?namespace=team-b']);
+  await refreshNamespaces();
+  assert.equal(state.namespace, 'team-b');
   assert.deepEqual(elements.activeNamespace.children.map(option => option.value), ['team-a', 'team-b']);
+  requests.length = 0;
   window.localStorage.setItem('kelos-console-namespace', 'inaccessible');
-  await loadConfig();
+  assert.equal(await loadConfig(), false);
   assert.equal(state.namespace, 'team-a');
-  global.api = async () => ({namespaces: ['team-c']});
-  await loadConfig();
+  assert.deepEqual(requests, ['/api/namespaces?namespace=inaccessible', '/api/namespaces']);
+  available = ['team-c'];
+  assert.equal(await loadConfig(), false);
   assert.equal(state.namespace, 'team-c');
-  global.api = async () => ({namespaces: []});
-  await loadConfig();
+  available = [];
+  assert.equal(await loadConfig(), false);
   assert.equal(state.namespace, '');
-  assert.equal(elements.activeNamespace.disabled, true);
+  assert.equal(elements.activeNamespace.disabled, false);
   assert.equal(elements.newSessionButton.disabled, true);
   assert.match(elements.namespaceStatus.textContent, /Ask an administrator/);
   assert.equal(window.localStorage.getItem('kelos-console-namespace'), null);
+}
+
+function startConsole() {
+  const from = app.indexOf('const configReady = loadConfig();');
+  const to = app.indexOf('window.setInterval(', from);
+  assert.ok(from > 0 && to > from);
+  const loaded = [];
+  vm.runInNewContext(app.slice(from, to), {
+    loadConfig, refreshNamespaces, errorMessage, showToast,
+    loadOptions: async () => { loaded.push('options'); },
+    loadSessions: async () => { loaded.push('sessions'); },
+    loadResources: async () => { loaded.push('resources'); },
+    setConsoleView: view => { loaded.push(view); },
+  });
+  return loaded;
+}
+
+async function testBackgroundNamespaceDiscovery() {
+  for (const outcome of ['success', 'failure', 'revoked', 'default']) {
+    reset();
+    state.namespace = '';
+    const preferred = outcome === 'default' ? 'team-a' : 'team-b';
+    if (outcome !== 'default') window.localStorage.setItem('kelos-console-namespace', preferred);
+    global.loadIdentity = async () => ({defaultNamespace: 'team-a'});
+    const requests = [];
+    let resolve, reject;
+    global.api = async url => {
+      requests.push(url);
+      if (url === `/api/namespaces?namespace=${preferred}`) return {namespaces: [preferred]};
+      assert.equal(url, '/api/namespaces');
+      return new Promise((a, b) => { resolve = a; reject = b; });
+    };
+    const loaded = startConsole();
+    await new Promise(setImmediate);
+    assert.deepEqual(loaded, ['options', 'sessions', 'resources', 'overview']);
+    assert.deepEqual(requests, [`/api/namespaces?namespace=${preferred}`, '/api/namespaces']);
+    assert.equal(state.namespace, preferred);
+    assert.deepEqual(state.namespaces, [preferred]);
+    assert.equal(elements.activeNamespace.disabled, false);
+    assert.equal(elements.newSessionButton.disabled, false);
+    assert.equal(elements.activeNamespace.getAttribute('aria-busy'), 'true');
+    assert.equal(elements.namespaceLabels[0].textContent, preferred);
+    if (outcome === 'failure') reject(new Error('authorization service unavailable'));
+    else resolve({namespaces: outcome === 'revoked' ? ['team-a'] : ['team-a', 'team-b']});
+    await new Promise(setImmediate);
+    assert.equal(state.namespace, outcome === 'revoked' ? 'team-a' : preferred);
+    assert.equal(elements.activeNamespace.getAttribute('aria-busy'), 'false');
+    if (outcome === 'failure') {
+      assert.deepEqual(state.namespaces, [preferred]);
+      assert.equal(elements.namespaceStatus.textContent, 'Unable to load namespaces: authorization service unavailable');
+      assert.equal(elements.namespaceStatus.hidden, false);
+    } else {
+      assert.deepEqual(state.namespaces, outcome === 'revoked' ? ['team-a'] : ['team-a', 'team-b']);
+    }
+  }
+}
+
+async function testInaccessibleStartupNamespace() {
+  reset();
+  state.namespace = '';
+  window.localStorage.setItem('kelos-console-namespace', 'deleted');
+  global.loadIdentity = async () => ({defaultNamespace: 'team-a'});
+  const requests = [];
+  let resolve;
+  global.api = async url => {
+    requests.push(url);
+    if (url === '/api/namespaces?namespace=deleted') return {namespaces: []};
+    assert.equal(url, '/api/namespaces');
+    return new Promise(done => { resolve = done; });
+  };
+  const loaded = startConsole();
+  await new Promise(setImmediate);
+  assert.deepEqual(loaded, []);
+  assert.equal(state.namespace, '');
+  assert.equal(elements.newSessionButton.disabled, true);
+  resolve({namespaces: ['team-a', 'team-b']});
+  await new Promise(setImmediate);
+  assert.deepEqual(loaded, ['options', 'sessions', 'resources', 'overview']);
+  assert.equal(state.namespace, 'team-a');
+  assert.deepEqual(requests, ['/api/namespaces?namespace=deleted', '/api/namespaces']);
 }
 async function testStartupNamespaceFailure() {
   reset();
@@ -171,14 +269,114 @@ async function testStartupNamespaceFailure() {
   assert.match(elements.namespaceStatus.textContent, /authorization service unavailable/);
   assert.equal(elements.newSessionButton.disabled, true);
   assert.equal(elements.welcomeNew.disabled, true);
+  assert.equal(elements.activeNamespace.disabled, false);
+  assert.equal(elements.activeNamespace.children[0].textContent, 'Open to load namespaces');
   assert.equal(window.localStorage.getItem('kelos-console-namespace'), null);
   global.api = async () => ({namespaces: ['team-a']});
-  await refreshNamespaces();
+  bindNamespacePicker();
+  elements.activeNamespace.listeners.get('pointerdown')({});
+  await new Promise(setImmediate);
   assert.equal(state.namespace, 'team-a');
   assert.equal(elements.newSessionButton.disabled, false);
   assert.equal(elements.welcomeNew.disabled, false);
   await openDialog();
   assert.equal(elements.dialog.open, true);
+}
+
+function bindNamespacePicker() {
+  extract('elements.namespaceForm.addEventListener(', 'elements.sessionSource.addEventListener(');
+}
+
+async function testNamespacePickerInteractions() {
+  for (const [name, event] of [
+    ['focus', {}], ['pointerdown', {pointerType: 'mouse'}], ['pointerdown', {pointerType: 'touch'}],
+    ['keydown', {key: ' '}], ['keydown', {key: 'Enter'}], ['keydown', {key: 'F4'}],
+    ['keydown', {key: 'ArrowDown', altKey: true}], ['keydown', {key: 'ArrowUp', altKey: true}],
+  ]) {
+    reset();
+    bindNamespacePicker();
+    state.namespaces = ['team-a'];
+    let calls = 0;
+    global.api = async url => {
+      assert.equal(url, '/api/namespaces');
+      calls++;
+      return {namespaces: ['team-a', 'team-b']};
+    };
+    elements.activeNamespace.listeners.get(name)(event);
+    await new Promise(setImmediate);
+    assert.equal(calls, 1);
+    assert.deepEqual(state.namespaces, ['team-a', 'team-b']);
+    assert.equal(state.namespace, 'team-a');
+    assert.equal(elements.activeNamespace.value, 'team-a');
+    assert.equal(elements.namespaceStatus.textContent, '');
+    const options = [...elements.activeNamespace.options];
+    elements.activeNamespace.listeners.get(name)(event);
+    await new Promise(setImmediate);
+    assert.equal(calls, 2);
+    assert.equal(elements.activeNamespace.value, 'team-a');
+    assert.equal(elements.activeNamespace.options.length, options.length);
+    for (const [index, option] of options.entries()) assert.equal(elements.activeNamespace.options[index], option);
+    elements.activeNamespace.listeners.get('keydown')({key: 'Escape'});
+    elements.activeNamespace.listeners.get('keydown')({key: 'ArrowDown'});
+    await new Promise(setImmediate);
+    assert.equal(calls, 2);
+  }
+}
+
+async function testNamespacePickerCoalescesRequests() {
+  for (const fail of [false, true]) {
+    reset();
+    bindNamespacePicker();
+    let calls = 0, resolve, reject;
+    global.api = url => {
+      assert.equal(url, '/api/namespaces');
+      calls++;
+      return new Promise((a, b) => { resolve = a; reject = b; });
+    };
+    const background = refreshNamespaces();
+    elements.activeNamespace.listeners.get('pointerdown')({});
+    elements.activeNamespace.listeners.get('focus')({});
+    elements.activeNamespace.listeners.get('keydown')({key: ' '});
+    assert.equal(calls, 1);
+    assert.equal(elements.activeNamespace.disabled, false);
+    if (fail) {
+      reject(new Error('temporarily unavailable'));
+      await assert.rejects(background, /temporarily unavailable/);
+    } else {
+      resolve({namespaces: ['team-a']});
+      await background;
+    }
+    elements.activeNamespace.listeners.get('pointerdown')({});
+    assert.equal(calls, 2);
+    resolve({namespaces: ['team-a', 'team-b']});
+    await new Promise(setImmediate);
+    assert.deepEqual(state.namespaces, ['team-a', 'team-b']);
+    assert.equal(state.namespace, 'team-a');
+  }
+}
+
+async function testNamespacePickerAfterAccessGranted() {
+  reset();
+  state.namespace = '';
+  elements.activeNamespace.disabled = true;
+  global.loadIdentity = async () => ({defaultNamespace: 'team-a'});
+  global.api = async () => ({namespaces: []});
+  await loadConfig();
+  assert.equal(elements.activeNamespace.disabled, false);
+  assert.equal(elements.newSessionButton.disabled, true);
+  const placeholder = elements.activeNamespace.options[0];
+  assert.equal(placeholder.textContent, 'No accessible namespaces');
+  bindNamespacePicker();
+  elements.activeNamespace.listeners.get('focus')({});
+  await new Promise(setImmediate);
+  assert.equal(elements.activeNamespace.options.length, 1);
+  assert.equal(elements.activeNamespace.options[0], placeholder);
+  global.api = async () => ({namespaces: ['team-a']});
+  elements.activeNamespace.listeners.get('focus')({});
+  await new Promise(setImmediate);
+  assert.equal(state.namespace, 'team-a');
+  assert.equal(elements.newSessionButton.disabled, false);
+  assert.equal(elements.namespaceStatus.hidden, true);
 }
 async function testRoleChangeConflict() {
   reset(); state.memberInventory = inventory;
@@ -243,6 +441,6 @@ async function testStaleNamespaceDiscovery() {
   }
 }
 (async () => {
-  await testMembers(); await testAddAndChange(); await testRemoveAndSelfDemotion(); await testStaleNamespace(); await testNamespacePicker(); await testStartupNamespaceFailure(); await testRoleChangeConflict(); await testRemovalAlertRefresh(); await testStaleNamespaceDiscovery();
+  await testMembers(); await testAddAndChange(); await testRemoveAndSelfDemotion(); await testStaleNamespace(); await testNamespacePicker(); await testBackgroundNamespaceDiscovery(); await testInaccessibleStartupNamespace(); await testStartupNamespaceFailure(); await testNamespacePickerInteractions(); await testNamespacePickerCoalescesRequests(); await testNamespacePickerAfterAccessGranted(); await testRoleChangeConflict(); await testRemovalAlertRefresh(); await testStaleNamespaceDiscovery();
   process.stdout.write('Member and namespace tests passed\n');
 })().catch(error => { console.error(error); process.exitCode = 1; });

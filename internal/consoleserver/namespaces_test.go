@@ -2,6 +2,7 @@ package consoleserver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -13,7 +14,50 @@ import (
 	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
+
+func TestNamespaceDiscoveryFiltersByName(t *testing.T) {
+	for _, test := range []struct {
+		name, namespace, resource, body string
+		status, reviews                 int
+		err                             error
+	}{
+		{name: "sessions", namespace: "team-a", resource: "sessions", body: `{"namespaces":["team-a"]}`, status: http.StatusOK, reviews: 1},
+		{name: "custom role", namespace: "team-a", resource: "agentconfigs", body: `{"namespaces":["team-a"]}`, status: http.StatusOK, reviews: len(consoleResourceDefinitions)},
+		{name: "denied", namespace: "team-a", body: `{"namespaces":[]}`, status: http.StatusOK, reviews: len(consoleResourceDefinitions)},
+		{name: "missing", namespace: "missing", body: `{"namespaces":[]}`, status: http.StatusOK},
+		{name: "authorization failure", namespace: "team-a", body: `{"error":"authorization service unavailable"}`, status: http.StatusServiceUnavailable, reviews: 1, err: errors.New("unavailable")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var calls atomic.Int32
+			server := memberTestServer(t, reviewFunc(func(_ context.Context, review *authorizationv1.SubjectAccessReview, _ metav1.CreateOptions) (*authorizationv1.SubjectAccessReview, error) {
+				calls.Add(1)
+				attr := review.Spec.ResourceAttributes
+				if attr.Namespace != test.namespace || attr.Group != "kelos.dev" || attr.Verb != "list" || review.Spec.User != "oidc:alice" {
+					t.Errorf("unexpected namespace review: %#v", review.Spec)
+				}
+				review.Status.Allowed = attr.Resource == test.resource
+				return review, test.err
+			}))
+			server.client = fake.NewClientBuilder().WithScheme(server.client.Scheme()).
+				WithIndex(&corev1.Namespace{}, "metadata.name", func(object client.Object) []string { return []string{object.GetName()} }).Build()
+			for _, namespace := range []string{"team-a", "team-b", "team-c"} {
+				if err := server.client.Create(t.Context(), &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			response := memberRequest(server, http.MethodGet, "/api/namespaces?namespace="+test.namespace, "")
+			if response.Code != test.status || strings.TrimSpace(response.Body.String()) != test.body {
+				t.Fatalf("namespace discovery: %d %s", response.Code, response.Body.String())
+			}
+			if got := int(calls.Load()); got != test.reviews {
+				t.Fatalf("review count = %d, want %d", got, test.reviews)
+			}
+		})
+	}
+}
 
 func TestNamespaceDiscoveryBoundsConcurrentReviews(t *testing.T) {
 	started := make(chan struct{}, namespaceReviewConcurrency*2)

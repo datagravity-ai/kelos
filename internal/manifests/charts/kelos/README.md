@@ -366,7 +366,8 @@ Members**. **Add member** takes an OIDC subject ID and defaults to **User**.
 The Console adds the configured username prefix and grants membership in the
 selected namespace. User members can use Sessions and inspect resources;
 Admin members can also manage configuration and members. The Console remembers
-the selected namespace. Refresh the dropdown after access changes.
+the selected namespace. Reopen the dropdown after access changes to refresh the
+namespace list.
 
 Use **Change role** to promote or demote a member, or **Remove member** to remove
 their direct membership. When external user assignments remain, the action is

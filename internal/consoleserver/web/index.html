@@ -26,10 +26,7 @@
       <div class="sidebar-scroll">
         <form class="namespace-form" id="namespace-form">
           <label for="active-namespace">Namespace</label>
-          <div>
-            <select id="active-namespace" required aria-label="Active namespace" disabled><option value="">Loading namespaces…</option></select>
-            <button id="refresh-namespaces" type="button" aria-label="Refresh namespaces" title="Refresh namespaces">↻</button>
-          </div>
+          <select id="active-namespace" required aria-label="Active namespace" aria-describedby="namespace-status" disabled><option value="">Loading namespaces…</option></select>
           <p id="namespace-status" role="status" hidden></p>
         </form>
         <nav class="console-nav" aria-label="Console">
