@@ -7,13 +7,18 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	corev1 "k8s.io/api/core/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 const namespaceReviewConcurrency = 8
 
 func (s *Server) listNamespaces(writer http.ResponseWriter, request *http.Request) {
 	var namespaces corev1.NamespaceList
-	if err := s.client.List(request.Context(), &namespaces); err != nil {
+	var options []client.ListOption
+	if namespace := request.URL.Query().Get("namespace"); namespace != "" {
+		options = append(options, client.MatchingFields{"metadata.name": namespace})
+	}
+	if err := s.client.List(request.Context(), &namespaces, options...); err != nil {
 		writeError(writer, http.StatusInternalServerError, "unable to list namespaces")
 		return
 	}

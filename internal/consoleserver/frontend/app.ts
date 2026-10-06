@@ -504,7 +504,6 @@ const elements = requireElements({
   dialogError: document.querySelector('#dialog-error'),
   namespaceForm: document.querySelector('#namespace-form'),
   namespaceStatus: document.querySelector('#namespace-status'),
-  refreshNamespaces: document.querySelector('#refresh-namespaces'),
   activeNamespace: document.querySelector('#active-namespace'),
   namespace: document.querySelector('[name="namespace"]'),
   sessionSource: document.querySelector('#session-source'),
@@ -591,6 +590,7 @@ const state = {
   namespace: '',
   namespaces: [] as string[],
   namespaceGeneration: 0,
+  namespaceRefresh: null as Promise<void> | null,
   sessionListGeneration: 0,
   options: {credentials: [], workspaces: [], agentConfigs: [], sessions: []} as SessionOptions,
   selectedAgentConfigs: [] as string[],
@@ -2860,26 +2860,30 @@ async function loadIdentity() {
   return config;
 }
 
-async function loadNamespaceOptions(preferred = state.namespace) {
+async function loadNamespaceOptions(preferred = state.namespace, {onlyPreferred = false} = {}) {
   const generation = state.namespaceGeneration;
-  elements.refreshNamespaces.disabled = true;
+  elements.activeNamespace.setAttribute('aria-busy', 'true');
   elements.newSessionButton.disabled = !state.namespace;
   elements.welcomeNew.disabled = !state.namespace;
   try {
-    const result = await api<{namespaces: string[]}>('/api/namespaces');
+    const query = onlyPreferred ? `?namespace=${encodeURIComponent(preferred)}` : '';
+    const result = await api<{namespaces: string[]}>(`/api/namespaces${query}`);
     if (generation !== state.namespaceGeneration) return null;
+    if (onlyPreferred && !result.namespaces.length) return '';
     state.namespaces = result.namespaces;
-    elements.activeNamespace.replaceChildren();
-    for (const namespace of state.namespaces) addOption(elements.activeNamespace, namespace, namespace);
+    const namespaces = state.namespaces.length ? state.namespaces : [''];
+    const options = elements.activeNamespace.options;
+    if (options.length !== namespaces.length || namespaces.some((namespace, index) => options[index].value !== namespace || options[index].textContent !== (namespace || 'No accessible namespaces'))) {
+      elements.activeNamespace.replaceChildren();
+      for (const namespace of namespaces) addOption(elements.activeNamespace, namespace, namespace || 'No accessible namespaces');
+    }
     const selected = state.namespaces.includes(preferred) ? preferred
       : state.namespaces.includes(state.defaultNamespace) ? state.defaultNamespace : state.namespaces[0] || '';
-    if (!selected) addOption(elements.activeNamespace, '', 'No accessible namespaces');
-    elements.activeNamespace.value = selected;
-    elements.activeNamespace.disabled = !selected;
+    if (elements.activeNamespace.value !== selected) elements.activeNamespace.value = selected;
     elements.newSessionButton.disabled = !selected;
     elements.welcomeNew.disabled = !selected;
     elements.namespaceStatus.hidden = Boolean(selected);
-    elements.namespaceStatus.textContent = 'No namespace access. Ask an administrator to add you as a member, then refresh.';
+    elements.namespaceStatus.textContent = selected ? '' : 'No namespace access. Ask an administrator to add you as a member, then reopen this list.';
     return selected;
   } catch (error) {
     if (generation !== state.namespaceGeneration) return null;
@@ -2887,19 +2891,26 @@ async function loadNamespaceOptions(preferred = state.namespace) {
     elements.namespaceStatus.textContent = `Unable to load namespaces: ${errorMessage(error)}`;
     throw error;
   } finally {
-    elements.refreshNamespaces.disabled = false;
+    elements.activeNamespace.setAttribute('aria-busy', 'false');
   }
 }
 
 async function loadConfig() {
   const config = await loadIdentity();
   state.defaultNamespace = config.defaultNamespace;
+  let discoverNamespaces = false;
   try {
-    const namespace = await loadNamespaceOptions(window.localStorage.getItem('kelos-console-namespace') || state.defaultNamespace);
+    const preferred = window.localStorage.getItem('kelos-console-namespace') || state.defaultNamespace;
+    let namespace = await loadNamespaceOptions(preferred, {onlyPreferred: true});
+    discoverNamespaces = Boolean(namespace);
+    if (namespace === '') namespace = await loadNamespaceOptions(preferred);
     if (namespace !== null) state.namespace = namespace;
   } catch {
     state.namespace = '';
+    elements.activeNamespace.replaceChildren();
+    addOption(elements.activeNamespace, '', 'Open to load namespaces');
   }
+  elements.activeNamespace.disabled = false;
   elements.namespace.value = state.namespace;
   for (const label of elements.namespaceLabels) label.textContent = state.namespace || 'No namespace selected';
   if (state.namespace) window.localStorage.setItem('kelos-console-namespace', state.namespace);
@@ -2909,11 +2920,16 @@ async function loadConfig() {
     renderResources();
     renderSessions();
   }
+  return discoverNamespaces;
 }
 
-async function refreshNamespaces() {
-  const namespace = await loadNamespaceOptions();
-  if (namespace !== null) await switchNamespace(namespace);
+function refreshNamespaces(): Promise<void> {
+  if (!state.namespaceRefresh) {
+    state.namespaceRefresh = loadNamespaceOptions().then(async namespace => {
+      if (namespace !== null) await switchNamespace(namespace);
+    }).finally(() => { state.namespaceRefresh = null; });
+  }
+  return state.namespaceRefresh;
 }
 
 function defaultSessionYAML() {
@@ -5901,8 +5917,16 @@ elements.namespaceForm.addEventListener('submit', event => event.preventDefault(
 elements.activeNamespace.addEventListener('change', () => {
   void switchNamespace(elements.activeNamespace.value).catch(error => showToast(errorMessage(error)));
 });
-elements.refreshNamespaces.addEventListener('click', () => {
-  void refreshNamespaces().catch(error => showToast(errorMessage(error)));
+for (const event of ['focus', 'pointerdown']) {
+  elements.activeNamespace.addEventListener(event, () => {
+    void refreshNamespaces().catch(error => showToast(errorMessage(error)));
+  });
+}
+elements.activeNamespace.addEventListener('keydown', event => {
+  const key = event as KeyboardEvent;
+  if ([' ', 'Enter', 'F4'].includes(key.key) || key.altKey && ['ArrowDown', 'ArrowUp'].includes(key.key)) {
+    void refreshNamespaces().catch(error => showToast(errorMessage(error)));
+  }
 });
 elements.sessionSource.addEventListener('change', () => loadSessionSource(elements.sessionSource.value));
 elements.credentialType.addEventListener('change', () => {
@@ -6400,7 +6424,10 @@ window.addEventListener('storage', event => {
 loadBrowserAlertPreference();
 
 const configReady = loadConfig();
-configReady.then(() => Promise.all([loadOptions(), loadSessions(), loadResources()])).then(() => {
+configReady.then(discoverNamespaces => {
+  if (discoverNamespaces) void refreshNamespaces().catch(error => showToast(errorMessage(error)));
+  return Promise.all([loadOptions(), loadSessions(), loadResources()]);
+}).then(() => {
   setConsoleView('overview');
 }).catch(error => showToast(error.message));
 window.setInterval(() => loadSessions({quiet: true}), 5000);

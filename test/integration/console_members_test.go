@@ -195,6 +195,16 @@ func TestConsoleMembership(t *testing.T) {
 	if response.Code != http.StatusOK || strings.TrimSpace(response.Body.String()) != `{"namespaces":["team-a"]}` {
 		t.Fatalf("member namespace discovery: %d %s", response.Code, response.Body.String())
 	}
+	for _, test := range []struct{ namespace, body string }{
+		{"team-a", `{"namespaces":["team-a"]}`},
+		{"team-b", `{"namespaces":[]}`},
+		{"missing", `{"namespaces":[]}`},
+	} {
+		response = request("bob", http.MethodGet, "/api/namespaces?namespace="+test.namespace, "")
+		if response.Code != http.StatusOK || strings.TrimSpace(response.Body.String()) != test.body {
+			t.Fatalf("namespace %s discovery: %d %s", test.namespace, response.Code, response.Body.String())
+		}
+	}
 	id, version = getMember()
 	response = request("alice", http.MethodDelete, "/api/admin/members/team-a/"+id+"?version="+version, "")
 	if response.Code != http.StatusOK {
@@ -204,6 +214,10 @@ func TestConsoleMembership(t *testing.T) {
 	response = request("bob", http.MethodGet, "/api/namespaces", "")
 	if response.Code != http.StatusOK || strings.TrimSpace(response.Body.String()) != `{"namespaces":[]}` {
 		t.Fatalf("removed member namespace discovery: %d %s", response.Code, response.Body.String())
+	}
+	response = request("bob", http.MethodGet, "/api/namespaces?namespace=team-a", "")
+	if response.Code != http.StatusOK || strings.TrimSpace(response.Body.String()) != `{"namespaces":[]}` {
+		t.Fatalf("removed member selected namespace discovery: %d %s", response.Code, response.Body.String())
 	}
 	forbidden := bootstrap.DeepCopy()
 	forbidden.Name, forbidden.ResourceVersion, forbidden.UID = "forbidden-grant", "", ""

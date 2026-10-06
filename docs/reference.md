@@ -728,11 +728,14 @@ permissions. Changing or deleting configuration can affect workloads that use it
 
 The **Namespace** dropdown lists namespaces where you can list at least one
 Console resource type, including access granted through groups or custom roles.
-The Console remembers your selection in this browser. If it is unavailable at
-sign-in, the Console selects the configured default when accessible, otherwise
-the first accessible namespace. Use the refresh button beside the dropdown after
-an administrator changes your access. If you have no accessible namespaces, ask
-an administrator to add you as a member and refresh.
+The Console remembers your selection in this browser. At sign-in, it checks your
+remembered namespace (or the configured default) first. If accessible, you can
+start working while the remaining namespace options load in the background.
+Otherwise, the Console loads the full list and selects the configured default
+when accessible, or the first accessible namespace. Opening or focusing the
+dropdown refreshes the namespace choices and keeps your current selection when
+it is still accessible. If you have no accessible namespaces, ask an administrator
+to add you as a member, then reopen the dropdown.
 
 With OIDC sign-in, **Admin → Members** shows each direct member once in the active
 namespace. Use **Add member** to enter an OIDC subject ID and choose **User**
