@@ -242,6 +242,9 @@ function resetHarness() {
     socket: null,
     socketGeneration: 0,
     bottomScrollFrame: null,
+    messagesScrollTop: 0,
+    messagesScrollPaused: false,
+    jumpToLatestPending: false,
     promptDrafts: new Map(),
     attachmentDrafts: new Map(),
     sendingMessage: false,
@@ -356,6 +359,10 @@ const connectSessionSocket = vm.runInThisContext(
 );
 const anchorSessionBottom = vm.runInThisContext(
   `(() => {${applicationSlice('function scheduleBottomAnchor', 'function currentAttachmentFiles')} return scheduleBottomAnchor;})()`,
+  {filename: 'app.js'},
+);
+const scrollSessionToBottom = vm.runInThisContext(
+  `(() => {${applicationSlice('function scrollToBottom', 'function messagesBottomDistance')} return scrollToBottom;})()`,
   {filename: 'app.js'},
 );
 vm.runInThisContext(applicationSlice('function ensureConversation', 'function trimURLSuffix'), {filename: 'app.js'});
@@ -515,6 +522,7 @@ function testPromptJumpToLoadedMessage() {
     renderAcceptedUser({...prompt, id: 2});
     renderAcceptedUser(prompt);
     const rows = elements.messages.querySelectorAll('.event-row.user');
+    state.jumpToLatestPending = true;
     state.bottomScrollFrame = window.requestAnimationFrame(() => assert.fail('Jump must cancel bottom anchoring'));
 
     clickPromptJump();
@@ -529,6 +537,8 @@ function testPromptJumpToLoadedMessage() {
     assert.equal(elements.input.value, 'unsent draft');
     assert.equal(sent.length, 1);
     assert.equal(state.bottomScrollFrame, null);
+    assert.equal(state.jumpToLatestPending, false);
+    assert.equal(state.messagesScrollPaused, true);
     animationFrames.forEach(callback => callback());
   }
 }
@@ -626,8 +636,10 @@ function testPromptJumpCancellation() {
     state.historyCursor = 'older-cursor';
     clickPromptJump();
     assert.equal(sent.length, 2);
+    assert.equal(state.messagesScrollPaused, false, 'Loading a prompt must preserve following');
     cancel();
     assert.equal(state.promptJumpTarget, null);
+    assert.equal(state.messagesScrollPaused, false, 'Cancelling a prompt jump must preserve following');
     receiveTranscriptPage(sent[1], [{type: 'user.message', id: 5, text: 'prompt'}], 'more-cursor');
     assert.equal(sent.length, 2);
     assert.equal(elements.promptsDialog.open, false);
@@ -649,6 +661,7 @@ function testPromptJumpUnavailableAndPageError() {
     assert.equal(state.historyPageLoading, false);
     assert.equal(elements.promptsDialog.open, true);
     assert.equal(elements.promptsMore.disabled, false);
+    assert.equal(state.messagesScrollPaused, false, 'An unsuccessful prompt jump must preserve following');
     assert.equal(elements.promptsStatus.textContent, failure === 'unavailable'
       ? 'This prompt is no longer available in the conversation'
       : 'Could not load messages for this prompt; try again');
@@ -656,6 +669,7 @@ function testPromptJumpUnavailableAndPageError() {
     clickPromptJump();
     assert.equal(elements.promptsDialog.open, false);
     assert.equal(elements.messages.querySelectorAll('.event-row.user')[0].focused, true);
+    assert.equal(state.messagesScrollPaused, true, 'A successful prompt jump must pause following');
   }
 }
 
@@ -695,6 +709,7 @@ function testSessionViewReset() {
   state.lastEventID = 12;
   state.historyCursor = 'cursor-1';
   state.tools.set('tool-1', {});
+  state.jumpToLatestPending = true;
 
   resetCurrentSessionView();
   assert.equal(elements.messages.hasChildNodes(), false);
@@ -703,6 +718,7 @@ function testSessionViewReset() {
   assert.equal(state.tools.size, 0);
   assert.equal(state.replayingHistory, true);
   assert.equal(state.pinHistoryToBottom, true);
+  assert.equal(state.jumpToLatestPending, false);
   assert.equal(view.historyLoaded, false);
   assert.equal(view.statusPlaceholder, false);
   assert.equal(view.historyCursor, '');
@@ -1611,6 +1627,106 @@ function testBottomAnchorUpdatesButtonBeforePaint() {
   assert.equal(state.bottomScrollFrame, null);
 }
 
+function testStreamingScrollPosition() {
+  const anchorStub = global.scheduleBottomAnchor;
+  const scrollStub = global.scrollToBottom;
+  global.scheduleBottomAnchor = anchorSessionBottom;
+  global.scrollToBottom = scrollSessionToBottom;
+  try {
+    for (const replayingHistory of [false, true]) {
+      for (const deliverScrollEvent of [false, true]) {
+        resetHarness();
+        state.selected = {namespace: 'default', name: 'one'};
+        state.replayingHistory = replayingHistory;
+        state.pinHistoryToBottom = replayingHistory;
+        let height = 1000;
+        let top = 600;
+        elements.messages.clientHeight = 400;
+        Object.defineProperties(elements.messages, {
+          scrollHeight: {get: () => height},
+          scrollTop: {
+            get: () => { top = Math.min(top, height - 400); return top; },
+            set: value => { top = Math.min(value, height - 400); },
+          },
+        });
+        state.messagesScrollTop = top;
+        const flushFrames = () => {
+          for (let index = 0; index < animationFrames.length; index++) animationFrames[index]();
+          animationFrames = [];
+        };
+
+        scheduleBottomAnchor();
+        elements.messages.scrollTop -= 20;
+        if (deliverScrollEvent) handleMessagesScroll();
+        renderAssistantDelta({turnId: 'live', text: 'Streaming response'});
+        flushFrames();
+        handleMessagesScroll();
+
+        assert.equal(top, 580, 'A small upward scroll must survive a queued bottom anchor');
+        assert.equal(elements.jumpToLatest.hidden, false);
+        assert.equal(state.pinHistoryToBottom, false);
+        assert.equal(state.assistantSegmentByTurn.get('live').textContent, 'Streaming response');
+
+        renderAssistantDelta({turnId: 'live', text: ' continues'});
+        renderTool({toolId: 'tool', toolName: 'Read file'});
+        appendToolDelta({toolId: 'tool', output: 'file contents'});
+        completeTool({toolId: 'tool', status: 'completed'});
+        height += 40;
+        flushFrames();
+        assert.equal(top, 580, 'Assistant and tool updates must preserve the reading position');
+        assert.equal(state.tools.get('tool').querySelector('.tool-output-preview').textContent, 'file contents');
+
+        elements.messages.scrollTop += 10;
+        handleMessagesScroll();
+        scrollToBottom();
+        flushFrames();
+        assert.equal(top, 590, 'Scrolling toward the bottom must not resume following prematurely');
+
+        jumpToLatest();
+        elements.messages.scrollTop -= 20;
+        if (deliverScrollEvent) handleMessagesScroll();
+        flushFrames();
+        assert.equal(top, height - 400, 'Jump to latest must complete despite an in-flight upward scroll');
+        assert.equal(state.jumpToLatestPending, false);
+        assert.equal(elements.jumpToLatest.hidden, true);
+        renderAssistantDelta({turnId: 'live', text: ' at the bottom'});
+        height += 40;
+        flushFrames();
+        assert.equal(top, height - 400, 'Streaming must follow after jumping to latest');
+
+        elements.messages.scrollTop -= 20;
+        handleMessagesScroll();
+        elements.messages.scrollTop = height;
+        handleMessagesScroll();
+        renderAssistantDelta({turnId: 'live', text: ' after manual scrolling'});
+        height += 40;
+        flushFrames();
+        assert.equal(top, height - 400, 'Manually reaching the bottom must resume following');
+
+        state.replayingHistory = false;
+        height -= 24;
+        endAssistantSegment('live');
+        assert.equal(elements.messages.scrollTop, height - 400, 'Ending a segment can clamp the viewport');
+        height += 60;
+        renderTool({toolId: 'second', toolName: 'Run tests'});
+        if (deliverScrollEvent) handleMessagesScroll();
+        flushFrames();
+        assert.equal(top, height - 400, 'Following must survive a segment shrinking before a tool starts');
+        assert.equal(state.messagesScrollPaused, false);
+
+        elements.messages.scrollTop -= 20;
+        handleMessagesScroll();
+        selectSession({namespace: 'default', name: 'two', phase: 'Pending'});
+        flushFrames();
+        assert.equal(top, height - 400, 'Selecting a session must start at the bottom');
+      }
+    }
+  } finally {
+    global.scheduleBottomAnchor = anchorStub;
+    global.scrollToBottom = scrollStub;
+  }
+}
+
 function testPendingMessageEditing() {
   resetHarness();
   const sent = [];
@@ -1783,6 +1899,7 @@ testJumpToLatestReturnsToBottom();
 testConnectionPreservesTranscriptFocus();
 testJumpToLatestUpdatesAfterImageLoad();
 testBottomAnchorUpdatesButtonBeforePaint();
+testStreamingScrollPosition();
 testPendingMessageEditing();
 testPendingMessageRemoval();
 testPendingMessageSurvivesCompletedHistoryReplay();

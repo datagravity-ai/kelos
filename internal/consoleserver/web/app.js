@@ -191,6 +191,9 @@
         reconnectTimer: null,
         reconnectDelay: 800,
         bottomScrollFrame: null,
+        messagesScrollTop: 0,
+        messagesScrollPaused: false,
+        jumpToLatestPending: false,
         sessionViews: new Map(),
         currentView: null,
         lastEventID: 0,
@@ -1586,6 +1589,9 @@ ${specs[collection.resource]}`;
     }
     function resetCurrentSessionView() {
         closePromptHistory();
+        state.messagesScrollTop = 0;
+        state.messagesScrollPaused = false;
+        state.jumpToLatestPending = false;
         const view = state.currentView;
         state.lastEventID = 0;
         state.assistantSegmentByTurn = new Map();
@@ -3048,6 +3054,8 @@ spec:
         closeSessionSectionEditor();
         closeSocket();
         saveCurrentSessionView();
+        state.messagesScrollTop = 0;
+        state.messagesScrollPaused = false;
         state.selected = session;
         state.currentView = null;
         setActiveView('conversation');
@@ -3295,6 +3303,7 @@ spec:
                 : `Enter to ${action} · Shift+Enter for a new line · !COMMAND · /goal`);
     }
     function closeSocket() {
+        state.jumpToLatestPending = false;
         state.changesRequestID = '';
         state.changesRefreshPending = false;
         closePromptHistory();
@@ -4206,6 +4215,7 @@ spec:
         const scrollBehavior = messages.style.scrollBehavior;
         messages.style.scrollBehavior = 'auto';
         messages.scrollTop = Math.max(0, previousTop + (Number(messages.scrollHeight) || 0) - previousHeight);
+        state.messagesScrollTop = messages.scrollTop;
         messages.style.scrollBehavior = scrollBehavior;
         updateCurrentRequest();
         updateJumpToLatest();
@@ -4286,13 +4296,10 @@ spec:
         const target = row || (pending && (pending.event.id === prompt.id || (prompt.turnId && pending.event.turnId === prompt.turnId))
             ? pending.item : null);
         if (target) {
+            pauseMessagesScroll();
             closePromptHistory();
             setActiveView('conversation');
             hideCurrentRequest();
-            if (state.bottomScrollFrame !== null) {
-                window.cancelAnimationFrame(state.bottomScrollFrame);
-                state.bottomScrollFrame = null;
-            }
             target.tabIndex = -1;
             target.focus({ preventScroll: true });
             target.scrollIntoView({ behavior: 'instant', block: 'start' });
@@ -4609,6 +4616,7 @@ spec:
         const request = currentRequestRow;
         if (!request)
             return;
+        pauseMessagesScroll();
         hideCurrentRequest();
         request.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
@@ -4617,6 +4625,9 @@ spec:
             elements.messages.hidden || messagesNearBottom();
     }
     function jumpToLatest() {
+        state.jumpToLatestPending = true;
+        state.messagesScrollPaused = false;
+        state.messagesScrollTop = elements.messages.scrollTop;
         state.pinHistoryToBottom = state.replayingHistory;
         scheduleBottomAnchor();
         elements.jumpToLatest.hidden = true;
@@ -5424,32 +5435,69 @@ spec:
             || (event.type === 'input.resolved' && event.status === 'cancelled')
             || (event.type === 'turn.completed' && event.status === 'interrupted');
     }
-    function scrollToBottom(smooth = true) {
+    function scrollToBottom() {
         if (state.replayingHistory) {
             if (state.pinHistoryToBottom)
                 scheduleBottomAnchor();
             return;
         }
-        const distance = messagesBottomDistance();
-        if (distance < 240 || !smooth) {
-            elements.messages.scrollTo({ top: elements.messages.scrollHeight, behavior: smooth ? 'smooth' : 'auto' });
-        }
+        if (messagesNearBottom())
+            scheduleBottomAnchor();
         updateJumpToLatest();
     }
     function messagesBottomDistance() {
         return elements.messages.scrollHeight - elements.messages.scrollTop - elements.messages.clientHeight;
     }
     function messagesNearBottom() {
-        return messagesBottomDistance() < 240;
+        if (state.messagesScrollPaused)
+            return false;
+        const distance = messagesBottomDistance();
+        // Layout can clamp the viewport when a streaming segment shrinks.
+        if (distance <= 1)
+            state.messagesScrollTop = elements.messages.scrollTop;
+        return distance < 240;
+    }
+    function pauseMessagesScroll() {
+        state.jumpToLatestPending = false;
+        state.messagesScrollPaused = true;
+        state.pinHistoryToBottom = false;
+        if (state.bottomScrollFrame !== null) {
+            window.cancelAnimationFrame(state.bottomScrollFrame);
+            state.bottomScrollFrame = null;
+        }
+    }
+    function handleMessagesScroll() {
+        if (state.jumpToLatestPending)
+            return;
+        const top = Math.max(0, elements.messages.scrollTop);
+        if (messagesBottomDistance() <= 1) {
+            state.messagesScrollPaused = false;
+            state.pinHistoryToBottom = state.replayingHistory;
+        }
+        else if (top < state.messagesScrollTop) {
+            pauseMessagesScroll();
+        }
+        state.messagesScrollTop = top;
+        updateJumpToLatest();
     }
     function scheduleBottomAnchor() {
         if (state.bottomScrollFrame !== null)
             return;
         state.bottomScrollFrame = window.requestAnimationFrame(() => {
             state.bottomScrollFrame = null;
+            if (state.jumpToLatestPending) {
+                state.jumpToLatestPending = false;
+            }
+            else if (elements.messages.scrollTop < state.messagesScrollTop) {
+                // Scrolling can move the viewport before its scroll event is delivered.
+                handleMessagesScroll();
+            }
+            if (state.messagesScrollPaused)
+                return;
             const scrollBehavior = elements.messages.style.scrollBehavior;
             elements.messages.style.scrollBehavior = 'auto';
             elements.messages.scrollTop = elements.messages.scrollHeight;
+            state.messagesScrollTop = elements.messages.scrollTop;
             elements.messages.style.scrollBehavior = scrollBehavior;
             updateJumpToLatest();
         });
@@ -6042,7 +6090,7 @@ spec:
     elements.currentRequestButton.addEventListener('click', jumpToCurrentRequest);
     elements.messages.addEventListener('scroll', scheduleCurrentRequestUpdate);
     elements.jumpToLatest.addEventListener('click', jumpToLatest);
-    elements.messages.addEventListener('scroll', updateJumpToLatest);
+    elements.messages.addEventListener('scroll', handleMessagesScroll);
     window.addEventListener('pagehide', () => {
         sessionTerminal.close();
         if (!elements.terminalView.hidden)
