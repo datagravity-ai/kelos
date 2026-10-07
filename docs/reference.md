@@ -378,8 +378,10 @@ Session clears its prompt history.
 
 On phones, Prompt history keeps its text label and a 44-pixel touch target.
 
-Select **Jump to latest** at the bottom of the console conversation to return to
-the latest messages. The button appears when you are scrolled away from the bottom.
+Scrolling up in the console conversation pauses automatic following, so you can
+read earlier messages while a response streams. **Jump to latest** appears when
+following is paused, even near the bottom, or when you are scrolled away from the
+bottom. Scroll to the bottom or select **Jump to latest** to resume following.
 
 Attach a local file with `/attach PATH`; the next message includes all staged
 files. In the interactive terminal UI, dragging a file into a terminal that
