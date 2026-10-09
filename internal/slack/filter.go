@@ -202,17 +202,16 @@ func reactionOnly(triggers []kelos.SlackTrigger) bool {
 	return true
 }
 
-// wantsReaction reports whether any Slack TaskSpawner has a reaction trigger
-// for the reaction in the channel, after the channel allowlist and exclusion
-// rules. The handler checks this before fetching the reacted-to message from
+// wantsReaction reports whether any Slack source — a TaskSpawner's or a
+// SessionSpawner's — has a reaction trigger for the reaction in the channel,
+// after the channel allowlist and exclusion rules. The handler checks this before fetching the reacted-to message from
 // Slack, so a reaction no spawner cares about costs no API calls. Exclusion
 // rules see only the channel here; a criterion the channel-only data does not
 // carry never matches, so the gate can let a reaction through that the full
 // match later rejects, but never drops one the full match would accept.
-func wantsReaction(spawners []*kelos.TaskSpawner, reaction, channelID string) bool {
+func wantsReaction(sources []*kelos.Slack, reaction, channelID string) bool {
 	channelOnly := &SlackMessageData{ChannelID: channelID}
-	for _, spawner := range spawners {
-		slackCfg := spawner.Spec.When.Slack
+	for _, slackCfg := range sources {
 		if slackCfg == nil || !matchesReaction(reaction, slackCfg.Triggers) {
 			continue
 		}

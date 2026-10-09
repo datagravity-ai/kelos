@@ -232,6 +232,14 @@ func (b *SessionBridge) Enqueue(ctx context.Context, spawner *kelos.SessionSpawn
 	job := &turnJob{ctx: ctx, spawner: spawner, msg: msg}
 
 	messageKey := queueKey + "/" + msg.Timestamp
+	if msg.Reaction != "" {
+		// A reaction carries the reacted-to message's timestamp, which may
+		// already have driven a turn of its own. Keying on the emoji as well
+		// keeps the reaction distinct from that message and from other emoji,
+		// while a second person adding the same emoji is still one request, as
+		// it is for a TaskSpawner.
+		messageKey += "/reaction/" + msg.Reaction
+	}
 
 	b.mu.Lock()
 	if b.draining {
@@ -663,13 +671,36 @@ func spawnResourceName(spawnerName, hashInput string) string {
 // Every part of a Slack message its author controls — the text, and the display
 // name that names them — must therefore appear after that literal, never at the
 // start of the prompt.
+//
+// A reaction is relayed as the reacted-to message, introduced by who added
+// which emoji, so the agent can tell an approval from a message it was sent.
 func turnPrompt(msg *SlackMessageData, firstTurn bool) string {
+	header := "Author: " + promptAuthor(msg)
+	if msg.Reaction != "" {
+		header = reactionHeader(msg)
+	}
 	if firstTurn {
 		if msg.HasThreadContext {
-			return "Relayed from a Slack thread. The conversation so far:\n\n" + msg.Body
+			prompt := "Relayed from a Slack thread. The conversation so far:\n\n" + msg.Body
+			if msg.Reaction != "" {
+				prompt += "\n\n" + header + "\n\n" + turnText(msg)
+			}
+			return prompt
 		}
-		return fmt.Sprintf("Relayed from Slack. Author: %s\n\n%s", promptAuthor(msg), msg.Body)
+		return fmt.Sprintf("Relayed from Slack. %s\n\n%s", header, msg.Body)
 	}
+	return fmt.Sprintf("Relayed from the Slack thread. %s\n\n%s", header, turnText(msg))
+}
+
+// reactionHeader describes a reaction for a prompt envelope. The reacting
+// user's display name is not looked up, so they are named by Slack user ID.
+func reactionHeader(msg *SlackMessageData) string {
+	return fmt.Sprintf("%s reacted with :%s: to this message from %s:", msg.ReactionUserID, msg.Reaction, promptAuthor(msg))
+}
+
+// turnText returns the new content of one message, without the thread context
+// Body may carry.
+func turnText(msg *SlackMessageData) string {
 	text := strings.TrimSpace(stripLeadingMentions(msg.Text))
 	if attachments := strings.TrimSpace(msg.AttachmentText); attachments != "" {
 		// enrichMessage folds attachment text into Body, but Body carries the
@@ -690,7 +721,7 @@ func turnPrompt(msg *SlackMessageData, firstTurn bool) string {
 	if text == "" {
 		text = "(no message text)"
 	}
-	return fmt.Sprintf("Relayed from the Slack thread. Author: %s\n\n%s", promptAuthor(msg), text)
+	return text
 }
 
 // promptAuthor names the message author for a prompt envelope. The name comes
