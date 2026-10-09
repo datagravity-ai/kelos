@@ -257,8 +257,8 @@ func (h *SlackHandler) handleMessageEvent(ctx context.Context, innerEvent *slack
 	h.routeMessage(ctx, msg)
 }
 
-// handleReactionAdded creates a Task for every TaskSpawner with a reaction
-// trigger for the added emoji. The event carries only the
+// handleReactionAdded routes a reaction to every TaskSpawner and SessionSpawner
+// with a reaction trigger for the added emoji. The event carries only the
 // reacted-to message's channel and timestamp, so the message is fetched from
 // Slack before matching.
 func (h *SlackHandler) handleReactionAdded(ctx context.Context, evt *slackevents.ReactionAddedEvent) {
@@ -271,13 +271,13 @@ func (h *SlackHandler) handleReactionAdded(ctx context.Context, evt *slackevents
 	}
 
 	reaction := reactionName(evt.Reaction)
-	spawners, err := h.getMatchingSpawners(ctx)
+	sources, err := h.slackSources(ctx)
 	if err != nil {
 		h.log.Error(err, "Failed to get matching spawners")
 		return
 	}
-	if !wantsReaction(spawners, reaction, evt.Item.Channel) {
-		h.log.V(1).Info("No TaskSpawner lists reaction", "reaction", reaction, "channel", evt.Item.Channel)
+	if !wantsReaction(sources, reaction, evt.Item.Channel) {
+		h.log.V(1).Info("No spawner lists reaction", "reaction", reaction, "channel", evt.Item.Channel)
 		return
 	}
 
@@ -423,6 +423,31 @@ func (h *SlackHandler) routeMessageToSessionSpawners(ctx context.Context, msg *S
 			"channel", msg.ChannelID, "user", msg.UserID)
 		h.sessionBridge.Enqueue(ctx, spawner, msg)
 	}
+}
+
+// slackSources returns the Slack source of every TaskSpawner, and of every
+// SessionSpawner when the session bridge is enabled, since only then can a
+// SessionSpawner act on a reaction.
+func (h *SlackHandler) slackSources(ctx context.Context) ([]*kelos.Slack, error) {
+	taskSpawners, err := h.getMatchingSpawners(ctx)
+	if err != nil {
+		return nil, err
+	}
+	sources := make([]*kelos.Slack, 0, len(taskSpawners))
+	for _, spawner := range taskSpawners {
+		sources = append(sources, spawner.Spec.When.Slack)
+	}
+	if h.sessionBridge == nil {
+		return sources, nil
+	}
+	sessionSpawners, err := h.getMatchingSessionSpawners(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, spawner := range sessionSpawners {
+		sources = append(sources, spawner.Spec.When.Slack)
+	}
+	return sources, nil
 }
 
 // getMatchingSessionSpawners returns all SessionSpawners that have a Slack source configured.
