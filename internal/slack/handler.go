@@ -298,7 +298,7 @@ func (h *SlackHandler) handleReactionAdded(ctx context.Context, evt *slackevents
 		User:            message.User,
 		BotID:           message.BotID,
 		Channel:         evt.Item.Channel,
-		Text:            message.Text,
+		Text:            reactedText(message),
 		TimeStamp:       message.Timestamp,
 		ThreadTimeStamp: threadTS,
 		Message:         &goslack.Msg{Attachments: message.Attachments},
@@ -308,6 +308,41 @@ func (h *SlackHandler) handleReactionAdded(ctx context.Context, evt *slackevents
 
 	h.log.Info("Routing Slack reaction", "reaction", reaction, "channel", msg.ChannelID, "ts", msg.Timestamp, "user", evt.User)
 	h.routeMessage(ctx, msg)
+}
+
+// reactedText is the text a reaction routes on. Slack can return a bot reply's
+// text field as one line with its newlines collapsed, while the reply's section
+// and context blocks keep them, so a bot message with such blocks routes on the
+// blocks' text. A person's message keeps its text, whose rich_text blocks would
+// drop mentions.
+func reactedText(message *goslack.Message) string {
+	if message.BotID == "" {
+		return message.Text
+	}
+	var parts []string
+	for _, block := range message.Blocks.BlockSet {
+		switch b := block.(type) {
+		case *goslack.SectionBlock:
+			if b.Text != nil && b.Text.Text != "" {
+				parts = append(parts, b.Text.Text)
+			}
+			for _, field := range b.Fields {
+				if field != nil && field.Text != "" {
+					parts = append(parts, field.Text)
+				}
+			}
+		case *goslack.ContextBlock:
+			for _, element := range b.ContextElements.Elements {
+				if text, ok := element.(*goslack.TextBlockObject); ok && text.Text != "" {
+					parts = append(parts, text.Text)
+				}
+			}
+		}
+	}
+	if len(parts) == 0 {
+		return message.Text
+	}
+	return strings.Join(parts, "\n")
 }
 
 func (h *SlackHandler) handleSlashCommand(ctx context.Context, evt socketmode.Event) {

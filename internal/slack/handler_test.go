@@ -823,6 +823,13 @@ func TestHandleReactionAdded(t *testing.T) {
 	utilruntime.Must(kelos.AddToScheme(scheme))
 
 	const topLevelHistory = `{"ok":true,"messages":[{"type":"message","user":"UAUTHOR","text":"Acme went live today","ts":"2222222222.222222"}]}`
+	// A reporter reply as conversations.history returns it: the text field
+	// flattened to one line with the Task appended, the blocks with newlines.
+	const flattenedBotReplyHistory = `{"ok":true,"messages":[{"type":"message","subtype":"bot_message","bot_id":"B1",` +
+		`"text":"Plan: 5 tickets. React to create them. gravity-goal-plan doc-1 (Task: planner-1)","ts":"2222222222.222222",` +
+		`"blocks":[{"type":"section","text":{"type":"mrkdwn","text":"Plan: 5 tickets.\nReact to create them.\ngravity-goal-plan doc-1"}},` +
+		`{"type":"divider"},` +
+		`{"type":"context","elements":[{"type":"mrkdwn","text":"Task: planner-1"}]}]}]}`
 
 	gearEvent := func() *slackevents.ReactionAddedEvent {
 		return &slackevents.ReactionAddedEvent{
@@ -935,6 +942,44 @@ func TestHandleReactionAdded(t *testing.T) {
 			},
 			history:   topLevelHistory,
 			wantNoAPI: true,
+		},
+		{
+			name:     "bot reply routes on its block text, whose newlines Slack keeps",
+			slackCfg: &kelos.Slack{Triggers: []kelos.SlackTrigger{{Reaction: &kelos.SlackReactionTrigger{Name: "gear"}}}},
+			event:    gearEvent,
+			history:  flattenedBotReplyHistory,
+			wantPrompt: "SlackReaction :gear: by UREACTOR on C1/2222222222.222222 thread=" +
+				" url=https://example.slack.com/archives/C1/p2222222222222222\n" +
+				"Plan: 5 tickets.\nReact to create them.\ngravity-goal-plan doc-1\nTask: planner-1",
+			wantThread: "2222222222.222222",
+		},
+		{
+			name: "line-anchored exclusion matches a bot reply whose text field is flattened",
+			slackCfg: &kelos.Slack{
+				Triggers:        []kelos.SlackTrigger{{Reaction: &kelos.SlackReactionTrigger{Name: "gear"}}},
+				ExcludePatterns: []string{`(?m)^gravity-goal-plan \S+`},
+			},
+			event:   gearEvent,
+			history: flattenedBotReplyHistory,
+		},
+		{
+			name:     "bot message without blocks routes on its text",
+			slackCfg: &kelos.Slack{Triggers: []kelos.SlackTrigger{{Reaction: &kelos.SlackReactionTrigger{Name: "gear"}}}},
+			event:    gearEvent,
+			history:  `{"ok":true,"messages":[{"type":"message","bot_id":"B1","text":"Acme went live today","ts":"2222222222.222222"}]}`,
+			wantPrompt: "SlackReaction :gear: by UREACTOR on C1/2222222222.222222 thread=" +
+				" url=https://example.slack.com/archives/C1/p2222222222222222\nAcme went live today",
+			wantThread: "2222222222.222222",
+		},
+		{
+			name:     "a person's message keeps its text over its rich_text blocks",
+			slackCfg: &kelos.Slack{Triggers: []kelos.SlackTrigger{{Reaction: &kelos.SlackReactionTrigger{Name: "gear"}}}},
+			event:    gearEvent,
+			history: `{"ok":true,"messages":[{"type":"message","user":"UAUTHOR","text":"<@UOTHER> Acme went live today","ts":"2222222222.222222",` +
+				`"blocks":[{"type":"rich_text","elements":[{"type":"rich_text_section","elements":[{"type":"user","user_id":"UOTHER"},{"type":"text","text":" Acme went live today"}]}]}]}]}`,
+			wantPrompt: "SlackReaction :gear: by UREACTOR on C1/2222222222.222222 thread=" +
+				" url=https://example.slack.com/archives/C1/p2222222222222222\n<@UOTHER> Acme went live today",
+			wantThread: "2222222222.222222",
 		},
 		{
 			name:     "message that cannot be found does not create a task",

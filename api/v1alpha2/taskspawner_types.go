@@ -765,7 +765,8 @@ type Slack struct {
 	// is excluded if the text matches ANY entry. Patterns use Go regexp
 	// syntax (RE2, unanchored). Leading @-mentions are stripped before
 	// matching so patterns target semantic content. For a reaction trigger,
-	// the text is the reacted-to message's. Does NOT apply to slash commands.
+	// the text is the reacted-to message's; for a bot message with section or
+	// context blocks, it is those blocks' text. Does NOT apply to slash commands.
 	// +optional
 	// +kubebuilder:validation:MaxItems=10
 	// +kubebuilder:validation:items:MinLength=1
