@@ -3020,7 +3020,7 @@ func TestBuildPluginConfigMap_TooLarge(t *testing.T) {
 		{
 			Name: "huge",
 			Skills: []kelos.SkillDefinition{
-				{Name: "big", Content: strings.Repeat("x", pluginConfigMapMaxBytes+1)},
+				{Name: "big", Content: strings.Repeat("x", kelos.MaxInlinePluginContentBytes+1)},
 			},
 		},
 	}

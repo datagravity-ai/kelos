@@ -5,6 +5,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// MaxInlinePluginContentBytes leaves headroom below the 1 MiB ConfigMap data limit.
+const MaxInlinePluginContentBytes = 900 * 1024
+
 // AgentConfigSpec defines the desired state of AgentConfig.
 type AgentConfigSpec struct {
 	// AgentsMD is written to the agent's instruction file
@@ -42,7 +45,7 @@ type PluginSpec struct {
 	Name string `json:"name"`
 
 	// Skills defines skills for this plugin.
-	// Each becomes skills/<name>/SKILL.md in the plugin directory.
+	// Each becomes a directory under skills/<name> in the plugin directory.
 	// +optional
 	Skills []SkillDefinition `json:"skills,omitempty"`
 
@@ -57,6 +60,30 @@ type SkillDefinition struct {
 	// +kubebuilder:validation:MinLength=1
 	Name    string `json:"name"`
 	Content string `json:"content"`
+
+	// Files are supporting text files written alongside SKILL.md.
+	// +optional
+	// +listType=map
+	// +listMapKey=path
+	Files []SkillFile `json:"files,omitempty"`
+}
+
+// SkillFile defines a supporting text file within a skill directory.
+type SkillFile struct {
+	// Path is relative to the skill directory, using forward slashes.
+	// Each component must be nonempty and differ from "." and "..".
+	// Conflicts with SKILL.md or other files are rejected when consumed.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=4096
+	// +kubebuilder:validation:Pattern=`^([^./\\]|\.[^./\\]|\.\.[^/\\])[^/\\]*(/([^./\\]|\.[^./\\]|\.\.[^/\\])[^/\\]*)*$`
+	Path string `json:"path"`
+
+	// Content is the UTF-8 file content.
+	Content string `json:"content"`
+
+	// Executable writes the file with mode 0755 instead of 0644.
+	// +optional
+	Executable bool `json:"executable,omitempty"`
 }
 
 // AgentDefinition defines a sub-agent within a plugin.
