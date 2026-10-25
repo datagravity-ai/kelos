@@ -231,7 +231,7 @@ func Run(ctx context.Context, config Config) error {
 		journal.Close()
 		return err
 	}
-	recovery, err := recoverJournal(journal)
+	recovery, err := recoverJournal(journal, config.AgentType)
 	if err != nil {
 		journal.Close()
 		return err
@@ -275,7 +275,7 @@ func Run(ctx context.Context, config Config) error {
 		journal.Close()
 		return err
 	}
-	if goalManager, ok := provider.(goalProvider); ok && goalManager.ActiveGoal() != nil {
+	if goalManager, ok := provider.(goalControlProvider); ok && goalManager.ActiveGoal() != nil {
 		turn := turnRequest{
 			id:       fmt.Sprintf("turn-%d", server.nextTurnID.Add(1)),
 			text:     "/goal resume",
@@ -823,10 +823,19 @@ func (s *Server) runTurn(ctx context.Context, request turnRequest) {
 	}
 	startResult := make(chan error, 1)
 	go func() {
+		if command.kind == sessionCommandLoop {
+			provider, ok := s.provider.(loopProvider)
+			if !ok {
+				startResult <- errors.New("/loop is not available in this Session")
+				return
+			}
+			startResult <- provider.StartLoop(turn.ctx, command.text)
+			return
+		}
 		if command.kind == sessionCommandGoal {
 			provider, ok := s.provider.(goalProvider)
 			if !ok {
-				startResult <- errors.New("/goal is available only in Codex Sessions")
+				startResult <- errors.New("/goal is not available in this Session")
 				return
 			}
 			startResult <- provider.StartGoal(turn.ctx, command.goal)
@@ -975,9 +984,14 @@ func (s *Server) submitParsedMessage(text, requestID string, command sessionComm
 	if command.kind != sessionCommandMessage && len(attachments) > 0 {
 		return errors.New("Session commands do not accept attachments")
 	}
+	if command.kind == sessionCommandLoop {
+		if !providerSupportsCommand(s.provider, sessionCommandLoop) {
+			return errors.New("/loop is not available in this Session")
+		}
+	}
 	if command.kind == sessionCommandGoal {
-		if _, ok := s.provider.(goalProvider); !ok {
-			return errors.New("/goal is available only in Codex Sessions")
+		if !providerSupportsCommand(s.provider, sessionCommandGoal) {
+			return errors.New("/goal is not available in this Session")
 		}
 	}
 	s.submitMu.Lock()
@@ -1045,16 +1059,21 @@ func (s *Server) submitParsedMessage(text, requestID string, command sessionComm
 }
 
 func (s *Server) submitClientMessage(ctx context.Context, text, requestID string, attachmentIDs ...string) error {
-	command, err := parseSessionCommand(text)
+	command, err := parseSessionCommand(text, s.config.AgentType)
 	if err != nil {
 		return err
 	}
 	if command.kind != sessionCommandMessage && len(attachmentIDs) > 0 {
 		return errors.New("Session commands do not accept attachments")
 	}
+	if command.kind == sessionCommandLoop {
+		if !providerSupportsCommand(s.provider, sessionCommandLoop) {
+			return errors.New("/loop is not available in this Session")
+		}
+	}
 	if command.kind == sessionCommandGoal {
-		if _, ok := s.provider.(goalProvider); !ok {
-			return errors.New("/goal is available only in Codex Sessions")
+		if !providerSupportsCommand(s.provider, sessionCommandGoal) {
+			return errors.New("/goal is not available in this Session")
 		}
 	}
 	if command.kind == sessionCommandGoal {
@@ -1062,11 +1081,8 @@ func (s *Server) submitClientMessage(ctx context.Context, text, requestID string
 		turnID := s.activeTurn
 		activeKind := s.activeKind
 		s.activeMu.Unlock()
-		if turnID != "" && activeKind == sessionCommandGoal {
-			provider, ok := s.provider.(goalProvider)
-			if !ok {
-				return errors.New("/goal is available only in Codex Sessions")
-			}
+		provider, controlsGoal := s.provider.(goalControlProvider)
+		if turnID != "" && activeKind == sessionCommandGoal && controlsGoal {
 			if err := s.journal.Append(Event{Type: EventUserMessage, RequestID: requestID, Text: text, SessionCommand: true}); err != nil {
 				return fmt.Errorf("recording Session goal command: %w", err)
 			}
@@ -1105,16 +1121,21 @@ func (s *Server) editMessage(turnID, text string, expectedRevision int64, reques
 	if strings.TrimSpace(text) == "" && len(turn.attachments) == 0 {
 		return fmt.Errorf("editing Session turn %q: message must not be empty", turnID)
 	}
-	command, err := parseSessionCommand(text)
+	command, err := parseSessionCommand(text, s.config.AgentType)
 	if err != nil {
 		return err
 	}
 	if command.kind != sessionCommandMessage && len(turn.attachments) > 0 {
 		return errors.New("Session commands do not accept attachments")
 	}
+	if command.kind == sessionCommandLoop {
+		if !providerSupportsCommand(s.provider, sessionCommandLoop) {
+			return errors.New("/loop is not available in this Session")
+		}
+	}
 	if command.kind == sessionCommandGoal {
-		if _, ok := s.provider.(goalProvider); !ok {
-			return errors.New("/goal is available only in Codex Sessions")
+		if !providerSupportsCommand(s.provider, sessionCommandGoal) {
+			return errors.New("/goal is not available in this Session")
 		}
 	}
 	turn.text = text
@@ -1240,7 +1261,7 @@ func (r journalRecovery) hasUnsettledActivity(settledTurnID int64) bool {
 	return r.nextTurnID > settledTurnID
 }
 
-func recoverJournal(journal *Journal) (journalRecovery, error) {
+func recoverJournal(journal *Journal, agentType string) (journalRecovery, error) {
 	events := journal.snapshotForRecovery()
 	if len(events) == 0 {
 		return journalRecovery{}, nil
@@ -1331,7 +1352,7 @@ func recoverJournal(journal *Journal) (journalRecovery, error) {
 			command := sessionCommand{kind: sessionCommandMessage, text: turn.text}
 			if turn.command {
 				var err error
-				command, err = parseSessionCommand(turn.text)
+				command, err = parseSessionCommand(turn.text, agentType)
 				if err != nil {
 					return recovery, fmt.Errorf("recovering Session command %q: %w", turn.id, err)
 				}

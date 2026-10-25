@@ -9,6 +9,36 @@ import (
 	"time"
 )
 
+func TestRecoverJournalPreservesClaudeGoalSyntax(t *testing.T) {
+	journal := NewJournal()
+	defer journal.Close()
+	if err := journal.Append(Event{Type: EventUserMessage, TurnID: "turn-1", Text: "/goal edit", Revision: 1, SessionCommand: true}); err != nil {
+		t.Fatal(err)
+	}
+	recovery, err := recoverJournal(journal, "claude-code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovery.pendingTurn == nil || recovery.pendingTurn.command.kind != sessionCommandGoal || recovery.pendingTurn.command.goal.action != goalCommandCreate || recovery.pendingTurn.command.goal.objective != "edit" {
+		t.Fatalf("Recovered native goal = %#v", recovery.pendingTurn)
+	}
+}
+
+func TestRecoverJournalPreservesClaudeLoopSyntax(t *testing.T) {
+	journal := NewJournal()
+	defer journal.Close()
+	if err := journal.Append(Event{Type: EventUserMessage, TurnID: "turn-1", Text: "/loop Check CI", Revision: 1, SessionCommand: true}); err != nil {
+		t.Fatal(err)
+	}
+	recovery, err := recoverJournal(journal, "claude-code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovery.pendingTurn == nil || recovery.pendingTurn.command.kind != sessionCommandLoop || recovery.pendingTurn.command.text != "/loop Check CI" {
+		t.Fatalf("Recovered native loop = %#v", recovery.pendingTurn)
+	}
+}
+
 func TestJournalTimestampsEventsAndPreservesTimestampAfterReopen(t *testing.T) {
 	path := filepath.Join(t.TempDir(), journalFileName)
 	journal, err := OpenJournal(path)
@@ -57,7 +87,7 @@ func TestJournalPersistsEventsAndRecoversInterruptedTurn(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer reopened.Close()
-	recovery, err := recoverJournal(reopened)
+	recovery, err := recoverJournal(reopened, "codex")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +127,7 @@ func TestJournalRecoveryHandlesEventsWithoutTurnIDs(t *testing.T) {
 		}
 	}
 
-	recovery, err := recoverJournal(journal)
+	recovery, err := recoverJournal(journal, "codex")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +177,7 @@ func TestJournalCompactionPreservesPendingTurnForRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer reopened.Close()
-	recovery, err := recoverJournal(reopened)
+	recovery, err := recoverJournal(reopened, "codex")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,7 +211,7 @@ func TestJournalRecoveryCombinesPendingTurns(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer reopened.Close()
-	recovery, err := recoverJournal(reopened)
+	recovery, err := recoverJournal(reopened, "codex")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +242,7 @@ func TestJournalRecoveryPreservesSessionCommandIdentity(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			recovery, err := recoverJournal(journal)
+			recovery, err := recoverJournal(journal, "codex")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -440,7 +470,7 @@ func TestRecoverJournalKeepsCompletedTurnCompleted(t *testing.T) {
 	journal.Append(Event{Type: EventUserMessage, TurnID: "turn-2", Text: "done"})
 	journal.Append(Event{Type: EventTurnStarted, TurnID: "turn-2", Status: "running"})
 	journal.Append(Event{Type: EventTurnCompleted, TurnID: "turn-2", Status: "completed"})
-	recovery, err := recoverJournal(journal)
+	recovery, err := recoverJournal(journal, "codex")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -458,7 +488,7 @@ func TestRecoverJournalDoesNotRestoreRemovedPendingTurn(t *testing.T) {
 	defer journal.Close()
 	journal.Append(Event{Type: EventUserMessage, TurnID: "turn-2", Text: "remove this", Revision: 1})
 	journal.Append(Event{Type: EventUserMessageRemoved, TurnID: "turn-2", Revision: 2, Status: "removed"})
-	recovery, err := recoverJournal(journal)
+	recovery, err := recoverJournal(journal, "codex")
 	if err != nil {
 		t.Fatal(err)
 	}

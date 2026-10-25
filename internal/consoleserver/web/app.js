@@ -3560,6 +3560,13 @@ spec:
     function composerInterruptAction() {
         return state.activeTurn && (elements.input.disabled || (!elements.input.value.trim() && currentAttachmentFiles().length === 0));
     }
+    function supportsSessionCommand(command) {
+        if (Array.isArray(state.runtimeStatus?.commands))
+            return state.runtimeStatus.commands.includes(command);
+        const provider = state.selected?.provider;
+        return command === 'goal' ? !provider || provider === 'codex' || provider === 'claude-code'
+            : command === 'loop' ? !provider || provider === 'claude-code' : true;
+    }
     function composerCommand() {
         const text = elements.input.value.trim().replace(/^\p{White_Space}+|\p{White_Space}+$/gu, '');
         let kind = 'message';
@@ -3573,6 +3580,26 @@ spec:
             action = state.activeTurn ? 'Queue command' : 'Run command';
             invalid = !text.slice(1).match(/[^\p{White_Space}]/u);
             detail = invalid ? 'Enter a command after !' : 'Runs directly in the Session workspace';
+        }
+        else if (/^\/loop(?:\p{White_Space}|$)/u.test(text)) {
+            kind = 'loop';
+            prefix = '/loop';
+            action = 'Start loop';
+            detail = state.activeTurn ? 'Queued until active work ends; use /interrupt to apply sooner' : "Uses Claude Code's native loop scheduling";
+            if (state.selected?.provider === 'codex') {
+                action = 'Run loop';
+                detail = 'Uses the enabled Codex loop skill';
+            }
+            else if (state.selected?.provider === 'opencode') {
+                action = 'Run loop';
+                detail = "Uses OpenCode's registered loop command";
+            }
+            if (state.activeTurn)
+                detail = 'Queued until active work ends; use /interrupt to apply sooner';
+            if (!supportsSessionCommand('loop')) {
+                invalid = true;
+                detail = '/loop is not available in this Session';
+            }
         }
         else if (/^\/goal(?:\p{White_Space}|$)/u.test(text)) {
             kind = 'goal';
@@ -3598,16 +3625,32 @@ spec:
                 'Clear goal': 'Remove the current goal',
             };
             detail = invalid ? 'Enter an objective after /goal edit' : descriptions[action];
-            if (state.selected && state.selected.provider !== 'codex') {
+            if (state.selected?.provider === 'claude-code') {
+                invalid = false;
+                action = args.length === 0 ? 'Show goal' : args.length === 1 && ['clear', 'stop', 'off', 'reset', 'none', 'cancel'].includes(args[0].toLowerCase()) ? 'Clear goal' : 'Start goal';
+                prefix = action === 'Clear goal' ? text : '/goal';
+                detail = action === 'Start goal' ? "Sets or replaces Claude Code's completion condition" : descriptions[action];
+                if (state.activeTurn)
+                    detail = 'Queued until active work ends; use /interrupt to apply sooner';
+            }
+            else if (state.selected?.provider === 'opencode') {
+                action = 'Run goal';
+                prefix = '/goal';
+                invalid = false;
+                detail = "Uses OpenCode's registered goal command";
+                if (state.activeTurn)
+                    detail = 'Queued until active work ends; use /interrupt to apply sooner';
+            }
+            if (!supportsSessionCommand('goal')) {
                 invalid = true;
-                detail = '/goal is available only in Codex Sessions';
+                detail = '/goal is not available in this Session';
             }
         }
         if (kind !== 'message' && currentAttachmentFiles().length > 0) {
             invalid = true;
             detail = 'Remove attachments to use a command';
         }
-        if (state.pendingMessage && (kind === 'shell' || kind === 'goal' && !state.activeTurn)) {
+        if (state.pendingMessage && (kind === 'shell' || kind === 'loop' || kind === 'goal' && (!state.activeTurn || ['claude-code', 'opencode'].includes(state.selected?.provider || '')))) {
             invalid = true;
             detail = 'Wait for pending work to start or remove it before submitting a command';
         }
@@ -3667,10 +3710,10 @@ spec:
         elements.composerHint.textContent = !interrupt && command.invalid ? command.detail : usesTouchComposer()
             ? (!interrupt && command.kind !== 'message'
                 ? `Tap ${command.action} · Return for a new line`
-                : `Tap ${actionSymbol} to ${action} · Return for a new line · !COMMAND · /goal`)
+                : `Tap ${actionSymbol} to ${action} · Return for a new line · !COMMAND · /goal · /loop`)
             : (interrupt && elements.input.disabled
                 ? `Click ${actionSymbol} to interrupt`
-                : `Enter to ${action} · Shift+Enter for a new line · !COMMAND · /goal`);
+                : `Enter to ${action} · Shift+Enter for a new line · !COMMAND · /goal · /loop`);
     }
     function closeSocket() {
         state.jumpToLatestPending = false;
@@ -4839,6 +4882,7 @@ spec:
                 break;
             case 'runtime.status':
                 state.runtimeStatus = event.runtime || null;
+                updateComposerAction();
                 if (state.currentView)
                     state.currentView.runtimeStatus = state.runtimeStatus;
                 renderRuntimeStatus();

@@ -85,7 +85,7 @@ func TestOpenCodeProviderStreamsOrderedEvents(t *testing.T) {
 	}
 	want := []Event{
 		{Type: EventTurnStarted, Status: "running"},
-		{Type: EventRuntimeStatus, Runtime: &RuntimeStatus{Effort: "high"}},
+		{Type: EventRuntimeStatus, Runtime: &RuntimeStatus{Effort: "high", Commands: []string{"shell"}}},
 		{Type: EventAssistantDelta, Text: "hello"},
 		{Type: EventToolStarted, ToolID: "tool-1", ToolName: "bash", Status: "running"},
 		{Type: EventToolCompleted, ToolID: "tool-1", ToolName: "bash", Output: "ok\n", Status: "completed"},
@@ -347,9 +347,13 @@ type fakeOpenCodeServer struct {
 	permissionReplies chan string
 	aborts            chan struct{}
 
-	mu             sync.Mutex
-	createdRequest map[string]any
-	createdCount   int
+	nativeCommands  []string
+	commandRequests chan map[string]any
+	commandFailure  int
+	commandWait     <-chan struct{}
+	mu              sync.Mutex
+	createdRequest  map[string]any
+	createdCount    int
 }
 
 func newFakeOpenCodeServer(t *testing.T) *fakeOpenCodeServer {
@@ -360,6 +364,7 @@ func newFakeOpenCodeServer(t *testing.T) *fakeOpenCodeServer {
 		resumeFound:       true,
 		events:            make(chan string, 64),
 		prompts:           make(chan map[string]any, 4),
+		commandRequests:   make(chan map[string]any, 4),
 		contexts:          make(chan map[string]any, 4),
 		questionReplies:   make(chan [][]string, 4),
 		permissionReplies: make(chan string, 4),
@@ -373,6 +378,33 @@ func (f *fakeOpenCodeServer) serveHTTP(response http.ResponseWriter, request *ht
 	switch {
 	case request.Method == http.MethodGet && request.URL.Path == "/event":
 		f.serveEvents(response, request)
+	case request.Method == http.MethodGet && request.URL.Path == "/command":
+		f.requireDirectory(request)
+		commands := make([]map[string]string, 0, len(f.nativeCommands))
+		for _, name := range f.nativeCommands {
+			commands = append(commands, map[string]string{"name": name})
+		}
+		writeOpenCodeJSON(response, commands)
+	case request.Method == http.MethodPost && request.URL.Path == "/session/"+f.sessionID+"/command":
+		f.requireDirectory(request)
+		var body map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			f.t.Error(err)
+			return
+		}
+		f.commandRequests <- body
+		if f.commandWait != nil {
+			select {
+			case <-f.commandWait:
+			case <-request.Context().Done():
+				return
+			}
+		}
+		if f.commandFailure != 0 {
+			http.Error(response, "command failed", f.commandFailure)
+			return
+		}
+		writeOpenCodeJSON(response, map[string]any{"info": map[string]string{"id": "command-message"}, "parts": []any{}})
 	case request.Method == http.MethodGet && request.URL.Path == "/config/providers":
 		f.requireDirectory(request)
 		writeOpenCodeJSON(response, map[string]any{"providers": []map[string]any{{

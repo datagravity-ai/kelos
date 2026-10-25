@@ -2,6 +2,7 @@ package sessionruntime
 
 import (
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -23,7 +24,7 @@ func newRuntimeStatus(config Config) RuntimeStatus {
 }
 
 func (s RuntimeStatus) empty() bool {
-	return s.SessionName == "" &&
+	return len(s.Commands) == 0 && s.SessionName == "" &&
 		s.AgentType == "" &&
 		s.Model == "" &&
 		s.Effort == "" &&
@@ -37,6 +38,7 @@ func (s RuntimeStatus) empty() bool {
 }
 
 func cloneRuntimeStatus(status RuntimeStatus) RuntimeStatus {
+	status.Commands = slices.Clone(status.Commands)
 	if status.BackgroundTasks != nil {
 		count := *status.BackgroundTasks
 		status.BackgroundTasks = &count
@@ -88,6 +90,9 @@ func (s *Server) updateWorkspaceRuntimeStatus(status WorkspaceStatus) {
 
 func (s *Server) updateProviderRuntimeStatus(update RuntimeStatus) {
 	s.runtimeStatusMu.Lock()
+	if update.Commands != nil {
+		s.runtimeStatus.Commands = slices.Clone(update.Commands)
+	}
 	backgroundChanged := false
 	if update.BackgroundTasks != nil {
 		count := *update.BackgroundTasks

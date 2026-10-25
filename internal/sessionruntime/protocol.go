@@ -106,6 +106,8 @@ type HistoryPendingTurn struct {
 
 // RuntimeStatus describes the current Session and workspace for connected clients.
 type RuntimeStatus struct {
+	// Commands lists the Session commands available from the configured agent.
+	Commands          []string          `json:"commands,omitempty"`
 	SessionName       string            `json:"sessionName,omitempty"`
 	AgentType         string            `json:"agentType,omitempty"`
 	Model             string            `json:"model,omitempty"`

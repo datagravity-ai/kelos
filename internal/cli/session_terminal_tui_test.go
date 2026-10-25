@@ -146,7 +146,21 @@ func TestSessionTUIComposerIdentifiesCommands(t *testing.T) {
 		{text: "/goal resume", want: "Goal command · Enter to resume goal"},
 		{text: "/goal clear", want: "Goal command · Enter to clear goal"},
 		{text: "/goal clear tech debt", want: "Goal command · Enter to start goal"},
-		{text: "/goal", provider: "claude-code", want: "Goal command · /goal is available only in Codex Sessions"},
+		{text: "/goal", provider: "claude-code", want: "Goal command · Enter to show goal"},
+		{text: "/goal All tests pass", provider: "claude-code", want: "Goal command · Enter to start goal · Sets or replaces Claude Code's completion condition"},
+		{text: "/goal clear", provider: "claude-code", want: "Goal command · Enter to clear goal"},
+		{text: "/goal clear", provider: "claude-code", active: true, want: "Goal command · Enter to clear goal · Queued until active work ends; use /interrupt to apply sooner"},
+		{text: "/goal stop", provider: "claude-code", want: "Goal command · Enter to clear goal"},
+		{text: "/goal STOP", provider: "claude-code", want: "Goal command · Enter to clear goal"},
+		{text: "/goal edit All tests pass", provider: "claude-code", want: "Goal command · Enter to start goal · Sets or replaces Claude Code's completion condition"},
+		{text: "/goal", provider: "opencode", want: "Goal command · /goal is not available in this Session"},
+		{text: "/loop", provider: "claude-code", want: "Loop command · Enter to start loop · Uses Claude Code's native loop scheduling"},
+		{text: "/loop 5m Check CI", provider: "claude-code", want: "Loop command · Enter to start loop · Uses Claude Code's native loop scheduling"},
+		{text: "/loop Check CI", provider: "claude-code", want: "Loop command · Enter to start loop · Uses Claude Code's native loop scheduling"},
+		{text: "/loop 15m", provider: "claude-code", want: "Loop command · Enter to start loop · Uses Claude Code's native loop scheduling"},
+		{text: "/loop 5m Check CI", provider: "claude-code", active: true, want: "Loop command · Enter to start loop · Queued until active work ends; use /interrupt to apply sooner"},
+		{text: "/loop", provider: "codex", want: "Loop command · /loop is not available in this Session"},
+		{text: "/loop", provider: "opencode", want: "Loop command · /loop is not available in this Session"},
 		{text: "/quit", want: "Session command · Enter to disconnect"},
 		{text: " /exit\n", want: "Session command · Enter to disconnect"},
 		{text: "/history", want: "Session command · Enter to load earlier history"},
@@ -206,7 +220,7 @@ func TestSessionTUIComposerHighlightsCommands(t *testing.T) {
 		{text: "!make test", color: "33"},
 		{text: "/goal pause", color: "32"},
 		{text: "/goal edit", color: "31"},
-		{text: "/goal pause", provider: "claude-code", color: "31"},
+		{text: "/goal pause", provider: "claude-code", color: "32"},
 		{text: "ordinary message"},
 	} {
 		model.input.SetValue(test.text)
@@ -239,7 +253,7 @@ func TestSessionTUICommandSubmission(t *testing.T) {
 	}{
 		{text: "!", blocked: true},
 		{text: "/goal edit", blocked: true},
-		{text: "/goal pause", provider: "claude-code", blocked: true},
+		{text: "/goal pause", provider: "claude-code"},
 		{text: "!pwd", attachments: true, blocked: true},
 		{text: "/goal pause", attachments: true, blocked: true},
 		{text: "!pwd", pending: true, active: true, blocked: true},
@@ -525,6 +539,39 @@ func TestSessionTUIStreamsToolOutputIntoCompletion(t *testing.T) {
 	rendered := stripSessionTUIANSI(model.renderTranscript())
 	if strings.Count(rendered, "first") != 1 || strings.Count(rendered, "second") != 1 {
 		t.Fatalf("completed streamed tool output = %q", rendered)
+	}
+}
+
+func TestSessionTUIDiscoveredNativeCommands(t *testing.T) {
+	for _, agent := range []string{"codex", "claude-code", "opencode"} {
+		for _, command := range []string{"goal", "loop"} {
+			for _, available := range []bool{false, true} {
+				model, _ := newSessionTUITestModel()
+				model.runtimeStatus.AgentType = agent
+				model.runtimeStatus.Commands = []string{"shell"}
+				if available {
+					model.runtimeStatus.Commands = append(model.runtimeStatus.Commands, command)
+				}
+				model.input.SetValue("/" + command + " Check CI")
+				if got := model.composerCommandError(); (got == "") != available {
+					t.Fatalf("Agent %s command %s available %v: %q", agent, command, available, got)
+				}
+			}
+		}
+	}
+	model, _ := newSessionTUITestModel()
+	model.runtimeStatus = sessionruntime.RuntimeStatus{AgentType: "opencode", Commands: []string{"shell", "goal"}}
+	model.input.SetValue("/goal edit")
+	if got := model.composerHint(); got != "Goal command · Enter to run goal · Uses OpenCode's registered goal command" {
+		t.Fatalf("Native goal hint = %q", got)
+	}
+	model.turnActive = true
+	if got := model.composerHint(); got != "Goal command · Enter to run goal · Queued until active work ends; use /interrupt to apply sooner" {
+		t.Fatalf("Active native goal hint = %q", got)
+	}
+	model.pendingTurnID = "pending"
+	if model.composerCommandError() == "" {
+		t.Fatal("Native goal bypassed pending work")
 	}
 }
 

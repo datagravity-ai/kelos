@@ -397,14 +397,14 @@ and are removed by Session reset or deletion. Retained messages show attachment
 names, and the web client provides authenticated previews or downloads while
 the Session is ready.
 
-Both terminal and web chat recognize `!COMMAND` and `/goal` before ordinary
-messages are submitted. The web and interactive terminal composers identify
-shell and goal commands as you type and show the submit action.
-The web composer highlights the command prefix and uses distinct shell and goal
-styling. It labels the submit button; touch clients use this button and reserve
-Return for a new line. Both composers explain incomplete commands, unavailable
-goal commands, and commands blocked by staged attachments or pending work, and
-prevent their submission until the problem is resolved. Removing the command
+Both terminal and web chat recognize `!COMMAND`, `/goal`, and `/loop` before
+ordinary messages are submitted. The web and interactive terminal composers
+identify shell, goal, and loop commands as you type and show the submit action.
+The web composer highlights the command prefix and styles shell commands
+separately from goals and loops. It labels the submit button; touch clients use
+this button and reserve Return for a new line. Both composers explain incomplete
+or unavailable commands and commands blocked by staged attachments or pending
+work, and prevent their submission until the problem is resolved. Removing the command
 prefix restores the ordinary message composer.
 
 `!COMMAND` runs `/bin/sh -lc COMMAND` directly in the Session working directory
@@ -416,8 +416,20 @@ prompt; Codex and OpenCode record them immediately. Live and retained command
 output appears as tool activity, and interrupting the Session turn stops the
 command.
 
-`/goal` is available only in Codex Sessions and uses the persisted goal owned by
-the Codex conversation:
+`/goal` and `/loop` use the configured agent's native capabilities. The runtime
+reports command availability to both composers:
+
+| Agent | `/goal` | `/loop` |
+|-------|---------|---------|
+| Claude Code | Built-in goal command | Built-in loop skill |
+| Codex | Built-in thread goal API | Enabled skill named `loop`, when installed |
+| OpenCode | Registered command named `goal`, when configured | Registered command named `loop`, when configured |
+
+Commands absent from the reported capabilities are rejected before they enter
+the turn queue. Agent policy can still reject an available command at execution.
+Kelos does not install skills or commands, or supply a scheduling engine.
+
+Codex supports these goal commands:
 
 | Command | Behavior |
 |---------|----------|
@@ -434,6 +446,53 @@ Interrupting active goal work pauses the goal before interrupting its current
 turn; detaching with `/quit` or `/exit` leaves it running. The goal and its
 accounting survive client reconnection and runtime container restart. They
 survive Pod replacement only when the Session workspace is persistent.
+
+Claude Code supports `/goal CONDITION` to set or replace a completion condition,
+`/goal` to show its native status, and `/goal clear` to remove it. Claude Code
+evaluates the condition after each model turn and continues until it is met,
+judged impossible, or stopped by a native error or continuation limit. Its
+native command output appears in the conversation. Goal commands submitted
+while Claude is working are queued until that work ends; use `/interrupt` to
+stop active work and let a queued command run sooner. Claude Code also accepts
+`stop`, `off`, `reset`, `none`, and `cancel` as aliases for `clear`. Other arguments
+are completion conditions, including words that Codex treats as controls such
+as `edit`, `pause`, and `resume`.
+
+Claude Code retains the goal with its conversation history. After runtime or
+Pod replacement, send a prompt to continue the resumed conversation and its
+retained goal; Pod replacement requires persistent workspace storage. Claude
+Code's native policy and settings can disable goal commands.
+
+In Claude Code, `/loop` invokes the native loop skill. Kelos passes its arguments
+through, including `/loop 5m Check CI`, `/loop Check CI` for agent-chosen pacing,
+and bare `/loop` for Claude's default maintenance prompt.
+
+Claude owns scheduling, interval validation, task limits, and cancellation. Ask
+Claude to list or cancel scheduled tasks. `/loop pause`, `/loop resume`, and
+`/loop clear` are not Kelos controls. Commands submitted during active work are
+queued; use `/interrupt` to let a queued command run sooner. Native scheduled
+runs appear as ordinary agent turns in the conversation.
+
+Native schedules run only while the agent process is running. Waiting schedules
+do not keep the Kelos Session active between turns, so configure
+`Session.spec.idlePolicy.suspendAfterSeconds` and
+`Session.spec.idlePolicy.deleteAfterSeconds` accordingly. Schedule
+restoration depends on Claude Code's native persistence and settings; Kelos does
+not retain or replay schedules. See [Claude Code's scheduling documentation](https://code.claude.com/docs/en/scheduled-tasks)
+for interval rounding, expiration, and resume limits.
+
+Codex loop support invokes an enabled `loop` skill and passes its arguments
+to that skill. The pinned Codex CLI does not ship
+a built-in `/loop` scheduler. Skill discovery runs at startup and refreshes when
+Codex reports changed skills; disabled skills are unavailable.
+
+OpenCode loop and goal support uses the commands registered with its server,
+including configured commands and skills. The pinned OpenCode version supplies
+neither command by default. Kelos discovers commands at runtime startup and
+forwards their arguments unchanged. Their syntax, controls, and scheduling
+behavior come from the registered command;
+Codex's goal controls do not apply. Restart the runtime after changing OpenCode's
+registered commands to refresh their availability.
 
 The terminal client shows live connecting, reconnecting, working,
 waiting-for-input, and interrupting progress with elapsed time. After a
