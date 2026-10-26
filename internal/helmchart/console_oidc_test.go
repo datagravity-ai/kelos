@@ -212,6 +212,22 @@ func testRenderConsoleProxy(t *testing.T, mode string, values map[string]interfa
 	if !foundNamespaceList {
 		t.Fatal("Console server must list namespaces for the namespace picker")
 	}
+	for _, role := range []rbacv1.ClusterRole{userRole, serverRole} {
+		canCreateTasks := false
+		for _, rule := range role.Rules {
+			if containsArgument(rule.APIGroups, "kelos.dev") && containsArgument(rule.Resources, "tasks") && containsArgument(rule.Verbs, "create") && len(rule.ResourceNames) == 0 {
+				canCreateTasks = true
+			}
+		}
+		if !canCreateTasks {
+			t.Fatalf("%s cannot create manual Tasks", role.Name)
+		}
+	}
+	for _, rule := range serverRole.Rules {
+		if (containsArgument(rule.APIGroups, "") || containsArgument(rule.APIGroups, "*")) && (containsArgument(rule.Resources, "secrets") || containsArgument(rule.Resources, "*")) {
+			t.Fatalf("Console server grants cluster-wide Secret access: %#v", rule)
+		}
+	}
 	if mode == "oidc" {
 		for _, userRule := range userRole.Rules {
 			found := false

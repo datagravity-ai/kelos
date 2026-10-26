@@ -52,7 +52,7 @@ func oidcTestServer(t *testing.T, reviewer AccessReviewer) *Server {
 			ExternalURL: "https://console.example", UsernamePrefix: "oidc:", GroupsPrefix: "oidc:",
 			Reviewer: reviewer, Logger: slog.New(slog.NewJSONHandler(io.Discard, nil)),
 		},
-		Client: s.client, Clientset: s.clientset, RESTConfig: s.restConfig, DefaultNamespace: "team-a",
+		Client: s.client, Clientset: s.clientset, RESTConfig: s.restConfig, HTTPClient: s.httpClient, DefaultNamespace: "team-a",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -574,7 +574,7 @@ func TestProxyAuthConfigurationValidation(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			oidc := *base.proxyAuth
-			config := Config{AuthMode: AuthModeOIDC, ProxyAuth: &oidc, Client: base.client, Clientset: base.clientset, RESTConfig: base.restConfig, DefaultNamespace: "team-a"}
+			config := Config{AuthMode: AuthModeOIDC, ProxyAuth: &oidc, Client: base.client, Clientset: base.clientset, RESTConfig: base.restConfig, HTTPClient: base.httpClient, DefaultNamespace: "team-a"}
 			test.change(&config)
 			if _, err := New(config); err == nil {
 				t.Fatal("invalid authentication configuration accepted")
@@ -589,7 +589,7 @@ func TestOIDCCanonicalOrigin(t *testing.T) {
 			base := oidcTestServer(t, reviewFunc(allowReview))
 			oidc := *base.proxyAuth
 			oidc.ExternalURL = externalURL
-			server, err := New(Config{AuthMode: AuthModeOIDC, ProxyAuth: &oidc, Client: base.client, Clientset: base.clientset, RESTConfig: base.restConfig, DefaultNamespace: base.defaultNamespace})
+			server, err := New(Config{AuthMode: AuthModeOIDC, ProxyAuth: &oidc, Client: base.client, Clientset: base.clientset, RESTConfig: base.restConfig, HTTPClient: base.httpClient, DefaultNamespace: base.defaultNamespace})
 			if err != nil {
 				t.Fatal(err)
 			}

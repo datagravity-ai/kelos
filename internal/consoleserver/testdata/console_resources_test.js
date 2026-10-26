@@ -182,6 +182,10 @@ async function testResourceDetailsIgnoreStaleResponses() {
     resourceDetailLogs: {textContent: ''},
     resourceDetailYAML: {textContent: ''},
     resourceDetailDialog: {showModal() {}},
+    taskSpawnerRunForm: {hidden: true},
+    taskSpawnerRunValues: {value: ''},
+    taskSpawnerRunError: {textContent: ''},
+    taskSpawnerRunButton: {disabled: false, textContent: ''},
   };
   global.state = {
     resourceDetailGeneration: 0,
@@ -228,6 +232,70 @@ async function testResourceDetailsIgnoreStaleResponses() {
   assert.equal(elements.resourceDetailLogs.textContent, 'second logs');
 }
 
+async function testTaskSpawnerRun() {
+  global.state = {resourceDetailGeneration: 0, resourceDetailLogGeneration: 0};
+  let postRequests = 0;
+  let refreshed = 0;
+  let toast = '';
+  let creation = deferred();
+  global.loadResources = async () => { refreshed++; };
+  global.showToast = message => { toast = message; };
+  global.apiText = async () => 'No logs yet.';
+  global.api = (requestPath, options) => {
+    if (!options) return Promise.resolve({yaml: 'kind: TaskSpawner'});
+    postRequests++;
+    assert.equal(requestPath, '/api/resources/taskspawners/team-a/daily/run');
+    assert.equal(options.method, 'POST');
+    assert.deepEqual(JSON.parse(options.body), {values: 'Title: Fix login'});
+    return creation.promise;
+  };
+
+  await openResourceDetail({resource: 'taskspawners', kind: 'TaskSpawner'}, {namespace: 'team-a', name: 'daily'});
+  assert.equal(elements.taskSpawnerRunForm.hidden, false);
+  assert.equal(elements.taskSpawnerRunButton.disabled, false);
+  assert.equal(elements.resourceDetailTabs.hidden, true);
+  elements.taskSpawnerRunValues.value = 'Title: Fix login';
+
+  let prevented = false;
+  const event = {preventDefault() { prevented = true; }};
+  const failedRun = runTaskSpawner(event);
+  await runTaskSpawner(event);
+  assert.equal(prevented, true);
+  assert.equal(postRequests, 1);
+  assert.equal(elements.taskSpawnerRunButton.disabled, true);
+  assert.equal(elements.taskSpawnerRunButton.textContent, 'Creating task…');
+  creation.reject(new Error('Task creation denied'));
+  await failedRun;
+  assert.equal(elements.taskSpawnerRunButton.disabled, false);
+  assert.equal(elements.taskSpawnerRunError.textContent, 'Task creation denied');
+  assert.equal(elements.taskSpawnerRunValues.value, 'Title: Fix login');
+
+  creation = deferred();
+  const successfulRun = runTaskSpawner(event);
+  assert.equal(elements.taskSpawnerRunError.textContent, '');
+  creation.resolve({namespace: 'team-a', name: 'daily-manual-abcde'});
+  await successfulRun;
+  assert.equal(postRequests, 2);
+  assert.equal(refreshed, 1);
+  assert.equal(toast, 'Created Task daily-manual-abcde');
+  assert.equal(elements.resourceDetailTitle.textContent, 'Task daily-manual-abcde');
+  assert.equal(elements.taskSpawnerRunForm.hidden, true);
+  assert.equal(elements.resourceDetailLogsPanel.hidden, false);
+}
+
+async function testTaskSpawnerRunIgnoresStaleResponses() {
+  const creation = deferred();
+  global.api = (_path, options) => options ? creation.promise : Promise.resolve({yaml: 'kind: Workspace'});
+  await openResourceDetail({resource: 'taskspawners', kind: 'TaskSpawner'}, {namespace: 'team-a', name: 'daily'});
+  const run = runTaskSpawner({preventDefault() {}});
+  await openResourceDetail({resource: 'workspaces', kind: 'Workspace'}, {namespace: 'team-a', name: 'repository'});
+  creation.resolve({namespace: 'team-a', name: 'daily-manual-abcde'});
+  await run;
+  assert.equal(elements.resourceDetailTitle.textContent, 'Workspace repository');
+  assert.equal(elements.taskSpawnerRunForm.hidden, true);
+  assert.equal(elements.taskSpawnerRunError.textContent, '');
+}
+
 async function testRefreshReportsOptionFailures() {
   let message = '';
   global.loadSessions = async () => {};
@@ -271,6 +339,8 @@ testResourceInventorySupportsAllTypesAndSearch();
 testResourceRelationshipHelpersResolveExistingAndMissingResources();
 testResourceViewTabsSupportKeyboardNavigation();
 testResourceDetailsIgnoreStaleResponses()
+  .then(() => testTaskSpawnerRun())
+  .then(() => testTaskSpawnerRunIgnoresStaleResponses())
   .then(() => testRefreshReportsOptionFailures())
   .then(() => testResourceDetailTabsSupportKeyboardNavigation())
   .then(() => process.stdout.write('Console resources tests passed\n'));

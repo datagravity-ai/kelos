@@ -470,6 +470,10 @@ const elements = requireElements({
   refreshResourceLogs: document.querySelector('#refresh-resource-logs'),
   resourceDetailLogs: document.querySelector('#resource-detail-logs'),
   resourceDetailYAML: document.querySelector('#resource-detail-yaml'),
+  taskSpawnerRunForm: document.querySelector('#taskspawner-run-form'),
+  taskSpawnerRunValues: document.querySelector('#taskspawner-run-values'),
+  taskSpawnerRunError: document.querySelector('#taskspawner-run-error'),
+  taskSpawnerRunButton: document.querySelector('#taskspawner-run-button'),
   namespaceLabels: document.querySelectorAll('.console-namespace'),
   newSessionButton: document.querySelector('#new-session'),
   welcomeNew: document.querySelector('#welcome-new'),
@@ -648,6 +652,7 @@ const state = {
   resourceDetailGeneration: 0,
   resourceDetailLogGeneration: 0,
   resourceDetailTask: null as {namespace: string; name: string} | null,
+  resourceDetailSpawner: null as {namespace: string; name: string} | null,
   sourceStorageClassNamePresent: false,
   loadedSource: null as {name: string; namespace: string; formCompatible: boolean} | null,
   displayNameSaving: false,
@@ -1904,6 +1909,12 @@ async function openResourceDetail(collection: ResourceDescriptor, item: Resource
   elements.resourceDetailTitle.textContent = `${collection.kind} ${item.name}`;
   elements.resourceDetailSubtitle.textContent = `${item.namespace}/${item.name}`;
   elements.resourceDetailTabs.hidden = !showTaskLogs;
+  state.resourceDetailSpawner = collection.resource === 'taskspawners' ? {namespace: item.namespace, name: item.name} : null;
+  elements.taskSpawnerRunForm.hidden = !state.resourceDetailSpawner;
+  elements.taskSpawnerRunValues.value = '';
+  elements.taskSpawnerRunError.textContent = '';
+  elements.taskSpawnerRunButton.disabled = true;
+  elements.taskSpawnerRunButton.textContent = 'Run task';
   state.resourceDetailTask = showTaskLogs ? {namespace: item.namespace, name: item.name} : null;
   if (!showTaskLogs) {
     state.resourceDetailLogGeneration++;
@@ -1919,6 +1930,7 @@ async function openResourceDetail(collection: ResourceDescriptor, item: Resource
       const detail = await api<{yaml: string}>(`/api/resources/${encodeURIComponent(collection.resource)}/${encodeURIComponent(item.namespace)}/${encodeURIComponent(item.name)}`);
       if (generation !== state.resourceDetailGeneration) return;
       elements.resourceDetailYAML.textContent = detail.yaml;
+      elements.taskSpawnerRunButton.disabled = !state.resourceDetailSpawner;
     } catch (error) {
       if (generation !== state.resourceDetailGeneration) return;
       elements.resourceDetailYAML.textContent = errorMessage(error);
@@ -1927,6 +1939,34 @@ async function openResourceDetail(collection: ResourceDescriptor, item: Resource
   const logsRequest = showTaskLogs ? loadResourceTaskLogs(state.resourceDetailTask!, generation) : Promise.resolve();
 
   await Promise.all([manifestRequest, logsRequest]);
+}
+
+async function runTaskSpawner(event: Event) {
+  event.preventDefault();
+  const spawner = state.resourceDetailSpawner;
+  if (!spawner || elements.taskSpawnerRunButton.disabled) return;
+  const generation = state.resourceDetailGeneration;
+  elements.taskSpawnerRunButton.disabled = true;
+  elements.taskSpawnerRunButton.textContent = 'Creating task…';
+  elements.taskSpawnerRunError.textContent = '';
+  try {
+    const task = await api<ResourceSummary>(`/api/resources/taskspawners/${encodeURIComponent(spawner.namespace)}/${encodeURIComponent(spawner.name)}/run`, {
+      method: 'POST',
+      body: JSON.stringify({values: elements.taskSpawnerRunValues.value}),
+    });
+    showToast(`Created Task ${task.name}`);
+    void loadResources();
+    if (generation !== state.resourceDetailGeneration) return;
+    await openResourceDetail({resource: 'tasks', kind: 'Task', label: 'Tasks'}, task);
+  } catch (error) {
+    if (generation !== state.resourceDetailGeneration) return;
+    elements.taskSpawnerRunError.textContent = errorMessage(error);
+  } finally {
+    if (generation === state.resourceDetailGeneration) {
+      elements.taskSpawnerRunButton.disabled = false;
+      elements.taskSpawnerRunButton.textContent = 'Run task';
+    }
+  }
 }
 
 const pendingCompletionReads = new Map<string, string>();
@@ -6940,6 +6980,12 @@ elements.resourceSearch.addEventListener('input', renderResources);
 document.querySelectorAll('.close-resource-detail').forEach(button => {
   button.addEventListener('click', () => elements.resourceDetailDialog.close());
 });
+elements.resourceDetailDialog.addEventListener('close', () => {
+  state.resourceDetailGeneration++;
+  state.resourceDetailLogGeneration++;
+  state.resourceDetailSpawner = null;
+});
+elements.taskSpawnerRunForm.addEventListener('submit', runTaskSpawner);
 elements.resourceDetailLogsTab.addEventListener('click', () => setResourceDetailView('logs'));
 elements.resourceDetailManifestTab.addEventListener('click', () => setResourceDetailView('manifest'));
 elements.resourceDetailTabs.addEventListener('keydown', handleResourceDetailTabKeydown);

@@ -43,6 +43,7 @@ var _ = Describe("Session", func() {
 			Client:           k8sClient,
 			Clientset:        clientset,
 			RESTConfig:       cfg,
+			HTTPClient:       http.DefaultClient,
 			DefaultNamespace: namespace,
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -163,7 +164,7 @@ spec:
 		clientset, err := kubernetes.NewForConfig(cfg)
 		Expect(err).NotTo(HaveOccurred())
 		console, err := consoleserver.New(consoleserver.Config{
-			Token: "secret-token", Client: k8sClient, Clientset: clientset, RESTConfig: cfg, DefaultNamespace: namespace,
+			Token: "secret-token", Client: k8sClient, Clientset: clientset, RESTConfig: cfg, HTTPClient: http.DefaultClient, DefaultNamespace: namespace,
 		})
 		Expect(err).NotTo(HaveOccurred())
 		journal := sessionruntime.NewJournal()

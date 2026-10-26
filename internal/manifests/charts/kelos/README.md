@@ -206,7 +206,10 @@ is deleted with its owning Session; the StorageClass reclaim policy controls
 the underlying PersistentVolume.
 
 The Console provides an overview and manifest browser for Kelos resources in
-the active namespace. Its Sessions view creates and organizes Sessions, bridges
+the active namespace. Select a TaskSpawner and choose **Run task** to create a
+standalone Task, with optional YAML or JSON template values. Manual runs bypass
+the schedule, source filters, suspension, and spawner task limits.
+Its Sessions view creates and organizes Sessions, bridges
 each chat to its Session Pod through Kubernetes exec, and can request a
 destructive Session workspace reset after user confirmation. Long conversations
 open at a bounded recent page and load earlier messages on demand. The Console
@@ -232,7 +235,7 @@ kubectl port-forward -n kelos-system service/kelos-console-server 8080:80
 
 Then open `http://localhost:8080` and enter the token. The token represents one
 shared user that can inspect Kelos resources, manage Workspaces, AgentConfigs,
-and WorkerPools through the Admin page, and create, reset, delete, and
+and WorkerPools through the Admin page, run Tasks from TaskSpawners, and create, reset, delete, and
 connect to Sessions in any namespace. It also grants interactive shell access
 to Ready Sessions' agent containers, including their workspaces and mounted
 credentials. Treat it as a credential. For access
@@ -306,7 +309,9 @@ Large sessions also require ingress request and response header limits that
 accommodate the proxy's session cookies.
 
 The chart creates unbound `kelos-console-user` and `kelos-console-admin`
-ClusterRoles. To grant Session access and resource inspection in one namespace:
+ClusterRoles in OIDC mode; GitHub mode creates only `kelos-console-user`.
+Both roles allow manual Task creation from TaskSpawners. To grant Session access,
+manual Task creation, and resource inspection in one namespace:
 
 ```yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -543,6 +548,45 @@ GitHub mode accepts the same `clientSecretKey`, `cookieSecretKey`, `image`,
 Secure, HttpOnly, and use a separate name from OIDC cookies. Do not combine
 `auth.github` with `auth.oidc` or static-token settings. When changing the
 provider instance, use a separate cookie secret and identity prefixes.
+
+### Console context-source Secrets
+
+The chart does not grant the Console ServiceAccount access to Secrets. For
+manual TaskSpawner runs that use authenticated context sources, grant `get` on
+each referenced Secret in the TaskSpawner's namespace. For example:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kelos-console-context-secrets
+  namespace: team-frontend
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [context-auth]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kelos-console-context-secrets
+  namespace: team-frontend
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kelos-console-context-secrets
+subjects:
+  - kind: ServiceAccount
+    name: kelos-console-server
+    namespace: kelos-system
+```
+
+Replace `team-frontend`, `context-auth`, and the ServiceAccount namespace with
+the TaskSpawner namespace, Secret name, and chart release namespace.
+Context-source requests use the Console ServiceAccount's access, rather than
+the signed-in user's Secret permissions. Template values can affect the request
+URL, headers, and body; users can read fetched context rendered into their Tasks.
 
 ### Console namespaces
 

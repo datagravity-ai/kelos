@@ -13,20 +13,11 @@ import (
 	"github.com/go-logr/logr/funcr"
 	"github.com/spf13/cobra"
 	json "k8s.io/apimachinery/pkg/util/json"
-	"k8s.io/apimachinery/pkg/util/rand"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 
 	kelos "github.com/kelos-dev/kelos/api/v1alpha2"
-	"github.com/kelos-dev/kelos/internal/contextfetch"
-	"github.com/kelos-dev/kelos/internal/source"
 	"github.com/kelos-dev/kelos/internal/taskbuilder"
-)
-
-const (
-	annotationCreatedFromTaskSpawner = "kelos.dev/created-from-taskspawner"
-	annotationManualTrigger          = "kelos.dev/trigger-type"
-	annotationManualTriggerTime      = "kelos.dev/trigger-time"
 )
 
 type runFromTaskSpawnerOptions struct {
@@ -138,81 +129,21 @@ func buildTaskFromTaskSpawner(ctx context.Context, cl client.Client, namespace, 
 		return nil, fmt.Errorf("getting TaskSpawner %s: %w", spawnerName, err)
 	}
 
-	now := opts.Now.UTC()
-	if now.IsZero() {
-		now = time.Now().UTC()
+	errorWriter := opts.ErrorWriter
+	if errorWriter == nil {
+		errorWriter = os.Stderr
 	}
-	manualID := "manual-" + rand.String(5)
-	vars := map[string]interface{}{
-		"ID":          manualID,
-		"Title":       "Manual run of TaskSpawner " + spawner.Name,
-		"Kind":        "Manual",
-		"TriggerType": "manual",
-		"TriggerTime": now.Format(time.RFC3339),
-	}
-	for key, value := range opts.Values {
-		vars[key] = value
-	}
-	if spawner.Spec.When.Cron != nil {
-		vars["Time"] = now.Format(time.RFC3339)
-		vars["Schedule"] = spawner.Spec.When.Cron.Schedule
-	}
-
-	httpClient := taskSpawnerHTTPClient(opts.HTTPClient)
-	if len(spawner.Spec.TaskTemplate.ContextSources) > 0 {
-		errorWriter := opts.ErrorWriter
-		if errorWriter == nil {
-			errorWriter = os.Stderr
-		}
-		warningLog := log.New(errorWriter, "Warning: ", 0)
-		logger := funcr.New(func(prefix, args string) {
-			warningLog.Print(strings.TrimSpace(prefix + " " + args))
-		}, funcr.Options{})
-		fetcher := &contextfetch.Fetcher{
-			Client:     cl,
-			HTTPClient: httpClient,
-			Namespace:  namespace,
-			Logger:     logger,
-		}
-		contextData, err := fetcher.FetchAll(ctx, spawner.Spec.TaskTemplate.ContextSources, vars)
-		if err != nil {
-			return nil, fmt.Errorf("fetching context sources for TaskSpawner %s: %w", spawner.Name, err)
-		}
-		vars["Context"] = contextData
-	}
-
-	taskName := opts.Name
-	if taskName == "" {
-		taskName = manualTaskName(spawner.Name, strings.TrimPrefix(manualID, "manual-"))
-	}
-	builder, err := taskbuilder.NewTaskBuilder(cl)
-	if err != nil {
-		return nil, fmt.Errorf("creating Task builder for TaskSpawner %s: %w", spawner.Name, err)
-	}
-	// Manual runs manage their own name (an explicit --name or a unique
-	// -manual- suffix), so bypass the spawner's nameTemplate: it targets
-	// automated deduplication and its variables may be absent for a manual run.
-	taskTemplate := spawner.Spec.TaskTemplate
-	taskTemplate.NameTemplate = ""
-	task, err := builder.BuildTask(taskName, namespace, &taskTemplate, vars, nil)
-	if err != nil {
-		return nil, fmt.Errorf("building task %s from TaskSpawner %s: %w", taskName, spawner.Name, err)
-	}
-	if err := builder.AssignSpawnerCredential(&spawner, task); err != nil {
-		return nil, fmt.Errorf("assigning TaskSpawner credential to task %s from TaskSpawner %s: %w", taskName, spawner.Name, err)
-	}
-	if task.Spec.UpstreamRepo == "" {
-		task.Spec.UpstreamRepo = taskSpawnerUpstreamRepo(&spawner)
-	}
-	delete(task.Labels, "kelos.dev/taskspawner")
-	if task.Annotations == nil {
-		task.Annotations = make(map[string]string)
-	}
-	task.Annotations[annotationCreatedFromTaskSpawner] = spawner.Name
-	task.Annotations[annotationManualTrigger] = "manual"
-	task.Annotations[annotationManualTriggerTime] = now.Format(time.RFC3339)
-	task.SetGroupVersionKind(kelos.GroupVersion.WithKind("Task"))
-	return task, nil
+	warningLog := log.New(errorWriter, "Warning: ", 0)
+	logger := funcr.New(func(prefix, args string) {
+		warningLog.Print(strings.TrimSpace(prefix + " " + args))
+	}, funcr.Options{})
+	return taskbuilder.BuildManualTask(ctx, cl, &spawner, taskbuilder.ManualTaskOptions{
+		Name:       opts.Name,
+		Values:     opts.Values,
+		Now:        opts.Now,
+		HTTPClient: taskSpawnerHTTPClient(opts.HTTPClient),
+		Logger:     logger,
+	})
 }
 
 func taskSpawnerHTTPClient(configured *http.Client) *http.Client {
@@ -220,24 +151,4 @@ func taskSpawnerHTTPClient(configured *http.Client) *http.Client {
 		return configured
 	}
 	return http.DefaultClient
-}
-
-func taskSpawnerUpstreamRepo(spawner *kelos.TaskSpawner) string {
-	var repo string
-	if spawner.Spec.When.GitHubIssues != nil {
-		repo = spawner.Spec.When.GitHubIssues.Repo
-	} else if spawner.Spec.When.GitHubPullRequests != nil {
-		repo = spawner.Spec.When.GitHubPullRequests.Repo
-	}
-	return source.GitHubRepositoryName(repo)
-}
-
-func manualTaskName(spawnerName, suffix string) string {
-	const separator = "-manual-"
-	maxPrefix := 63 - len(separator) - len(suffix)
-	prefix := spawnerName
-	if len(prefix) > maxPrefix {
-		prefix = strings.TrimRight(prefix[:maxPrefix], "-.")
-	}
-	return prefix + separator + suffix
 }

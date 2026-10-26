@@ -24,7 +24,7 @@ func TestBuildTaskFromCronTaskSpawner(t *testing.T) {
 	spawner.Spec.TaskTemplate.Metadata = &kelos.TaskTemplateMetadata{
 		Labels: map[string]string{"kelos.dev/taskspawner": "automatic-owner"},
 		Annotations: map[string]string{
-			annotationCreatedFromTaskSpawner: "template-value",
+			"kelos.dev/created-from-taskspawner": "template-value",
 		},
 	}
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(spawner).Build()
@@ -52,13 +52,13 @@ func TestBuildTaskFromCronTaskSpawner(t *testing.T) {
 	if len(task.OwnerReferences) != 0 {
 		t.Errorf("OwnerReferences = %#v, want none", task.OwnerReferences)
 	}
-	if got := task.Annotations[annotationCreatedFromTaskSpawner]; got != spawner.Name {
+	if got := task.Annotations["kelos.dev/created-from-taskspawner"]; got != spawner.Name {
 		t.Errorf("created-from annotation = %q, want %q", got, spawner.Name)
 	}
-	if got := task.Annotations[annotationManualTrigger]; got != "manual" {
+	if got := task.Annotations["kelos.dev/trigger-type"]; got != "manual" {
 		t.Errorf("trigger-type annotation = %q, want manual", got)
 	}
-	if got := task.Annotations[annotationManualTriggerTime]; got != "2026-07-10T01:02:03Z" {
+	if got := task.Annotations["kelos.dev/trigger-time"]; got != "2026-07-10T01:02:03Z" {
 		t.Errorf("trigger-time annotation = %q", got)
 	}
 }
@@ -314,16 +314,6 @@ func TestRunValuesRequiresFrom(t *testing.T) {
 	err := cmd.Execute()
 	if err == nil || !strings.Contains(err.Error(), "--values requires --from") {
 		t.Fatalf("error = %v, want --values requirement", err)
-	}
-}
-
-func TestManualTaskNameFitsDNSLabel(t *testing.T) {
-	name := manualTaskName(strings.Repeat("a", 63), "abcde")
-	if len(name) > 63 {
-		t.Fatalf("name length = %d, want at most 63", len(name))
-	}
-	if !strings.HasSuffix(name, "-manual-abcde") {
-		t.Errorf("name = %q, want manual suffix", name)
 	}
 }
 

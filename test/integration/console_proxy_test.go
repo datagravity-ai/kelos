@@ -142,7 +142,7 @@ func testConsoleProxy(t *testing.T, mode, githubTeam string) {
 	server, err := consoleserver.New(consoleserver.Config{
 		AuthMode:  mode,
 		ProxyAuth: &consoleserver.ProxyAuthConfig{ExternalURL: edge.URL, UsernamePrefix: prefix, GroupsPrefix: prefix, Reviewer: clientset.AuthorizationV1().SubjectAccessReviews(), Logger: slog.New(slog.NewJSONHandler(io.Discard, nil))},
-		Client:    kube, Clientset: clientset, RESTConfig: config, DefaultNamespace: "team-a",
+		Client:    kube, Clientset: clientset, RESTConfig: config, HTTPClient: http.DefaultClient, DefaultNamespace: "team-a",
 	})
 	if err != nil {
 		t.Fatal(err)
