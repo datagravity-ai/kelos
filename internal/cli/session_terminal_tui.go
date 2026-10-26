@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -658,7 +659,7 @@ func (m *sessionTUIModel) applyEvent(event sessionruntime.Event) sessionTUIComma
 		// A terminal-height transcript in both the managed view and native scrollback
 		// makes Bubble Tea move the smaller footer to the top when the copy is removed.
 		m.hideNextHistory = !m.ready
-		m.appendBlock(sessionTUIBlockNotice, "Connected. Enter sends, Ctrl+J inserts a newline, Up/Down browses prompts, Ctrl+C or Esc interrupts active work, Page Up loads earlier history, and dragging a file attaches it (or use /attach PATH). Press Alt+Up on an empty composer to edit pending work. Use !COMMAND, /goal, /answer INPUT QUESTION VALUE, or /quit.")
+		m.appendBlock(sessionTUIBlockNotice, "Connected. Enter sends, Ctrl+J inserts a newline, Up/Down browses prompts, Ctrl+C or Esc interrupts active work, Page Up loads earlier history, and dragging a file attaches it (or use /attach PATH). Press Alt+Up on an empty composer to edit pending work. Use !COMMAND, /goal, /loop, /answer INPUT QUESTION VALUE, or /quit.")
 		m.ready = true
 		m.connectionStatus = ""
 		commands.ui = tea.Batch(m.input.Focus(), m.scheduleProgress())
@@ -1516,28 +1517,46 @@ func (m *sessionTUIModel) statusStyle(status string) lipgloss.Style {
 	}
 }
 
+func (m *sessionTUIModel) supportsCommand(command string) bool {
+	if m.runtimeStatus.Commands != nil {
+		return slices.Contains(m.runtimeStatus.Commands, command)
+	}
+	switch command {
+	case "loop":
+		return m.runtimeStatus.AgentType == "" || m.runtimeStatus.AgentType == "claude-code"
+	case "goal":
+		return m.runtimeStatus.AgentType == "" || m.runtimeStatus.AgentType == "claude-code" || m.runtimeStatus.AgentType == "codex"
+	default:
+		return true
+	}
+}
+
 func (m *sessionTUIModel) composerCommandError() string {
 	text := strings.TrimSpace(m.input.Value())
 	fields := strings.Fields(text)
 	shell := strings.HasPrefix(text, "!")
 	goal := len(fields) > 0 && fields[0] == "/goal"
-	if !shell && !goal {
+	loop := len(fields) > 0 && fields[0] == "/loop"
+	if !shell && !goal && !loop {
 		return ""
 	}
 	if len(m.pendingAttachments) > 0 {
 		return "Remove attachments to use a command"
 	}
-	if m.pendingEditTurnID == "" && m.pendingTurnID != "" && (shell || !m.turnActive) {
+	if m.pendingEditTurnID == "" && m.pendingTurnID != "" && (shell || loop || !m.turnActive || goal && (m.runtimeStatus.AgentType == "claude-code" || m.runtimeStatus.AgentType == "opencode")) {
 		return "Wait for pending work to start or remove it before submitting a command"
 	}
 	if shell && strings.TrimSpace(strings.TrimPrefix(text, "!")) == "" {
 		return "Enter a command after !"
 	}
+	if loop && !m.supportsCommand("loop") {
+		return "/loop is not available in this Session"
+	}
 	if goal {
-		if m.runtimeStatus.AgentType != "" && m.runtimeStatus.AgentType != "codex" {
-			return "/goal is available only in Codex Sessions"
+		if !m.supportsCommand("goal") {
+			return "/goal is not available in this Session"
 		}
-		if len(fields) == 2 && fields[1] == "edit" {
+		if (m.runtimeStatus.AgentType == "" || m.runtimeStatus.AgentType == "codex") && len(fields) == 2 && fields[1] == "edit" {
 			return "Enter an objective after /goal edit"
 		}
 	}
@@ -1566,6 +1585,40 @@ func (m *sessionTUIModel) composerHint() string {
 			action = "edit goal"
 		case len(fields) == 2 && (fields[1] == "pause" || fields[1] == "resume" || fields[1] == "clear"):
 			action = fields[1] + " goal"
+		}
+		if m.runtimeStatus.AgentType == "claude-code" {
+			action = "show goal"
+			if len(fields) > 1 {
+				action = "start goal"
+				detail = "Sets or replaces Claude Code's completion condition"
+				if len(fields) == 2 {
+					switch strings.ToLower(fields[1]) {
+					case "clear", "stop", "off", "reset", "none", "cancel":
+						action, detail = "clear goal", ""
+					}
+				}
+			}
+			if m.turnActive {
+				detail = "Queued until active work ends; use /interrupt to apply sooner"
+			}
+		}
+		if m.runtimeStatus.AgentType == "opencode" {
+			action, detail = "run goal", "Uses OpenCode's registered goal command"
+			if m.turnActive {
+				detail = "Queued until active work ends; use /interrupt to apply sooner"
+			}
+		}
+	} else if len(fields) > 0 && fields[0] == "/loop" {
+		label, action = "Loop command", "start loop"
+		detail = "Uses Claude Code's native loop scheduling"
+		switch m.runtimeStatus.AgentType {
+		case "codex":
+			action, detail = "run loop", "Uses the enabled Codex loop skill"
+		case "opencode":
+			action, detail = "run loop", "Uses OpenCode's registered loop command"
+		}
+		if m.turnActive {
+			detail = "Queued until active work ends; use /interrupt to apply sooner"
 		}
 	}
 	if m.pendingEditTurnID != "" {
@@ -1617,7 +1670,7 @@ func (m *sessionTUIModel) composerView() string {
 	if strings.HasPrefix(text, "!") {
 		headingStyle = m.styles.warning
 		inputStyle = inputStyle.Foreground(m.styles.warning.GetForeground())
-	} else if len(fields) > 0 && fields[0] == "/goal" {
+	} else if len(fields) > 0 && (fields[0] == "/goal" || fields[0] == "/loop") {
 		headingStyle = m.styles.success.Bold(true)
 		inputStyle = inputStyle.Foreground(m.styles.success.GetForeground())
 	}

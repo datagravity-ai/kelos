@@ -95,11 +95,12 @@ type CodexProvider struct {
 	goalMu            sync.Mutex
 	goal              *Goal
 
-	statusMu    sync.Mutex
-	model       string
-	effort      string
-	usage       *RuntimeUsage
-	weeklyLimit *RuntimeRateLimit
+	statusMu      sync.Mutex
+	loopSkillPath string
+	model         string
+	effort        string
+	usage         *RuntimeUsage
+	weeklyLimit   *RuntimeRateLimit
 
 	threadID string
 	done     chan struct{}
@@ -160,6 +161,10 @@ func NewCodexProvider(ctx context.Context, config ProviderConfig) (*CodexProvide
 		provider.Close()
 		return nil, err
 	}
+	if err := provider.loadLoopSkill(initCtx); err != nil {
+		provider.Close()
+		return nil, err
+	}
 	if err := provider.loadGoal(initCtx); err != nil {
 		provider.Close()
 		return nil, err
@@ -174,6 +179,38 @@ func NewCodexProvider(ctx context.Context, config ProviderConfig) (*CodexProvide
 	}
 	rateLimitCancel()
 	return provider, nil
+}
+
+func (p *CodexProvider) loadLoopSkill(ctx context.Context) error {
+	result, err := p.request(ctx, "skills/list", map[string]any{"cwds": []string{p.config.WorkingDir}, "forceReload": true})
+	if err != nil {
+		return fmt.Errorf("discovering Codex loop skill: %w", err)
+	}
+	var response struct {
+		Data []struct {
+			Skills []struct {
+				Name    string `json:"name"`
+				Path    string `json:"path"`
+				Enabled bool   `json:"enabled"`
+			} `json:"skills"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(result, &response); err != nil {
+		return fmt.Errorf("decoding Codex skills: %w", err)
+	}
+	path := ""
+	for _, entry := range response.Data {
+		for _, skill := range entry.Skills {
+			if skill.Name == "loop" && skill.Enabled && skill.Path != "" {
+				path = skill.Path
+				break
+			}
+		}
+	}
+	p.statusMu.Lock()
+	p.loopSkillPath = path
+	p.statusMu.Unlock()
+	return nil
 }
 
 func (p *CodexProvider) loadGoal(ctx context.Context) error {
@@ -311,10 +348,27 @@ func codexTurnID(result json.RawMessage) string {
 
 // StartTurn submits one Codex turn to the session event stream.
 func (p *CodexProvider) StartTurn(ctx context.Context, input TurnInput) error {
+	return p.startTurn(ctx, codexTurnInputItems(input))
+}
+
+// StartLoop invokes the enabled loop skill through Codex's native skill input.
+func (p *CodexProvider) StartLoop(ctx context.Context, text string) error {
+	p.statusMu.Lock()
+	path := p.loopSkillPath
+	p.statusMu.Unlock()
+	if path == "" {
+		return errors.New("Codex has no enabled loop skill")
+	}
+	input := codexTurnInputItems(TurnInput{Text: "$loop" + strings.TrimPrefix(text, "/loop")})
+	input = append(input, map[string]any{"type": "skill", "name": "loop", "path": path})
+	return p.startTurn(ctx, input)
+}
+
+func (p *CodexProvider) startTurn(ctx context.Context, input []map[string]any) error {
 	return p.startInteraction(ctx, codexInteractionMessage, func(ready chan struct{}) (bool, error) {
 		params := map[string]any{
 			"threadId": p.threadID,
-			"input":    codexTurnInputItems(input),
+			"input":    input,
 		}
 		if p.config.Model != "" {
 			params["model"] = p.config.Model
@@ -796,6 +850,21 @@ func (p *CodexProvider) handleNotification(method string, params json.RawMessage
 	p.activeMu.Unlock()
 
 	switch method {
+	case "skills/changed":
+		go func() {
+			ctx, cancel := context.WithTimeout(p.ctx, 30*time.Second)
+			defer cancel()
+			if err := p.loadLoopSkill(ctx); err != nil {
+				if sink != nil {
+					sink.Emit(Event{Type: EventError, Text: err.Error()})
+				}
+				return
+			}
+			if sink != nil {
+				p.emitRuntimeStatus(sink)
+			}
+		}()
+		return
 	case "thread/goal/updated":
 		goal, err := decodeCodexGoal(params)
 		if err == nil && goal != nil {
@@ -951,7 +1020,10 @@ func (p *CodexProvider) emitRuntimeStatus(sink EventSink) {
 func (p *CodexProvider) runtimeStatusSnapshot() RuntimeStatus {
 	p.statusMu.Lock()
 	defer p.statusMu.Unlock()
-	status := RuntimeStatus{}
+	status := RuntimeStatus{Commands: []string{"shell", "goal"}}
+	if p.loopSkillPath != "" {
+		status.Commands = append(status.Commands, "loop")
+	}
 	status.Model = p.model
 	status.Effort = p.effort
 	if status.Effort == "" {

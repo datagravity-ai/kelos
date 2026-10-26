@@ -28,7 +28,7 @@ func TestParseSessionCommand(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			command, err := parseSessionCommand(test.input)
+			command, err := parseSessionCommand(test.input, "codex")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -39,10 +39,57 @@ func TestParseSessionCommand(t *testing.T) {
 	}
 }
 
+func TestParseClaudeGoalCommand(t *testing.T) {
+	for _, test := range []struct {
+		text      string
+		action    goalCommandAction
+		objective string
+	}{
+		{text: "/goal", action: goalCommandShow},
+		{text: "/goal All tests pass", action: goalCommandCreate, objective: "All tests pass"},
+		{text: "/goal edit tests until they pass", action: goalCommandCreate, objective: "edit tests until they pass"},
+		{text: "/goal edit", action: goalCommandCreate, objective: "edit"},
+		{text: "/goal pause", action: goalCommandCreate, objective: "pause"},
+		{text: "/goal resume", action: goalCommandCreate, objective: "resume"},
+		{text: "/goal clear", action: goalCommandClear},
+		{text: "/goal STOP", action: goalCommandClear},
+		{text: "/goal off", action: goalCommandClear},
+		{text: "/goal reset", action: goalCommandClear},
+		{text: "/goal none", action: goalCommandClear},
+		{text: "/goal cancel", action: goalCommandClear},
+		{text: "/goal clear tech debt", action: goalCommandCreate, objective: "clear tech debt"},
+	} {
+		t.Run(test.text, func(t *testing.T) {
+			command, err := parseSessionCommand(test.text, "claude-code")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if command.kind != sessionCommandGoal || command.goal.action != test.action || command.goal.objective != test.objective {
+				t.Fatalf("Claude goal command = %#v", command)
+			}
+		})
+	}
+}
+
+func TestParseClaudeLoopCommand(t *testing.T) {
+	for _, text := range []string{"/loop", "/loop 5m Check CI", "/loop 15m", "/loop Check CI", "/loop check CI every 2 hours", "/loop pause", "/loop clear", "/loop\nCheck CI"} {
+		command, err := parseSessionCommand(text, "claude-code")
+		if err != nil || command.kind != sessionCommandLoop || command.text != text {
+			t.Fatalf("parseSessionCommand(%q) = %#v, %v", text, command, err)
+		}
+	}
+	for _, text := range []string{"/loops", "/looping"} {
+		command, err := parseSessionCommand(text, "claude-code")
+		if err != nil || command.kind != sessionCommandMessage {
+			t.Fatalf("parseSessionCommand(%q) = %#v, %v", text, command, err)
+		}
+	}
+}
+
 func TestParseSessionCommandRejectsInvalidCommands(t *testing.T) {
 	for _, input := range []string{"!", "/goal edit"} {
 		t.Run(strings.ReplaceAll(input, " ", "_"), func(t *testing.T) {
-			if _, err := parseSessionCommand(input); err == nil {
+			if _, err := parseSessionCommand(input, "codex"); err == nil {
 				t.Fatalf("parseSessionCommand(%q) returned no error", input)
 			}
 		})

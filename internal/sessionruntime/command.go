@@ -15,6 +15,7 @@ const (
 	sessionCommandMessage sessionCommandKind = "message"
 	sessionCommandShell   sessionCommandKind = "shell"
 	sessionCommandGoal    sessionCommandKind = "goal"
+	sessionCommandLoop    sessionCommandKind = "loop"
 )
 
 type sessionCommand struct {
@@ -39,8 +40,11 @@ type goalCommand struct {
 	objective string
 }
 
-func parseSessionCommand(text string) (sessionCommand, error) {
+func parseSessionCommand(text, agentType string) (sessionCommand, error) {
 	trimmed := strings.TrimSpace(text)
+	if hasCommandPrefix(trimmed, "/loop") {
+		return sessionCommand{kind: sessionCommandLoop, text: trimmed}, nil
+	}
 	if strings.HasPrefix(trimmed, "!") {
 		command := strings.TrimSpace(strings.TrimPrefix(trimmed, "!"))
 		if command == "" {
@@ -56,7 +60,19 @@ func parseSessionCommand(text string) (sessionCommand, error) {
 	if arguments == "" {
 		return sessionCommand{kind: sessionCommandGoal, goal: goalCommand{action: goalCommandShow}}, nil
 	}
+	if agentType == "opencode" {
+		return sessionCommand{kind: sessionCommandGoal, goal: goalCommand{action: goalCommandCreate, objective: arguments}}, nil
+	}
 	fields := strings.Fields(arguments)
+	if agentType == "claude-code" {
+		if len(fields) == 1 {
+			switch strings.ToLower(fields[0]) {
+			case "clear", "stop", "off", "reset", "none", "cancel":
+				return sessionCommand{kind: sessionCommandGoal, goal: goalCommand{action: goalCommandClear}}, nil
+			}
+		}
+		return sessionCommand{kind: sessionCommandGoal, goal: goalCommand{action: goalCommandCreate, objective: arguments}}, nil
+	}
 	switch fields[0] {
 	case "clear":
 		if len(fields) == 1 {

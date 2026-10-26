@@ -988,7 +988,7 @@ function testComposerInterruptsWhileInputIsDisabled() {
   assert.equal(elements.input.value, 'preserved draft');
   window.matchMedia = () => ({matches: true});
   updateComposerAction();
-  assert.equal(elements.composerHint.textContent, 'Tap ■ to interrupt · Return for a new line · !COMMAND · /goal');
+  assert.equal(elements.composerHint.textContent, 'Tap ■ to interrupt · Return for a new line · !COMMAND · /goal · /loop');
   window.matchMedia = () => ({matches: false});
 
   submitComposer();
@@ -1010,11 +1010,11 @@ function testComposerLabelsPendingSubmission() {
 
   updateComposerAction();
 
-  assert.equal(elements.composerHint.textContent, 'Enter to add to pending · Shift+Enter for a new line · !COMMAND · /goal');
+  assert.equal(elements.composerHint.textContent, 'Enter to add to pending · Shift+Enter for a new line · !COMMAND · /goal · /loop');
 
   elements.input.value = '/goal pause';
   updateComposerAction();
-  assert.equal(elements.composerHint.textContent, 'Enter to pause goal · Shift+Enter for a new line · !COMMAND · /goal');
+  assert.equal(elements.composerHint.textContent, 'Enter to pause goal · Shift+Enter for a new line · !COMMAND · /goal · /loop');
 }
 
 function testComposerRecognizesCommands() {
@@ -1038,6 +1038,7 @@ function testComposerRecognizesCommands() {
     ['/goal resume', 'goal', 'Goal command', 'Resume goal'],
     ['/goal clear', 'goal', 'Goal command', 'Clear goal'],
     ['/goal clear tech debt', 'goal', 'Goal command', 'Start goal'],
+    ['/loops', 'message', 'Message', 'Send'],
   ];
   for (const [text, kind, label, action] of cases) {
     resetHarness();
@@ -1072,6 +1073,112 @@ function testComposerRecognizesCommands() {
   assert.equal(elements.composerHighlight.hidden, false);
   assert.equal(elements.composerHint.textContent, 'Tap Run command · Return for a new line');
   window.matchMedia = () => ({matches: false});
+}
+
+async function testDiscoveredNativeCommands() {
+  for (const provider of ['codex', 'claude-code', 'opencode']) {
+    for (const command of ['goal', 'loop']) {
+      for (const available of [false, true]) {
+        resetHarness();
+        state.selected = {namespace: 'default', name: 'one', uid: 'one', provider};
+        const sent = [];
+        state.socket = {readyState: WebSocket.OPEN, send: message => sent.push(JSON.parse(message))};
+        elements.input.value = `/${command} check CI`;
+        handleEvent({type: 'runtime.status', runtime: {agentType: provider, commands: available ? ['shell', command] : ['shell']}});
+        assert.equal(elements.send.disabled, !available, `${provider} ${command} ${available}`);
+        await submitComposer();
+        assert.deepEqual(sent, available ? [{type: 'message', text: `/${command} check CI`, attachmentIds: []}] : []);
+      }
+    }
+  }
+  resetHarness();
+  state.selected = {namespace: 'default', name: 'one', provider: 'opencode'};
+  state.socket = {readyState: WebSocket.OPEN};
+  state.runtimeStatus = {commands: ['shell', 'goal']};
+  elements.input.value = '/goal edit';
+  updateComposerAction();
+  assert.equal(elements.send.disabled, false);
+  assert.equal(elements.send.textContent, 'Run goal');
+  state.activeTurn = true;
+  state.pendingMessage = {event: {turnId: 'turn-2'}};
+  updateComposerAction();
+  assert.equal(elements.send.disabled, true);
+}
+
+async function testNativeLoopCommandSubmission() {
+  resetHarness();
+  state.selected = {namespace: 'default', name: 'one', uid: 'uid-one', provider: 'claude-code'};
+  const sent = [];
+  state.socket = {readyState: WebSocket.OPEN, send: message => sent.push(JSON.parse(message))};
+  const commands = ['/loop', '/loop 5m Check CI', '/loop Check CI', '/loop 15m', '/loop check CI every 2 hours'];
+  for (const text of commands) {
+    elements.input.value = text;
+    updateComposerAction();
+    assert.equal(elements.composer.dataset.command, 'loop', text);
+    assert.equal(elements.composerHighlight.querySelector('mark').textContent, '/loop', text);
+    assert.equal(elements.composerCommandHelp.textContent, "Uses Claude Code's native loop scheduling", text);
+    assert.equal(elements.send.disabled, false, text);
+    assert.equal(elements.send.textContent, 'Start loop', text);
+    await submitComposer();
+  }
+  assert.deepEqual(sent, commands.map(text => ({type: 'message', text, attachmentIds: []})));
+  state.activeTurn = true;
+  elements.input.value = '/loop 5m Check CI';
+  updateComposerAction();
+  assert.equal(elements.send.disabled, false);
+  assert.equal(elements.composerCommandHelp.textContent, 'Queued until active work ends; use /interrupt to apply sooner');
+  state.pendingMessage = {event: {turnId: 'turn-2'}};
+  updateComposerAction();
+  assert.equal(elements.send.disabled, true);
+  assert.equal(elements.composerCommandHelp.textContent, 'Wait for pending work to start or remove it before submitting a command');
+}
+
+function testClaudeGoalComposer() {
+  for (const [text, action] of [
+    ['/goal', 'Show goal'],
+    ['/goal All tests pass', 'Start goal'],
+    ['/goal edit tests until they pass', 'Start goal'],
+    ['/goal edit', 'Start goal'],
+    ['/goal pause', 'Start goal'],
+    ['/goal resume', 'Start goal'],
+    ['/goal clear', 'Clear goal'],
+    ['/goal STOP', 'Clear goal'],
+    ['/goal clear tech debt', 'Start goal'],
+  ]) {
+    resetHarness();
+    state.selected = {namespace: 'default', name: 'one', provider: 'claude-code'};
+    state.socket = {readyState: WebSocket.OPEN};
+    elements.input.value = text;
+    updateComposerAction();
+    assert.equal(elements.send.disabled, false, text);
+    assert.equal(elements.send.textContent, action, text);
+    assert.equal(elements.composer.dataset.command, 'goal', text);
+    assert.equal(elements.composerHighlight.querySelector('mark').textContent, action === 'Clear goal' ? text : '/goal', text);
+  }
+  state.activeTurn = true;
+  elements.input.value = '/goal clear';
+  updateComposerAction();
+  assert.equal(elements.composerCommandHelp.textContent, 'Queued until active work ends; use /interrupt to apply sooner');
+  state.pendingMessage = {event: {turnId: 'turn-2'}};
+  updateComposerAction();
+  assert.equal(elements.send.disabled, true);
+  assert.equal(elements.composerCommandHelp.textContent, 'Wait for pending work to start or remove it before submitting a command');
+}
+
+async function testClaudeGoalCommandSubmission() {
+  resetHarness();
+  state.selected = {namespace: 'default', name: 'one', uid: 'uid-one', provider: 'claude-code'};
+  const sent = [];
+  state.socket = {readyState: WebSocket.OPEN, send: message => sent.push(JSON.parse(message))};
+  for (const text of ['/goal', '/goal All tests pass', '/goal clear']) {
+    elements.input.value = text;
+    await submitComposer();
+  }
+  assert.deepEqual(sent, [
+    {type: 'message', text: '/goal', attachmentIds: []},
+    {type: 'message', text: '/goal All tests pass', attachmentIds: []},
+    {type: 'message', text: '/goal clear', attachmentIds: []},
+  ]);
 }
 
 function testComposerHighlightsCommandText() {
@@ -1164,9 +1271,10 @@ async function testComposerCommandSubmission() {
   state.socket = {readyState: WebSocket.OPEN, send: message => sent.push(JSON.parse(message))};
   for (const [text, provider, detail] of [
     ['!', 'codex', 'Enter a command after !'],
+    ['/loop 5m Check CI', 'codex', '/loop is not available in this Session'],
+    ['/loop 5m Check CI', 'opencode', '/loop is not available in this Session'],
     ['/goal edit', 'codex', 'Enter an objective after /goal edit'],
-    ['/goal pause', 'claude-code', '/goal is available only in Codex Sessions'],
-    ['\ufeff/goal pause', 'claude-code', '/goal is available only in Codex Sessions'],
+    ['/goal', 'opencode', '/goal is not available in this Session'],
     ['\ufeff!', 'codex', 'Enter a command after !'],
   ]) {
     state.selected.provider = provider;
@@ -1219,10 +1327,10 @@ async function testComposerCommandSubmission() {
 
 function testComposerCommandsRejectAttachments() {
   resetHarness();
-  state.selected = {namespace: 'default', name: 'one', uid: 'uid-one', provider: 'codex'};
+  state.selected = {namespace: 'default', name: 'one', uid: 'uid-one', provider: 'claude-code'};
   state.socket = {readyState: WebSocket.OPEN};
   state.attachmentDrafts.set(sessionKey(state.selected), [{name: 'file.txt'}]);
-  for (const text of ['!make test', '/goal improve coverage']) {
+  for (const text of ['!make test', '/goal improve coverage', '/loop 5m Check CI']) {
     elements.input.value = text;
     updateComposerAction();
     assert.equal(elements.composerCommandHelp.textContent, 'Remove attachments to use a command');
@@ -1728,6 +1836,7 @@ function testGoalRendering() {
   const cards = elements.messages.querySelectorAll('.goal-card');
   assert.equal(cards[1].textContent, 'Goal cleared.');
 }
+
 
 function testToolOutputRenderingNormalizesCarriageReturns() {
   resetHarness();
@@ -2308,6 +2417,7 @@ testSessionProgressRequiresReadyRuntime();
 testComposerInterruptsWhileInputIsDisabled();
 testComposerLabelsPendingSubmission();
 testComposerRecognizesCommands();
+testClaudeGoalComposer();
 testComposerHighlightsCommandText();
 testComposerHighlightEvents();
 testComposerCommandsRejectAttachments();
@@ -2360,6 +2470,9 @@ testReadySessionDisconnectsWhenItBecomesPending()
   .then(testSuspendSessionHidesBackgroundProgress)
   .then(testComposerIgnoresReentrantSubmission)
   .then(testComposerCommandSubmission)
+  .then(testClaudeGoalCommandSubmission)
+  .then(testNativeLoopCommandSubmission)
+  .then(testDiscoveredNativeCommands)
   .then(testPromptHistoryBrowseAndReuse)
   .then(() => process.stdout.write('Session history tests passed\n'))
   .catch(error => {

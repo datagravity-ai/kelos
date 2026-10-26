@@ -85,9 +85,10 @@ type OpenCodeProvider struct {
 	errMu         sync.Mutex
 	terminalErr   error
 
-	statusMu sync.Mutex
-	model    string
-	usage    *RuntimeUsage
+	statusMu       sync.Mutex
+	nativeCommands map[string]bool
+	model          string
+	usage          *RuntimeUsage
 	// countedSteps holds step-finish part IDs whose usage was already added to
 	// the totals, since a part can be republished on later updates.
 	countedSteps   map[string]struct{}
@@ -193,9 +194,31 @@ func (p *OpenCodeProvider) initialize(ctx context.Context) error {
 	if err := p.openSession(ctx); err != nil {
 		return err
 	}
+	if err := p.loadNativeCommands(ctx); err != nil {
+		return err
+	}
 	// Context windows only enrich the runtime status display, so a failed
 	// lookup must not block the session.
 	p.loadContextWindows(ctx)
+	return nil
+}
+
+func (p *OpenCodeProvider) loadNativeCommands(ctx context.Context) error {
+	var commands []struct {
+		Name string `json:"name"`
+	}
+	if err := p.client.doJSON(ctx, http.MethodGet, "/command", true, nil, &commands); err != nil {
+		return fmt.Errorf("discovering OpenCode commands: %w", err)
+	}
+	available := map[string]bool{}
+	for _, command := range commands {
+		if command.Name == "loop" || command.Name == "goal" {
+			available[command.Name] = true
+		}
+	}
+	p.statusMu.Lock()
+	p.nativeCommands = available
+	p.statusMu.Unlock()
 	return nil
 }
 
@@ -436,6 +459,41 @@ func (p *OpenCodeProvider) StartTurn(ctx context.Context, input TurnInput) error
 	close(ready)
 	p.activeMu.Unlock()
 
+	return nil
+}
+
+// StartGoal invokes the goal command registered with the OpenCode server.
+func (p *OpenCodeProvider) StartGoal(ctx context.Context, command goalCommand) error {
+	return p.startCommand(ctx, "goal", command.objective)
+}
+
+// StartLoop invokes the loop command registered with the OpenCode server.
+func (p *OpenCodeProvider) StartLoop(ctx context.Context, text string) error {
+	return p.startCommand(ctx, "loop", strings.TrimSpace(strings.TrimPrefix(text, "/loop")))
+}
+
+func (p *OpenCodeProvider) startCommand(ctx context.Context, name, arguments string) error {
+	p.statusMu.Lock()
+	available := p.nativeCommands[name]
+	p.statusMu.Unlock()
+	if !available {
+		return fmt.Errorf("OpenCode has no registered %s command", name)
+	}
+	ready := make(chan struct{})
+	close(ready)
+	p.beginTurn(ctx, ready)
+	p.activeMu.Lock()
+	requestCtx := p.interactionCtx
+	p.activeMu.Unlock()
+	// The command endpoint waits for the model turn, so keep input and interrupts
+	// available while its result arrives through the event stream.
+	go func() {
+		err := p.client.doJSON(requestCtx, http.MethodPost, "/session/"+url.PathEscape(p.currentSessionID())+"/command", true, map[string]string{"command": name, "arguments": arguments}, nil)
+		if err == nil {
+			return
+		}
+		p.completeTurn(true, ready, fmt.Sprintf("Running OpenCode %s command: %v", name, err))
+	}()
 	return nil
 }
 
@@ -697,7 +755,12 @@ func (p *OpenCodeProvider) emitRuntimeStatus(sink EventSink) {
 func (p *OpenCodeProvider) runtimeStatusSnapshot() RuntimeStatus {
 	p.statusMu.Lock()
 	defer p.statusMu.Unlock()
-	status := RuntimeStatus{Model: p.model, Effort: p.config.Effort}
+	status := RuntimeStatus{Model: p.model, Effort: p.config.Effort, Commands: []string{"shell"}}
+	for _, command := range []string{"goal", "loop"} {
+		if p.nativeCommands[command] {
+			status.Commands = append(status.Commands, command)
+		}
+	}
 	if p.usage != nil {
 		usage := *p.usage
 		if window, ok := p.contextWindows[p.model]; ok {
@@ -823,10 +886,21 @@ func (p *OpenCodeProvider) handleSessionError(raw json.RawMessage) {
 }
 
 func (p *OpenCodeProvider) completeActiveTurn(force bool) {
+	p.completeTurn(force, nil, "")
+}
+
+func (p *OpenCodeProvider) completeTurn(force bool, expected chan struct{}, failure string) {
 	p.activeMu.Lock()
+	if expected != nil && p.activeReady != expected {
+		p.activeMu.Unlock()
+		return
+	}
 	if p.activeReady == nil || (!force && !p.activeStarted) {
 		p.activeMu.Unlock()
 		return
+	}
+	if failure != "" {
+		p.activeError = failure
 	}
 	status, message := "completed", p.activeError
 	if p.interrupted {

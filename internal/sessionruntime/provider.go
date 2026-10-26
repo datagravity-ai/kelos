@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 )
 
@@ -78,8 +79,33 @@ func formatShellCommandRecord(record shellCommandRecord) string {
 
 type goalProvider interface {
 	StartGoal(context.Context, goalCommand) error
+}
+
+type goalControlProvider interface {
 	ControlGoal(context.Context, goalCommand, EventSink) error
 	ActiveGoal() *Goal
+}
+
+type loopProvider interface {
+	StartLoop(context.Context, string) error
+}
+
+func providerSupportsCommand(provider Provider, command sessionCommandKind) bool {
+	if status, ok := provider.(runtimeStatusProvider); ok {
+		if commands := status.runtimeStatusSnapshot().Commands; commands != nil {
+			return slices.Contains(commands, string(command))
+		}
+	}
+	switch command {
+	case sessionCommandGoal:
+		_, ok := provider.(goalProvider)
+		return ok
+	case sessionCommandLoop:
+		_, ok := provider.(loopProvider)
+		return ok
+	default:
+		return true
+	}
 }
 
 // NewProvider creates the configured conversation adapter.
