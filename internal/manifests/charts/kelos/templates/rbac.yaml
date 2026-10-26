@@ -270,6 +270,9 @@ kind: ClusterRole
 metadata:
   name: kelos-console-server-role
 rules:
+  - apiGroups: [kelos.dev]
+    resources: [tasks]
+    verbs: [create]
   - apiGroups: [""]
     resources: [namespaces]
     verbs: [list]

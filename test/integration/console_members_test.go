@@ -22,6 +22,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
@@ -105,7 +106,7 @@ func TestConsoleMembership(t *testing.T) {
 	server, err := consoleserver.New(consoleserver.Config{
 		AuthMode:  consoleserver.AuthModeOIDC,
 		ProxyAuth: &consoleserver.ProxyAuthConfig{ExternalURL: "https://console.example", UsernamePrefix: "oidc:", GroupsPrefix: "oidc:", Reviewer: clientset.AuthorizationV1().SubjectAccessReviews(), Logger: slog.New(slog.NewJSONHandler(io.Discard, nil))},
-		Client:    serviceClient, Clientset: clientset, RESTConfig: serviceConfig, DefaultNamespace: "team-a",
+		Client:    serviceClient, Clientset: clientset, RESTConfig: serviceConfig, HTTPClient: http.DefaultClient, DefaultNamespace: "team-a",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -146,6 +147,102 @@ func TestConsoleMembership(t *testing.T) {
 		t.Fatalf("grant User: %d %s", response.Code, response.Body.String())
 	}
 	waitForStatus("bob", "/api/sessions?namespace=team-a", http.StatusOK)
+	t.Run("RunTaskSpawner", func(t *testing.T) {
+		contextServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("Authorization") != "Bearer context-token" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			_, _ = w.Write([]byte("context data"))
+		}))
+		defer contextServer.Close()
+		spawner := &kelos.TaskSpawner{
+			ObjectMeta: metav1.ObjectMeta{Name: "manual-run", Namespace: "team-a"},
+			Spec: kelos.TaskSpawnerSpec{
+				When:    kelos.When{Cron: &kelos.Cron{Schedule: "0 9 * * *"}},
+				Suspend: ptr.To(true),
+				TaskTemplate: kelos.TaskTemplate{
+					Worker:         &kelos.WorkerSpec{Type: "claude-code", Credentials: &kelos.Credentials{Type: kelos.CredentialTypeNone}},
+					PromptTemplate: "{{.Reason}}: {{.Context.details}}",
+					ContextSources: []kelos.ContextSource{{Name: "details", HTTP: &kelos.HTTPContextSource{
+						URL: contextServer.URL, AllowInsecure: true,
+						HeadersFrom: []kelos.HTTPHeaderSource{{Header: "Authorization", SecretName: "context-auth", SecretKey: "token"}},
+					}}},
+				},
+			},
+		}
+		for _, object := range []client.Object{spawner, &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: "context-auth", Namespace: "team-a"},
+			Data:       map[string][]byte{"token": []byte("Bearer context-token")},
+		}, &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: "unrelated", Namespace: "team-a"},
+		}, &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: "context-auth", Namespace: "team-b"},
+		}} {
+			if err := kube.Create(t.Context(), object); err != nil {
+				t.Fatal(err)
+			}
+		}
+		response := request("bob", http.MethodPost, "/api/resources/taskspawners/team-a/manual-run/run", `{"values":"Reason: Operator request"}`)
+		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "context-auth") {
+			t.Fatalf("context fetch without a Secret grant: %d %s", response.Code, response.Body.String())
+		}
+		var tasks kelos.TaskList
+		if err := kube.List(t.Context(), &tasks, client.InNamespace("team-a")); err != nil || len(tasks.Items) != 0 {
+			t.Fatalf("Tasks after denied context fetch = %#v, error = %v", tasks.Items, err)
+		}
+		for _, object := range []client.Object{&rbacv1.Role{
+			ObjectMeta: metav1.ObjectMeta{Name: "console-context-secrets", Namespace: "team-a"},
+			Rules:      []rbacv1.PolicyRule{{APIGroups: []string{""}, Resources: []string{"secrets"}, ResourceNames: []string{"context-auth"}, Verbs: []string{"get"}}},
+		}, &rbacv1.RoleBinding{
+			ObjectMeta: metav1.ObjectMeta{Name: "console-context-secrets", Namespace: "team-a"},
+			RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "Role", Name: "console-context-secrets"},
+			Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "kelos-console-server", Namespace: "kelos-system"}},
+		}} {
+			if err := kube.Create(t.Context(), object); err != nil {
+				t.Fatal(err)
+			}
+		}
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			var secret corev1.Secret
+			err := serviceClient.Get(t.Context(), client.ObjectKey{Namespace: "team-a", Name: "context-auth"}, &secret)
+			if err == nil {
+				break
+			}
+			if !apierrors.IsForbidden(err) || time.Now().After(deadline) {
+				t.Fatalf("waiting for named Secret grant: %v", err)
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		for _, key := range []client.ObjectKey{{Namespace: "team-a", Name: "unrelated"}, {Namespace: "team-b", Name: "context-auth"}} {
+			var secret corev1.Secret
+			if err := serviceClient.Get(t.Context(), key, &secret); !apierrors.IsForbidden(err) {
+				t.Fatalf("Secret %s outside named namespace grant: %v", key, err)
+			}
+		}
+		for _, user := range []string{"alice", "bob"} {
+			response := request(user, http.MethodPost, "/api/resources/taskspawners/team-a/manual-run/run", `{"values":"Reason: Operator request"}`)
+			if response.Code != http.StatusCreated {
+				t.Fatalf("%s run: %d %s", user, response.Code, response.Body.String())
+			}
+			var result struct{ Name, Namespace string }
+			if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+				t.Fatal(err)
+			}
+			var task kelos.Task
+			if err := kube.Get(t.Context(), client.ObjectKey{Namespace: result.Namespace, Name: result.Name}, &task); err != nil {
+				t.Fatal(err)
+			}
+			if task.Namespace != "team-a" || task.Spec.Prompt != "Operator request: context data" || task.Annotations["kelos.dev/created-from-taskspawner"] != spawner.Name {
+				t.Fatalf("created Task = %#v", task)
+			}
+		}
+		response = request("bob", http.MethodPost, "/api/resources/taskspawners/team-b/manual-run/run", `{}`)
+		if response.Code != http.StatusForbidden {
+			t.Fatalf("cross-namespace run: %d %s", response.Code, response.Body.String())
+		}
+	})
 	response = request("bob", http.MethodPost, "/api/admin/members?namespace=team-a", `{"subject":"bob","role":"admin"}`)
 	if response.Code != http.StatusForbidden {
 		t.Fatalf("self-promotion: %d %s", response.Code, response.Body.String())

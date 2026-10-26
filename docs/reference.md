@@ -771,6 +771,11 @@ and can be refreshed while the Task is running. WorkerPool-backed Task views
 include only the selected Task's segment from the recent shared worker Pod log.
 The Console reports that the segment is unavailable when its markers are
 outside the bounded log window.
+Select a TaskSpawner from either resource view and choose **Run task** to create
+one standalone Task from its template. Supply optional template values as a YAML
+or JSON object when the template needs event fields. The Console opens the
+created Task's logs and manifest. Manual runs bypass the schedule, source filters,
+suspension, and spawner task limits; see [Manual Task Creation](#manual-task-creation).
 
 The **Admin** page manages namespace members and lists Workspaces, AgentConfigs, and
 WorkerPools in the active namespace. Use **Create** or **Edit YAML** to save one `kelos.dev/v1alpha2` manifest,
@@ -867,6 +872,7 @@ namespace. Named reads and actions are checked against the exact resource name.
 | Admin delete | `delete` the named resource |
 | Resource YAML | `get` the resource |
 | Task logs | `get tasks` and `get tasks/logs` |
+| Run a TaskSpawner manually | `get` the named TaskSpawner and `create tasks` |
 | Session list | `list sessions` |
 | Session creation options | `list sessions`, `list workspaces`, and `list agentconfigs` |
 | Read or clone a Session source | `get sessions` |
@@ -1424,6 +1430,15 @@ Run a standalone Task from any TaskSpawner's `taskTemplate`:
 kelos run --from taskspawner/daily-audit
 kelos run --from taskspawner/issue-worker -f values.yaml
 ```
+
+In the Console, select a TaskSpawner on the **Resources** page, enter any
+required template values, and choose **Run task**. Console runs use the same
+defaults and standalone Task behavior as the CLI, with an automatically generated
+Task name. The `kelos-console-user` role and, in OIDC mode, `kelos-console-admin`
+include Task creation permission. The chart does not grant the Console
+ServiceAccount access to Secrets. Context sources that use Secrets require an
+explicit namespaced grant of `get` on each referenced Secret to that
+ServiceAccount; see the [chart setup example](../internal/manifests/charts/kelos/README.md#console-context-source-secrets).
 
 The values file is a YAML or JSON object whose top-level keys are exposed
 directly to the Go template. Use `-f -` to read it from stdin. For example:

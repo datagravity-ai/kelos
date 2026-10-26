@@ -80,6 +80,7 @@ func main() {
 		Client:           controllerClient,
 		Clientset:        clientset,
 		RESTConfig:       restConfig,
+		HTTPClient:       http.DefaultClient,
 		DefaultNamespace: defaultNamespace,
 		SecureCookie:     secureCookie,
 	}

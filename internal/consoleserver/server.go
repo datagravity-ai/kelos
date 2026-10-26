@@ -82,6 +82,7 @@ type Config struct {
 	Client           client.Client
 	Clientset        *kubernetes.Clientset
 	RESTConfig       *rest.Config
+	HTTPClient       *http.Client
 	DefaultNamespace string
 	SecureCookie     bool
 }
@@ -95,6 +96,7 @@ type Server struct {
 	client           client.Client
 	clientset        *kubernetes.Clientset
 	restConfig       *rest.Config
+	httpClient       *http.Client
 	defaultNamespace string
 	secureCookie     bool
 	handler          http.Handler
@@ -281,6 +283,9 @@ func New(config Config) (*Server, error) {
 	if config.Client == nil || config.Clientset == nil || config.RESTConfig == nil {
 		return nil, errors.New("Kubernetes clients and REST config are required")
 	}
+	if config.HTTPClient == nil {
+		return nil, errors.New("HTTP client is required")
+	}
 	attachmentClient, err := sessionattachment.New(config.RESTConfig)
 	if err != nil {
 		return nil, err
@@ -294,6 +299,7 @@ func New(config Config) (*Server, error) {
 		client:           config.Client,
 		clientset:        config.Clientset,
 		restConfig:       config.RESTConfig,
+		httpClient:       config.HTTPClient,
 		defaultNamespace: defaultNamespace,
 		secureCookie:     config.SecureCookie,
 		attachments:      attachmentClient,
@@ -481,6 +487,10 @@ func (s *Server) api(writer http.ResponseWriter, request *http.Request) {
 	}
 	if len(parts) == 5 && parts[0] == "resources" && parts[1] == "tasks" && parts[4] == "logs" && request.Method == http.MethodGet {
 		s.getTaskLogs(writer, request, parts[2], parts[3])
+		return
+	}
+	if len(parts) == 5 && parts[0] == "resources" && parts[1] == "taskspawners" && parts[4] == "run" && request.Method == http.MethodPost {
+		s.runTaskSpawner(writer, request, parts[2], parts[3])
 		return
 	}
 	if len(parts) < 3 || parts[0] != "sessions" {
@@ -1897,10 +1907,17 @@ func sameOrigin(request *http.Request) bool {
 }
 
 func decodeJSON(reader io.Reader, target any) error {
-	decoder := json.NewDecoder(io.LimitReader(reader, requestBodyLimit))
+	decoder := json.NewDecoder(http.MaxBytesReader(nil, io.NopCloser(reader), requestBodyLimit))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
 		return fmt.Errorf("invalid JSON request: %w", err)
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err != nil {
+			return fmt.Errorf("invalid JSON request: %w", err)
+		}
+		return errors.New("invalid JSON request: expected a single JSON value")
 	}
 	return nil
 }

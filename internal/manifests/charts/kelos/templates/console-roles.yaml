@@ -35,6 +35,9 @@ rules:
   - apiGroups: [kelos.dev]
     resources: [tasks/logs]
     verbs: [get]
+  - apiGroups: [kelos.dev]
+    resources: [tasks]
+    verbs: [create]
   {{- if eq $name "kelos-console-admin" }}
   - apiGroups: [kelos.dev]
     resources: [workspaces, agentconfigs, workerpools]

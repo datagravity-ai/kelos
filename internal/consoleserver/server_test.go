@@ -157,6 +157,9 @@ func TestConsoleApplicationIncludesResourceViews(t *testing.T) {
 		`id="resource-detail-logs-tab"`,
 		`id="refresh-resource-logs"`,
 		`id="resource-detail-logs"`,
+		`id="taskspawner-run-form"`,
+		`id="taskspawner-run-values"`,
+		`id="taskspawner-run-button"`,
 	} {
 		if !strings.Contains(response.Body.String(), expected) {
 			t.Errorf("Console application does not contain %s", expected)
@@ -2790,6 +2793,35 @@ func TestSessionSourceAPIReturnsReusableSpec(t *testing.T) {
 	}
 }
 
+func TestDecodeJSONRequiresSingleValue(t *testing.T) {
+	const payload = `{"value":"ok"}`
+	for _, test := range []struct {
+		name, body string
+		wantError  bool
+	}{
+		{"object", payload, false},
+		{"whitespace", payload + " \n\t", false},
+		{"body at limit", payload + strings.Repeat(" ", requestBodyLimit-len(payload)), false},
+		{"second object", payload + `{}`, true},
+		{"second null", payload + `null`, true},
+		{"trailing data", payload + `trailing`, true},
+		{"trailing data beyond limit", payload + strings.Repeat(" ", requestBodyLimit) + `trailing`, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var target struct {
+				Value string `json:"value"`
+			}
+			err := decodeJSON(strings.NewReader(test.body), &target)
+			if (err != nil) != test.wantError {
+				t.Fatalf("decodeJSON() error = %v, want error = %v", err, test.wantError)
+			}
+			if err == nil && target.Value != "ok" {
+				t.Fatalf("decoded value = %q, want ok", target.Value)
+			}
+		})
+	}
+}
+
 func TestNewRejectsEmptyToken(t *testing.T) {
 	for _, token := range []string{"", " \t"} {
 		_, err := New(Config{Token: token})
@@ -2802,6 +2834,14 @@ func TestNewRejectsEmptyToken(t *testing.T) {
 func TestNewRejectsEmptyDefaultNamespace(t *testing.T) {
 	_, err := New(Config{Token: "secret-token"})
 	if err == nil || !strings.Contains(err.Error(), "namespace must not be empty") {
+		t.Fatalf("New() error = %v", err)
+	}
+}
+
+func TestNewRejectsMissingHTTPClient(t *testing.T) {
+	base := testServer(t)
+	_, err := New(Config{Token: "secret-token", Client: base.client, Clientset: base.clientset, RESTConfig: base.restConfig, DefaultNamespace: "default"})
+	if err == nil || !strings.Contains(err.Error(), "HTTP client is required") {
 		t.Fatalf("New() error = %v", err)
 	}
 }
@@ -3108,6 +3148,7 @@ func testServer(t *testing.T) *Server {
 		Client:           controllerClient,
 		Clientset:        &kubernetes.Clientset{},
 		RESTConfig:       &rest.Config{Host: "https://kubernetes.invalid"},
+		HTTPClient:       http.DefaultClient,
 		DefaultNamespace: "default",
 	})
 	if err != nil {
