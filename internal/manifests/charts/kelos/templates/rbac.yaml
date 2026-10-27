@@ -271,6 +271,9 @@ metadata:
   name: kelos-console-server-role
 rules:
   - apiGroups: [kelos.dev]
+    resources: [taskspawners]
+    verbs: [patch]
+  - apiGroups: [kelos.dev]
     resources: [tasks]
     verbs: [create]
   - apiGroups: [""]

@@ -554,6 +554,8 @@ button { color: inherit; }
 .display-name-dialog { width: min(94vw, 420px); }
 .resource-detail-dialog { width: min(94vw, 820px); }
 .resource-detail-content { padding: 23px; }
+.taskspawner-lifecycle-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 12px; }
+.taskspawner-lifecycle-help { margin: 8px 0 0; color: var(--faint); font-size: 11px; }
 .resource-detail-content pre { max-height: min(65vh, 680px); overflow: auto; margin: 18px 0 0; padding: 15px; border: 1px solid var(--code-border); border-radius: 11px; background: var(--code-bg); color: var(--code-ink); font: 11.5px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace; white-space: pre; }
 .resource-detail-tabs[hidden] { display: none; }
 .resource-detail-panel[hidden] { display: none; }

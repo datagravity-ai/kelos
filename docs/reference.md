@@ -932,6 +932,8 @@ namespace. Named reads and actions are checked against the exact resource name.
 | Resource YAML | `get` the resource |
 | Task logs | `get tasks` and `get tasks/logs` |
 | Run a TaskSpawner manually | `get` the named TaskSpawner and `create tasks` |
+| Suspend a TaskSpawner | `get taskspawners` and `create taskspawners/suspend` |
+| Resume a TaskSpawner | `get taskspawners` and `create taskspawners/resume` |
 | Session list | `list sessions` |
 | Session creation options | `list sessions`, `list workspaces`, and `list agentconfigs` |
 | Read or clone a Session source | `get sessions` |
@@ -963,7 +965,8 @@ cluster-wide permission. Each namespace is filtered using the user's resource
 permissions before it is returned.
 
 The slash-separated permissions are authorization subresources; they are not
-served CRD endpoints. Human users do not need `pods/log` or `pods/exec`.
+served CRD endpoints. TaskSpawner suspend/resume permissions do not grant general
+TaskSpawner editing. Human users do not need `pods/log` or `pods/exec`.
 `sessions/connect` grants full interactive access: retained conversations,
 prompts, tool activity, input responses, pending messages, goals, direct shell
 commands, attachment metadata, workspace changes, and terminal access. It does
@@ -1490,7 +1493,14 @@ kelos run --from taskspawner/daily-audit
 kelos run --from taskspawner/issue-worker -f values.yaml
 ```
 
-In the Console, select a TaskSpawner on the **Resources** page, enter any
+In the Console, select a TaskSpawner on the **Resources** page and choose
+**Suspend** or **Resume** to set `TaskSpawner.spec.suspend`. The action and
+automatic task creation state reflect the requested suspension setting while
+the controller applies it. Existing Tasks keep running. The `kelos-console-user`
+role and, in OIDC mode, the `kelos-console-admin` role include the required
+TaskSpawner suspend/resume permissions.
+
+To run a Task manually, select a TaskSpawner on the **Resources** page, enter any
 required template values, and choose **Run task**. Console runs use the same
 defaults and standalone Task behavior as the CLI, with an automatically generated
 Task name. The `kelos-console-user` role and, in OIDC mode, `kelos-console-admin`
