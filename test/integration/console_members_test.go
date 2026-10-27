@@ -147,6 +147,58 @@ func TestConsoleMembership(t *testing.T) {
 		t.Fatalf("grant User: %d %s", response.Code, response.Body.String())
 	}
 	waitForStatus("bob", "/api/sessions?namespace=team-a", http.StatusOK)
+	t.Run("TaskSpawnerSuspension", func(t *testing.T) {
+		spawner := &kelos.TaskSpawner{
+			ObjectMeta: metav1.ObjectMeta{Name: "scheduled-task", Namespace: "team-a"},
+			Spec: kelos.TaskSpawnerSpec{
+				When: kelos.When{Cron: &kelos.Cron{Schedule: "0 9 * * *"}},
+				TaskTemplate: kelos.TaskTemplate{
+					Worker:         &kelos.WorkerSpec{Type: "claude-code", Credentials: &kelos.Credentials{Type: kelos.CredentialTypeNone}},
+					PromptTemplate: "Scheduled task",
+				},
+			},
+		}
+		if err := kube.Create(t.Context(), spawner); err != nil {
+			t.Fatal(err)
+		}
+		for _, user := range []string{"alice", "bob"} {
+			userConfig := rest.CopyConfig(config)
+			userConfig.Impersonate = rest.ImpersonationConfig{UserName: "oidc:" + user}
+			userClient, err := client.New(userConfig, client.Options{Scheme: scheme})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var original kelos.TaskSpawner
+			if err := userClient.Get(t.Context(), client.ObjectKeyFromObject(spawner), &original); err != nil {
+				t.Fatal(err)
+			}
+			edited := original.DeepCopy()
+			edited.Spec.TaskTemplate.PromptTemplate = "Operator-supplied template"
+			if err := userClient.Patch(t.Context(), edited, client.MergeFrom(&original)); !apierrors.IsForbidden(err) {
+				t.Fatalf("%s direct TaskSpawner patch: %v, want forbidden", user, err)
+			}
+			if err := userClient.Update(t.Context(), edited); !apierrors.IsForbidden(err) {
+				t.Fatalf("%s direct TaskSpawner update: %v, want forbidden", user, err)
+			}
+			for _, action := range []string{"suspend", "resume"} {
+				response := request(user, http.MethodPost, "/api/resources/taskspawners/team-a/scheduled-task/"+action, "")
+				if response.Code != http.StatusOK {
+					t.Fatalf("%s %s: %d %s", user, action, response.Code, response.Body.String())
+				}
+				var updated kelos.TaskSpawner
+				if err := kube.Get(t.Context(), client.ObjectKeyFromObject(spawner), &updated); err != nil {
+					t.Fatal(err)
+				}
+				if updated.Spec.Suspend == nil || *updated.Spec.Suspend != (action == "suspend") || updated.Spec.TaskTemplate.PromptTemplate != spawner.Spec.TaskTemplate.PromptTemplate {
+					t.Fatalf("%s %s: spec = %#v", user, action, updated.Spec)
+				}
+				response = request(user, http.MethodPost, "/api/resources/taskspawners/team-b/scheduled-task/"+action, "")
+				if response.Code != http.StatusForbidden {
+					t.Fatalf("cross-namespace %s: %d %s", action, response.Code, response.Body.String())
+				}
+			}
+		}
+	})
 	t.Run("RunTaskSpawner", func(t *testing.T) {
 		contextServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Header.Get("Authorization") != "Bearer context-token" {

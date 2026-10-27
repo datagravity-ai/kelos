@@ -97,6 +97,11 @@ interface ResourceSummary {
   missing?: boolean;
 }
 
+interface ResourceDetail {
+  yaml: string;
+  suspended?: boolean;
+}
+
 interface ResourceCollection {
   resource: string;
   kind: string;
@@ -474,6 +479,10 @@ const elements = requireElements({
   taskSpawnerRunValues: document.querySelector('#taskspawner-run-values'),
   taskSpawnerRunError: document.querySelector('#taskspawner-run-error'),
   taskSpawnerRunButton: document.querySelector('#taskspawner-run-button'),
+  taskSpawnerLifecycle: document.querySelector('#taskspawner-lifecycle'),
+  taskSpawnerLifecycleButton: document.querySelector('#taskspawner-lifecycle-button'),
+  taskSpawnerLifecycleStatus: document.querySelector('#taskspawner-lifecycle-status'),
+  taskSpawnerLifecycleError: document.querySelector('#taskspawner-lifecycle-error'),
   namespaceLabels: document.querySelectorAll('.console-namespace'),
   newSessionButton: document.querySelector('#new-session'),
   welcomeNew: document.querySelector('#welcome-new'),
@@ -652,7 +661,7 @@ const state = {
   resourceDetailGeneration: 0,
   resourceDetailLogGeneration: 0,
   resourceDetailTask: null as {namespace: string; name: string} | null,
-  resourceDetailSpawner: null as {namespace: string; name: string} | null,
+  resourceDetailSpawner: null as {namespace: string; name: string; suspended?: boolean} | null,
   sourceStorageClassNamePresent: false,
   loadedSource: null as {name: string; namespace: string; formCompatible: boolean} | null,
   displayNameSaving: false,
@@ -1910,6 +1919,11 @@ async function openResourceDetail(collection: ResourceDescriptor, item: Resource
   elements.resourceDetailSubtitle.textContent = `${item.namespace}/${item.name}`;
   elements.resourceDetailTabs.hidden = !showTaskLogs;
   state.resourceDetailSpawner = collection.resource === 'taskspawners' ? {namespace: item.namespace, name: item.name} : null;
+  elements.taskSpawnerLifecycle.hidden = !state.resourceDetailSpawner;
+  elements.taskSpawnerLifecycleButton.disabled = true;
+  elements.taskSpawnerLifecycleButton.textContent = 'Suspend';
+  elements.taskSpawnerLifecycleStatus.textContent = 'Loading suspension state…';
+  elements.taskSpawnerLifecycleError.textContent = '';
   elements.taskSpawnerRunForm.hidden = !state.resourceDetailSpawner;
   elements.taskSpawnerRunValues.value = '';
   elements.taskSpawnerRunError.textContent = '';
@@ -1927,18 +1941,56 @@ async function openResourceDetail(collection: ResourceDescriptor, item: Resource
 
   const manifestRequest = (async () => {
     try {
-      const detail = await api<{yaml: string}>(`/api/resources/${encodeURIComponent(collection.resource)}/${encodeURIComponent(item.namespace)}/${encodeURIComponent(item.name)}`);
+      const detail = await api<ResourceDetail>(`/api/resources/${encodeURIComponent(collection.resource)}/${encodeURIComponent(item.namespace)}/${encodeURIComponent(item.name)}`);
       if (generation !== state.resourceDetailGeneration) return;
       elements.resourceDetailYAML.textContent = detail.yaml;
       elements.taskSpawnerRunButton.disabled = !state.resourceDetailSpawner;
+      if (state.resourceDetailSpawner) updateTaskSpawnerSuspension(detail);
     } catch (error) {
       if (generation !== state.resourceDetailGeneration) return;
       elements.resourceDetailYAML.textContent = errorMessage(error);
+      if (state.resourceDetailSpawner) elements.taskSpawnerLifecycleStatus.textContent = 'Suspension state unavailable.';
     }
   })();
   const logsRequest = showTaskLogs ? loadResourceTaskLogs(state.resourceDetailTask!, generation) : Promise.resolve();
 
   await Promise.all([manifestRequest, logsRequest]);
+}
+
+function updateTaskSpawnerSuspension(detail: ResourceDetail) {
+  const spawner = state.resourceDetailSpawner;
+  if (!spawner) return;
+  spawner.suspended = !!detail.suspended;
+  elements.resourceDetailYAML.textContent = detail.yaml;
+  elements.taskSpawnerLifecycleButton.textContent = spawner.suspended ? 'Resume' : 'Suspend';
+  elements.taskSpawnerLifecycleButton.disabled = false;
+  elements.taskSpawnerLifecycleStatus.textContent = spawner.suspended
+    ? 'Automatic task creation is suspended.' : 'Automatic task creation is enabled.';
+}
+
+async function toggleTaskSpawnerSuspension() {
+  const spawner = state.resourceDetailSpawner;
+  if (!spawner || elements.taskSpawnerLifecycleButton.disabled) return;
+  const generation = state.resourceDetailGeneration;
+  const action = spawner.suspended ? 'resume' : 'suspend';
+  elements.taskSpawnerLifecycleButton.disabled = true;
+  elements.taskSpawnerLifecycleButton.textContent = spawner.suspended ? 'Resuming…' : 'Suspending…';
+  elements.taskSpawnerLifecycleError.textContent = '';
+  try {
+    const detail = await api<ResourceDetail>(`/api/resources/taskspawners/${encodeURIComponent(spawner.namespace)}/${encodeURIComponent(spawner.name)}/${action}`, {method: 'POST'});
+    showToast(`TaskSpawner ${spawner.name} ${action} requested`);
+    void loadResources();
+    if (generation !== state.resourceDetailGeneration) return;
+    updateTaskSpawnerSuspension(detail);
+  } catch (error) {
+    if (generation !== state.resourceDetailGeneration) return;
+    elements.taskSpawnerLifecycleError.textContent = errorMessage(error);
+  } finally {
+    if (generation === state.resourceDetailGeneration) {
+      elements.taskSpawnerLifecycleButton.disabled = false;
+      elements.taskSpawnerLifecycleButton.textContent = spawner.suspended ? 'Resume' : 'Suspend';
+    }
+  }
 }
 
 async function runTaskSpawner(event: Event) {
@@ -6986,6 +7038,7 @@ elements.resourceDetailDialog.addEventListener('close', () => {
   state.resourceDetailSpawner = null;
 });
 elements.taskSpawnerRunForm.addEventListener('submit', runTaskSpawner);
+elements.taskSpawnerLifecycleButton.addEventListener('click', toggleTaskSpawnerSuspension);
 elements.resourceDetailLogsTab.addEventListener('click', () => setResourceDetailView('logs'));
 elements.resourceDetailManifestTab.addEventListener('click', () => setResourceDetailView('manifest'));
 elements.resourceDetailTabs.addEventListener('keydown', handleResourceDetailTabKeydown);

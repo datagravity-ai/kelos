@@ -206,9 +206,11 @@ is deleted with its owning Session; the StorageClass reclaim policy controls
 the underlying PersistentVolume.
 
 The Console provides an overview and manifest browser for Kelos resources in
-the active namespace. Select a TaskSpawner and choose **Run task** to create a
-standalone Task, with optional YAML or JSON template values. Manual runs bypass
-the schedule, source filters, suspension, and spawner task limits.
+the active namespace. Select a TaskSpawner and choose **Suspend** or **Resume**
+to pause or enable automatic task creation. Existing Tasks keep running.
+Choose **Run task** to create a standalone Task, with optional YAML or JSON
+template values. Manual runs bypass the schedule, source filters, suspension,
+and spawner task limits.
 Its Sessions view creates and organizes Sessions, bridges
 each chat to its Session Pod through Kubernetes exec, and can request a
 destructive Session workspace reset after user confirmation. Long conversations
@@ -235,8 +237,9 @@ kubectl port-forward -n kelos-system service/kelos-console-server 8080:80
 
 Then open `http://localhost:8080` and enter the token. The token represents one
 shared user that can inspect Kelos resources, manage Workspaces, AgentConfigs,
-and WorkerPools through the Admin page, run Tasks from TaskSpawners, and create, reset, delete, and
-connect to Sessions in any namespace. It also grants interactive shell access
+and WorkerPools through the Admin page, suspend or resume TaskSpawners, run Tasks
+from TaskSpawners, and create, reset, delete, and connect to Sessions in any
+namespace. It also grants interactive shell access
 to Ready Sessions' agent containers, including their workspaces and mounted
 credentials. Treat it as a credential. For access
 beyond a local port-forward,
@@ -310,8 +313,10 @@ accommodate the proxy's session cookies.
 
 The chart creates unbound `kelos-console-user` and `kelos-console-admin`
 ClusterRoles in OIDC mode; GitHub mode creates only `kelos-console-user`.
-Both roles allow manual Task creation from TaskSpawners. To grant Session access,
-manual Task creation, and resource inspection in one namespace:
+Both roles allow manual Task creation from TaskSpawners and suspending or resuming
+automatic task creation. The suspend/resume permissions do not grant general
+TaskSpawner editing. To grant Session access, manual Task creation, TaskSpawner
+suspension, and resource inspection in one namespace:
 
 ```yaml
 apiVersion: rbac.authorization.k8s.io/v1

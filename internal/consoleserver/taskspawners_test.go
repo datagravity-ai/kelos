@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -13,7 +14,9 @@ import (
 
 	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -32,6 +35,146 @@ func consoleTestTaskSpawner() *kelos.TaskSpawner {
 				NameTemplate:   "{{.Unavailable}}",
 			},
 		},
+	}
+}
+
+func TestTaskSpawnerSuspension(t *testing.T) {
+	for _, initial := range []struct {
+		name    string
+		suspend *bool
+	}{{"unset", nil}, {"active", ptr.To(false)}, {"suspended", ptr.To(true)}} {
+		for _, action := range []string{"suspend", "resume"} {
+			t.Run(initial.name+"/"+action, func(t *testing.T) {
+				s := testServer(t)
+				spawner := consoleTestTaskSpawner()
+				spawner.Spec.Suspend = initial.suspend
+				spawner.Status.Phase = kelos.TaskSpawnerPhaseSuspended
+				spawner.Status.ActiveTasks = 1
+				if err := s.client.Create(t.Context(), spawner); err != nil {
+					t.Fatal(err)
+				}
+				wantSuspended := action == "suspend"
+				for range 2 {
+					r := httptest.NewRequest(http.MethodPost, "/api/resources/taskspawners/team-a/daily/"+action, nil)
+					r.Header.Set("Authorization", "Bearer secret-token")
+					w := httptest.NewRecorder()
+					s.ServeHTTP(w, r)
+					if w.Code != http.StatusOK {
+						t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+					}
+					var result consoleResourceDetail
+					if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+						t.Fatal(err)
+					}
+					if result.Name != spawner.Name || result.Namespace != spawner.Namespace || result.Suspended != wantSuspended || !strings.Contains(result.YAML, fmt.Sprintf("suspend: %t", wantSuspended)) {
+						t.Fatalf("detail = %#v", result)
+					}
+				}
+				var updated kelos.TaskSpawner
+				if err := s.client.Get(t.Context(), client.ObjectKeyFromObject(spawner), &updated); err != nil {
+					t.Fatal(err)
+				}
+				spawner.Spec.Suspend = ptr.To(wantSuspended)
+				if !reflect.DeepEqual(updated.Spec, spawner.Spec) || !reflect.DeepEqual(updated.Status, spawner.Status) {
+					t.Fatalf("suspension modified unrelated fields: %#v", updated)
+				}
+				r := httptest.NewRequest(http.MethodGet, "/api/resources/taskspawners/team-a/daily", nil)
+				r.Header.Set("Authorization", "Bearer secret-token")
+				w := httptest.NewRecorder()
+				s.ServeHTTP(w, r)
+				var detail consoleResourceDetail
+				if err := json.Unmarshal(w.Body.Bytes(), &detail); err != nil {
+					t.Fatal(err)
+				}
+				if w.Code != http.StatusOK || detail.Suspended != wantSuspended {
+					t.Fatalf("read suspension state: status = %d, detail = %#v", w.Code, detail)
+				}
+			})
+		}
+	}
+}
+
+func TestTaskSpawnerSuspensionErrors(t *testing.T) {
+	resource := schema.GroupResource{Group: kelos.GroupVersion.Group, Resource: "taskspawners"}
+	for _, test := range []struct {
+		name   string
+		err    error
+		status int
+	}{
+		{"missing", nil, http.StatusNotFound},
+		{"conflict", apierrors.NewConflict(resource, "daily", errors.New("modified")), http.StatusConflict},
+		{"forbidden", apierrors.NewForbidden(resource, "daily", errors.New("denied")), http.StatusForbidden},
+		{"deleted", apierrors.NewNotFound(resource, "daily"), http.StatusNotFound},
+		{"unavailable", errors.New("unavailable"), http.StatusInternalServerError},
+	} {
+		for _, action := range []string{"suspend", "resume"} {
+			t.Run(test.name+"/"+action, func(t *testing.T) {
+				s := testServer(t)
+				if test.err != nil {
+					if err := s.client.Create(t.Context(), consoleTestTaskSpawner()); err != nil {
+						t.Fatal(err)
+					}
+					s.client = &patchErrorClient{Client: s.client, err: test.err}
+				}
+				r := httptest.NewRequest(http.MethodPost, "/api/resources/taskspawners/team-a/daily/"+action, nil)
+				r.Header.Set("Authorization", "Bearer secret-token")
+				w := httptest.NewRecorder()
+				s.ServeHTTP(w, r)
+				if w.Code != test.status || !strings.Contains(w.Body.String(), "daily") {
+					t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+				}
+			})
+		}
+	}
+}
+
+func TestTaskSpawnerSuspensionAuthorization(t *testing.T) {
+	for _, test := range []struct {
+		name, deniedVerb string
+		status           int
+	}{
+		{"allowed", "", http.StatusOK},
+		{"cannot read", "get", http.StatusForbidden},
+		{"cannot invoke action", "create", http.StatusForbidden},
+		{"review unavailable", "error", http.StatusServiceUnavailable},
+	} {
+		for _, action := range []string{"suspend", "resume"} {
+			t.Run(test.name+"/"+action, func(t *testing.T) {
+				var checks []authorizationv1.ResourceAttributes
+				s := oidcTestServer(t, reviewFunc(func(_ context.Context, r *authorizationv1.SubjectAccessReview, _ metav1.CreateOptions) (*authorizationv1.SubjectAccessReview, error) {
+					if test.deniedVerb == "error" {
+						return nil, errors.New("unavailable")
+					}
+					checks = append(checks, *r.Spec.ResourceAttributes)
+					r.Status.Allowed = r.Spec.ResourceAttributes.Verb != test.deniedVerb
+					return r, nil
+				}))
+				spawner := consoleTestTaskSpawner()
+				spawner.Spec.Suspend = ptr.To(action == "resume")
+				if err := s.client.Create(t.Context(), spawner); err != nil {
+					t.Fatal(err)
+				}
+				w := httptest.NewRecorder()
+				s.ServeHTTP(w, oidcRequest(http.MethodPost, "/api/resources/taskspawners/team-a/daily/"+action, ""))
+				if w.Code != test.status {
+					t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+				}
+				if test.status == http.StatusOK {
+					want := []authorizationv1.ResourceAttributes{access("get", "taskspawners", "team-a", "daily"), access("create", "taskspawners/"+action, "team-a", "daily")}
+					if !reflect.DeepEqual(checks, want) {
+						t.Fatalf("access checks = %#v, want %#v", checks, want)
+					}
+				} else {
+					var unchanged kelos.TaskSpawner
+					if err := s.client.Get(t.Context(), client.ObjectKeyFromObject(spawner), &unchanged); err != nil {
+						t.Fatal(err)
+					}
+					if !reflect.DeepEqual(unchanged.Spec, spawner.Spec) {
+						t.Fatal("unauthorized action modified TaskSpawner")
+					}
+				}
+			})
+		}
 	}
 }
 

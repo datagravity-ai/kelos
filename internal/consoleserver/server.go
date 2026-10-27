@@ -256,6 +256,7 @@ type consoleResourceDetail struct {
 	Name      string `json:"name"`
 	Namespace string `json:"namespace"`
 	YAML      string `json:"yaml"`
+	Suspended bool   `json:"suspended,omitempty"`
 }
 
 var consoleResourceDefinitions = []consoleResourceDefinition{
@@ -491,6 +492,10 @@ func (s *Server) api(writer http.ResponseWriter, request *http.Request) {
 	}
 	if len(parts) == 5 && parts[0] == "resources" && parts[1] == "taskspawners" && parts[4] == "run" && request.Method == http.MethodPost {
 		s.runTaskSpawner(writer, request, parts[2], parts[3])
+		return
+	}
+	if len(parts) == 5 && parts[0] == "resources" && parts[1] == "taskspawners" && request.Method == http.MethodPost && (parts[4] == "suspend" || parts[4] == "resume") {
+		s.setTaskSpawnerSuspended(writer, request, parts[2], parts[3], parts[4] == "suspend")
 		return
 	}
 	if len(parts) < 3 || parts[0] != "sessions" {
@@ -849,6 +854,11 @@ func (s *Server) getConsoleResource(writer http.ResponseWriter, request *http.Re
 		writeKubernetesError(writer, fmt.Sprintf("getting %s %q", definition.Kind, name), err)
 		return
 	}
+	writeConsoleResourceDetail(writer, definition, object)
+}
+
+func writeConsoleResourceDetail(writer http.ResponseWriter, definition consoleResourceDefinition, object client.Object) {
+	name := object.GetName()
 	content, err := runtime.DefaultUnstructuredConverter.ToUnstructured(object)
 	if err != nil {
 		writeError(writer, http.StatusInternalServerError, fmt.Sprintf("converting %s %q: %v", definition.Kind, name, err))
@@ -862,13 +872,17 @@ func (s *Server) getConsoleResource(writer http.ResponseWriter, request *http.Re
 		writeError(writer, http.StatusInternalServerError, fmt.Sprintf("marshaling %s %q: %v", definition.Kind, name, err))
 		return
 	}
-	writeJSON(writer, http.StatusOK, consoleResourceDetail{
+	detail := consoleResourceDetail{
 		Resource:  definition.Resource,
 		Kind:      definition.Kind,
 		Name:      name,
-		Namespace: namespace,
+		Namespace: object.GetNamespace(),
 		YAML:      string(data),
-	})
+	}
+	if spawner, ok := object.(*kelos.TaskSpawner); ok {
+		detail.Suspended = spawner.Spec.Suspend != nil && *spawner.Spec.Suspend
+	}
+	writeJSON(writer, http.StatusOK, detail)
 }
 
 func (s *Server) getTaskLogs(writer http.ResponseWriter, request *http.Request, namespace, name string) {

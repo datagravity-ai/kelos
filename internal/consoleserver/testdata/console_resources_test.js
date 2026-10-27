@@ -186,6 +186,10 @@ async function testResourceDetailsIgnoreStaleResponses() {
     taskSpawnerRunValues: {value: ''},
     taskSpawnerRunError: {textContent: ''},
     taskSpawnerRunButton: {disabled: false, textContent: ''},
+    taskSpawnerLifecycle: {hidden: true},
+    taskSpawnerLifecycleButton: {disabled: false, textContent: ''},
+    taskSpawnerLifecycleStatus: {textContent: ''},
+    taskSpawnerLifecycleError: {textContent: ''},
   };
   global.state = {
     resourceDetailGeneration: 0,
@@ -296,6 +300,96 @@ async function testTaskSpawnerRunIgnoresStaleResponses() {
   assert.equal(elements.taskSpawnerRunError.textContent, '');
 }
 
+async function testTaskSpawnerSuspension() {
+  global.state = {resourceDetailGeneration: 0, resourceDetailLogGeneration: 0};
+  let mutation = deferred();
+  let postRequests = 0;
+  let refreshed = 0;
+  const toasts = [];
+  global.loadResources = async () => { refreshed++; };
+  global.showToast = message => { toasts.push(message); };
+  global.api = (requestPath, options) => {
+    if (!options) return Promise.resolve({yaml: 'suspend: false', suspended: false});
+    postRequests++;
+    assert.equal(options.method, 'POST');
+    assert.equal(requestPath, `/api/resources/taskspawners/team-a/daily/${postRequests === 3 ? 'resume' : 'suspend'}`);
+    return mutation.promise;
+  };
+  await openResourceDetail({resource: 'taskspawners', kind: 'TaskSpawner'}, {namespace: 'team-a', name: 'daily', phase: 'Suspended'});
+  assert.equal(elements.taskSpawnerLifecycle.hidden, false);
+  assert.equal(elements.taskSpawnerLifecycleButton.textContent, 'Suspend');
+  assert.equal(elements.taskSpawnerLifecycleButton.disabled, false);
+  elements.taskSpawnerRunValues.value = 'Title: Operator request';
+
+  const failed = toggleTaskSpawnerSuspension();
+  await toggleTaskSpawnerSuspension();
+  assert.equal(postRequests, 1);
+  assert.equal(elements.taskSpawnerLifecycleButton.disabled, true);
+  assert.equal(elements.taskSpawnerLifecycleButton.textContent, 'Suspending…');
+  mutation.reject(new Error('Permission denied'));
+  await failed;
+  assert.equal(elements.taskSpawnerLifecycleError.textContent, 'Permission denied');
+  assert.equal(elements.taskSpawnerLifecycleButton.disabled, false);
+  assert.equal(elements.taskSpawnerLifecycleButton.textContent, 'Suspend');
+
+  mutation = deferred();
+  const suspended = toggleTaskSpawnerSuspension();
+  assert.equal(elements.taskSpawnerLifecycleError.textContent, '');
+  mutation.resolve({yaml: 'suspend: true', suspended: true});
+  await suspended;
+  assert.equal(elements.resourceDetailYAML.textContent, 'suspend: true');
+  assert.equal(elements.taskSpawnerLifecycleButton.textContent, 'Resume');
+  assert.equal(elements.taskSpawnerLifecycleStatus.textContent, 'Automatic task creation is suspended.');
+  assert.equal(elements.taskSpawnerRunValues.value, 'Title: Operator request');
+  assert.equal(elements.taskSpawnerRunButton.disabled, false);
+
+  mutation = deferred();
+  const resumed = toggleTaskSpawnerSuspension();
+  assert.equal(elements.taskSpawnerLifecycleButton.textContent, 'Resuming…');
+  mutation.resolve({yaml: 'suspend: false', suspended: false});
+  await resumed;
+  assert.equal(elements.resourceDetailYAML.textContent, 'suspend: false');
+  assert.equal(elements.taskSpawnerLifecycleButton.textContent, 'Suspend');
+  assert.equal(elements.taskSpawnerLifecycleStatus.textContent, 'Automatic task creation is enabled.');
+  assert.equal(refreshed, 2);
+  assert.deepEqual(toasts, ['TaskSpawner daily suspend requested', 'TaskSpawner daily resume requested']);
+}
+
+async function testTaskSpawnerSuspensionIgnoresStaleResponses() {
+  for (const fail of [false, true]) {
+    const mutation = deferred();
+    global.api = (requestPath, options) => options ? mutation.promise : Promise.resolve(requestPath.includes('/workspaces/')
+      ? {yaml: 'kind: Workspace'} : {yaml: 'suspend: true', suspended: true});
+    await openResourceDetail({resource: 'taskspawners', kind: 'TaskSpawner'}, {namespace: 'team-a', name: 'daily', phase: 'Running'});
+    assert.equal(elements.taskSpawnerLifecycleButton.textContent, 'Resume');
+    const pending = toggleTaskSpawnerSuspension();
+    await openResourceDetail({resource: 'workspaces', kind: 'Workspace'}, {namespace: 'team-a', name: 'repository'});
+    if (fail) mutation.reject(new Error('Request failed'));
+    else mutation.resolve({yaml: 'suspend: false', suspended: false});
+    await pending;
+    assert.equal(elements.taskSpawnerLifecycle.hidden, true);
+    assert.equal(elements.taskSpawnerLifecycleError.textContent, '');
+    assert.equal(elements.taskSpawnerLifecycleButton.disabled, true);
+    assert.equal(elements.resourceDetailTitle.textContent, 'Workspace repository');
+    assert.equal(elements.resourceDetailYAML.textContent, 'kind: Workspace');
+  }
+}
+
+async function testTaskSpawnerSuspensionWaitsForManifest() {
+  const manifest = deferred();
+  let requests = 0;
+  global.api = () => { requests++; return manifest.promise; };
+  const opening = openResourceDetail({resource: 'taskspawners', kind: 'TaskSpawner'}, {namespace: 'team-a', name: 'daily'});
+  assert.equal(elements.taskSpawnerLifecycleButton.disabled, true);
+  await toggleTaskSpawnerSuspension();
+  assert.equal(requests, 1);
+  manifest.reject(new Error('Cannot read TaskSpawner'));
+  await opening;
+  assert.equal(elements.taskSpawnerLifecycleButton.disabled, true);
+  assert.equal(elements.resourceDetailYAML.textContent, 'Cannot read TaskSpawner');
+  assert.equal(elements.taskSpawnerLifecycleStatus.textContent, 'Suspension state unavailable.');
+}
+
 async function testRefreshReportsOptionFailures() {
   let message = '';
   global.loadSessions = async () => {};
@@ -341,6 +435,9 @@ testResourceViewTabsSupportKeyboardNavigation();
 testResourceDetailsIgnoreStaleResponses()
   .then(() => testTaskSpawnerRun())
   .then(() => testTaskSpawnerRunIgnoresStaleResponses())
+  .then(() => testTaskSpawnerSuspension())
+  .then(() => testTaskSpawnerSuspensionIgnoresStaleResponses())
+  .then(() => testTaskSpawnerSuspensionWaitsForManifest())
   .then(() => testRefreshReportsOptionFailures())
   .then(() => testResourceDetailTabsSupportKeyboardNavigation())
   .then(() => process.stdout.write('Console resources tests passed\n'));

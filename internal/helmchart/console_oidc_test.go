@@ -212,15 +212,44 @@ func testRenderConsoleProxy(t *testing.T, mode string, values map[string]interfa
 	if !foundNamespaceList {
 		t.Fatal("Console server must list namespaces for the namespace picker")
 	}
-	for _, role := range []rbacv1.ClusterRole{userRole, serverRole} {
+	for _, role := range []rbacv1.ClusterRole{userRole, serverRole, adminRole} {
+		if role.Name == "" {
+			continue
+		}
 		canCreateTasks := false
+		canPatchTaskSpawners := false
 		for _, rule := range role.Rules {
 			if containsArgument(rule.APIGroups, "kelos.dev") && containsArgument(rule.Resources, "tasks") && containsArgument(rule.Verbs, "create") && len(rule.ResourceNames) == 0 {
 				canCreateTasks = true
 			}
+			if containsArgument(rule.APIGroups, "kelos.dev") && containsArgument(rule.Resources, "taskspawners") && containsArgument(rule.Verbs, "patch") && len(rule.ResourceNames) == 0 {
+				canPatchTaskSpawners = true
+			}
 		}
 		if !canCreateTasks {
 			t.Fatalf("%s cannot create manual Tasks", role.Name)
+		}
+		if canPatchTaskSpawners != (role.Name == serverRole.Name) {
+			t.Fatalf("%s TaskSpawner patch permission = %t", role.Name, canPatchTaskSpawners)
+		}
+	}
+	for _, role := range []rbacv1.ClusterRole{userRole, adminRole} {
+		if role.Name == "" {
+			continue
+		}
+		for _, action := range []string{"suspend", "resume"} {
+			canInvoke := false
+			for _, rule := range role.Rules {
+				if containsArgument(rule.APIGroups, "kelos.dev") && containsArgument(rule.Resources, "taskspawners/"+action) && containsArgument(rule.Verbs, "create") && len(rule.ResourceNames) == 0 {
+					canInvoke = true
+				}
+				if (containsArgument(rule.APIGroups, "kelos.dev") || containsArgument(rule.APIGroups, "*")) && (containsArgument(rule.Resources, "taskspawners") || containsArgument(rule.Resources, "*")) && (containsArgument(rule.Verbs, "patch") || containsArgument(rule.Verbs, "update") || containsArgument(rule.Verbs, "*")) {
+					t.Fatalf("%s grants TaskSpawner editing: %#v", role.Name, rule)
+				}
+			}
+			if !canInvoke {
+				t.Fatalf("%s cannot %s TaskSpawners", role.Name, action)
+			}
 		}
 	}
 	for _, rule := range serverRole.Rules {
