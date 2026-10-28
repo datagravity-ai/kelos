@@ -234,6 +234,14 @@ Child Tasks have these labels:
 | `kelos.dev/taskpipeline-stage` | Stage name |
 | `kelos.dev/taskpipeline-index` | Zero-based index of the Task within the stage |
 
+Child Tasks also inherit the TaskPipeline's Slack reporting metadata: the
+`kelos.dev/slack-reporting` label and the `kelos.dev/slack-reporting`,
+`kelos.dev/slack-channel`, `kelos.dev/slack-thread-ts`, and
+`kelos.dev/slack-user-id` annotations. A TaskSpawner with `pipelineTemplate`
+sets these from the Slack message, so each stage Task reports to the
+originating thread the way a spawned Task does. No other labels or annotations
+are copied.
+
 ### Pipeline Templates and Results
 
 `taskTemplate.prompt` and `taskTemplate.branch` receive these variables:
@@ -1511,8 +1519,9 @@ later stage handles the request.
   own `worker` or `workerPoolRef`.
 - The TaskPipeline is named and deduplicated the way the Task would have been,
   carries the `kelos.dev/taskspawner` label and the same Slack reporting
-  annotations, and is owned by the TaskSpawner. Results from its stage Tasks
-  are not yet posted back to the Slack thread.
+  annotations, and is owned by the TaskSpawner. Stage Tasks inherit the Slack
+  reporting annotations, so every stage that runs posts its status and result
+  to the originating thread. Skipped stages post nothing.
 - The work item's string template variables (for Slack: `ID`, `Title`, `Body`,
   `URL`, and `Kind`) are copied to `TaskPipeline.spec.params`, and stage
   templates read them as `{{.Params.Body}}`.

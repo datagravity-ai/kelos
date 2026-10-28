@@ -1,11 +1,15 @@
 package integration
 
 import (
+	"os"
+	"path/filepath"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/yaml"
 
 	kelos "github.com/kelos-dev/kelos/api/v1alpha2"
 )
@@ -50,6 +54,16 @@ var _ = Describe("TaskSpawner pipelineTemplate validation", func() {
 
 	It("accepts a Slack TaskSpawner with pipelineTemplate and no taskTemplate", func() {
 		Expect(k8sClient.Create(ctx, pipelineSpawner("valid"), client.DryRunAll)).To(Succeed())
+	})
+
+	It("accepts the Slack pipeline router example", func() {
+		data, err := os.ReadFile(filepath.Join("..", "..", "examples", "19-slack-pipeline-router", "taskspawner.yaml"))
+		Expect(err).NotTo(HaveOccurred())
+		spawner := &kelos.TaskSpawner{}
+		Expect(yaml.UnmarshalStrict(data, spawner)).To(Succeed())
+		spawner.Namespace = ns
+		Expect(spawner.Spec.PipelineTemplate).NotTo(BeNil())
+		Expect(k8sClient.Create(ctx, spawner, client.DryRunAll)).To(Succeed())
 	})
 
 	It("rejects a TaskSpawner with both taskTemplate and pipelineTemplate", func() {

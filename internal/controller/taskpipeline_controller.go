@@ -32,7 +32,28 @@ const (
 	taskPipelineIndexLabel = "kelos.dev/taskpipeline-index"
 	maxPipelineStageTasks  = 256
 	pipelineCollisionWait  = 2 * time.Second
+
+	// Slack reporting keys a TaskPipeline passes to its stage Tasks so the
+	// Slack reporter answers in the thread that started the pipeline. They
+	// mirror the constants in internal/reporting.
+	pipelineSlackReportingKey = "kelos.dev/slack-reporting"
+	pipelineSlackChannelKey   = "kelos.dev/slack-channel"
+	pipelineSlackThreadTSKey  = "kelos.dev/slack-thread-ts"
+	pipelineSlackUserIDKey    = "kelos.dev/slack-user-id"
 )
+
+// pipelineInheritedAnnotations are copied from a TaskPipeline to each stage Task.
+var pipelineInheritedAnnotations = []string{
+	pipelineSlackReportingKey,
+	pipelineSlackChannelKey,
+	pipelineSlackThreadTSKey,
+	pipelineSlackUserIDKey,
+}
+
+// pipelineInheritedLabels are copied from a TaskPipeline to each stage Task.
+var pipelineInheritedLabels = []string{
+	pipelineSlackReportingKey,
+}
 
 // TaskPipelineReconciler creates and observes the Tasks in a TaskPipeline.
 type TaskPipelineReconciler struct {
@@ -476,6 +497,19 @@ func buildPipelineTask(
 			Prompt: prompt,
 			Branch: branch,
 		},
+	}
+	for _, key := range pipelineInheritedLabels {
+		if value, ok := pipeline.Labels[key]; ok {
+			task.Labels[key] = value
+		}
+	}
+	for _, key := range pipelineInheritedAnnotations {
+		if value, ok := pipeline.Annotations[key]; ok {
+			if task.Annotations == nil {
+				task.Annotations = make(map[string]string)
+			}
+			task.Annotations[key] = value
+		}
 	}
 	if stage.TaskTemplate.Worker != nil {
 		task.Spec.Worker = stage.TaskTemplate.Worker.DeepCopy()
