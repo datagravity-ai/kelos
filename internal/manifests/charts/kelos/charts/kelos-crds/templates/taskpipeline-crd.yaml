@@ -51,6 +51,15 @@ spec:
           spec:
             description: TaskPipelineSpec defines an ordered sequence of stages.
             properties:
+              params:
+                additionalProperties:
+                  type: string
+                description: |-
+                  Params are string values exposed to stage prompt, branch, and condition
+                  templates as .Params. A TaskSpawner with pipelineTemplate sets them from
+                  the work item's template variables.
+                maxProperties: 64
+                type: object
               stages:
                 description: Stages execute in order. Tasks within a matrix stage
                   execute in parallel.
@@ -68,8 +77,8 @@ spec:
                         properties:
                           input:
                             description: |-
-                              Input is a Go template rendered with .Stages, the results of completed
-                              earlier stages. Leading and trailing whitespace is trimmed from the
+                              Input is a Go template rendered with .Params and .Stages, the results of
+                              completed earlier stages. Leading and trailing whitespace is trimmed from the
                               rendered value before it is compared.
                             minLength: 1
                             type: string
@@ -7231,6 +7240,9 @@ spec:
                 == stage.name))
             - message: TaskPipeline stages are immutable after creation
               rule: self.stages == oldSelf.stages
+            - message: TaskPipeline params are immutable after creation
+              rule: has(self.params) == has(oldSelf.params) && (!has(self.params)
+                || self.params == oldSelf.params)
           status:
             description: TaskPipelineStatus defines the observed state of a TaskPipeline.
             properties:

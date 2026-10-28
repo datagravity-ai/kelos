@@ -40,8 +40,8 @@ const (
 
 // PipelineStageCondition gates a stage on a value rendered from earlier stages.
 type PipelineStageCondition struct {
-	// Input is a Go template rendered with .Stages, the results of completed
-	// earlier stages. Leading and trailing whitespace is trimmed from the
+	// Input is a Go template rendered with .Params and .Stages, the results of
+	// completed earlier stages. Leading and trailing whitespace is trimmed from the
 	// rendered value before it is compared.
 	// +kubebuilder:validation:MinLength=1
 	Input string `json:"input"`
@@ -71,8 +71,8 @@ type PipelineMatrix struct {
 }
 
 // PipelineTaskTemplate defines Tasks created for a pipeline stage.
-// Prompt and branch support Go text/template expressions. The current matrix
-// values are available as .Matrix. Results from completed stages are available
+// Prompt and branch support Go text/template expressions. The pipeline's params
+// are available as .Params, and the current matrix values as .Matrix. Results from completed stages are available
 // as .Stages, keyed by stage name. Each value lists that stage's Task results
 // in index order, with Name, Matrix, Results, and Outputs fields.
 //
@@ -128,12 +128,20 @@ type PipelineStage struct {
 //
 // +kubebuilder:validation:XValidation:rule="self.stages.all(stage, self.stages.exists_one(candidate, candidate.name == stage.name))",message="stage names must be unique"
 // +kubebuilder:validation:XValidation:rule="self.stages == oldSelf.stages",message="TaskPipeline stages are immutable after creation"
+// +kubebuilder:validation:XValidation:rule="has(self.params) == has(oldSelf.params) && (!has(self.params) || self.params == oldSelf.params)",message="TaskPipeline params are immutable after creation"
 type TaskPipelineSpec struct {
 	// Stages execute in order. Tasks within a matrix stage execute in parallel.
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:MaxItems=64
 	// +listType=atomic
 	Stages []PipelineStage `json:"stages"`
+
+	// Params are string values exposed to stage prompt, branch, and condition
+	// templates as .Params. A TaskSpawner with pipelineTemplate sets them from
+	// the work item's template variables.
+	// +optional
+	// +kubebuilder:validation:MaxProperties=64
+	Params map[string]string `json:"params,omitempty"`
 }
 
 // PipelineStageStatus summarizes the Tasks created for one pipeline stage.

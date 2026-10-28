@@ -303,6 +303,7 @@ func pipelineStageConditionsMet(
 	tasksByStage map[string][]*kelos.Task,
 ) (bool, error) {
 	templateData := map[string]interface{}{
+		"Params": pipeline.Spec.Params,
 		"Stages": pipelineStageTemplateData(pipeline, stage, tasksByStage),
 	}
 	for i := range stage.Conditions {
@@ -445,6 +446,7 @@ func buildPipelineTask(
 ) (*kelos.Task, error) {
 	templateData := map[string]interface{}{
 		"Matrix": matrix,
+		"Params": pipeline.Spec.Params,
 		"Stages": pipelineStageTemplateData(pipeline, stage, tasksByStage),
 	}
 	prompt, err := renderPipelineTemplate(stage.Name+" prompt", stage.TaskTemplate.Prompt, templateData)

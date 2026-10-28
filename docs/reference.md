@@ -211,8 +211,9 @@ TaskPipeline is available only in `kelos.dev/v1alpha2`.
 | `spec.stages[].taskTemplate.prompt` | Go template rendered into each stage Task's prompt | Yes |
 | `spec.stages[].taskTemplate.branch` | Optional Go template rendered into each stage Task's branch. Not supported with workerPoolRef | No |
 | `spec.stages[].matrix.items` | Ordered value maps (1–256). Each item contains 1–16 string values, creates one Task, and defines the same keys as every other item | Yes when matrix is set |
+| `spec.params` | String values (up to 64) exposed to stage templates as `.Params`. Set from the work item by a TaskSpawner with `pipelineTemplate`. Immutable after creation | No |
 | `spec.stages[].conditions` | Conditions (0–8) that must all be met for the stage to run. See [Conditional Stages](#conditional-stages) | No |
-| `spec.stages[].conditions[].input` | Go template rendered with `.Stages`; surrounding whitespace is trimmed before comparison | Yes |
+| `spec.stages[].conditions[].input` | Go template rendered with `.Params` and `.Stages`; surrounding whitespace is trimmed before comparison | Yes |
 | `spec.stages[].conditions[].operator` | `In` or `NotIn` | Yes |
 | `spec.stages[].conditions[].values` | Values (1–32) compared exactly and case-sensitively against the rendered input | Yes |
 
@@ -239,6 +240,7 @@ Child Tasks have these labels:
 
 | Variable | Type | Description |
 |----------|------|-------------|
+| `.Params` | `map[string]string` | Values from `spec.params` |
 | `.Matrix` | `map[string]string` | Values from the current matrix item; empty for a stage without a matrix |
 | `.Stages` | `map[string][]object` | Results from completed earlier stages, keyed by stage name |
 | `.Stages.<stage>[].Name` | string | Child Task name |
@@ -300,8 +302,8 @@ them.
 ### Conditional Stages
 
 A stage with `conditions` runs only when every condition is met. Each condition
-renders `input` with `.Stages` (the same results available to prompts; `.Matrix`
-is not available), trims surrounding whitespace, and compares the value exactly
+renders `input` with `.Params` and `.Stages` (the same values available to
+prompts; `.Matrix` is not available), trims surrounding whitespace, and compares the value exactly
 against `values`: `In` is met when the value is listed, `NotIn` when it is not.
 
 Conditions are evaluated when the stage would otherwise start, after every
@@ -1492,9 +1494,60 @@ bundled skills. Reading an AgentConfig through `kelos.dev/v1alpha1` omits
 | `spec.taskTemplate.metadata.annotations` | Annotations merged into spawned Tasks; values support the same Go template variables as `branch`/`promptTemplate`; source annotations (e.g. `kelos.dev/source-kind`) are applied after rendering and override conflicting user values | No |
 | `spec.taskTemplate.contextSources` | External data sources fetched in parallel before task creation; each source's value is exposed as `{{.Context.NAME}}` in `branch`, `promptTemplate`, and `metadata` templates — but not in `nameTemplate` (see [Context Sources](#context-sources) below). Maximum 8 entries; names must be unique | No |
 | `spec.taskTemplate.upstreamRepo` | Upstream repository in `owner/repo` format; injected as `KELOS_UPSTREAM_REPO` into the agent container. Typically auto-derived from `githubIssues.repo`/`githubPullRequests.repo`, but can be set explicitly for fork workflows | No |
-| `spec.maxConcurrency` | Limit max concurrent running tasks (important for cost control) | No |
+| `spec.pipelineTemplate.stages` | Creates a TaskPipeline with these stages for each work item, instead of a Task. Uses the same stage fields as `TaskPipeline.spec.stages`. Exactly one of `taskTemplate` or `pipelineTemplate` is required. See [Pipeline Templates](#taskspawner-pipeline-templates) | No |
+| `spec.maxConcurrency` | Limit max concurrent running tasks (important for cost control). With `pipelineTemplate`, each active TaskPipeline counts as one | No |
 | `spec.maxTotalTasks` | Lifetime limit on total tasks created by this spawner | No |
 | `spec.suspend` | Pause the spawner without deleting it; resume with `spec.suspend: false` (default: `false`) | No |
+
+### TaskSpawner Pipeline Templates
+
+With `spec.pipelineTemplate`, each work item creates a
+[TaskPipeline](#taskpipeline) instead of a Task. Use it with
+[conditional stages](#conditional-stages) to let a first stage decide which
+later stage handles the request.
+
+- `pipelineTemplate` is supported only with the `slack` source. It is mutually
+  exclusive with `taskTemplate` and with `spec.credentials`; each stage sets its
+  own `worker` or `workerPoolRef`.
+- The TaskPipeline is named and deduplicated the way the Task would have been,
+  carries the `kelos.dev/taskspawner` label and the same Slack reporting
+  annotations, and is owned by the TaskSpawner. Results from its stage Tasks
+  are not yet posted back to the Slack thread.
+- The work item's string template variables (for Slack: `ID`, `Title`, `Body`,
+  `URL`, and `Kind`) are copied to `TaskPipeline.spec.params`, and stage
+  templates read them as `{{.Params.Body}}`.
+- `status.activeTasks` and `spec.maxConcurrency` count active TaskPipelines.
+- Manual runs (`kelos run --from taskspawner/<name>` and the Console) do not
+  support `pipelineTemplate` spawners and return an error.
+
+```yaml
+apiVersion: kelos.dev/v1alpha2
+kind: TaskSpawner
+metadata:
+  name: support-front-door
+spec:
+  when:
+    slack:
+      channels: ["C0123456789"]
+  pipelineTemplate:
+    stages:
+      - name: route
+        taskTemplate:
+          workerPoolRef:
+            name: router-pool
+          prompt: |
+            Classify this request and reply with exactly one word: docs or none.
+            Request: {{.Params.Body}}
+      - name: docs
+        conditions:
+          - input: '{{index .Stages "route" 0 "Results" "response" | b64dec}}'
+            operator: In
+            values: [docs]
+        taskTemplate:
+          workerPoolRef:
+            name: docs-pool
+          prompt: "{{.Params.Body}}"
+```
 
 When `spec.credentials` is configured, omit credentials from
 `spec.taskTemplate`. Before creating each Task, the TaskSpawner selects the

@@ -325,3 +325,33 @@ func pipelineStageTask(t *testing.T, k8sClient client.Client, pipeline *kelos.Ta
 	}
 	return &tasks.Items[0]
 }
+
+func TestTaskPipelineReconcileRendersParams(t *testing.T) {
+	pipeline := testTaskPipeline("params", []kelos.PipelineStage{
+		{Name: "route", TaskTemplate: testPipelineTaskTemplate("Route: {{.Params.Body}}")},
+		{
+			Name: "docs",
+			Conditions: []kelos.PipelineStageCondition{{
+				Input:    `{{.Params.Kind}}`,
+				Operator: kelos.PipelineConditionOperatorIn,
+				Values:   []string{"SlackMessage"},
+			}},
+			TaskTemplate: testPipelineTaskTemplate("Answer {{.Params.Body}}"),
+		},
+	})
+	pipeline.Spec.Params = map[string]string{"Body": "How do I rotate keys?", "Kind": "SlackMessage"}
+	reconciler, k8sClient := testTaskPipelineReconciler(t, pipeline)
+	reconcileTaskPipeline(t, reconciler, pipeline)
+
+	route := pipelineStageTask(t, k8sClient, pipeline, "route")
+	if route == nil || route.Spec.Prompt != "Route: How do I rotate keys?" {
+		t.Fatalf("route Task = %#v, want the prompt rendered with params", route)
+	}
+	completePipelineStageTask(t, k8sClient, pipeline, "route", map[string]string{"summary": "routed"})
+	reconcileTaskPipeline(t, reconciler, pipeline)
+
+	docs := pipelineStageTask(t, k8sClient, pipeline, "docs")
+	if docs == nil || docs.Spec.Prompt != "Answer How do I rotate keys?" {
+		t.Fatalf("docs Task = %#v, want the condition met and the prompt rendered with params", docs)
+	}
+}
