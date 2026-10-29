@@ -653,6 +653,11 @@ func spawnResourceName(spawnerName, hashInput string) string {
 // starts knowing what the thread has already said. Later messages carry only
 // the new text, because the Session retains the rest.
 //
+// Every prompt names the channel, the thread and the message's permalink, so
+// the agent can scope its memory to the channel and link the thread from its
+// handoff state. Nothing else in the Session reaches those: Kelos keeps them as
+// annotations on the Session object, which the runtime cannot read.
+//
 // Every prompt opens with a literal, and that is load-bearing rather than
 // cosmetic. The Session runtime parses a submitted prompt for its own commands
 // before the agent sees it: text beginning with "!" runs as a shell command
@@ -664,11 +669,12 @@ func spawnResourceName(spawnerName, hashInput string) string {
 // name that names them — must therefore appear after that literal, never at the
 // start of the prompt.
 func turnPrompt(msg *SlackMessageData, firstTurn bool) string {
+	location := slackLocation(msg)
 	if firstTurn {
 		if msg.HasThreadContext {
-			return "Relayed from a Slack thread. The conversation so far:\n\n" + msg.Body
+			return "Relayed from a Slack thread. " + location + " The conversation so far:\n\n" + msg.Body
 		}
-		return fmt.Sprintf("Relayed from Slack. Author: %s\n\n%s", promptAuthor(msg), msg.Body)
+		return fmt.Sprintf("Relayed from Slack. %s Author: %s\n\n%s", location, promptAuthor(msg), msg.Body)
 	}
 	text := strings.TrimSpace(stripLeadingMentions(msg.Text))
 	if attachments := strings.TrimSpace(msg.AttachmentText); attachments != "" {
@@ -690,7 +696,19 @@ func turnPrompt(msg *SlackMessageData, firstTurn bool) string {
 	if text == "" {
 		text = "(no message text)"
 	}
-	return fmt.Sprintf("Relayed from the Slack thread. Author: %s\n\n%s", promptAuthor(msg), text)
+	return fmt.Sprintf("Relayed from the Slack thread. %s Author: %s\n\n%s", location, promptAuthor(msg), text)
+}
+
+// slackLocation names the channel and thread a message belongs to, with the
+// message's permalink when Slack returned one. All three come from Slack, not
+// from the author, so they are safe to place right after the envelope's
+// literal opening.
+func slackLocation(msg *SlackMessageData) string {
+	location := fmt.Sprintf("Channel: %s, thread: %s", msg.ChannelID, ThreadTimestamp(msg))
+	if msg.Permalink != "" {
+		location += ", permalink: " + msg.Permalink
+	}
+	return location + "."
 }
 
 // promptAuthor names the message author for a prompt envelope. The name comes

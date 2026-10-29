@@ -1292,6 +1292,47 @@ func TestTurnPromptCarriesAttachmentTextOnLaterTurns(t *testing.T) {
 	}
 }
 
+func TestTurnPromptNamesTheChannelAndThread(t *testing.T) {
+	const permalink = "https://example.slack.com/archives/C123/p1790000000000100"
+	parent := SlackMessageData{
+		UserID: "U1", UserName: "Ada", ChannelID: "C123",
+		Text:      "<@BOT> what changed?",
+		Body:      "what changed?",
+		Timestamp: "1790000000.000100",
+		Permalink: permalink,
+	}
+	reply := parent
+	reply.ThreadTS = "1790000000.000050"
+	reply.Body = "the whole thread so far"
+	reply.HasThreadContext = true
+	noPermalink := parent
+	noPermalink.Permalink = ""
+
+	for _, tc := range []struct {
+		name      string
+		msg       SlackMessageData
+		firstTurn bool
+		want      string
+	}{
+		{"first turn on a new thread", parent, true, "Channel: C123, thread: 1790000000.000100, permalink: " + permalink + "."},
+		{"first turn with thread context", reply, true, "Channel: C123, thread: 1790000000.000050, permalink: " + permalink + "."},
+		{"later turn", reply, false, "Channel: C123, thread: 1790000000.000050, permalink: " + permalink + "."},
+		{"no permalink", noPermalink, true, "Channel: C123, thread: 1790000000.000100."},
+	} {
+		msg := tc.msg
+		prompt := turnPrompt(&msg, tc.firstTurn)
+		if !strings.Contains(prompt, tc.want) {
+			t.Errorf("%s: prompt = %q, want it to carry %q", tc.name, prompt, tc.want)
+		}
+		if !strings.HasPrefix(prompt, "Relayed from") {
+			t.Errorf("%s: prompt = %q, want the literal opening kept ahead of the location", tc.name, prompt)
+		}
+		if tc.msg.Permalink == "" && strings.Contains(prompt, "permalink:") {
+			t.Errorf("%s: prompt = %q, want no permalink label when Slack returned none", tc.name, prompt)
+		}
+	}
+}
+
 func TestTurnPromptAlwaysNamesAnAuthor(t *testing.T) {
 	for _, msg := range []*SlackMessageData{
 		{UserName: "Ada", Text: "hello", Body: "hello"},
