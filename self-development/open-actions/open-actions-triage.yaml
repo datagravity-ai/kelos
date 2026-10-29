@@ -31,9 +31,9 @@ spec:
     worker:
       workspaceRef:
         name: open-actions-agent
-      model: gpt-6-astra
+      model: opus
       effort: high
-      type: codex
+      type: claude-code
       credentials:
         type: oauth
         secretRef:

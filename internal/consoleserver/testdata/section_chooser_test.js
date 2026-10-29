@@ -142,6 +142,10 @@ global.window = {
   setTimeout: callback => callback(),
 };
 
+global.sessionAttentionLabel = () => '';
+global.renderSessionAttentionCount = () => false;
+global.scheduleCompletionRead = () => false;
+
 const application = fs.readFileSync(path.join(__dirname, '..', 'web', 'app.js'), 'utf8');
 
 function applicationSlice(start, end) {

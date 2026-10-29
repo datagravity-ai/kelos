@@ -230,6 +230,10 @@ func TestMirroredBoundsMatchMarkers(t *testing.T) {
 		fmt.Sprintf("+kubebuilder:validation:MaxLength=%d", GitHubWebhookFilterPullRequestAuthorMaxLength)) {
 		t.Errorf("pullRequestAuthor has no MaxLength=%d marker", GitHubWebhookFilterPullRequestAuthorMaxLength)
 	}
+	if !slices.Contains(markers["requestedReviewer"],
+		fmt.Sprintf("+kubebuilder:validation:MaxLength=%d", GitHubWebhookFilterRequestedReviewerMaxLength)) {
+		t.Errorf("requestedReviewer has no MaxLength=%d marker", GitHubWebhookFilterRequestedReviewerMaxLength)
+	}
 
 	for _, tc := range []struct {
 		field string

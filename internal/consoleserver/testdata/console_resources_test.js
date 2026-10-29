@@ -3,6 +3,9 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
+global.renderSessionAttentionCount = () => false;
+global.scheduleCompletionRead = () => false;
+
 const application = fs.readFileSync(path.join(__dirname, '..', 'web', 'app.js'), 'utf8');
 
 function applicationSlice(start, end) {
@@ -16,28 +19,57 @@ function applicationSlice(start, end) {
 vm.runInThisContext(applicationSlice('function errorMessage', 'function requireElements'), {filename: 'app.js'});
 vm.runInThisContext(applicationSlice('const allResourceKind', 'async function loadResources'), {filename: 'app.js'});
 vm.runInThisContext(applicationSlice('async function refreshConsole', 'async function openResourceDetail'), {filename: 'app.js'});
-vm.runInThisContext(applicationSlice('function setResourceDetailView', 'function sessionKey'), {filename: 'app.js'});
+vm.runInThisContext(applicationSlice('function setResourceDetailView', 'const pendingCompletionReads'), {filename: 'app.js'});
+
+vm.runInThisContext(applicationSlice('function renderSessions(', 'function createSessionListItem('), {filename: 'app.js'});
+
+function testViewsWithoutNamespace() {
+  const element = () => ({children: [], textContent: '', replaceChildren(...items) { this.children = items; }, append(...items) { this.children.push(...items); }});
+  global.document = {createElement: element};
+  global.state = {namespace: '', sessions: [], resourceGroups: []};
+  global.elements = {summaryGrid: element(), recentResources: element(), list: element()};
+  global.syncSessionActionsMenu = () => {};
+  try {
+    assert.equal(createResourceTable([]).textContent, 'Select a namespace to view resources.');
+    renderSessions();
+    assert.equal(elements.list.children[0].textContent, 'Select a namespace to view Sessions.');
+  } finally {
+    delete global.document;
+    delete global.syncSessionActionsMenu;
+    delete global.state;
+    delete global.elements;
+  }
+}
 
 function testReturningToSessionsRefreshesCurrentRequest() {
   let updates = 0;
+  let resizes = 0;
   const navigationButton = () => ({setAttribute() {}, removeAttribute() {}});
   global.state = {consoleView: 'overview', selected: {}, sessions: []};
   global.elements = {
     overviewView: {hidden: false},
     sessionsView: {hidden: true},
     resourcesView: {hidden: true},
+    adminView: {hidden: true},
     sessionSidebar: {hidden: true},
     overviewButton: navigationButton(),
     sessionsButton: navigationButton(),
     resourcesButton: navigationButton(),
+    adminButton: navigationButton(),
   };
   global.updateCurrentRequest = () => { updates++; };
+  global.resizeComposer = () => {
+    assert.equal(elements.sessionsView.hidden, false);
+    resizes++;
+  };
+  global.updateJumpToLatest = () => {};
   global.setSidebarOpen = () => {};
 
   setConsoleView('sessions');
 
   assert.equal(elements.sessionsView.hidden, false);
   assert.equal(updates, 1);
+  assert.equal(resizes, 1);
 }
 
 function testResourceInventorySupportsAllTypesAndSearch() {
@@ -150,6 +182,14 @@ async function testResourceDetailsIgnoreStaleResponses() {
     resourceDetailLogs: {textContent: ''},
     resourceDetailYAML: {textContent: ''},
     resourceDetailDialog: {showModal() {}},
+    taskSpawnerRunForm: {hidden: true},
+    taskSpawnerRunValues: {value: ''},
+    taskSpawnerRunError: {textContent: ''},
+    taskSpawnerRunButton: {disabled: false, textContent: ''},
+    taskSpawnerLifecycle: {hidden: true},
+    taskSpawnerLifecycleButton: {disabled: false, textContent: ''},
+    taskSpawnerLifecycleStatus: {textContent: ''},
+    taskSpawnerLifecycleError: {textContent: ''},
   };
   global.state = {
     resourceDetailGeneration: 0,
@@ -196,6 +236,160 @@ async function testResourceDetailsIgnoreStaleResponses() {
   assert.equal(elements.resourceDetailLogs.textContent, 'second logs');
 }
 
+async function testTaskSpawnerRun() {
+  global.state = {resourceDetailGeneration: 0, resourceDetailLogGeneration: 0};
+  let postRequests = 0;
+  let refreshed = 0;
+  let toast = '';
+  let creation = deferred();
+  global.loadResources = async () => { refreshed++; };
+  global.showToast = message => { toast = message; };
+  global.apiText = async () => 'No logs yet.';
+  global.api = (requestPath, options) => {
+    if (!options) return Promise.resolve({yaml: 'kind: TaskSpawner'});
+    postRequests++;
+    assert.equal(requestPath, '/api/resources/taskspawners/team-a/daily/run');
+    assert.equal(options.method, 'POST');
+    assert.deepEqual(JSON.parse(options.body), {values: 'Title: Fix login'});
+    return creation.promise;
+  };
+
+  await openResourceDetail({resource: 'taskspawners', kind: 'TaskSpawner'}, {namespace: 'team-a', name: 'daily'});
+  assert.equal(elements.taskSpawnerRunForm.hidden, false);
+  assert.equal(elements.taskSpawnerRunButton.disabled, false);
+  assert.equal(elements.resourceDetailTabs.hidden, true);
+  elements.taskSpawnerRunValues.value = 'Title: Fix login';
+
+  let prevented = false;
+  const event = {preventDefault() { prevented = true; }};
+  const failedRun = runTaskSpawner(event);
+  await runTaskSpawner(event);
+  assert.equal(prevented, true);
+  assert.equal(postRequests, 1);
+  assert.equal(elements.taskSpawnerRunButton.disabled, true);
+  assert.equal(elements.taskSpawnerRunButton.textContent, 'Creating task…');
+  creation.reject(new Error('Task creation denied'));
+  await failedRun;
+  assert.equal(elements.taskSpawnerRunButton.disabled, false);
+  assert.equal(elements.taskSpawnerRunError.textContent, 'Task creation denied');
+  assert.equal(elements.taskSpawnerRunValues.value, 'Title: Fix login');
+
+  creation = deferred();
+  const successfulRun = runTaskSpawner(event);
+  assert.equal(elements.taskSpawnerRunError.textContent, '');
+  creation.resolve({namespace: 'team-a', name: 'daily-manual-abcde'});
+  await successfulRun;
+  assert.equal(postRequests, 2);
+  assert.equal(refreshed, 1);
+  assert.equal(toast, 'Created Task daily-manual-abcde');
+  assert.equal(elements.resourceDetailTitle.textContent, 'Task daily-manual-abcde');
+  assert.equal(elements.taskSpawnerRunForm.hidden, true);
+  assert.equal(elements.resourceDetailLogsPanel.hidden, false);
+}
+
+async function testTaskSpawnerRunIgnoresStaleResponses() {
+  const creation = deferred();
+  global.api = (_path, options) => options ? creation.promise : Promise.resolve({yaml: 'kind: Workspace'});
+  await openResourceDetail({resource: 'taskspawners', kind: 'TaskSpawner'}, {namespace: 'team-a', name: 'daily'});
+  const run = runTaskSpawner({preventDefault() {}});
+  await openResourceDetail({resource: 'workspaces', kind: 'Workspace'}, {namespace: 'team-a', name: 'repository'});
+  creation.resolve({namespace: 'team-a', name: 'daily-manual-abcde'});
+  await run;
+  assert.equal(elements.resourceDetailTitle.textContent, 'Workspace repository');
+  assert.equal(elements.taskSpawnerRunForm.hidden, true);
+  assert.equal(elements.taskSpawnerRunError.textContent, '');
+}
+
+async function testTaskSpawnerSuspension() {
+  global.state = {resourceDetailGeneration: 0, resourceDetailLogGeneration: 0};
+  let mutation = deferred();
+  let postRequests = 0;
+  let refreshed = 0;
+  const toasts = [];
+  global.loadResources = async () => { refreshed++; };
+  global.showToast = message => { toasts.push(message); };
+  global.api = (requestPath, options) => {
+    if (!options) return Promise.resolve({yaml: 'suspend: false', suspended: false});
+    postRequests++;
+    assert.equal(options.method, 'POST');
+    assert.equal(requestPath, `/api/resources/taskspawners/team-a/daily/${postRequests === 3 ? 'resume' : 'suspend'}`);
+    return mutation.promise;
+  };
+  await openResourceDetail({resource: 'taskspawners', kind: 'TaskSpawner'}, {namespace: 'team-a', name: 'daily', phase: 'Suspended'});
+  assert.equal(elements.taskSpawnerLifecycle.hidden, false);
+  assert.equal(elements.taskSpawnerLifecycleButton.textContent, 'Suspend');
+  assert.equal(elements.taskSpawnerLifecycleButton.disabled, false);
+  elements.taskSpawnerRunValues.value = 'Title: Operator request';
+
+  const failed = toggleTaskSpawnerSuspension();
+  await toggleTaskSpawnerSuspension();
+  assert.equal(postRequests, 1);
+  assert.equal(elements.taskSpawnerLifecycleButton.disabled, true);
+  assert.equal(elements.taskSpawnerLifecycleButton.textContent, 'Suspending…');
+  mutation.reject(new Error('Permission denied'));
+  await failed;
+  assert.equal(elements.taskSpawnerLifecycleError.textContent, 'Permission denied');
+  assert.equal(elements.taskSpawnerLifecycleButton.disabled, false);
+  assert.equal(elements.taskSpawnerLifecycleButton.textContent, 'Suspend');
+
+  mutation = deferred();
+  const suspended = toggleTaskSpawnerSuspension();
+  assert.equal(elements.taskSpawnerLifecycleError.textContent, '');
+  mutation.resolve({yaml: 'suspend: true', suspended: true});
+  await suspended;
+  assert.equal(elements.resourceDetailYAML.textContent, 'suspend: true');
+  assert.equal(elements.taskSpawnerLifecycleButton.textContent, 'Resume');
+  assert.equal(elements.taskSpawnerLifecycleStatus.textContent, 'Automatic task creation is suspended.');
+  assert.equal(elements.taskSpawnerRunValues.value, 'Title: Operator request');
+  assert.equal(elements.taskSpawnerRunButton.disabled, false);
+
+  mutation = deferred();
+  const resumed = toggleTaskSpawnerSuspension();
+  assert.equal(elements.taskSpawnerLifecycleButton.textContent, 'Resuming…');
+  mutation.resolve({yaml: 'suspend: false', suspended: false});
+  await resumed;
+  assert.equal(elements.resourceDetailYAML.textContent, 'suspend: false');
+  assert.equal(elements.taskSpawnerLifecycleButton.textContent, 'Suspend');
+  assert.equal(elements.taskSpawnerLifecycleStatus.textContent, 'Automatic task creation is enabled.');
+  assert.equal(refreshed, 2);
+  assert.deepEqual(toasts, ['TaskSpawner daily suspend requested', 'TaskSpawner daily resume requested']);
+}
+
+async function testTaskSpawnerSuspensionIgnoresStaleResponses() {
+  for (const fail of [false, true]) {
+    const mutation = deferred();
+    global.api = (requestPath, options) => options ? mutation.promise : Promise.resolve(requestPath.includes('/workspaces/')
+      ? {yaml: 'kind: Workspace'} : {yaml: 'suspend: true', suspended: true});
+    await openResourceDetail({resource: 'taskspawners', kind: 'TaskSpawner'}, {namespace: 'team-a', name: 'daily', phase: 'Running'});
+    assert.equal(elements.taskSpawnerLifecycleButton.textContent, 'Resume');
+    const pending = toggleTaskSpawnerSuspension();
+    await openResourceDetail({resource: 'workspaces', kind: 'Workspace'}, {namespace: 'team-a', name: 'repository'});
+    if (fail) mutation.reject(new Error('Request failed'));
+    else mutation.resolve({yaml: 'suspend: false', suspended: false});
+    await pending;
+    assert.equal(elements.taskSpawnerLifecycle.hidden, true);
+    assert.equal(elements.taskSpawnerLifecycleError.textContent, '');
+    assert.equal(elements.taskSpawnerLifecycleButton.disabled, true);
+    assert.equal(elements.resourceDetailTitle.textContent, 'Workspace repository');
+    assert.equal(elements.resourceDetailYAML.textContent, 'kind: Workspace');
+  }
+}
+
+async function testTaskSpawnerSuspensionWaitsForManifest() {
+  const manifest = deferred();
+  let requests = 0;
+  global.api = () => { requests++; return manifest.promise; };
+  const opening = openResourceDetail({resource: 'taskspawners', kind: 'TaskSpawner'}, {namespace: 'team-a', name: 'daily'});
+  assert.equal(elements.taskSpawnerLifecycleButton.disabled, true);
+  await toggleTaskSpawnerSuspension();
+  assert.equal(requests, 1);
+  manifest.reject(new Error('Cannot read TaskSpawner'));
+  await opening;
+  assert.equal(elements.taskSpawnerLifecycleButton.disabled, true);
+  assert.equal(elements.resourceDetailYAML.textContent, 'Cannot read TaskSpawner');
+  assert.equal(elements.taskSpawnerLifecycleStatus.textContent, 'Suspension state unavailable.');
+}
+
 async function testRefreshReportsOptionFailures() {
   let message = '';
   global.loadSessions = async () => {};
@@ -233,11 +427,17 @@ function testResourceDetailTabsSupportKeyboardNavigation() {
   assert.equal(prevented, true);
 }
 
+testViewsWithoutNamespace();
 testReturningToSessionsRefreshesCurrentRequest();
 testResourceInventorySupportsAllTypesAndSearch();
 testResourceRelationshipHelpersResolveExistingAndMissingResources();
 testResourceViewTabsSupportKeyboardNavigation();
 testResourceDetailsIgnoreStaleResponses()
+  .then(() => testTaskSpawnerRun())
+  .then(() => testTaskSpawnerRunIgnoresStaleResponses())
+  .then(() => testTaskSpawnerSuspension())
+  .then(() => testTaskSpawnerSuspensionIgnoresStaleResponses())
+  .then(() => testTaskSpawnerSuspensionWaitsForManifest())
   .then(() => testRefreshReportsOptionFailures())
   .then(() => testResourceDetailTabsSupportKeyboardNavigation())
   .then(() => process.stdout.write('Console resources tests passed\n'));

@@ -50,8 +50,8 @@ test: ## Run unit tests.
 	go test $(TEST_FLAGS) $$(go list ./... | grep -v /test/) --skip=E2E
 
 .PHONY: test-integration
-test-integration: envtest ## Run integration tests (envtest).
-	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test $(TEST_FLAGS) ./test/integration/... -v
+test-integration: envtest oauth2-proxy ## Run integration tests (envtest).
+	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" OAUTH2_PROXY_BIN="$(OAUTH2_PROXY)" go test $(TEST_FLAGS) ./test/integration/... -v
 
 .PHONY: test-e2e
 test-e2e: ginkgo ## Run e2e tests (requires cluster and agent credentials).
@@ -151,6 +151,23 @@ ENVTEST ?= $(LOCALBIN)/setup-envtest
 GINKGO ?= $(LOCALBIN)/ginkgo
 YAMLFMT ?= $(LOCALBIN)/yamlfmt
 SHFMT ?= $(LOCALBIN)/shfmt
+OAUTH2_PROXY_VERSION = v7.15.5
+OAUTH2_PROXY ?= $(LOCALBIN)/oauth2-proxy-$(OAUTH2_PROXY_VERSION)
+
+.PHONY: oauth2-proxy
+oauth2-proxy: $(OAUTH2_PROXY)
+$(OAUTH2_PROXY): | $(LOCALBIN)
+	@command -v gh >/dev/null || { echo 'Install GitHub CLI and authenticate with gh auth login or GH_TOKEN'; exit 1; }; \
+		if command -v sha256sum >/dev/null; then proxy_checksum=(sha256sum); \
+		elif command -v shasum >/dev/null; then proxy_checksum=(shasum -a 256); \
+		else echo 'Install sha256sum or shasum to verify the OAuth2 Proxy download'; exit 1; fi; \
+		proxy_tmp=$$(mktemp -d); trap 'rm -rf "$$proxy_tmp"' EXIT; \
+		proxy_asset="oauth2-proxy-$(OAUTH2_PROXY_VERSION).$$(go env GOOS)-$$(go env GOARCH).tar.gz"; \
+		gh release download $(OAUTH2_PROXY_VERSION) --repo oauth2-proxy/oauth2-proxy \
+			--pattern "$$proxy_asset" --pattern "$$proxy_asset-sha256sum.txt" --dir "$$proxy_tmp"; \
+		(cd "$$proxy_tmp" && "$${proxy_checksum[@]}" -c "$$proxy_asset-sha256sum.txt"); \
+		tar -xzf "$$proxy_tmp/$$proxy_asset" -C "$$proxy_tmp"; \
+		install -m 755 "$$proxy_tmp/$${proxy_asset%.tar.gz}/oauth2-proxy" "$(OAUTH2_PROXY)"
 
 .PHONY: controller-gen
 controller-gen: $(CONTROLLER_GEN)

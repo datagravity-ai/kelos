@@ -19,6 +19,8 @@ You need:
 - Git
 - The Go version declared in [`go.mod`](go.mod)
 - Make
+- An authenticated GitHub CLI (`gh auth login` or `GH_TOKEN`) and either
+  `sha256sum` or `shasum` when downloading OAuth2 Proxy for integration tests
 - Docker only when building container images
 - A Kubernetes cluster and agent credentials only when running end-to-end tests
 
@@ -44,7 +46,7 @@ Use the repository's Make targets for development and CI checks:
 | `make update` | Regenerate code, CRDs, and manifests; format Go, YAML, and shell files; and tidy Go modules |
 | `make verify` | Check generated files, formatting, Go modules, and `go vet` without retaining generated changes |
 | `make test` | Run unit tests |
-| `make test-integration` | Run integration tests with envtest |
+| `make test-integration` | Run integration tests with envtest and OAuth2 Proxy |
 | `make build` | Build the binaries into `bin/` |
 | `make test-e2e` | Run end-to-end tests against a configured cluster |
 
@@ -63,6 +65,19 @@ make build
 For documentation-only changes, `make verify` is sufficient. If an integration
 test is not relevant to your change or cannot run in your environment, explain
 that in the pull request.
+
+`make test-integration` downloads the pinned OAuth2 Proxy
+release and verifies its checksum. To avoid passing GitHub token environment
+variables into the test process, run `make oauth2-proxy` while authenticated,
+then run the tests with `GH_TOKEN` and `GITHUB_TOKEN` unset. The binary is
+reused from `bin/`; an
+existing binary can also be supplied with `OAUTH2_PROXY=/path/to/oauth2-proxy`.
+
+To run only the Console OIDC integration test:
+
+```bash
+make test-integration TEST_FLAGS='-run=TestConsoleOIDC'
+```
 
 End-to-end tests require a Kubernetes cluster and agent credentials. Run them
 when your environment is configured for them; otherwise, describe the tests

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -21,6 +22,20 @@ import (
 
 type claudeTurnResult struct {
 	error string
+}
+
+type claudeEventEnvelope struct {
+	Type            string `json:"type"`
+	Subtype         string `json:"subtype"`
+	ParentToolUseID string `json:"parent_tool_use_id"`
+	OwnedBySubagent bool   `json:"owned_by_subagent"`
+	SkipTranscript  bool   `json:"skip_transcript"`
+	Ambient         bool   `json:"ambient"`
+	TaskID          string `json:"task_id"`
+	Description     string `json:"description"`
+	Patch           struct {
+		Status string `json:"status"`
+	} `json:"patch"`
 }
 
 type claudeControlRequestEnvelope struct {
@@ -41,7 +56,6 @@ type ClaudeProvider struct {
 	stdin  io.WriteCloser
 
 	writeMu sync.Mutex
-	turnMu  sync.Mutex
 
 	shellContextMu       sync.Mutex
 	pendingShellCommands []shellCommandRecord
@@ -51,14 +65,15 @@ type ClaudeProvider struct {
 	nextControlID  atomic.Int64
 
 	activeMu          sync.Mutex
-	activeSink        EventSink
-	turnDone          chan claudeTurnResult
+	eventSink         EventSink
+	active            bool
 	interactionCtx    context.Context
 	interactionCancel context.CancelFunc
 	seenTools         map[string]string
 	hadTextDelta      bool
 	blockText         map[int]*strings.Builder
 	interrupted       bool
+	tasks             map[string]BackgroundTask
 
 	statusMu sync.Mutex
 	model    string
@@ -108,6 +123,7 @@ func NewClaudeProvider(ctx context.Context, config ProviderConfig) (*ClaudeProvi
 
 	provider := &ClaudeProvider{
 		config:         config,
+		eventSink:      config.EventSink,
 		ctx:            providerCtx,
 		cancel:         cancel,
 		cmd:            command,
@@ -153,47 +169,77 @@ func claudeCommandArgs(config ProviderConfig, sessionID string, resume bool) []s
 	return args
 }
 
-// RunTurn sends one prompt while keeping the Claude Code process alive between turns.
-func (p *ClaudeProvider) RunTurn(ctx context.Context, input TurnInput, sink EventSink) error {
-	p.turnMu.Lock()
-	defer p.turnMu.Unlock()
-
-	done := make(chan claudeTurnResult, 1)
-	interactionCtx, interactionCancel := context.WithCancel(ctx)
+// SetEventSink installs the session's event consumer before submitting prompts.
+func (p *ClaudeProvider) SetEventSink(sink EventSink) {
 	p.activeMu.Lock()
-	p.activeSink = sink
-	p.turnDone = done
-	p.interactionCtx = interactionCtx
-	p.interactionCancel = interactionCancel
+	p.eventSink = sink
+	p.activeMu.Unlock()
+}
+
+func (p *ClaudeProvider) beginTurn(ctx context.Context) {
+	p.activeMu.Lock()
+	if p.active {
+		p.activeMu.Unlock()
+		return
+	}
+	p.active = true
+	p.interactionCtx, p.interactionCancel = context.WithCancel(ctx)
 	p.seenTools = map[string]string{}
 	p.hadTextDelta = false
 	p.blockText = map[int]*strings.Builder{}
 	p.interrupted = false
+	sink := p.eventSink
 	p.activeMu.Unlock()
-	p.emitRuntimeStatus(sink)
-	defer func() {
-		interactionCancel()
-		p.activeMu.Lock()
-		p.activeSink = nil
-		p.turnDone = nil
-		p.interactionCtx = nil
-		p.interactionCancel = nil
-		p.seenTools = nil
-		p.blockText = nil
-		p.interrupted = false
-		p.activeMu.Unlock()
-	}()
+	if sink != nil {
+		sink.Emit(Event{Type: EventTurnStarted, Status: "running"})
+		p.emitRuntimeStatus(sink)
+	}
+}
+
+// StartTurn submits a prompt; replies and completion arrive through the session sink.
+func (p *ClaudeProvider) StartTurn(ctx context.Context, input TurnInput) error {
+	return p.startMessage(ctx, input, true)
+}
+
+const claudeGoalUsage = "Claude Code supports /goal [<condition>|clear]; use /interrupt to stop active work"
+
+// StartGoal submits Claude Code's native goal command through its input stream.
+func (p *ClaudeProvider) StartGoal(ctx context.Context, command goalCommand) error {
+	text := "/goal"
+	switch command.action {
+	case goalCommandShow:
+	case goalCommandCreate:
+		text += " " + command.objective
+	case goalCommandClear:
+		text += " clear"
+	default:
+		return errors.New(claudeGoalUsage)
+	}
+	// Native commands must be the first input block. Shell results stay queued
+	// for the next ordinary prompt so they cannot hide the command prefix.
+	return p.startMessage(ctx, TurnInput{Text: text}, false)
+}
+
+// StartLoop submits Claude Code's native loop skill through its input stream.
+func (p *ClaudeProvider) StartLoop(ctx context.Context, text string) error {
+	return p.startMessage(ctx, TurnInput{Text: text}, false)
+}
+
+func (p *ClaudeProvider) startMessage(ctx context.Context, input TurnInput, includeShellContext bool) error {
+	p.beginTurn(ctx)
 
 	p.sessionMu.Lock()
 	sessionID := p.sessionID
 	p.sessionMu.Unlock()
 	p.shellContextMu.Lock()
 	content := make([]map[string]string, 0, len(p.pendingShellCommands)+1)
-	for _, record := range p.pendingShellCommands {
-		content = append(content, map[string]string{
-			"type": "text",
-			"text": formatShellCommandRecord(record),
-		})
+	if includeShellContext {
+		for _, record := range p.pendingShellCommands {
+			content = append(content, map[string]string{
+				"type": "text",
+				"text": formatShellCommandRecord(record),
+			})
+		}
 	}
 	content = append(content, map[string]string{
 		"type": "text",
@@ -210,31 +256,21 @@ func (p *ClaudeProvider) RunTurn(ctx context.Context, input TurnInput, sink Even
 	}
 	if err := p.write(message); err != nil {
 		p.shellContextMu.Unlock()
+		p.activeMu.Lock()
+		p.active = false
+		if p.interactionCancel != nil {
+			p.interactionCancel()
+		}
+		p.interactionCtx, p.interactionCancel = nil, nil
+		p.activeMu.Unlock()
 		return err
 	}
-	p.pendingShellCommands = nil
+	if includeShellContext {
+		p.pendingShellCommands = nil
+	}
 	p.shellContextMu.Unlock()
 
-	select {
-	case result := <-done:
-		p.activeMu.Lock()
-		interrupted := p.interrupted
-		p.activeMu.Unlock()
-		if interrupted {
-			return ErrTurnInterrupted
-		}
-		if result.error != "" {
-			return errors.New(result.error)
-		}
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-p.done:
-		if p.readErr != nil {
-			return p.readErr
-		}
-		return errors.New("Claude Code stopped")
-	}
+	return nil
 }
 
 func (p *ClaudeProvider) recordShellCommand(_ context.Context, record shellCommandRecord) error {
@@ -247,7 +283,7 @@ func (p *ClaudeProvider) recordShellCommand(_ context.Context, record shellComma
 // Interrupt stops the active Claude Code turn without closing its session.
 func (p *ClaudeProvider) Interrupt(ctx context.Context) error {
 	p.activeMu.Lock()
-	if p.turnDone == nil {
+	if !p.active {
 		p.activeMu.Unlock()
 		return ErrNoActiveTurn
 	}
@@ -255,7 +291,7 @@ func (p *ClaudeProvider) Interrupt(ctx context.Context) error {
 	p.activeMu.Unlock()
 	if err := p.sendControlRequest(ctx, map[string]any{"subtype": "interrupt"}); err != nil {
 		p.activeMu.Lock()
-		if p.turnDone != nil {
+		if p.active {
 			p.interrupted = false
 		}
 		p.activeMu.Unlock()
@@ -289,44 +325,110 @@ func (p *ClaudeProvider) readLoop(reader io.Reader) {
 	scanner := newProviderScanner(reader)
 	for scanner.Scan() {
 		line := append([]byte(nil), scanner.Bytes()...)
-		var header struct {
-			Type string `json:"type"`
-		}
-		if err := json.Unmarshal(line, &header); err != nil {
+		var event claudeEventEnvelope
+		if err := json.Unmarshal(line, &event); err != nil {
 			p.readErr = fmt.Errorf("decoding Claude Code event: %w", err)
 			return
 		}
-		if header.Type == "control_request" {
+		if event.Type == "control_request" {
 			go p.handleControlRequest(line)
 			continue
 		}
-		if header.Type == "control_response" {
+		if event.Type == "control_response" {
 			p.handleControlResponse(line)
 			continue
 		}
 
+		subagent := event.ParentToolUseID != "" || event.OwnedBySubagent
 		p.activeMu.Lock()
-		sink := p.activeSink
-		done := p.turnDone
+		active := p.active
+		p.activeMu.Unlock()
+		if event.SkipTranscript || event.Ambient || (subagent && (!active || event.Type == "result")) {
+			continue
+		}
+		if !subagent {
+			if event.Type == "assistant" || event.Type == "stream_event" || (event.Type == "system" && event.Subtype == "task_notification") {
+				p.beginTurn(p.ctx)
+			}
+			p.recordTaskActivity(event)
+		}
+		p.activeMu.Lock()
+		sink := p.eventSink
 		p.activeMu.Unlock()
 		result, err := p.handleClaudeLine(line, sink)
 		if err != nil {
 			p.readErr = err
 			return
 		}
-		if result != nil && done != nil {
+		if result != nil {
 			if err := p.persistSessionID(); err != nil {
 				p.readErr = fmt.Errorf("saving Claude Code session ID: %w", err)
 				return
 			}
-			select {
-			case done <- *result:
-			default:
+			p.activeMu.Lock()
+			active, interrupted := p.active, p.interrupted
+			p.active = false
+			if p.interactionCancel != nil {
+				p.interactionCancel()
+			}
+			p.interactionCtx, p.interactionCancel = nil, nil
+			p.activeMu.Unlock()
+			if active && sink != nil {
+				status := "completed"
+				if interrupted {
+					status = "interrupted"
+					result.error = ""
+				} else if result.error != "" {
+					status = "failed"
+				}
+				sink.Emit(Event{Type: EventTurnCompleted, Status: status, Text: result.error})
 			}
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		p.readErr = fmt.Errorf("reading Claude Code output: %w", err)
+	}
+}
+
+func (p *ClaudeProvider) recordTaskActivity(event claudeEventEnvelope) {
+	if event.Type != "system" || event.TaskID == "" {
+		return
+	}
+	p.activeMu.Lock()
+	before := len(p.tasks)
+	switch event.Subtype {
+	case "task_started":
+		if p.tasks == nil {
+			p.tasks = map[string]BackgroundTask{}
+		}
+		if _, exists := p.tasks[event.TaskID]; !exists {
+			p.tasks[event.TaskID] = BackgroundTask{ID: event.TaskID, Description: event.Description, StartedAt: time.Now().UTC()}
+		}
+	case "task_notification":
+		delete(p.tasks, event.TaskID)
+	case "task_updated":
+		switch event.Patch.Status {
+		case "completed", "failed", "killed":
+			delete(p.tasks, event.TaskID)
+		}
+	}
+	after, sink := len(p.tasks), p.eventSink
+	var tasks []BackgroundTask
+	if sink != nil && before != after {
+		tasks = make([]BackgroundTask, 0, after)
+		for _, task := range p.tasks {
+			tasks = append(tasks, task)
+		}
+		slices.SortFunc(tasks, func(a, b BackgroundTask) int {
+			if order := a.StartedAt.Compare(b.StartedAt); order != 0 {
+				return order
+			}
+			return strings.Compare(a.ID, b.ID)
+		})
+	}
+	p.activeMu.Unlock()
+	if sink != nil && before != after {
+		sink.Emit(Event{Type: EventRuntimeStatus, Runtime: &RuntimeStatus{BackgroundTasks: &after, BackgroundTaskDetails: tasks}})
 	}
 }
 
@@ -493,7 +595,7 @@ func (p *ClaudeProvider) recordClaudeUsage(raw json.RawMessage, sink EventSink) 
 		Model string       `json:"model"`
 		Usage *claudeUsage `json:"usage"`
 	}
-	if json.Unmarshal(raw, &message) != nil {
+	if json.Unmarshal(raw, &message) != nil || message.Model == "<synthetic>" {
 		return
 	}
 	changed := false
@@ -587,7 +689,7 @@ func (p *ClaudeProvider) emitRuntimeStatus(sink EventSink) {
 func (p *ClaudeProvider) runtimeStatusSnapshot() RuntimeStatus {
 	p.statusMu.Lock()
 	defer p.statusMu.Unlock()
-	status := RuntimeStatus{Model: p.model, Effort: p.config.Effort}
+	status := RuntimeStatus{Model: p.model, Effort: p.config.Effort, Commands: []string{"shell", "goal", "loop"}}
 	if p.usage != nil {
 		usage := *p.usage
 		status.Usage = &usage
@@ -650,7 +752,7 @@ func (p *ClaudeProvider) handleClaudeInputRequest(envelope claudeControlRequestE
 	}
 
 	p.activeMu.Lock()
-	sink := p.activeSink
+	sink := p.eventSink
 	interactionCtx := p.interactionCtx
 	p.activeMu.Unlock()
 	if interactionCtx == nil {
@@ -886,6 +988,10 @@ func writeClaudeSessionID(stateDir, sessionID string) error {
 // Done closes when the Claude Code process can no longer serve turns.
 func (p *ClaudeProvider) Done() <-chan struct{} {
 	return p.done
+}
+
+func (p *ClaudeProvider) providerError() error {
+	return p.readErr
 }
 
 // Close stops the Claude Code process.

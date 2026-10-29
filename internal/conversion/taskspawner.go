@@ -182,7 +182,7 @@ func restorePreservedGitHubWebhookExcludeFilters(annotations map[string]string, 
 
 // validGitHubWebhookExcludeFilters reports whether restored exclusion rules can
 // be applied safely. It re-checks the constraints whose violation would make a
-// rule match more than it should: the list bound, the pullRequestAuthor length,
+// rule match more than it should: the list bound, the username lengths,
 // the rejected criteria, the at-least-one-criterion requirement, the event scope
 // on criteria that only apply to certain event types, and the enum values.
 //
@@ -218,6 +218,9 @@ func validGitHubWebhookExcludeFilters(filters []v1alpha2.GitHubWebhookFilter) bo
 
 func validGitHubWebhookExcludeFilter(filter v1alpha2.GitHubWebhookFilter) bool {
 	if utf8.RuneCountInString(filter.PullRequestAuthor) > v1alpha2.GitHubWebhookFilterPullRequestAuthorMaxLength {
+		return false
+	}
+	if utf8.RuneCountInString(filter.RequestedReviewer) > v1alpha2.GitHubWebhookFilterRequestedReviewerMaxLength {
 		return false
 	}
 

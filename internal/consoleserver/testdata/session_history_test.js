@@ -16,6 +16,7 @@ class TestNode {
     this.listeners = new Map();
     this.style = {};
     this.scrollTop = 0;
+    this.clientHeight = 100;
     this.bounds = {top: 0, bottom: 0};
     this.scrollIntoViewOptions = null;
     this.classList = {
@@ -122,7 +123,7 @@ class TestNode {
 
   showModal() { this.open = true; }
   close() { this.open = false; }
-  focus(options) { this.focused = true; this.focusOptions = options; }
+  focus(options) { this.focused = true; this.focusOptions = options; document.activeElement = this; }
   select() { this.selected = true; }
 
   getBoundingClientRect() {
@@ -185,17 +186,26 @@ global.WebSocket = {OPEN: 1};
 global.sessionTerminal = {available: session => session?.phase === 'Ready' && !session.resetting && !session.userSuspended, sync() {}};
 
 function resetHarness() {
+  document.activeElement = document.body;
   global.elements = {
     messages: new TestNode('div'),
     pending: new TestNode('div'),
     changesList: new TestNode('div'),
     changesCount: new TestNode('span'),
     changesSummary: new TestNode('span'),
+    changesScope: new TestNode('select'),
+    changesBaseLabel: new TestNode('label'),
+    changesBase: new TestNode('select'),
     currentRequest: new TestNode('div'),
     currentRequestButton: new TestNode('button'),
     currentRequestText: new TestNode('span'),
+    jumpToLatest: new TestNode('button'),
     sessionsView: new TestNode('main'),
     composerHint: new TestNode('span'),
+    composer: new TestNode('form'),
+    composerWrap: new TestNode('div'),
+    composerHighlight: new TestNode('div'),
+    composerCommandHelp: new TestNode('div'),
     input: new TestNode('textarea'),
     attachFiles: new TestNode('button'),
     promptsButton: new TestNode('button'),
@@ -209,12 +219,16 @@ function resetHarness() {
     progress: new TestNode('div'),
     progressLabel: new TestNode('span'),
     progressElapsed: new TestNode('span'),
+    backgroundTasks: new TestNode('ul'),
+    backgroundTaskStatus: new TestNode('div'),
     runtimeStatus: new TestNode('div'),
     sidebar: new TestNode('aside'),
     displayNameButton: new TestNode('button'),
     terminalTab: new TestNode('button'),
     terminalView: new TestNode('section'),
     viewChoice: new TestNode('select'),
+    viewPicker: new TestNode('div'),
+    changes: new TestNode('section'),
     terminalChoice: new TestNode('option'),
     suspendButton: new TestNode('button'),
     resumeButton: new TestNode('button'),
@@ -228,6 +242,7 @@ function resetHarness() {
     welcome: null,
   };
   elements.currentRequest.hidden = true;
+  elements.jumpToLatest.hidden = true;
   elements.terminalView.hidden = true;
   elements.connection.append(new TestNode('span'), new TestNode('span'));
   global.state = {
@@ -236,7 +251,11 @@ function resetHarness() {
     currentView: null,
     sessionViews: new Map(),
     socket: null,
+    socketGeneration: 0,
     bottomScrollFrame: null,
+    messagesScrollTop: 0,
+    messagesScrollPaused: false,
+    jumpToLatestPending: false,
     promptDrafts: new Map(),
     attachmentDrafts: new Map(),
     sendingMessage: false,
@@ -247,6 +266,11 @@ function resetHarness() {
     inputs: new Map(),
     diffs: new Map(),
     fileChanges: new Map(),
+    workspaceChanges: null,
+    changesScope: 'uncommitted',
+    changesBaseRef: '',
+    changesRequestID: '',
+    changesRefreshPending: false,
     pendingMessage: null,
     activeTurn: false,
     activeTurnID: '',
@@ -268,7 +292,6 @@ function resetHarness() {
     historyRequestID: '',
     runtimeRecoveryActive: false,
     pinHistoryToBottom: false,
-    fileChangesDirty: false,
     namespace: 'default',
     namespaceGeneration: 0,
     sessionListGeneration: 0,
@@ -310,12 +333,14 @@ global.acceptPendingMessage = () => {};
 global.renderInputRequest = () => {};
 global.resolveInputCard = () => {};
 global.scrollToBottom = () => {};
-global.messagesNearBottom = () => true;
 global.interruptActiveTurn = () => { interruptRequests++; };
 global.showToast = (message) => { toasts.push(message); };
-global.notifySessionEvent = () => {};
+global.notifySessions = () => {};
 global.pruneBrowserNotifications = () => {};
+global.syncCompletionReads = () => {};
 global.closeSessionSectionEditor = () => {};
+
+global.scheduleCompletionRead = () => false;
 
 const application = fs.readFileSync(path.join(__dirname, '..', 'web', 'app.js'), 'utf8');
 
@@ -334,9 +359,26 @@ vm.runInThisContext(applicationSlice('function providerLabel', 'function parseSe
 vm.runInThisContext(applicationSlice('function parseSessionTimestamp', 'function safeHTTPURL'), {filename: 'app.js'});
 vm.runInThisContext(applicationSlice('function selectSession', 'function renderHeader'), {filename: 'app.js'});
 vm.runInThisContext(applicationSlice('async function loadSessions', 'async function loadConfig'), {filename: 'app.js'});
+vm.runInThisContext(applicationSlice('function setConnection', 'function usesTouchComposer'), {filename: 'app.js'});
 vm.runInThisContext(applicationSlice('function usesTouchComposer', 'function closeSocket'), {filename: 'app.js'});
 const renderSessionHeader = vm.runInThisContext(
   `(() => {${applicationSlice('function renderHeader', 'function usesTouchComposer')} return renderHeader;})()`,
+  {filename: 'app.js'},
+);
+const connectSessionSocket = vm.runInThisContext(
+  `(WebSocket, location) => {
+    ${applicationSlice('const sessionHistoryItemLimit', 'const sectionOrderStoragePrefix')}
+    ${applicationSlice('function connectSocket', 'function ensureConversation')}
+    connectSocket();
+  }`,
+  {filename: 'app.js'},
+);
+const anchorSessionBottom = vm.runInThisContext(
+  `(() => {${applicationSlice('function scheduleBottomAnchor', 'function currentAttachmentFiles')} return scheduleBottomAnchor;})()`,
+  {filename: 'app.js'},
+);
+const scrollSessionToBottom = vm.runInThisContext(
+  `(() => {${applicationSlice('function scrollToBottom', 'function messagesBottomDistance')} return scrollToBottom;})()`,
   {filename: 'app.js'},
 );
 vm.runInThisContext(applicationSlice('function ensureConversation', 'function trimURLSuffix'), {filename: 'app.js'});
@@ -347,6 +389,7 @@ vm.runInThisContext(applicationSlice('function renderUser', 'function renderTool
 vm.runInThisContext(applicationSlice('function renderTool', 'function renderInputRequest'), {filename: 'app.js'});
 vm.runInThisContext(applicationSlice('function renderDiff', 'function setActiveView'), {filename: 'app.js'});
 vm.runInThisContext(applicationSlice('function renderError', 'function scrollToBottom'), {filename: 'app.js'});
+vm.runInThisContext(applicationSlice('function messagesBottomDistance', 'function scheduleBottomAnchor'), {filename: 'app.js'});
 vm.runInThisContext(applicationSlice('function currentAttachmentFiles', "elements.composer.addEventListener('submit'"), {filename: 'app.js'});
 
 async function testPromptHistoryBrowseAndReuse() {
@@ -495,6 +538,7 @@ function testPromptJumpToLoadedMessage() {
     renderAcceptedUser({...prompt, id: 2});
     renderAcceptedUser(prompt);
     const rows = elements.messages.querySelectorAll('.event-row.user');
+    state.jumpToLatestPending = true;
     state.bottomScrollFrame = window.requestAnimationFrame(() => assert.fail('Jump must cancel bottom anchoring'));
 
     clickPromptJump();
@@ -509,6 +553,8 @@ function testPromptJumpToLoadedMessage() {
     assert.equal(elements.input.value, 'unsent draft');
     assert.equal(sent.length, 1);
     assert.equal(state.bottomScrollFrame, null);
+    assert.equal(state.jumpToLatestPending, false);
+    assert.equal(state.messagesScrollPaused, true);
     animationFrames.forEach(callback => callback());
   }
 }
@@ -535,10 +581,17 @@ function testPromptJumpLoadsEarlierPages() {
   assert.equal(sent.length, 3);
   assert.equal(sent[2].type, 'history');
   assert.equal(sent[2].historyCursor, 'older-cursor');
-  receiveTranscriptPage(sent[2], [{type: 'user.message', id: 5, text: 'earliest prompt'}], 'more-cursor');
+  receiveTranscriptPage(sent[2], [
+    {type: 'user.message', id: 5, text: 'earliest prompt'},
+    {type: 'assistant.message', id: 6, text: 'earliest reply'},
+  ], 'more-cursor');
 
   const rows = elements.messages.querySelectorAll('.event-row.user');
   assert.deepEqual(rows.map(row => row.dataset.eventId), ['5', '50', '90']);
+  assert.equal(rows[0].style.animation, 'none', 'The jump target must not move after scrolling');
+  assert.equal(rows[1].style.animation, 'none');
+  assert.equal(elements.messages.querySelectorAll('.event-row.assistant')[0].style.animation, 'none');
+  assert.equal(rows[2].style.animation, undefined, 'Live messages retain their entrance animation');
   assert.deepEqual(rows[0].scrollIntoViewOptions, {behavior: 'instant', block: 'start'});
   assert.equal(rows[1].scrollIntoViewOptions, null);
   assert.equal(rows[2].scrollIntoViewOptions, null);
@@ -548,6 +601,8 @@ function testPromptJumpLoadsEarlierPages() {
   assert.equal(state.lastEventID, 100);
   assert.equal(state.historyCursor, 'more-cursor');
   assert.equal(sent.length, 3, 'Stop loading as soon as the target is found');
+  handleEvent({type: 'assistant.message', id: 101, turnId: 'live-turn', text: 'live reply'});
+  assert.equal(elements.messages.querySelectorAll('.event-row.assistant')[1].style.animation, undefined);
 }
 
 function testPromptJumpToEditedPendingMessage() {
@@ -576,10 +631,13 @@ function testPromptJumpWaitsForInitialHistory() {
   clickPromptJump();
   assert.equal(sent.length, 1);
   handleEvent({type: 'user.message', id: 5, text: 'prompt'});
+  handleEvent({type: 'assistant.message', id: 6, text: 'reply'});
   handleEvent({type: 'history.end', historyState: {}});
   assert.equal(elements.promptsDialog.open, false);
   assert.equal(elements.messages.querySelectorAll('.event-row.user')[0].focused, true);
-  assert.equal(sent.length, 1);
+  for (const row of elements.messages.querySelectorAll('.event-row')) assert.equal(row.style.animation, 'none');
+  assert.equal(sent.filter(request => request.type === 'prompts').length, 1);
+  assert.equal(sent.filter(request => request.type === 'workspace.changes').length, 1);
 }
 
 function testPromptJumpCancellation() {
@@ -594,8 +652,10 @@ function testPromptJumpCancellation() {
     state.historyCursor = 'older-cursor';
     clickPromptJump();
     assert.equal(sent.length, 2);
+    assert.equal(state.messagesScrollPaused, false, 'Loading a prompt must preserve following');
     cancel();
     assert.equal(state.promptJumpTarget, null);
+    assert.equal(state.messagesScrollPaused, false, 'Cancelling a prompt jump must preserve following');
     receiveTranscriptPage(sent[1], [{type: 'user.message', id: 5, text: 'prompt'}], 'more-cursor');
     assert.equal(sent.length, 2);
     assert.equal(elements.promptsDialog.open, false);
@@ -617,6 +677,7 @@ function testPromptJumpUnavailableAndPageError() {
     assert.equal(state.historyPageLoading, false);
     assert.equal(elements.promptsDialog.open, true);
     assert.equal(elements.promptsMore.disabled, false);
+    assert.equal(state.messagesScrollPaused, false, 'An unsuccessful prompt jump must preserve following');
     assert.equal(elements.promptsStatus.textContent, failure === 'unavailable'
       ? 'This prompt is no longer available in the conversation'
       : 'Could not load messages for this prompt; try again');
@@ -624,6 +685,7 @@ function testPromptJumpUnavailableAndPageError() {
     clickPromptJump();
     assert.equal(elements.promptsDialog.open, false);
     assert.equal(elements.messages.querySelectorAll('.event-row.user')[0].focused, true);
+    assert.equal(state.messagesScrollPaused, true, 'A successful prompt jump must pause following');
   }
 }
 
@@ -663,6 +725,7 @@ function testSessionViewReset() {
   state.lastEventID = 12;
   state.historyCursor = 'cursor-1';
   state.tools.set('tool-1', {});
+  state.jumpToLatestPending = true;
 
   resetCurrentSessionView();
   assert.equal(elements.messages.hasChildNodes(), false);
@@ -671,6 +734,7 @@ function testSessionViewReset() {
   assert.equal(state.tools.size, 0);
   assert.equal(state.replayingHistory, true);
   assert.equal(state.pinHistoryToBottom, true);
+  assert.equal(state.jumpToLatestPending, false);
   assert.equal(view.historyLoaded, false);
   assert.equal(view.statusPlaceholder, false);
   assert.equal(view.historyCursor, '');
@@ -678,6 +742,7 @@ function testSessionViewReset() {
 
 function testSessionProgressLifecycle() {
   resetHarness();
+  state.selected = {namespace: 'default', name: 'one', phase: 'Ready'};
   const view = createSessionView();
   activateSessionView(view);
   assert.equal(elements.progress.hidden, true);
@@ -710,6 +775,199 @@ function testSessionProgressLifecycle() {
   assert.equal(state.progressTimer, null);
 }
 
+function backgroundTaskRows() {
+  return elements.backgroundTasks.children.map(item => ({
+    id: item.dataset.taskId,
+    name: item.querySelector('.background-task-name').textContent,
+    elapsed: item.querySelector('.background-task-elapsed').textContent,
+  }));
+}
+
+function testBackgroundTaskProgress() {
+  resetHarness();
+  state.selected = {namespace: 'default', name: 'one', phase: 'Ready'};
+  const view = createSessionView();
+  activateSessionView(view);
+  state.socket = {readyState: WebSocket.OPEN, send() {}};
+  state.sendingMessage = false;
+  elements.input.disabled = false;
+  const first = {id: 'first', description: 'Review API changes', startedAt: '2026-07-23T12:00:00Z'};
+  const second = {id: 'second', description: 'Run unit tests', startedAt: '2026-07-23T12:01:00Z'};
+  const now = Date.parse('2026-07-23T12:01:05Z');
+  handleEvent({type: 'runtime.status', runtime: {backgroundTasks: 1, backgroundTaskDetails: [first]}});
+  renderSessionProgress(now);
+  assert.equal(elements.progress.hidden, false);
+  assert.equal(elements.progress.dataset.state, 'background');
+  assert.equal(elements.progressLabel.textContent, '1 background task running');
+  assert.equal(elements.progressElapsed.textContent, '');
+  assert.equal(elements.backgroundTasks.hidden, false);
+  assert.deepEqual(backgroundTaskRows(), [{id: 'first', name: 'Review API changes', elapsed: '(1m 05s)'}]);
+  assert.equal(progressTimers.size, 1);
+  const taskRow = elements.backgroundTasks.firstChild;
+  const taskName = taskRow.querySelector('.background-task-name');
+  const nameText = taskName.firstChild;
+  const originalNow = Date.now;
+  Date.now = () => now + 1000;
+  try {
+    progressTimers.get(state.progressTimer)();
+    assert.equal(backgroundTaskRows()[0].elapsed, '(1m 06s)');
+    assert.equal(elements.backgroundTasks.firstChild, taskRow);
+    assert.equal(taskRow.querySelector('.background-task-name'), taskName);
+    assert.equal(taskName.firstChild, nameText);
+  } finally {
+    Date.now = originalNow;
+  }
+  updateComposerAction();
+  assert.equal(elements.send.attributes.get('aria-label'), 'Send message');
+  assert.equal(elements.send.disabled, false);
+
+  handleEvent({type: 'runtime.status', runtime: {backgroundTasks: 2, backgroundTaskDetails: [first, second]}});
+  renderSessionProgress(now);
+  const expected = [
+    {id: 'first', name: 'Review API changes', elapsed: '(1m 05s)'},
+    {id: 'second', name: 'Run unit tests', elapsed: '(5s)'},
+  ];
+  assert.deepEqual(backgroundTaskRows(), expected);
+
+  handleEvent({type: 'turn.started', turnId: 'turn-1', timestamp: '2026-07-23T12:01:02Z'});
+  renderSessionProgress(now);
+  assert.equal(elements.progressLabel.textContent, 'Working · 2 background tasks');
+  assert.equal(elements.progressElapsed.textContent, '(3s)');
+  assert.deepEqual(backgroundTaskRows(), expected);
+  handleEvent({type: 'input.requested', turnId: 'turn-1', inputId: 'input-1'});
+  assert.equal(elements.progressLabel.textContent, 'Waiting for input · 2 background tasks');
+  handleEvent({type: 'turn.interrupting', turnId: 'turn-1'});
+  assert.equal(elements.progressLabel.textContent, 'Interrupting · 2 background tasks');
+  handleEvent({type: 'turn.completed', turnId: 'turn-1', status: 'completed', timestamp: '2026-07-23T12:01:05Z'});
+  renderSessionProgress(now);
+  assert.equal(elements.progressLabel.textContent, '2 background tasks running');
+  assert.equal(elements.progressElapsed.textContent, '');
+  assert.deepEqual(backgroundTaskRows(), expected);
+  assert.equal(progressTimers.size, 1);
+
+  saveCurrentSessionView();
+  activateSessionView(createSessionView());
+  assert.equal(elements.progress.hidden, true);
+  assert.equal(elements.backgroundTasks.hidden, true);
+  assert.equal(progressTimers.size, 0);
+  activateSessionView(view);
+  renderSessionProgress(now);
+  assert.deepEqual(backgroundTaskRows(), expected);
+  assert.equal(progressTimers.size, 1);
+
+  handleEvent({type: 'history.start', reset: true, journalId: 'reconnected'});
+  handleEvent({type: 'runtime.status', runtime: {backgroundTasks: 2, backgroundTaskDetails: [first, second]}});
+  handleEvent({type: 'history.end', historyState: {}});
+  renderSessionProgress(now);
+  assert.deepEqual(backgroundTaskRows(), expected);
+
+  handleEvent({type: 'runtime.status', runtime: {backgroundTasks: 1, backgroundTaskDetails: [second]}});
+  renderSessionProgress(now);
+  assert.equal(elements.progressLabel.textContent, '1 background task running');
+  assert.deepEqual(backgroundTaskRows(), [expected[1]]);
+  handleEvent({type: 'runtime.status', runtime: {backgroundTasks: 0}});
+  assert.equal(elements.progress.hidden, true);
+  assert.equal(elements.backgroundTasks.hidden, true);
+  assert.deepEqual(backgroundTaskRows(), []);
+  assert.equal(state.progressTimer, null);
+  assert.equal(progressTimers.size, 0);
+
+  handleEvent({type: 'runtime.status', runtime: {backgroundTasks: 1, backgroundTaskDetails: [{id: 'third', startedAt: '2026-07-23T12:01:00Z'}]}});
+  renderSessionProgress(now);
+  assert.deepEqual(backgroundTaskRows(), [{id: 'third', name: 'Background task third', elapsed: '(5s)'}]);
+  handleEvent({type: 'runtime.status', runtime: {model: 'provider-without-task-count'}});
+  assert.equal(elements.progress.hidden, true);
+  assert.equal(elements.backgroundTasks.hidden, true);
+  assert.equal(progressTimers.size, 0);
+}
+
+function testBackgroundTaskProgressWithoutTiming() {
+  for (const backgroundTaskDetails of [undefined, [{id: 'first', startedAt: 'invalid'}]]) {
+    resetHarness();
+    state.selected = {namespace: 'default', name: 'one', phase: 'Ready'};
+    handleEvent({type: 'runtime.status', runtime: {backgroundTasks: 1, backgroundTaskDetails}});
+    assert.equal(elements.progressLabel.textContent, '1 background task running');
+    assert.equal(elements.progressElapsed.textContent, '');
+    assert.equal(elements.backgroundTasks.hidden, !backgroundTaskDetails);
+    assert.equal(progressTimers.size, 0);
+    if (backgroundTaskDetails) assert.equal(backgroundTaskRows()[0].elapsed, '');
+  }
+}
+
+function testBackgroundTaskAnnouncements() {
+  resetHarness();
+  state.selected = {namespace: 'default', name: 'one', phase: 'Ready'};
+  const first = {id: 'first', description: 'Review API changes', startedAt: '2026-07-23T12:00:00Z'};
+  const second = {id: 'second', description: 'Run unit tests', startedAt: '2026-07-23T12:01:00Z'};
+  const report = tasks => handleEvent({type: 'runtime.status', runtime: {backgroundTasks: tasks.length, backgroundTaskDetails: tasks}});
+  report([first]);
+  assert.equal(elements.backgroundTaskStatus.textContent, 'Background task started: Review API changes');
+  const announcement = elements.backgroundTaskStatus.firstChild;
+  renderSessionProgress(Date.parse('2026-07-23T12:01:05Z'));
+  assert.equal(elements.backgroundTaskStatus.firstChild, announcement);
+  report([first]);
+  assert.equal(elements.backgroundTaskStatus.firstChild, announcement);
+
+  report([first, second]);
+  assert.equal(elements.backgroundTaskStatus.textContent, 'Background task started: Run unit tests');
+  report([second]);
+  assert.equal(elements.backgroundTaskStatus.textContent, 'Background task finished: Review API changes');
+  report([]);
+  assert.equal(elements.backgroundTaskStatus.textContent, 'Background task finished: Run unit tests');
+  assert.equal(elements.progress.hidden, true);
+  assert.equal(elements.backgroundTaskStatus.hidden, false);
+
+  handleEvent({type: 'history.start', reset: true});
+  report([first]);
+  assert.equal(elements.backgroundTaskStatus.textContent, '');
+  handleEvent({type: 'history.end', historyState: {}});
+  activateSessionView(createSessionView());
+  assert.equal(elements.backgroundTaskStatus.textContent, '');
+}
+
+function testSessionProgressRequiresReadyRuntime() {
+  for (const activeTurn of [false, true]) {
+    for (const change of [{phase: 'Pending'}, {phase: 'Suspended'}, {phase: 'Failed'}, {resetting: true}, {userSuspended: true}]) {
+      resetHarness();
+      const session = {namespace: 'default', name: 'one', provider: 'claude-code', phase: 'Ready'};
+      state.selected = {...session};
+      const view = createSessionView();
+      activateSessionView(view);
+      handleEvent({type: 'runtime.status', runtime: {backgroundTasks: 2, backgroundTaskDetails: [{id: 'first', startedAt: '2026-07-23T12:00:00Z'}, {id: 'second', startedAt: '2026-07-23T12:01:00Z'}]}});
+      if (activeTurn) handleEvent({type: 'turn.started', turnId: 'turn-1'});
+      assert.equal(elements.progress.hidden, false);
+      assert.equal(progressTimers.size, 1);
+
+      Object.assign(state.selected, change);
+      renderSessionHeader();
+
+      assert.equal(elements.progress.hidden, true);
+      assert.equal(elements.progressLabel.textContent, '');
+      assert.equal(elements.progressElapsed.textContent, '');
+      assert.equal(progressTimers.size, 0);
+      saveCurrentSessionView();
+      activateSessionView(view);
+      assert.equal(elements.progress.hidden, true);
+      assert.equal(progressTimers.size, 0);
+
+      state.selected = session;
+      renderSessionHeader();
+      assert.equal(elements.progress.hidden, true);
+      assert.equal(progressTimers.size, 0);
+      activateSessionView(view);
+      assert.equal(elements.progress.hidden, true);
+      assert.equal(state.activeTurn, false);
+      assert.equal(state.activeTurnID, '');
+      assert.equal(state.runtimeStatus.backgroundTasks, undefined);
+      assert.equal(state.runtimeStatus.backgroundTaskDetails, undefined);
+      assert.equal(elements.backgroundTasks.hidden, true);
+      assert.deepEqual(backgroundTaskRows(), []);
+      handleEvent({type: 'runtime.status', runtime: {backgroundTasks: 1}});
+      assert.equal(elements.progressLabel.textContent, '1 background task running');
+    }
+  }
+}
+
 function testComposerInterruptsWhileInputIsDisabled() {
   resetHarness();
   const sent = [];
@@ -730,7 +988,7 @@ function testComposerInterruptsWhileInputIsDisabled() {
   assert.equal(elements.input.value, 'preserved draft');
   window.matchMedia = () => ({matches: true});
   updateComposerAction();
-  assert.equal(elements.composerHint.textContent, 'Tap ■ to interrupt · Return for a new line · !COMMAND · /goal');
+  assert.equal(elements.composerHint.textContent, 'Tap ■ to interrupt · Return for a new line · !COMMAND · /goal · /loop');
   window.matchMedia = () => ({matches: false});
 
   submitComposer();
@@ -752,11 +1010,335 @@ function testComposerLabelsPendingSubmission() {
 
   updateComposerAction();
 
-  assert.equal(elements.composerHint.textContent, 'Enter to add to pending · Shift+Enter for a new line · !COMMAND · /goal');
+  assert.equal(elements.composerHint.textContent, 'Enter to add to pending · Shift+Enter for a new line · !COMMAND · /goal · /loop');
 
   elements.input.value = '/goal pause';
   updateComposerAction();
-  assert.equal(elements.composerHint.textContent, 'Enter to run goal command · Shift+Enter for a new line · !COMMAND · /goal');
+  assert.equal(elements.composerHint.textContent, 'Enter to pause goal · Shift+Enter for a new line · !COMMAND · /goal · /loop');
+}
+
+function testComposerRecognizesCommands() {
+  const cases = [
+    ['Explain this code', 'message', 'Message', 'Send'],
+    ['/review', 'message', 'Message', 'Send'],
+    ['/goals', 'message', 'Message', 'Send'],
+    ['/goalkeeper', 'message', 'Message', 'Send'],
+    ['!make test', 'shell', 'Shell command', 'Run command'],
+    ['  ! make test\n', 'shell', 'Shell command', 'Run command'],
+    ['\ufeff!make test', 'shell', 'Shell command', 'Run command'],
+    ['\ufeff/goal pause', 'goal', 'Goal command', 'Pause goal'],
+    ['\u0085\ufeff!pwd', 'message', 'Message', 'Send'],
+    ['![diagram](image.png)', 'shell', 'Shell command', 'Run command'],
+    ['/goal', 'goal', 'Goal command', 'Show goal'],
+    ['/goal improve coverage', 'goal', 'Goal command', 'Start goal'],
+    ['/goal\nimprove coverage', 'goal', 'Goal command', 'Start goal'],
+    ['\u0085/goal\u0085pause\u0085', 'goal', 'Goal command', 'Pause goal'],
+    ['/goal edit improve tests', 'goal', 'Goal command', 'Edit goal'],
+    ['/goal pause', 'goal', 'Goal command', 'Pause goal'],
+    ['/goal resume', 'goal', 'Goal command', 'Resume goal'],
+    ['/goal clear', 'goal', 'Goal command', 'Clear goal'],
+    ['/goal clear tech debt', 'goal', 'Goal command', 'Start goal'],
+    ['/loops', 'message', 'Message', 'Send'],
+  ];
+  for (const [text, kind, label, action] of cases) {
+    resetHarness();
+    state.selected = {namespace: 'default', name: 'one', provider: 'codex'};
+    state.socket = {readyState: WebSocket.OPEN};
+    elements.input.value = text;
+    updateComposerAction();
+    assert.equal(elements.composerHighlight.hidden, kind === 'message', text);
+    assert.equal(elements.composer.dataset.command, kind, text);
+    assert.equal(elements.input.attributes.get('aria-label'), label, text);
+    assert.equal(elements.send.attributes.get('aria-label'), kind === 'message' ? 'Send message' : action, text);
+    assert.equal(elements.send.disabled, false, text);
+    if (kind !== 'message') assert.equal(elements.send.textContent, action, text);
+  }
+  elements.input.value = 'ordinary message';
+  updateComposerAction();
+  assert.equal(elements.composerHighlight.hidden, true);
+  assert.equal(elements.composerHighlight.hasChildNodes(), false);
+  assert.equal(elements.composerCommandHelp.hidden, true);
+  assert.equal(elements.send.dataset.action, 'send');
+  assert.equal(elements.send.textContent, '↑');
+
+  elements.input.value = '!make test';
+  state.activeTurn = true;
+  updateComposerAction();
+  assert.equal(elements.send.textContent, 'Queue command');
+  assert.equal(elements.composerCommandHelp.textContent, 'Runs directly in the Session workspace');
+
+  state.activeTurn = false;
+  window.matchMedia = () => ({matches: true});
+  updateComposerAction();
+  assert.equal(elements.composerHighlight.hidden, false);
+  assert.equal(elements.composerHint.textContent, 'Tap Run command · Return for a new line');
+  window.matchMedia = () => ({matches: false});
+}
+
+async function testDiscoveredNativeCommands() {
+  for (const provider of ['codex', 'claude-code', 'opencode']) {
+    for (const command of ['goal', 'loop']) {
+      for (const available of [false, true]) {
+        resetHarness();
+        state.selected = {namespace: 'default', name: 'one', uid: 'one', provider};
+        const sent = [];
+        state.socket = {readyState: WebSocket.OPEN, send: message => sent.push(JSON.parse(message))};
+        elements.input.value = `/${command} check CI`;
+        handleEvent({type: 'runtime.status', runtime: {agentType: provider, commands: available ? ['shell', command] : ['shell']}});
+        assert.equal(elements.send.disabled, !available, `${provider} ${command} ${available}`);
+        await submitComposer();
+        assert.deepEqual(sent, available ? [{type: 'message', text: `/${command} check CI`, attachmentIds: []}] : []);
+      }
+    }
+  }
+  resetHarness();
+  state.selected = {namespace: 'default', name: 'one', provider: 'opencode'};
+  state.socket = {readyState: WebSocket.OPEN};
+  state.runtimeStatus = {commands: ['shell', 'goal']};
+  elements.input.value = '/goal edit';
+  updateComposerAction();
+  assert.equal(elements.send.disabled, false);
+  assert.equal(elements.send.textContent, 'Run goal');
+  state.activeTurn = true;
+  state.pendingMessage = {event: {turnId: 'turn-2'}};
+  updateComposerAction();
+  assert.equal(elements.send.disabled, true);
+}
+
+async function testNativeLoopCommandSubmission() {
+  resetHarness();
+  state.selected = {namespace: 'default', name: 'one', uid: 'uid-one', provider: 'claude-code'};
+  const sent = [];
+  state.socket = {readyState: WebSocket.OPEN, send: message => sent.push(JSON.parse(message))};
+  const commands = ['/loop', '/loop 5m Check CI', '/loop Check CI', '/loop 15m', '/loop check CI every 2 hours'];
+  for (const text of commands) {
+    elements.input.value = text;
+    updateComposerAction();
+    assert.equal(elements.composer.dataset.command, 'loop', text);
+    assert.equal(elements.composerHighlight.querySelector('mark').textContent, '/loop', text);
+    assert.equal(elements.composerCommandHelp.textContent, "Uses Claude Code's native loop scheduling", text);
+    assert.equal(elements.send.disabled, false, text);
+    assert.equal(elements.send.textContent, 'Start loop', text);
+    await submitComposer();
+  }
+  assert.deepEqual(sent, commands.map(text => ({type: 'message', text, attachmentIds: []})));
+  state.activeTurn = true;
+  elements.input.value = '/loop 5m Check CI';
+  updateComposerAction();
+  assert.equal(elements.send.disabled, false);
+  assert.equal(elements.composerCommandHelp.textContent, 'Queued until active work ends; use /interrupt to apply sooner');
+  state.pendingMessage = {event: {turnId: 'turn-2'}};
+  updateComposerAction();
+  assert.equal(elements.send.disabled, true);
+  assert.equal(elements.composerCommandHelp.textContent, 'Wait for pending work to start or remove it before submitting a command');
+}
+
+function testClaudeGoalComposer() {
+  for (const [text, action] of [
+    ['/goal', 'Show goal'],
+    ['/goal All tests pass', 'Start goal'],
+    ['/goal edit tests until they pass', 'Start goal'],
+    ['/goal edit', 'Start goal'],
+    ['/goal pause', 'Start goal'],
+    ['/goal resume', 'Start goal'],
+    ['/goal clear', 'Clear goal'],
+    ['/goal STOP', 'Clear goal'],
+    ['/goal clear tech debt', 'Start goal'],
+  ]) {
+    resetHarness();
+    state.selected = {namespace: 'default', name: 'one', provider: 'claude-code'};
+    state.socket = {readyState: WebSocket.OPEN};
+    elements.input.value = text;
+    updateComposerAction();
+    assert.equal(elements.send.disabled, false, text);
+    assert.equal(elements.send.textContent, action, text);
+    assert.equal(elements.composer.dataset.command, 'goal', text);
+    assert.equal(elements.composerHighlight.querySelector('mark').textContent, action === 'Clear goal' ? text : '/goal', text);
+  }
+  state.activeTurn = true;
+  elements.input.value = '/goal clear';
+  updateComposerAction();
+  assert.equal(elements.composerCommandHelp.textContent, 'Queued until active work ends; use /interrupt to apply sooner');
+  state.pendingMessage = {event: {turnId: 'turn-2'}};
+  updateComposerAction();
+  assert.equal(elements.send.disabled, true);
+  assert.equal(elements.composerCommandHelp.textContent, 'Wait for pending work to start or remove it before submitting a command');
+}
+
+async function testClaudeGoalCommandSubmission() {
+  resetHarness();
+  state.selected = {namespace: 'default', name: 'one', uid: 'uid-one', provider: 'claude-code'};
+  const sent = [];
+  state.socket = {readyState: WebSocket.OPEN, send: message => sent.push(JSON.parse(message))};
+  for (const text of ['/goal', '/goal All tests pass', '/goal clear']) {
+    elements.input.value = text;
+    await submitComposer();
+  }
+  assert.deepEqual(sent, [
+    {type: 'message', text: '/goal', attachmentIds: []},
+    {type: 'message', text: '/goal All tests pass', attachmentIds: []},
+    {type: 'message', text: '/goal clear', attachmentIds: []},
+  ]);
+}
+
+function testComposerHighlightsCommandText() {
+  resetHarness();
+  state.selected = {namespace: 'default', name: 'one', provider: 'codex'};
+  state.socket = {readyState: WebSocket.OPEN};
+  for (const [text, prefix] of [
+    ['!make test', '!make'],
+    ['  ! make test', '! make'],
+    ['\ufeff!make test', '!make'],
+    ['\ufeff/goal pause', '/goal pause'],
+    ['/goal pause', '/goal pause'],
+    ['/goal clear tech debt', '/goal'],
+    ['/goal edit improve coverage', '/goal edit'],
+    ["!printf '<script>alert(1)</script>'", '!printf'],
+    ['/goal\nimprove tests\n', '/goal'],
+  ]) {
+    elements.input.value = text;
+    updateComposerAction();
+    assert.equal(elements.composerHighlight.querySelector('mark').textContent, prefix, text);
+    assert.equal(elements.composerHighlight.textContent, text + '\u200b', text);
+    assert.equal(elements.composerHighlight.querySelector('script'), null);
+    assert.equal(elements.input.value, text);
+  }
+  elements.input.scrollTop = 48;
+  elements.input.scrollLeft = 10;
+  elements.input.clientWidth = 360;
+  syncComposerHighlight();
+  assert.equal(elements.composerHighlight.scrollTop, 48);
+  assert.equal(elements.composerHighlight.scrollLeft, 10);
+  assert.equal(elements.composerHighlight.style.width, '360px');
+
+  elements.input.disabled = true;
+  updateComposerAction();
+  assert.equal(elements.composer.dataset.command, 'message');
+  assert.equal(elements.composerHighlight.hidden, true);
+}
+
+function testComposerHighlightEvents() {
+  resetHarness();
+  let width = 360;
+  let height = 220;
+  Object.defineProperty(elements.input, 'clientWidth', {get: () => elements.composerWrap.hidden ? 0 : width});
+  Object.defineProperty(elements.input, 'scrollHeight', {get: () => elements.composerWrap.hidden ? 0 : height});
+  const context = vm.createContext({
+    elements, state,
+    window: new TestNode('window'),
+    requestWorkspaceChanges() {},
+    updateCurrentRequest() {},
+    hideCurrentRequest() {},
+    updateJumpToLatest() {},
+    scheduleCompletionRead() {},
+    closeSessionActionsMenu() {},
+    scheduleCurrentRequestUpdate() {},
+    sessionTerminal: {show() {}},
+  });
+  vm.runInContext(applicationSlice('function syncComposerHighlight', 'function renderComposerCommand'), context);
+  vm.runInContext(applicationSlice('function setActiveView', 'function handleViewTabKeydown'), context);
+  vm.runInContext(applicationSlice("elements.input.addEventListener('keydown'", 'async function openDialog'), context);
+  vm.runInContext(applicationSlice("window.addEventListener('resize', () => {", "document.addEventListener('pointerdown'"), context);
+  for (const tab of ['changes', 'terminal']) {
+    context.setActiveView('conversation');
+    assert.equal(elements.composerHighlight.style.width, `${width}px`);
+    assert.equal(elements.input.style.height, `${Math.min(height, 160)}px`);
+    context.setActiveView(tab);
+    width += 80;
+    height = 100;
+    context.window.listeners.get('resize')();
+    context.syncComposerHighlight();
+    assert.notEqual(elements.composerHighlight.style.width, '0px');
+    assert.notEqual(elements.input.style.height, '0px');
+    context.setActiveView('conversation');
+    assert.equal(elements.composerHighlight.style.width, `${width}px`);
+    assert.equal(elements.input.style.height, '100px');
+  }
+  elements.input.scrollTop = 48;
+  elements.input.scrollLeft = 10;
+  elements.input.listeners.get('scroll')();
+  assert.equal(elements.composerHighlight.scrollTop, 48);
+  assert.equal(elements.composerHighlight.scrollLeft, 10);
+  width = 600;
+  context.window.listeners.get('resize')();
+  assert.equal(elements.composerHighlight.style.width, '600px');
+}
+
+async function testComposerCommandSubmission() {
+  resetHarness();
+  state.selected = {namespace: 'default', name: 'one', uid: 'uid-one', provider: 'codex'};
+  const sent = [];
+  state.socket = {readyState: WebSocket.OPEN, send: message => sent.push(JSON.parse(message))};
+  for (const [text, provider, detail] of [
+    ['!', 'codex', 'Enter a command after !'],
+    ['/loop 5m Check CI', 'codex', '/loop is not available in this Session'],
+    ['/loop 5m Check CI', 'opencode', '/loop is not available in this Session'],
+    ['/goal edit', 'codex', 'Enter an objective after /goal edit'],
+    ['/goal', 'opencode', '/goal is not available in this Session'],
+    ['\ufeff!', 'codex', 'Enter a command after !'],
+  ]) {
+    state.selected.provider = provider;
+    elements.input.value = text;
+    updateComposerAction();
+    assert.equal(elements.composer.dataset.invalid, 'true');
+    assert.equal(elements.composerCommandHelp.textContent, detail);
+    assert.equal(elements.send.disabled, true);
+    assert.equal(elements.composerHint.textContent, detail);
+    window.matchMedia = () => ({matches: true});
+    updateComposerAction();
+    assert.equal(elements.composerHint.textContent, detail);
+    window.matchMedia = () => ({matches: false});
+    await submitComposer();
+    assert.equal(elements.input.value, text);
+  }
+  assert.deepEqual(sent, []);
+
+  state.selected.provider = 'codex';
+  state.pendingMessage = {event: {turnId: 'turn-2'}};
+  for (const active of [false, true]) {
+    state.activeTurn = active;
+    for (const text of ['!pwd', '/goal pause']) {
+      if (active && text.startsWith('/goal')) continue;
+      elements.input.value = text;
+      updateComposerAction();
+      assert.equal(elements.send.disabled, true);
+      assert.equal(elements.composerCommandHelp.textContent, 'Wait for pending work to start or remove it before submitting a command');
+      await submitComposer();
+      assert.equal(elements.input.value, text);
+    }
+  }
+  assert.deepEqual(sent, []);
+  state.pendingMessage = null;
+  state.activeTurn = false;
+
+  state.selected.provider = 'codex';
+  for (const text of ['!make test', '/goal improve coverage', '\ufeff!pwd']) {
+    elements.input.value = text;
+    updateComposerAction();
+    assert.equal(elements.send.disabled, false);
+    await submitComposer();
+  }
+  assert.deepEqual(sent, [
+    {type: 'message', text: '!make test', attachmentIds: []},
+    {type: 'message', text: '/goal improve coverage', attachmentIds: []},
+    {type: 'message', text: '!pwd', attachmentIds: []},
+  ]);
+}
+
+function testComposerCommandsRejectAttachments() {
+  resetHarness();
+  state.selected = {namespace: 'default', name: 'one', uid: 'uid-one', provider: 'claude-code'};
+  state.socket = {readyState: WebSocket.OPEN};
+  state.attachmentDrafts.set(sessionKey(state.selected), [{name: 'file.txt'}]);
+  for (const text of ['!make test', '/goal improve coverage', '/loop 5m Check CI']) {
+    elements.input.value = text;
+    updateComposerAction();
+    assert.equal(elements.composerCommandHelp.textContent, 'Remove attachments to use a command');
+    assert.equal(elements.send.disabled, true);
+  }
+  state.attachmentDrafts.clear();
+  updateComposerAction();
+  assert.equal(elements.send.disabled, false);
 }
 
 function testPendingSessionComposerAllowsDraft() {
@@ -827,6 +1409,8 @@ async function testReadySessionDisconnectsWhenItBecomesPending() {
   state.selected = session;
   state.sessions = [session];
   state.socket = {readyState: WebSocket.OPEN};
+  handleEvent({type: 'runtime.status', runtime: {backgroundTasks: 1}});
+  assert.equal(elements.progress.hidden, false);
   global.api = async () => [{...session, phase: 'Pending'}];
   global.renderHeader = renderSessionHeader;
 
@@ -837,6 +1421,29 @@ async function testReadySessionDisconnectsWhenItBecomesPending() {
   assert.equal(state.selected.phase, 'Pending');
   assert.equal(elements.input.disabled, false);
   assert.equal(elements.send.disabled, true);
+  assert.equal(elements.progress.hidden, true);
+}
+
+async function testSuspendSessionHidesBackgroundProgress() {
+  resetHarness();
+  const session = {namespace: 'default', name: 'one', uid: 'uid-one', provider: 'claude-code', phase: 'Ready'};
+  state.selected = session;
+  state.sessions = [session];
+  handleEvent({type: 'runtime.status', runtime: {backgroundTasks: 1}});
+  assert.equal(elements.progress.hidden, false);
+  global.renderHeader = renderSessionHeader;
+  global.api = async (url, options) => {
+    assert.equal(url, '/api/sessions/default/one/suspend');
+    assert.equal(options.method, 'POST');
+    return {...session, userSuspended: true};
+  };
+
+  await suspendSession(session);
+
+  assert.equal(closeSocketRequests, 1);
+  assert.equal(state.selected.userSuspended, true);
+  assert.equal(elements.progress.hidden, true);
+  assert.equal(elements.progressLabel.textContent, '');
 }
 
 async function testComposerIgnoresReentrantSubmission() {
@@ -858,6 +1465,7 @@ async function testComposerIgnoresReentrantSubmission() {
 
 function testSessionProgressSurvivesCachedViewSwitch() {
   resetHarness();
+  state.selected = {namespace: 'default', name: 'one', phase: 'Ready'};
   const activeView = createSessionView();
   activateSessionView(activeView);
   state.activeTurn = true;
@@ -1019,7 +1627,6 @@ function testProjectedHistoryRestoresStateAndReconnectHighWater() {
   view.historyCursor = 'stale-cursor';
   activateSessionView(view);
 
-  const fileDiff = 'diff --git a/old.txt b/old.txt\n--- a/old.txt\n+++ b/old.txt\n-old\n+new';
   handleEvent({
     type: 'history.start',
     journalId: 'journal-1',
@@ -1036,7 +1643,6 @@ function testProjectedHistoryRestoresStateAndReconnectHighWater() {
       waitingForInput: true,
       turnInterrupting: true,
       pendingTurn: {turnId: 'turn-2', text: 'pending request'},
-      fileDiff,
     },
   });
 
@@ -1052,7 +1658,6 @@ function testProjectedHistoryRestoresStateAndReconnectHighWater() {
   assert.equal(state.assistantTextByTurn.get('turn-1'), 'working');
   assert.equal(state.assistantTextByTurn.has('current'), false);
   assert.equal(state.pendingMessage.event.text, 'pending request');
-  assert.equal(state.fileChanges.get('old.txt'), fileDiff);
   assert.equal(elements.messages.querySelector('.history-page-control').textContent, 'Load earlier messages');
 
   handleEvent({type: 'assistant.message', id: 13, turnId: 'turn-1', text: 'working done'});
@@ -1232,6 +1837,7 @@ function testGoalRendering() {
   assert.equal(cards[1].textContent, 'Goal cleared.');
 }
 
+
 function testToolOutputRenderingNormalizesCarriageReturns() {
   resetHarness();
   state.replayingHistory = true;
@@ -1341,6 +1947,233 @@ function testCurrentRequestScrollUpdatesAreThrottled() {
   animationFrames.shift()();
 }
 
+function testJumpToLatestVisibility() {
+  resetHarness();
+  state.selected = {namespace: 'default', name: 'one'};
+  Object.defineProperty(elements.messages, 'scrollHeight', {value: 1000});
+  elements.messages.clientHeight = 400;
+  elements.messages.scrollTop = 600;
+  updateJumpToLatest();
+  assert.equal(elements.jumpToLatest.hidden, true);
+
+  elements.messages.scrollTop = 359;
+  updateJumpToLatest();
+  assert.equal(elements.jumpToLatest.hidden, false);
+
+  elements.messages.scrollTop = 361;
+  updateJumpToLatest();
+  assert.equal(elements.jumpToLatest.hidden, true);
+
+  elements.messages.scrollTop = 0;
+  elements.messages.hidden = true;
+  updateJumpToLatest();
+  assert.equal(elements.jumpToLatest.hidden, true);
+  elements.messages.hidden = false;
+  updateJumpToLatest();
+  assert.equal(elements.jumpToLatest.hidden, false);
+
+  elements.sessionsView.hidden = true;
+  updateJumpToLatest();
+  assert.equal(elements.jumpToLatest.hidden, true);
+  elements.sessionsView.hidden = false;
+  state.selected = null;
+  updateJumpToLatest();
+  assert.equal(elements.jumpToLatest.hidden, true);
+}
+
+function testJumpToLatestReturnsToBottom() {
+  for (const replayingHistory of [false, true]) {
+    resetHarness();
+    state.replayingHistory = replayingHistory;
+    elements.jumpToLatest.hidden = false;
+
+    jumpToLatest();
+
+    assert.equal(bottomAnchors, 1);
+    assert.equal(state.pinHistoryToBottom, replayingHistory);
+    assert.equal(elements.jumpToLatest.hidden, true);
+    assert.equal(elements.messages.focused, true);
+    assert.deepEqual(elements.messages.focusOptions, {preventScroll: true});
+    assert.equal(elements.input.focused, undefined, 'Returning to latest must not open the mobile keyboard');
+  }
+}
+
+function testConnectionPreservesTranscriptFocus() {
+  for (const focusTarget of ['composer', 'transcript', 'message']) {
+    resetHarness();
+    state.selected = {namespace: 'default', name: 'one', phase: 'Ready'};
+    state.currentView = {historyLoaded: true, journalID: 'journal'};
+    state.lastEventID = 50;
+    class SessionSocket extends TestNode {
+      constructor(url) {
+        super('socket');
+        this.url = url;
+        this.sent = [];
+        this.readyState = WebSocket.OPEN;
+      }
+      send(payload) { this.sent.push(JSON.parse(payload)); }
+    }
+    connectSessionSocket(SessionSocket, {protocol: 'http:', host: 'console.test'});
+    let expectedFocus = elements.input;
+    if (focusTarget === 'transcript') {
+      jumpToLatest();
+      expectedFocus = elements.messages;
+    } else if (focusTarget === 'message') {
+      renderAcceptedUser({id: 5, text: 'Read this prompt'});
+      expectedFocus = elements.messages.querySelectorAll('.event-row.user')[0];
+      expectedFocus.focus({preventScroll: true});
+    }
+
+    const socket = state.socket;
+    socket.listeners.get('open')();
+
+    assert.equal(socket.url, 'ws://console.test/api/sessions/default/one/connect');
+    assert.equal(socket.sent.length, 1);
+    assert.equal(socket.sent[0].type, 'subscribe');
+    assert.equal(socket.sent[0].since, 50);
+    assert.equal(socket.sent[0].journalId, 'journal');
+    assert.equal(document.activeElement, expectedFocus);
+    assert.equal(elements.input.disabled, false);
+  }
+}
+
+function testJumpToLatestUpdatesAfterImageLoad() {
+  resetHarness();
+  state.selected = {namespace: 'default', name: 'one'};
+  renderAcceptedUser({id: 5, text: 'Screenshots', attachments: [{id: 'image', name: 'screen.png', mediaType: 'image/png'}]});
+  let height = 1000;
+  Object.defineProperty(elements.messages, 'scrollHeight', {get: () => height});
+  elements.messages.clientHeight = 400;
+  elements.messages.scrollTop = 600;
+  jumpToLatest();
+  assert.equal(elements.jumpToLatest.hidden, true);
+
+  height = 1400;
+  elements.messages.querySelector('img').listeners.get('load')();
+
+  assert.equal(elements.jumpToLatest.hidden, false);
+  assert.equal(elements.messages.scrollTop, 600, 'Image loading must preserve the reading position');
+}
+
+function testBottomAnchorUpdatesButtonBeforePaint() {
+  resetHarness();
+  state.selected = {namespace: 'default', name: 'one'};
+  Object.defineProperty(elements.messages, 'scrollHeight', {value: 1000});
+  elements.messages.style.scrollBehavior = 'smooth';
+  updateJumpToLatest();
+  assert.equal(elements.jumpToLatest.hidden, false);
+
+  anchorSessionBottom();
+  anchorSessionBottom();
+  assert.equal(animationFrames.length, 1);
+  animationFrames[0]();
+
+  assert.ok(messagesBottomDistance() <= 0);
+  assert.equal(elements.jumpToLatest.hidden, true);
+  assert.equal(elements.messages.style.scrollBehavior, 'smooth');
+  assert.equal(state.bottomScrollFrame, null);
+}
+
+function testStreamingScrollPosition() {
+  const anchorStub = global.scheduleBottomAnchor;
+  const scrollStub = global.scrollToBottom;
+  global.scheduleBottomAnchor = anchorSessionBottom;
+  global.scrollToBottom = scrollSessionToBottom;
+  try {
+    for (const replayingHistory of [false, true]) {
+      for (const deliverScrollEvent of [false, true]) {
+        resetHarness();
+        state.selected = {namespace: 'default', name: 'one'};
+        state.replayingHistory = replayingHistory;
+        state.pinHistoryToBottom = replayingHistory;
+        let height = 1000;
+        let top = 600;
+        elements.messages.clientHeight = 400;
+        Object.defineProperties(elements.messages, {
+          scrollHeight: {get: () => height},
+          scrollTop: {
+            get: () => { top = Math.min(top, height - 400); return top; },
+            set: value => { top = Math.min(value, height - 400); },
+          },
+        });
+        state.messagesScrollTop = top;
+        const flushFrames = () => {
+          for (let index = 0; index < animationFrames.length; index++) animationFrames[index]();
+          animationFrames = [];
+        };
+
+        scheduleBottomAnchor();
+        elements.messages.scrollTop -= 20;
+        if (deliverScrollEvent) handleMessagesScroll();
+        renderAssistantDelta({turnId: 'live', text: 'Streaming response'});
+        flushFrames();
+        handleMessagesScroll();
+
+        assert.equal(top, 580, 'A small upward scroll must survive a queued bottom anchor');
+        assert.equal(elements.jumpToLatest.hidden, false);
+        assert.equal(state.pinHistoryToBottom, false);
+        assert.equal(state.assistantSegmentByTurn.get('live').textContent, 'Streaming response');
+
+        renderAssistantDelta({turnId: 'live', text: ' continues'});
+        renderTool({toolId: 'tool', toolName: 'Read file'});
+        appendToolDelta({toolId: 'tool', output: 'file contents'});
+        completeTool({toolId: 'tool', status: 'completed'});
+        height += 40;
+        flushFrames();
+        assert.equal(top, 580, 'Assistant and tool updates must preserve the reading position');
+        assert.equal(state.tools.get('tool').querySelector('.tool-output-preview').textContent, 'file contents');
+
+        elements.messages.scrollTop += 10;
+        handleMessagesScroll();
+        scrollToBottom();
+        flushFrames();
+        assert.equal(top, 590, 'Scrolling toward the bottom must not resume following prematurely');
+
+        jumpToLatest();
+        elements.messages.scrollTop -= 20;
+        if (deliverScrollEvent) handleMessagesScroll();
+        flushFrames();
+        assert.equal(top, height - 400, 'Jump to latest must complete despite an in-flight upward scroll');
+        assert.equal(state.jumpToLatestPending, false);
+        assert.equal(elements.jumpToLatest.hidden, true);
+        renderAssistantDelta({turnId: 'live', text: ' at the bottom'});
+        height += 40;
+        flushFrames();
+        assert.equal(top, height - 400, 'Streaming must follow after jumping to latest');
+
+        elements.messages.scrollTop -= 20;
+        handleMessagesScroll();
+        elements.messages.scrollTop = height;
+        handleMessagesScroll();
+        renderAssistantDelta({turnId: 'live', text: ' after manual scrolling'});
+        height += 40;
+        flushFrames();
+        assert.equal(top, height - 400, 'Manually reaching the bottom must resume following');
+
+        state.replayingHistory = false;
+        height -= 24;
+        endAssistantSegment('live');
+        assert.equal(elements.messages.scrollTop, height - 400, 'Ending a segment can clamp the viewport');
+        height += 60;
+        renderTool({toolId: 'second', toolName: 'Run tests'});
+        if (deliverScrollEvent) handleMessagesScroll();
+        flushFrames();
+        assert.equal(top, height - 400, 'Following must survive a segment shrinking before a tool starts');
+        assert.equal(state.messagesScrollPaused, false);
+
+        elements.messages.scrollTop -= 20;
+        handleMessagesScroll();
+        selectSession({namespace: 'default', name: 'two', phase: 'Pending'});
+        flushFrames();
+        assert.equal(top, height - 400, 'Selecting a session must start at the bottom');
+      }
+    }
+  } finally {
+    global.scheduleBottomAnchor = anchorStub;
+    global.scrollToBottom = scrollStub;
+  }
+}
+
 function testPendingMessageEditing() {
   resetHarness();
   const sent = [];
@@ -1394,11 +2227,200 @@ function testPendingMessageSurvivesCompletedHistoryReplay() {
   assert.match(elements.messages.textContent, /completed/);
 }
 
+function testWorkspaceChangesSnapshots() {
+  resetHarness();
+  state.selected = {namespace: 'default', name: 'one', phase: 'Ready'};
+  const requests = [];
+  state.socket = {readyState: WebSocket.OPEN, send: value => requests.push(JSON.parse(value))};
+  requestWorkspaceChanges();
+  requestWorkspaceChanges();
+  assert.equal(requests.length, 1, 'Only one snapshot request may be outstanding');
+  assert.equal(requests[0].type, 'workspace.changes');
+  const diff = 'diff --git a/new.txt b/new.txt\nnew file mode 100644\n--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1 @@\n+new';
+  handleEvent({type: 'workspace.changes', requestId: requests[0].requestId, changes: {
+    base: '123456789abcdef', files: [{name: 'new.txt', diff}],
+  }});
+  assert.equal(state.fileChanges.get('new.txt'), diff);
+  assert.equal(elements.changesList.querySelector('.file-change-name').textContent, 'new.txt');
+  assert.equal(elements.changesList.querySelector('.file-change-added').textContent, '+1');
+  assert.equal(elements.changesSummary.textContent, '1 changed file · Uncommitted · HEAD 123456789abc');
+
+  renderDiff({type: 'file.diff', turnId: 'old-turn', diff: '*** Add File: outdated.txt\n+outdated'});
+  replayOlderHistoryPage([{type: 'file.diff', turnId: 'earlier-turn', diff: '*** Add File: earlier.txt\n+earlier'}]);
+  assert.deepEqual([...state.fileChanges.keys()], ['new.txt']);
+
+  requestWorkspaceChanges();
+  handleEvent({type: 'workspace.changes', requestId: requests[1].requestId, changes: {base: '123456789abcdef', files: []}});
+  assert.equal(state.fileChanges.size, 0);
+  assert.equal(elements.changesList.textContent, 'No uncommitted changes.');
+  handleEvent({type: 'workspace.changes', requestId: requests[0].requestId, changes: {files: [{name: 'stale.txt', diff}]}});
+  assert.equal(state.fileChanges.size, 0, 'Stale responses must not restore files');
+
+  requestWorkspaceChanges();
+  handleEvent({type: 'workspace.changes', requestId: requests[2].requestId, changes: {files: [], message: 'Unable to read workspace changes'}});
+  assert.equal(elements.changesList.textContent, 'Unable to read workspace changes');
+  requestWorkspaceChanges();
+  assert.equal(requests.length, 4, 'Errors must allow another refresh');
+  requestWorkspaceChanges(true);
+  assert.equal(requests.length, 4, 'A completed turn queues a refresh behind an in-flight snapshot');
+
+  state.historyPageReading = true;
+  handleEvent({type: 'workspace.changes', requestId: requests[3].requestId, changes: {files: [{name: 'new.txt', diff}]}});
+  assert.equal(state.fileChanges.get('new.txt'), diff, 'Live snapshots bypass transcript paging');
+  assert.equal(requests.length, 5, 'The queued refresh must run after the in-flight snapshot');
+
+  const warning = 'Showing 1 of 1001 changed files (file list truncated)';
+  handleEvent({type: 'workspace.changes', requestId: requests[4].requestId, changes: {
+    base: '123456789abcdef', files: [{name: 'new.txt', diff}], truncated: true, message: warning,
+  }});
+  assert.equal(elements.changesSummary.textContent, warning);
+  assert.equal(elements.changesList.querySelector('.file-change-name').textContent, 'new.txt');
+}
+
+function testWorkspaceChangesPreservesUnchangedDOM() {
+  resetHarness();
+  state.selected = {namespace: 'default', name: 'one', phase: 'Ready'};
+  const requests = [];
+  state.socket = {readyState: WebSocket.OPEN, send: value => requests.push(JSON.parse(value))};
+  const snapshot = {base: '123456789abcdef', files: [{name: 'file.txt', diff: '*** Add File: file.txt\n+content'}]};
+  requestWorkspaceChanges();
+  handleEvent({type: 'workspace.changes', requestId: requests[0].requestId, changes: snapshot});
+  const fileNode = elements.changesList.firstChild;
+  const files = state.fileChanges;
+  fileNode.open = true;
+
+  requestWorkspaceChanges();
+  requestWorkspaceChanges(true);
+  handleEvent({type: 'workspace.changes', requestId: requests[1].requestId, changes: JSON.parse(JSON.stringify(snapshot))});
+  assert.equal(elements.changesList.firstChild, fileNode, 'Identical snapshots preserve diff DOM nodes');
+  assert.equal(state.fileChanges, files);
+  assert.equal(fileNode.open, true);
+  assert.equal(requests.length, 3, 'An unchanged response still services a queued refresh');
+
+  handleEvent({type: 'workspace.changes', requestId: requests[2].requestId, changes: {
+    ...snapshot, files: [{name: 'file.txt', diff: '*** Add File: file.txt\n+updated\n+content'}],
+  }});
+  assert.notEqual(elements.changesList.firstChild, fileNode);
+  assert.equal(elements.changesList.querySelector('.file-change-added').textContent, '+2');
+}
+
+function testWorkspaceChangesScopeSelection() {
+  resetHarness();
+  state.selected = {namespace: 'default', name: 'one', phase: 'Ready'};
+  const view = createSessionView();
+  activateSessionView(view);
+  const requests = [];
+  state.socket = {readyState: WebSocket.OPEN, send: value => requests.push(JSON.parse(value))};
+  requestWorkspaceChanges();
+  assert.equal(requests[0].scope, 'uncommitted');
+  assert.equal(requests[0].baseRef, undefined);
+  const branches = ['refs/heads/main', 'refs/heads/feature', 'refs/remotes/origin/main'];
+  handleEvent({type: 'workspace.changes', requestId: requests[0].requestId, changes: {base: '123456789abcdef', branches, files: []}});
+  assert.equal(elements.changesBaseLabel.hidden, true);
+  assert.deepEqual(elements.changesBase.children.map(option => option.value), ['', ...branches]);
+  assert.deepEqual(elements.changesBase.children.map(option => option.textContent), ['Select base branch', 'main', 'feature', 'origin/main']);
+
+  requestWorkspaceChanges();
+  elements.changesScope.value = 'branch';
+  elements.changesBase.value = 'refs/heads/main';
+  changeChangesComparison();
+  assert.equal(requests.length, 3);
+  assert.equal(requests[2].scope, 'branch');
+  assert.equal(requests[2].baseRef, 'refs/heads/main');
+  assert.equal(elements.changesBaseLabel.hidden, false);
+  assert.equal(elements.changesList.textContent, 'Loading workspace changes…');
+  handleEvent({type: 'workspace.changes', requestId: requests[1].requestId, changes: {files: [{name: 'stale.txt', diff: '+stale'}]}});
+  assert.equal(state.fileChanges.size, 0, 'A response from another scope must be ignored');
+  const snapshot = {scope: 'branch', baseRef: 'refs/heads/main', base: '123456789abcdef', branches,
+    files: [{name: 'committed.txt', diff: '*** Add File: committed.txt\n+committed'}]};
+  handleEvent({type: 'workspace.changes', requestId: requests[2].requestId, changes: snapshot});
+  assert.equal(state.fileChanges.get('committed.txt'), snapshot.files[0].diff);
+  assert.equal(elements.changesSummary.textContent, '1 changed file · Committed against main · Merge base 123456789abc');
+
+  requestWorkspaceChanges(true);
+  handleEvent({type: 'workspace.changes', requestId: requests[3].requestId, changes: {...snapshot, files: []}});
+  assert.equal(state.changesScope, 'branch', 'A clean result must not switch scopes');
+  assert.equal(state.changesBaseRef, 'refs/heads/main');
+  assert.equal(elements.changesList.textContent, 'No committed branch changes.');
+  saveCurrentSessionView();
+  activateSessionView(createSessionView());
+  assert.equal(elements.changesScope.value, 'uncommitted');
+  activateSessionView(view);
+  assert.equal(elements.changesScope.value, 'branch');
+  assert.equal(elements.changesBase.value, 'refs/heads/main');
+  resetCurrentSessionView();
+  assert.equal(state.changesScope, 'branch', 'History replay must not reset the selected scope');
+  assert.equal(state.changesBaseRef, 'refs/heads/main');
+}
+
+function testWorkspaceChangesBaseSelection() {
+  resetHarness();
+  state.selected = {namespace: 'default', name: 'one', phase: 'Ready'};
+  const requests = [];
+  state.socket = {readyState: WebSocket.OPEN, send: value => requests.push(JSON.parse(value))};
+  elements.changesScope.value = 'branch';
+  elements.changesBase.value = '';
+  changeChangesComparison();
+  handleEvent({type: 'workspace.changes', requestId: requests[0].requestId, changes: {
+    scope: 'branch', branches: ['refs/heads/main', 'refs/heads/develop'], files: [], message: 'Choose a base branch to compare committed changes',
+  }});
+  assert.equal(state.changesBaseRef, '');
+  assert.equal(elements.changesList.textContent, 'Choose a base branch to compare committed changes');
+
+  elements.changesBase.value = 'refs/heads/main';
+  changeChangesComparison();
+  elements.changesBase.value = 'refs/heads/develop';
+  changeChangesComparison();
+  handleEvent({type: 'workspace.changes', requestId: requests[1].requestId, changes: {files: [{name: 'stale.txt', diff: '+stale'}]}});
+  assert.equal(state.fileChanges.size, 0, 'A response for another base branch must be ignored');
+  handleEvent({type: 'workspace.changes', requestId: requests[2].requestId, changes: {
+    scope: 'branch', branches: ['refs/heads/main'], files: [], message: 'Unable to read workspace changes: base branch "refs/heads/develop" is unavailable',
+  }});
+  assert.equal(elements.changesBase.value, 'refs/heads/develop', 'Unavailable branches must not silently select another base');
+  assert.match(elements.changesList.textContent, /refs\/heads\/develop/);
+
+  requestWorkspaceChanges();
+  handleEvent({type: 'workspace.changes', requestId: requests[3].requestId, changes: {files: [{name: 'wrong-scope.txt', diff: '+uncommitted'}]}});
+  assert.equal(state.fileChanges.size, 0, 'A runtime without branch support must not show an uncommitted diff as branch changes');
+  assert.equal(elements.changesList.textContent, 'Branch changes require an updated Session runtime');
+}
+
+function testWorkspaceChangesReportsBranchListTruncation() {
+  resetHarness();
+  state.selected = {namespace: 'default', name: 'one', phase: 'Ready'};
+  const requests = [];
+  state.socket = {readyState: WebSocket.OPEN, send: value => requests.push(JSON.parse(value))};
+  elements.changesScope.value = 'branch';
+  elements.changesBase.value = 'refs/heads/main';
+  changeChangesComparison();
+  const snapshot = {scope: 'branch', baseRef: 'refs/heads/main', base: '123456789abcdef', branches: ['refs/heads/main'], files: []};
+  handleEvent({type: 'workspace.changes', requestId: requests[0].requestId, changes: snapshot});
+  assert.equal(elements.changesSummary.textContent, '0 changed files · Committed against main · Merge base 123456789abc');
+  requestWorkspaceChanges();
+  handleEvent({type: 'workspace.changes', requestId: requests[1].requestId, changes: {...snapshot, branchesTruncated: true}});
+  assert.equal(elements.changesSummary.textContent, '0 changed files · Committed against main · Merge base 123456789abc · Branch list truncated');
+  assert.equal(elements.changesBase.value, 'refs/heads/main');
+}
+
+testWorkspaceChangesSnapshots();
+testWorkspaceChangesPreservesUnchangedDOM();
+testWorkspaceChangesScopeSelection();
+testWorkspaceChangesBaseSelection();
+testWorkspaceChangesReportsBranchListTruncation();
 testSessionViewSaveAndRestore();
 testSessionViewReset();
 testSessionProgressLifecycle();
+testBackgroundTaskProgress();
+testBackgroundTaskProgressWithoutTiming();
+testBackgroundTaskAnnouncements();
+testSessionProgressRequiresReadyRuntime();
 testComposerInterruptsWhileInputIsDisabled();
 testComposerLabelsPendingSubmission();
+testComposerRecognizesCommands();
+testClaudeGoalComposer();
+testComposerHighlightsCommandText();
+testComposerHighlightEvents();
+testComposerCommandsRejectAttachments();
 testPendingSessionComposerAllowsDraft();
 testFailedSessionComposerRejectsDraft();
 testSessionViewPickerAvailability();
@@ -1427,6 +2449,12 @@ testHistoryToolCompletionRendersOutputWithoutStart();
 testUserAttachmentRendering();
 testCurrentRequestTracksScrolledTurn();
 testCurrentRequestScrollUpdatesAreThrottled();
+testJumpToLatestVisibility();
+testJumpToLatestReturnsToBottom();
+testConnectionPreservesTranscriptFocus();
+testJumpToLatestUpdatesAfterImageLoad();
+testBottomAnchorUpdatesButtonBeforePaint();
+testStreamingScrollPosition();
 testPendingMessageEditing();
 testPendingMessageRemoval();
 testPendingMessageSurvivesCompletedHistoryReplay();
@@ -1439,7 +2467,12 @@ testPromptJumpWaitsForInitialHistory();
 testPromptJumpCancellation();
 testPromptJumpUnavailableAndPageError();
 testReadySessionDisconnectsWhenItBecomesPending()
+  .then(testSuspendSessionHidesBackgroundProgress)
   .then(testComposerIgnoresReentrantSubmission)
+  .then(testComposerCommandSubmission)
+  .then(testClaudeGoalCommandSubmission)
+  .then(testNativeLoopCommandSubmission)
+  .then(testDiscoveredNativeCommands)
   .then(testPromptHistoryBrowseAndReuse)
   .then(() => process.stdout.write('Session history tests passed\n'))
   .catch(error => {

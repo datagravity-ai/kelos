@@ -30,7 +30,9 @@ global.document = {
   createElement: () => ({}),
 };
 global.window = new Events();
-global.location = {protocol: 'https:', host: 'console.example'};
+const loginRedirects = [];
+global.location = {protocol: 'https:', host: 'console.example', replace: target => loginRedirects.push(target)};
+global.fetch = async () => ({status: 200});
 const terminals = [];
 const sockets = [];
 const observers = [];
@@ -180,13 +182,19 @@ sockets.at(-1).close();
 assert.match(elements['terminal-status'].textContent, /^Disconnected/);
 controller.close();
 controller.show(session);
+global.fetch = async target => {
+  assert.equal(target, '/api/config');
+  return {status: 401};
+};
 sockets.at(-1).emit('error');
 assert.match(elements['terminal-status'].textContent, /^Could not connect/);
+queueMicrotask(() => assert.deepEqual(loginRedirects, ['/login']));
 controller.close();
 assert.equal(sockets.at(-1).closed, true);
 
 const index = fs.readFileSync(path.join(__dirname, '../web/index.html'), 'utf8');
 const app = fs.readFileSync(path.join(__dirname, '../web/app.js'), 'utf8');
+global.scheduleCompletionRead = () => {};
 assert.match(index, /id="terminal-tab"[^>]*role="tab"[^>]*aria-controls="terminal-view"[^>]*disabled/);
 assert.match(index, /id="terminal-view"[^>]*role="tabpanel"[^>]*aria-labelledby="terminal-tab"[^>]*hidden/);
 assert.match(app, /terminalTab.addEventListener\('click', \(\) => setActiveView\('terminal'\)\)/);
@@ -201,6 +209,8 @@ global.state = {selected: session};
 let currentRequestHidden = false;
 global.hideCurrentRequest = () => { currentRequestHidden = true; };
 global.updateCurrentRequest = () => { currentRequestHidden = false; };
+global.resizeComposer = () => {};
+global.updateJumpToLatest = () => {};
 vm.runInThisContext(app.slice(app.indexOf('function setActiveView('), app.indexOf('function renderError(')), {filename: 'app.js'});
 const choiceListener = app.indexOf("elements.viewChoice.addEventListener('change'");
 assert.notEqual(choiceListener, -1);
@@ -211,6 +221,8 @@ vm.runInThisContext(app.slice(pageHideListener, app.indexOf('function interruptA
 for (const [name, tab] of [['conversation', viewElements.conversationTab], ['changes', viewElements.changesTab], ['terminal', viewElements.terminalTab]]) {
   tab.addEventListener('click', () => setActiveView(name));
 }
+let changesRefreshes = 0;
+global.requestWorkspaceChanges = () => { changesRefreshes++; };
 const beforeTabs = sockets.length;
 setActiveView('conversation');
 assert.equal(sockets.length, beforeTabs, 'Conversation must not start a shell');
@@ -231,6 +243,7 @@ assert.equal(viewElements.terminalTab.tabIndex, 0);
 assert.equal(viewElements.conversationTab.tabIndex, -1);
 assert.equal(viewElements.changesTab.tabIndex, -1);
 setActiveView('changes');
+assert.ok(changesRefreshes > 0);
 assert.equal(viewElements.viewChoice.value, 'changes');
 assert.equal(viewElements.viewPicker.dataset.view, 'changes');
 assert.equal(viewElements.changes.hidden, false);

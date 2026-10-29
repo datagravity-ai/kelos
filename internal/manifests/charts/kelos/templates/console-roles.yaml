@@ -1,0 +1,57 @@
+{{- if and .Values.consoleServer.enabled (or (eq .Values.consoleServer.auth.mode "oidc") (eq .Values.consoleServer.auth.mode "github")) }}
+{{- $roles := list "kelos-console-user" }}
+{{- if eq .Values.consoleServer.auth.mode "oidc" }}
+{{- $roles = append $roles "kelos-console-admin" }}
+{{- end }}
+{{- range $name := $roles }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $name }}
+rules:
+  - apiGroups: [kelos.dev]
+    resources:
+      - agentconfigs
+      - sessions
+      - sessionspawners
+      - taskbudgets
+      - taskpipelines
+      - taskrecords
+      - tasks
+      - taskspawners
+      - workerpools
+      - workspaces
+    verbs: [get, list]
+  - apiGroups: [kelos.dev]
+    resources: [sessions]
+    verbs: [create, patch, delete]
+  - apiGroups: [kelos.dev]
+    resources: [sessions/connect, sessions/reset, sessions/suspend, sessions/resume]
+    verbs: [create]
+  - apiGroups: [kelos.dev]
+    resources: [sessions/attachments]
+    verbs: [get, create]
+  - apiGroups: [kelos.dev]
+    resources: [tasks/logs]
+    verbs: [get]
+  - apiGroups: [kelos.dev]
+    resources: [tasks]
+    verbs: [create]
+  - apiGroups: [kelos.dev]
+    resources: [taskspawners/suspend, taskspawners/resume]
+    verbs: [create]
+  {{- if eq $name "kelos-console-admin" }}
+  - apiGroups: [kelos.dev]
+    resources: [workspaces, agentconfigs, workerpools]
+    verbs: [create, update, delete]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [rolebindings]
+    verbs: [list, create, delete]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [clusterroles]
+    resourceNames: [kelos-console-user, kelos-console-admin]
+    verbs: [bind]
+  {{- end }}
+{{- end }}
+{{- end }}

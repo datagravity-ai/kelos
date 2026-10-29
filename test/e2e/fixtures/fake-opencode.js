@@ -50,6 +50,10 @@ const server = http.createServer(async (request, response) => {
     json(response, 200, {healthy: true, version: 'e2e'});
     return;
   }
+  if (request.method === 'GET' && url.pathname === '/command') {
+    json(response, 200, []);
+    return;
+  }
   if (request.method === 'GET' && url.pathname === '/event') {
     response.writeHead(200, {
       'content-type': 'text/event-stream',

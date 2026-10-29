@@ -1,0 +1,7 @@
+{
+  "name": "Kelos Console",
+  "short_name": "Kelos",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone"
+}

@@ -26,6 +26,7 @@ const (
 	EventInputRequested     = "input.requested"
 	EventInputResolved      = "input.resolved"
 	EventFileDiff           = "file.diff"
+	EventWorkspaceChanges   = "workspace.changes"
 	EventTurnCompleted      = "turn.completed"
 	EventError              = "error"
 
@@ -37,32 +38,35 @@ const (
 type Event struct {
 	ID   int64  `json:"id,omitempty"`
 	Type string `json:"type"`
+	// NotificationID matches Session.status.lastNotification.id for completed or failed turns.
+	NotificationID string `json:"notificationId,omitempty"`
 	// Timestamp records when a durable conversation event was first appended.
-	Timestamp      *time.Time      `json:"timestamp,omitempty"`
-	RequestID      string          `json:"requestId,omitempty"`
-	TurnID         string          `json:"turnId,omitempty"`
-	Text           string          `json:"text,omitempty"`
-	Revision       int64           `json:"revision,omitempty"`
-	SessionCommand bool            `json:"sessionCommand,omitempty"`
-	ToolID         string          `json:"toolId,omitempty"`
-	ToolName       string          `json:"toolName,omitempty"`
-	Output         string          `json:"output,omitempty"`
-	Status         string          `json:"status,omitempty"`
-	InputID        string          `json:"inputId,omitempty"`
-	Questions      []InputQuestion `json:"questions,omitempty"`
-	Diff           string          `json:"diff,omitempty"`
-	FirstEventID   int64           `json:"firstEventId,omitempty"`
-	LastEventID    int64           `json:"lastEventId,omitempty"`
-	JournalID      string          `json:"journalId,omitempty"`
-	Reset          bool            `json:"reset,omitempty"`
-	HistoryLimited bool            `json:"historyLimited,omitempty"`
-	HistoryPage    bool            `json:"historyPage,omitempty"`
-	HistoryCursor  string          `json:"historyCursor,omitempty"`
-	HistoryState   *HistoryState   `json:"historyState,omitempty"`
-	Runtime        *RuntimeStatus  `json:"runtime,omitempty"`
-	Goal           *Goal           `json:"goal,omitempty"`
-	Attachments    []Attachment    `json:"attachments,omitempty"`
-	Prompts        []Prompt        `json:"prompts,omitempty"`
+	Timestamp      *time.Time        `json:"timestamp,omitempty"`
+	RequestID      string            `json:"requestId,omitempty"`
+	TurnID         string            `json:"turnId,omitempty"`
+	Text           string            `json:"text,omitempty"`
+	Revision       int64             `json:"revision,omitempty"`
+	SessionCommand bool              `json:"sessionCommand,omitempty"`
+	ToolID         string            `json:"toolId,omitempty"`
+	ToolName       string            `json:"toolName,omitempty"`
+	Output         string            `json:"output,omitempty"`
+	Status         string            `json:"status,omitempty"`
+	InputID        string            `json:"inputId,omitempty"`
+	Questions      []InputQuestion   `json:"questions,omitempty"`
+	Diff           string            `json:"diff,omitempty"`
+	FirstEventID   int64             `json:"firstEventId,omitempty"`
+	LastEventID    int64             `json:"lastEventId,omitempty"`
+	JournalID      string            `json:"journalId,omitempty"`
+	Reset          bool              `json:"reset,omitempty"`
+	HistoryLimited bool              `json:"historyLimited,omitempty"`
+	HistoryPage    bool              `json:"historyPage,omitempty"`
+	HistoryCursor  string            `json:"historyCursor,omitempty"`
+	HistoryState   *HistoryState     `json:"historyState,omitempty"`
+	Runtime        *RuntimeStatus    `json:"runtime,omitempty"`
+	Goal           *Goal             `json:"goal,omitempty"`
+	Attachments    []Attachment      `json:"attachments,omitempty"`
+	Prompts        []Prompt          `json:"prompts,omitempty"`
+	Changes        *WorkspaceChanges `json:"changes,omitempty"`
 }
 
 // Prompt is a retained user submission, with its latest accepted text.
@@ -90,7 +94,6 @@ type HistoryState struct {
 	TurnInterrupting  bool                `json:"turnInterrupting,omitempty"`
 	WaitingForInput   bool                `json:"waitingForInput,omitempty"`
 	PendingTurn       *HistoryPendingTurn `json:"pendingTurn,omitempty"`
-	FileDiff          string              `json:"fileDiff,omitempty"`
 }
 
 // HistoryPendingTurn describes the user message waiting to run.
@@ -103,6 +106,8 @@ type HistoryPendingTurn struct {
 
 // RuntimeStatus describes the current Session and workspace for connected clients.
 type RuntimeStatus struct {
+	// Commands lists the Session commands available from the configured agent.
+	Commands          []string          `json:"commands,omitempty"`
 	SessionName       string            `json:"sessionName,omitempty"`
 	AgentType         string            `json:"agentType,omitempty"`
 	Model             string            `json:"model,omitempty"`
@@ -113,6 +118,18 @@ type RuntimeStatus struct {
 	PullRequestNumber int               `json:"pullRequestNumber,omitempty"`
 	Usage             *RuntimeUsage     `json:"usage,omitempty"`
 	WeeklyLimit       *RuntimeRateLimit `json:"weeklyLimit,omitempty"`
+	// BackgroundTasks counts unfinished provider-reported tasks. Nil means
+	// the count is unavailable.
+	BackgroundTasks *int `json:"backgroundTasks,omitempty"`
+	// BackgroundTaskDetails describes the unfinished tasks when available.
+	BackgroundTaskDetails []BackgroundTask `json:"backgroundTaskDetails,omitempty"`
+}
+
+// BackgroundTask describes one unfinished provider-reported task.
+type BackgroundTask struct {
+	ID          string    `json:"id"`
+	Description string    `json:"description,omitempty"`
+	StartedAt   time.Time `json:"startedAt"`
 }
 
 // RuntimeUsage describes cumulative provider token use and the model context window.
@@ -133,6 +150,8 @@ type RuntimeRateLimit struct {
 type ClientRequest struct {
 	Type             string              `json:"type"`
 	RequestID        string              `json:"requestId,omitempty"`
+	Scope            string              `json:"scope,omitempty"`
+	BaseRef          string              `json:"baseRef,omitempty"`
 	Since            int64               `json:"since,omitempty"`
 	JournalID        string              `json:"journalId,omitempty"`
 	HistoryBounds    bool                `json:"historyBounds,omitempty"`
@@ -170,7 +189,7 @@ type InputRequest struct {
 	Questions []InputQuestion
 }
 
-// EventSink receives provider events for the active turn.
+// EventSink receives conversation events and routes requests for user input.
 type EventSink interface {
 	Emit(Event)
 	RequestInput(ctx context.Context, request InputRequest) (map[string][]string, error)

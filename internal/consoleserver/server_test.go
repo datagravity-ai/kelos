@@ -157,6 +157,9 @@ func TestConsoleApplicationIncludesResourceViews(t *testing.T) {
 		`id="resource-detail-logs-tab"`,
 		`id="refresh-resource-logs"`,
 		`id="resource-detail-logs"`,
+		`id="taskspawner-run-form"`,
+		`id="taskspawner-run-values"`,
+		`id="taskspawner-run-button"`,
 	} {
 		if !strings.Contains(response.Body.String(), expected) {
 			t.Errorf("Console application does not contain %s", expected)
@@ -899,7 +902,11 @@ func TestApplicationIncludesFileChangesView(t *testing.T) {
 		`id="changes-count"`,
 		`id="changes-view"`,
 		`id="changes-list"`,
-		`No file changes yet.`,
+		`id="changes-scope"`,
+		`<option value="uncommitted">Uncommitted</option>`,
+		`<option value="branch">Branch changes</option>`,
+		`id="changes-base"`,
+		`No uncommitted changes.`,
 	} {
 		if !strings.Contains(response.Body.String(), expected) {
 			t.Errorf("Console Sessions view does not contain %s", expected)
@@ -911,7 +918,7 @@ func TestApplicationIncludesFileChangesView(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, expected := range []string{
-		`state.fileChanges.set(file.name, file.diff)`,
+		`state.fileChanges = new Map(state.workspaceChanges.files.map(file => [file.name, file.diff]))`,
 		`state.diffs.set(key, block)`,
 		`renderFileChangeList(block.list, block.files, openFiles)`,
 		`const path = normalizeDiffPath(header.slice(prefix.length))`,
@@ -1044,6 +1051,37 @@ func TestApplicationBrowserAlertsBehavior(t *testing.T) {
 	command := exec.Command(node, "testdata/browser_alerts_test.js")
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("running browser alert tests: %v\n%s", err, output)
+	}
+}
+
+func TestApplicationUnreadCompletionsBehavior(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("Node.js is not installed")
+	}
+	command := exec.Command(node, "testdata/unread_completions_test.js")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("running unread completion tests: %v\n%s", err, output)
+	}
+}
+
+func TestNotificationAssets(t *testing.T) {
+	server := testServer(t)
+	for _, test := range []struct {
+		path        string
+		contentType string
+		content     string
+	}{
+		{"/notifications.js", "text/javascript; charset=utf-8", "notificationclick"},
+		{"/manifest.webmanifest", "application/manifest+json", `"display": "standalone"`},
+	} {
+		request := httptest.NewRequest(http.MethodGet, test.path, nil)
+		request.Header.Set("Authorization", "Bearer secret-token")
+		response := httptest.NewRecorder()
+		server.ServeHTTP(response, request)
+		if response.Code != http.StatusOK || response.Header().Get("Content-Type") != test.contentType || !strings.Contains(response.Body.String(), test.content) {
+			t.Fatalf("GET %s status = %d, headers = %v, body = %s", test.path, response.Code, response.Header(), response.Body.String())
+		}
 	}
 }
 
@@ -1425,6 +1463,9 @@ func TestSessionComposerUsesOneSendAndInterruptAction(t *testing.T) {
 	if !strings.Contains(body, `id="session-progress"`) {
 		t.Error("Session composer does not contain the agent progress region")
 	}
+	if !strings.Contains(body, `id="session-background-tasks-status" role="status" aria-live="polite" aria-atomic="true"`) {
+		t.Error("Session composer does not contain the background task announcement region")
+	}
 	for _, expected := range []string{`id="attachment-input" type="file" multiple`, `id="attach-files"`, `id="pending-attachments"`} {
 		if !strings.Contains(body, expected) {
 			t.Errorf("Session composer does not contain attachment control %s", expected)
@@ -1542,8 +1583,8 @@ func TestSessionComposerAllowsMultilinePromptsOnTouchDevices(t *testing.T) {
 	javascript := string(source)
 	for description, expected := range map[string]string{
 		"touch device detection":  `window.matchMedia('(pointer: coarse)').matches`,
-		"touch composer hint":     "? `Tap ${actionSymbol} to ${action} · Return for a new line · !COMMAND · /goal`",
-		"desktop composer hint":   "`Enter to ${action} · Shift+Enter for a new line · !COMMAND · /goal`",
+		"touch composer hint":     "`Tap ${actionSymbol} to ${action} · Return for a new line · !COMMAND · /goal · /loop`",
+		"desktop composer hint":   "`Enter to ${action} · Shift+Enter for a new line · !COMMAND · /goal · /loop`",
 		"disabled interrupt hint": "`Click ${actionSymbol} to interrupt`",
 		"desktop-only Enter send": `!event.isComposing && !usesTouchComposer()`,
 	} {
@@ -1630,8 +1671,8 @@ func TestSessionUIAdaptsToPhoneViewport(t *testing.T) {
 		"phone prompt history touch target":  `.prompt-history-button, .prompt-history-heading button, #prompts-more { min-height: 44px;`,
 		"phone safe-area padding":            `env(safe-area-inset-bottom)`,
 		"non-zooming form fields":            `.composer textarea, .pending-message-input, .yaml-panel textarea, .form-grid input`,
-		"desktop composer alignment":         `.composer textarea { width: 100%; min-height: 36px;`,
-		"mobile composer alignment":          `.composer textarea { min-height: 44px; padding: 10px 8px; line-height: 24px; }`,
+		"desktop composer alignment":         `.composer textarea, .composer-highlight { width: 100%; min-height: 36px;`,
+		"mobile composer alignment":          `.composer textarea, .composer-highlight { min-height: 44px; padding: 10px 8px; font-size: 16px; line-height: 24px; }`,
 		"phone-sized dialog":                 `max-height: calc(100dvh - 16px`,
 		"scrolling sidebar controls":         `.sidebar-scroll { flex: 1; min-height: 0; overflow-y: auto;`,
 	} {
@@ -2120,6 +2161,7 @@ func TestSummarizeIncludesRuntimeStatus(t *testing.T) {
 		Status: kelos.SessionStatus{
 			Phase:            kelos.SessionPhaseReady,
 			LastActivityTime: &lastActivityAt,
+			LastNotification: &kelos.SessionNotification{ID: "journal/42", Type: kelos.SessionNotificationTypeInputRequested, EventTime: lastActivityAt},
 			Model:            "gpt-5.6-sol",
 			Branch:           "feature/session-status",
 			Conditions: []metav1.Condition{{
@@ -2140,6 +2182,9 @@ func TestSummarizeIncludesRuntimeStatus(t *testing.T) {
 	}
 
 	summary := summarize(session)
+	if summary.LastNotification == nil || *summary.LastNotification != *session.Status.LastNotification {
+		t.Fatalf("summarize() LastNotification = %#v, want %#v", summary.LastNotification, session.Status.LastNotification)
+	}
 	if summary.DisplayName != "chat" || summary.Active == nil || !*summary.Active || !summary.WaitingForInput || summary.Model != session.Status.Model || summary.Branch != session.Status.Branch || summary.PullRequest == nil || *summary.PullRequest != *session.Status.PullRequest || summary.Section != "Reviews" {
 		t.Fatalf("summarize() = %#v", summary)
 	}
@@ -2748,6 +2793,35 @@ func TestSessionSourceAPIReturnsReusableSpec(t *testing.T) {
 	}
 }
 
+func TestDecodeJSONRequiresSingleValue(t *testing.T) {
+	const payload = `{"value":"ok"}`
+	for _, test := range []struct {
+		name, body string
+		wantError  bool
+	}{
+		{"object", payload, false},
+		{"whitespace", payload + " \n\t", false},
+		{"body at limit", payload + strings.Repeat(" ", requestBodyLimit-len(payload)), false},
+		{"second object", payload + `{}`, true},
+		{"second null", payload + `null`, true},
+		{"trailing data", payload + `trailing`, true},
+		{"trailing data beyond limit", payload + strings.Repeat(" ", requestBodyLimit) + `trailing`, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var target struct {
+				Value string `json:"value"`
+			}
+			err := decodeJSON(strings.NewReader(test.body), &target)
+			if (err != nil) != test.wantError {
+				t.Fatalf("decodeJSON() error = %v, want error = %v", err, test.wantError)
+			}
+			if err == nil && target.Value != "ok" {
+				t.Fatalf("decoded value = %q, want ok", target.Value)
+			}
+		})
+	}
+}
+
 func TestNewRejectsEmptyToken(t *testing.T) {
 	for _, token := range []string{"", " \t"} {
 		_, err := New(Config{Token: token})
@@ -2760,6 +2834,14 @@ func TestNewRejectsEmptyToken(t *testing.T) {
 func TestNewRejectsEmptyDefaultNamespace(t *testing.T) {
 	_, err := New(Config{Token: "secret-token"})
 	if err == nil || !strings.Contains(err.Error(), "namespace must not be empty") {
+		t.Fatalf("New() error = %v", err)
+	}
+}
+
+func TestNewRejectsMissingHTTPClient(t *testing.T) {
+	base := testServer(t)
+	_, err := New(Config{Token: "secret-token", Client: base.client, Clientset: base.clientset, RESTConfig: base.restConfig, DefaultNamespace: "default"})
+	if err == nil || !strings.Contains(err.Error(), "HTTP client is required") {
 		t.Fatalf("New() error = %v", err)
 	}
 }
@@ -3066,6 +3148,7 @@ func testServer(t *testing.T) *Server {
 		Client:           controllerClient,
 		Clientset:        &kubernetes.Clientset{},
 		RESTConfig:       &rest.Config{Host: "https://kubernetes.invalid"},
+		HTTPClient:       http.DefaultClient,
 		DefaultNamespace: "default",
 	})
 	if err != nil {

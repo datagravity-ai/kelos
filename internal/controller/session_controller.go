@@ -329,7 +329,7 @@ func (r *SessionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (re
 		return ctrl.Result{}, err
 	}
 	serviceAccountName := desiredStatefulSet.Spec.Template.Spec.ServiceAccountName
-	if err := r.ensureSessionRuntimeAccess(ctx, &session, serviceAccountName); err != nil {
+	if err := r.ensureSessionRuntimeAccess(ctx, &session, serviceAccountName, &statefulSet); err != nil {
 		message := fmt.Sprintf("Failed to prepare Session runtime access: %v", err)
 		return ctrl.Result{}, r.updateSessionStatus(ctx, &session, nil, kelos.SessionPhaseFailed, message, "RuntimeAccessFailed")
 	}
@@ -732,7 +732,7 @@ func (r *SessionReconciler) createSessionStatefulSet(ctx context.Context, sessio
 	if err := r.ensureSessionPluginConfigMap(ctx, session, configMap); err != nil {
 		return ctrl.Result{}, err
 	}
-	if err := r.ensureSessionRuntimeAccess(ctx, session, statefulSet.Spec.Template.Spec.ServiceAccountName); err != nil {
+	if err := r.ensureSessionRuntimeAccess(ctx, session, statefulSet.Spec.Template.Spec.ServiceAccountName, nil); err != nil {
 		message := fmt.Sprintf("Failed to prepare Session runtime access: %v", err)
 		_ = r.updateSessionStatus(ctx, session, nil, kelos.SessionPhaseFailed, message, "RuntimeAccessFailed")
 		return ctrl.Result{}, err
@@ -1069,7 +1069,7 @@ func (r *SessionReconciler) ensureSessionResetStartPrerequisites(ctx context.Con
 	if serviceAccountName == "" {
 		serviceAccountName = sessionRuntimeAccessName(session)
 	}
-	if err := r.ensureSessionRuntimeAccess(ctx, session, serviceAccountName); err != nil {
+	if err := r.ensureSessionRuntimeAccess(ctx, session, serviceAccountName, statefulSet); err != nil {
 		return fmt.Errorf("preparing Session %q runtime access after reset: %w", session.Name, err)
 	}
 	if err := r.ensureSessionService(ctx, session); err != nil {

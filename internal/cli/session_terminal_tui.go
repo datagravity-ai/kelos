@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -471,6 +472,9 @@ func (m *sessionTUIModel) readEvent() tea.Cmd {
 func (m *sessionTUIModel) submitInput() tea.Cmd {
 	m.promptRequestID = ""
 	line := m.input.Value()
+	if m.composerCommandError() != "" {
+		return nil
+	}
 	if m.pendingEditTurnID != "" {
 		request := sessionruntime.ClientRequest{
 			Type:             "message.edit",
@@ -494,7 +498,7 @@ func (m *sessionTUIModel) submitInput() tea.Cmd {
 		m.resizeComposer()
 		return nil
 	}
-	if line == "/quit" || line == "/exit" {
+	if text := strings.TrimSpace(line); text == "/quit" || text == "/exit" {
 		return m.quit()
 	}
 	if strings.TrimSpace(line) == "/history" {
@@ -647,13 +651,15 @@ func (m *sessionTUIModel) applyEvent(event sessionruntime.Event) sessionTUIComma
 		if event.Runtime != nil {
 			m.runtimeStatus = *event.Runtime
 		}
+		m.resizeComposer()
+		commands.ui = m.scheduleProgress()
 	case sessionruntime.EventHistoryEnd:
 		m.replayingHistory = false
 		m.applyHistoryState(event.HistoryState)
 		// A terminal-height transcript in both the managed view and native scrollback
 		// makes Bubble Tea move the smaller footer to the top when the copy is removed.
 		m.hideNextHistory = !m.ready
-		m.appendBlock(sessionTUIBlockNotice, "Connected. Enter sends, Ctrl+J inserts a newline, Up/Down browses prompts, Ctrl+C or Esc interrupts active work, Page Up loads earlier history, and dragging a file attaches it (or use /attach PATH). Press Alt+Up on an empty composer to edit pending work. Use !COMMAND, /goal, /answer INPUT QUESTION VALUE, or /quit.")
+		m.appendBlock(sessionTUIBlockNotice, "Connected. Enter sends, Ctrl+J inserts a newline, Up/Down browses prompts, Ctrl+C or Esc interrupts active work, Page Up loads earlier history, and dragging a file attaches it (or use /attach PATH). Press Alt+Up on an empty composer to edit pending work. Use !COMMAND, /goal, /loop, /answer INPUT QUESTION VALUE, or /quit.")
 		m.ready = true
 		m.connectionStatus = ""
 		commands.ui = tea.Batch(m.input.Focus(), m.scheduleProgress())
@@ -948,7 +954,8 @@ func (m *sessionTUIModel) scheduleProgress() tea.Cmd {
 func (m *sessionTUIModel) progressVisible() bool {
 	connecting := m.connectionStatus == sessionTerminalStatusReconnecting ||
 		(m.connectionStatus == sessionTerminalStatusConnecting && !m.ready)
-	return connecting || m.historyPageLoading || m.activeTurnID != ""
+	return connecting || m.historyPageLoading || m.activeTurnID != "" ||
+		(m.runtimeStatus.BackgroundTasks != nil && *m.runtimeStatus.BackgroundTasks > 0)
 }
 
 func (m *sessionTUIModel) canInterruptTurn() bool {
@@ -1105,7 +1112,7 @@ func (m *sessionTUIModel) setPendingUser(turnID, text string, attachments []sess
 }
 
 func (m *sessionTUIModel) acceptPendingTurn(turnID string) bool {
-	if m.pendingTurnID != turnID {
+	if turnID == "" || m.pendingTurnID != turnID {
 		return false
 	}
 	text := m.pendingTurnText
@@ -1510,20 +1517,181 @@ func (m *sessionTUIModel) statusStyle(status string) lipgloss.Style {
 	}
 }
 
+func (m *sessionTUIModel) supportsCommand(command string) bool {
+	if m.runtimeStatus.Commands != nil {
+		return slices.Contains(m.runtimeStatus.Commands, command)
+	}
+	switch command {
+	case "loop":
+		return m.runtimeStatus.AgentType == "" || m.runtimeStatus.AgentType == "claude-code"
+	case "goal":
+		return m.runtimeStatus.AgentType == "" || m.runtimeStatus.AgentType == "claude-code" || m.runtimeStatus.AgentType == "codex"
+	default:
+		return true
+	}
+}
+
+func (m *sessionTUIModel) composerCommandError() string {
+	text := strings.TrimSpace(m.input.Value())
+	fields := strings.Fields(text)
+	shell := strings.HasPrefix(text, "!")
+	goal := len(fields) > 0 && fields[0] == "/goal"
+	loop := len(fields) > 0 && fields[0] == "/loop"
+	if !shell && !goal && !loop {
+		return ""
+	}
+	if len(m.pendingAttachments) > 0 {
+		return "Remove attachments to use a command"
+	}
+	if m.pendingEditTurnID == "" && m.pendingTurnID != "" && (shell || loop || !m.turnActive || goal && (m.runtimeStatus.AgentType == "claude-code" || m.runtimeStatus.AgentType == "opencode")) {
+		return "Wait for pending work to start or remove it before submitting a command"
+	}
+	if shell && strings.TrimSpace(strings.TrimPrefix(text, "!")) == "" {
+		return "Enter a command after !"
+	}
+	if loop && !m.supportsCommand("loop") {
+		return "/loop is not available in this Session"
+	}
+	if goal {
+		if !m.supportsCommand("goal") {
+			return "/goal is not available in this Session"
+		}
+		if (m.runtimeStatus.AgentType == "" || m.runtimeStatus.AgentType == "codex") && len(fields) == 2 && fields[1] == "edit" {
+			return "Enter an objective after /goal edit"
+		}
+	}
+	return ""
+}
+
+func (m *sessionTUIModel) composerHint() string {
+	text := strings.TrimSpace(m.input.Value())
+	fields := strings.Fields(text)
+	label, action, detail := "Message", "send", ""
+	if m.turnActive || m.pendingTurnID != "" {
+		action = "add to pending"
+	}
+	if strings.HasPrefix(text, "!") {
+		label, action = "Shell command", "run command"
+		detail = "Runs directly in the Session workspace"
+		if m.turnActive {
+			action = "queue command"
+		}
+	} else if len(fields) > 0 && fields[0] == "/goal" {
+		label, action = "Goal command", "start goal"
+		switch {
+		case len(fields) == 1:
+			action = "show goal"
+		case fields[1] == "edit":
+			action = "edit goal"
+		case len(fields) == 2 && (fields[1] == "pause" || fields[1] == "resume" || fields[1] == "clear"):
+			action = fields[1] + " goal"
+		}
+		if m.runtimeStatus.AgentType == "claude-code" {
+			action = "show goal"
+			if len(fields) > 1 {
+				action = "start goal"
+				detail = "Sets or replaces Claude Code's completion condition"
+				if len(fields) == 2 {
+					switch strings.ToLower(fields[1]) {
+					case "clear", "stop", "off", "reset", "none", "cancel":
+						action, detail = "clear goal", ""
+					}
+				}
+			}
+			if m.turnActive {
+				detail = "Queued until active work ends; use /interrupt to apply sooner"
+			}
+		}
+		if m.runtimeStatus.AgentType == "opencode" {
+			action, detail = "run goal", "Uses OpenCode's registered goal command"
+			if m.turnActive {
+				detail = "Queued until active work ends; use /interrupt to apply sooner"
+			}
+		}
+	} else if len(fields) > 0 && fields[0] == "/loop" {
+		label, action = "Loop command", "start loop"
+		detail = "Uses Claude Code's native loop scheduling"
+		switch m.runtimeStatus.AgentType {
+		case "codex":
+			action, detail = "run loop", "Uses the enabled Codex loop skill"
+		case "opencode":
+			action, detail = "run loop", "Uses OpenCode's registered loop command"
+		}
+		if m.turnActive {
+			detail = "Queued until active work ends; use /interrupt to apply sooner"
+		}
+	}
+	if m.pendingEditTurnID != "" {
+		action = "save pending work"
+		if text == "" {
+			action = "remove pending work"
+		}
+	} else if label == "Message" {
+		switch text {
+		case "/quit", "/exit":
+			label, action = "Session command", "disconnect"
+		case "/history":
+			label, action = "Session command", "load earlier history"
+		default:
+			request := sessionTerminalRequest(text)
+			switch request.Type {
+			case sessionTerminalRequestAttachment:
+				label, action = "Session command", "attach file"
+			case "interrupt":
+				label, action = "Session command", "interrupt active work"
+			case "input":
+				label, action = "Session command", "answer input request"
+				if request.Cancel {
+					action = "cancel input request"
+				}
+			}
+		}
+	}
+	if reason := m.composerCommandError(); reason != "" {
+		return label + " · " + reason
+	}
+	hint := label + " · Enter to " + action
+	if detail != "" {
+		hint += " · " + detail
+	}
+	return hint
+}
+
 func (m *sessionTUIModel) composerView() string {
 	blank := m.renderUserRow("")
 	if !m.ready {
 		loading := m.renderUserRow("> " + m.styles.muted.Render("Loading Session…"))
 		return blank + "\n" + loading + "\n" + blank
 	}
+	headingStyle := m.styles.muted
+	inputStyle := m.styles.user
+	text := strings.TrimSpace(m.input.Value())
+	fields := strings.Fields(text)
+	if strings.HasPrefix(text, "!") {
+		headingStyle = m.styles.warning
+		inputStyle = inputStyle.Foreground(m.styles.warning.GetForeground())
+	} else if len(fields) > 0 && (fields[0] == "/goal" || fields[0] == "/loop") {
+		headingStyle = m.styles.success.Bold(true)
+		inputStyle = inputStyle.Foreground(m.styles.success.GetForeground())
+	}
+	if m.composerCommandError() != "" {
+		headingStyle = m.styles.error
+		inputStyle = inputStyle.Foreground(m.styles.error.GetForeground())
+	}
+	// The textarea retains a pointer to its active style.
+	focusedStyle, blurredStyle := m.input.FocusedStyle, m.input.BlurredStyle
+	style := sessionTUITextAreaStyle(inputStyle)
+	m.input.FocusedStyle, m.input.BlurredStyle = style, style
 	middle := strings.TrimSuffix(m.input.View(), "\n")
+	m.input.FocusedStyle, m.input.BlurredStyle = focusedStyle, blurredStyle
+	heading := m.renderUserRow(headingStyle.Render(ansi.Truncate("  "+m.composerHint(), max(1, m.width), "…")))
 	attachmentLine := ""
 	if len(m.pendingAttachments) > 0 {
 		names := make([]string, len(m.pendingAttachments))
 		for index := range m.pendingAttachments {
 			names[index] = m.pendingAttachments[index].Name
 		}
-		attachmentLine = m.renderUserRow("  " + m.styles.muted.Render("Attached: "+strings.Join(names, ", ")))
+		attachmentLine = m.renderUserRow(m.styles.muted.Render(ansi.Truncate("  Attached: "+strings.Join(names, ", "), max(1, m.width), "…")))
 	}
 	lines := strings.Split(middle, "\n")
 	continuation := strings.Repeat(" ", len(sessionTUIComposerPrompt))
@@ -1537,9 +1705,9 @@ func (m *sessionTUIModel) composerView() string {
 	middle = strings.Join(lines, "\n")
 	middle = m.renderUserRow(middle)
 	if attachmentLine != "" {
-		return attachmentLine + "\n" + middle + "\n" + blank
+		return heading + "\n" + attachmentLine + "\n" + middle + "\n" + blank
 	}
-	return blank + "\n" + middle + "\n" + blank
+	return heading + "\n" + middle + "\n" + blank
 }
 
 func (m *sessionTUIModel) resizeComposer() {
@@ -1766,6 +1934,15 @@ func (m *sessionTUIModel) progressView() string {
 	label := ""
 	started := m.activeTurnStarted
 	showInterrupt := false
+	background := ""
+	if count := m.runtimeStatus.BackgroundTasks; count != nil && *count > 0 {
+		noun := "task"
+		if *count != 1 {
+			noun = "tasks"
+		}
+		background = fmt.Sprintf("%d background %s", *count, noun)
+	}
+	backgroundOnly := false
 	switch {
 	case m.connectionStatus == sessionTerminalStatusReconnecting:
 		label = "Reconnecting"
@@ -1781,19 +1958,29 @@ func (m *sessionTUIModel) progressView() string {
 	case m.waitingForInput:
 		label = "Waiting for input"
 		showInterrupt = true
+	case m.activeTurnID == "" && background != "":
+		label = background + " running"
+		backgroundOnly = true
 	default:
 		label = "Working"
 		showInterrupt = true
 	}
-	elapsed := m.now().Sub(started)
-	if elapsed < 0 {
-		elapsed = 0
+	if background != "" && m.activeTurnID != "" && m.connectionStatus == "" && !m.historyPageLoading {
+		label += " · " + background
 	}
-	details := formatSessionTUIElapsed(elapsed)
-	if showInterrupt {
-		details += " • esc to interrupt"
+	text := "• " + label
+	if !backgroundOnly {
+		elapsed := m.now().Sub(started)
+		if elapsed < 0 {
+			elapsed = 0
+		}
+		details := formatSessionTUIElapsed(elapsed)
+		if showInterrupt {
+			details += " • esc to interrupt"
+		}
+		text += " (" + details + ")"
 	}
-	text := truncateSessionTUIProgress("• "+label+" ("+details+")", max(1, m.width))
+	text = truncateSessionTUIProgress(text, max(1, m.width))
 	return m.styles.pending.Width(max(1, m.width)).MaxWidth(max(1, m.width)).Render(text)
 }
 

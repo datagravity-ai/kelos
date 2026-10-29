@@ -3,7 +3,6 @@ package sessionruntime
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -40,18 +39,18 @@ func TestOpenCodeProviderStreamsOrderedEvents(t *testing.T) {
 		t.Fatalf("OpenCode session permission = %#v", permissions[0])
 	}
 
-	sink := newOpenCodeTestSink(nil)
-	turnDone := make(chan error, 1)
+	sink := newProviderTestSink(nil)
+	provider.SetEventSink(sink)
 	attachmentPath := filepath.Join(t.TempDir(), "screen.png")
-	go func() {
-		turnDone <- provider.RunTurn(t.Context(), TurnInput{
-			Text: "hello",
-			Attachments: []ResolvedAttachment{{
-				Attachment: Attachment{Name: "screen.png", MediaType: "image/png"},
-				Path:       attachmentPath,
-			}},
-		}, sink)
-	}()
+	if err := provider.StartTurn(t.Context(), TurnInput{
+		Text: "hello",
+		Attachments: []ResolvedAttachment{{
+			Attachment: Attachment{Name: "screen.png", MediaType: "image/png"},
+			Path:       attachmentPath,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	request := receiveOpenCodePrompt(t, fake.prompts)
 	parts, ok := request["parts"].([]any)
 	if !ok || len(parts) != 2 || !strings.Contains(parts[0].(map[string]any)["text"].(string), attachmentPath) {
@@ -75,9 +74,7 @@ func TestOpenCodeProviderStreamsOrderedEvents(t *testing.T) {
 	fake.emit("message.part.updated", map[string]any{"part": map[string]any{"id": "text-1", "messageID": "message-1", "sessionID": fake.sessionID, "type": "text", "text": "hello world"}})
 	fake.emit("session.idle", map[string]string{"sessionID": fake.sessionID})
 
-	if err := receiveOpenCodeResult(t, turnDone); err != nil {
-		t.Fatalf("RunTurn() error = %v", err)
-	}
+	sink.waitForCompletion(t, "completed")
 	select {
 	case reply := <-fake.permissionReplies:
 		if reply != "once" {
@@ -87,11 +84,13 @@ func TestOpenCodeProviderStreamsOrderedEvents(t *testing.T) {
 		t.Fatal("OpenCode permission was not approved")
 	}
 	want := []Event{
-		{Type: EventRuntimeStatus, Runtime: &RuntimeStatus{Effort: "high"}},
+		{Type: EventTurnStarted, Status: "running"},
+		{Type: EventRuntimeStatus, Runtime: &RuntimeStatus{Effort: "high", Commands: []string{"shell"}}},
 		{Type: EventAssistantDelta, Text: "hello"},
 		{Type: EventToolStarted, ToolID: "tool-1", ToolName: "bash", Status: "running"},
 		{Type: EventToolCompleted, ToolID: "tool-1", ToolName: "bash", Output: "ok\n", Status: "completed"},
 		{Type: EventAssistantDelta, Text: " world"},
+		{Type: EventTurnCompleted, Status: "completed"},
 	}
 	if got := sink.snapshot(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("OpenCode events = %#v, want %#v", got, want)
@@ -134,9 +133,11 @@ func TestOpenCodeProviderRecordsShellCommandWithoutReply(t *testing.T) {
 func TestOpenCodeProviderAnswersQuestion(t *testing.T) {
 	fake := newFakeOpenCodeServer(t)
 	provider := newTestOpenCodeProvider(t, fake, ProviderConfig{WorkingDir: t.TempDir(), StateDir: t.TempDir()})
-	sink := newOpenCodeTestSink(map[string][]string{"question-1": {"PostgreSQL"}})
-	turnDone := make(chan error, 1)
-	go func() { turnDone <- provider.RunTurn(t.Context(), TurnInput{Text: "choose a database"}, sink) }()
+	sink := newProviderTestSink(map[string][]string{"question-1": {"PostgreSQL"}})
+	provider.SetEventSink(sink)
+	if err := provider.StartTurn(t.Context(), TurnInput{Text: "choose a database"}); err != nil {
+		t.Fatal(err)
+	}
 	receiveOpenCodePrompt(t, fake.prompts)
 
 	fake.emit("session.status", map[string]any{"sessionID": fake.sessionID, "status": map[string]string{"type": "busy"}})
@@ -167,9 +168,7 @@ func TestOpenCodeProviderAnswersQuestion(t *testing.T) {
 		t.Fatal("OpenCode question was not answered")
 	}
 	fake.emit("session.idle", map[string]string{"sessionID": fake.sessionID})
-	if err := receiveOpenCodeResult(t, turnDone); err != nil {
-		t.Fatalf("RunTurn() error = %v", err)
-	}
+	sink.waitForCompletion(t, "completed")
 }
 
 // TestOpenCodeProviderRuntimeStatusMapping verifies that the model reported on
@@ -184,9 +183,11 @@ func TestOpenCodeProviderRuntimeStatusMapping(t *testing.T) {
 		StateDir:   t.TempDir(),
 		Effort:     "high",
 	})
-	sink := newOpenCodeTestSink(nil)
-	turnDone := make(chan error, 1)
-	go func() { turnDone <- provider.RunTurn(t.Context(), TurnInput{Text: "hello"}, sink) }()
+	sink := newProviderTestSink(nil)
+	provider.SetEventSink(sink)
+	if err := provider.StartTurn(t.Context(), TurnInput{Text: "hello"}); err != nil {
+		t.Fatal(err)
+	}
 	receiveOpenCodePrompt(t, fake.prompts)
 
 	fake.emit("session.status", map[string]any{"sessionID": fake.sessionID, "status": map[string]string{"type": "busy"}})
@@ -205,9 +206,7 @@ func TestOpenCodeProviderRuntimeStatusMapping(t *testing.T) {
 		"tokens": map[string]any{"input": 200, "output": 30, "reasoning": 70, "cache": map[string]any{"read": 1100, "write": 0}},
 	}})
 	fake.emit("session.idle", map[string]string{"sessionID": fake.sessionID})
-	if err := receiveOpenCodeResult(t, turnDone); err != nil {
-		t.Fatalf("RunTurn() error = %v", err)
-	}
+	sink.waitForCompletion(t, "completed")
 
 	var statuses []Event
 	for _, event := range sink.snapshot() {
@@ -238,10 +237,11 @@ func TestOpenCodeProviderRuntimeStatusMapping(t *testing.T) {
 func TestOpenCodeProviderInterruptsActiveTurn(t *testing.T) {
 	fake := newFakeOpenCodeServer(t)
 	provider := newTestOpenCodeProvider(t, fake, ProviderConfig{WorkingDir: t.TempDir(), StateDir: t.TempDir()})
-	turnDone := make(chan error, 1)
-	go func() {
-		turnDone <- provider.RunTurn(t.Context(), TurnInput{Text: "keep working"}, newOpenCodeTestSink(nil))
-	}()
+	sink := newProviderTestSink(nil)
+	provider.SetEventSink(sink)
+	if err := provider.StartTurn(t.Context(), TurnInput{Text: "keep working"}); err != nil {
+		t.Fatal(err)
+	}
 	receiveOpenCodePrompt(t, fake.prompts)
 
 	if err := provider.Interrupt(t.Context()); err != nil {
@@ -253,9 +253,7 @@ func TestOpenCodeProviderInterruptsActiveTurn(t *testing.T) {
 		t.Fatal("OpenCode abort endpoint was not called")
 	}
 	fake.emit("session.idle", map[string]string{"sessionID": fake.sessionID})
-	if err := receiveOpenCodeResult(t, turnDone); !errors.Is(err, ErrTurnInterrupted) {
-		t.Fatalf("RunTurn() error = %v, want %v", err, ErrTurnInterrupted)
-	}
+	sink.waitForCompletion(t, "interrupted")
 }
 
 func TestOpenCodeProviderFailsWhenSavedSessionIsMissing(t *testing.T) {
@@ -349,9 +347,13 @@ type fakeOpenCodeServer struct {
 	permissionReplies chan string
 	aborts            chan struct{}
 
-	mu             sync.Mutex
-	createdRequest map[string]any
-	createdCount   int
+	nativeCommands  []string
+	commandRequests chan map[string]any
+	commandFailure  int
+	commandWait     <-chan struct{}
+	mu              sync.Mutex
+	createdRequest  map[string]any
+	createdCount    int
 }
 
 func newFakeOpenCodeServer(t *testing.T) *fakeOpenCodeServer {
@@ -362,6 +364,7 @@ func newFakeOpenCodeServer(t *testing.T) *fakeOpenCodeServer {
 		resumeFound:       true,
 		events:            make(chan string, 64),
 		prompts:           make(chan map[string]any, 4),
+		commandRequests:   make(chan map[string]any, 4),
 		contexts:          make(chan map[string]any, 4),
 		questionReplies:   make(chan [][]string, 4),
 		permissionReplies: make(chan string, 4),
@@ -375,6 +378,33 @@ func (f *fakeOpenCodeServer) serveHTTP(response http.ResponseWriter, request *ht
 	switch {
 	case request.Method == http.MethodGet && request.URL.Path == "/event":
 		f.serveEvents(response, request)
+	case request.Method == http.MethodGet && request.URL.Path == "/command":
+		f.requireDirectory(request)
+		commands := make([]map[string]string, 0, len(f.nativeCommands))
+		for _, name := range f.nativeCommands {
+			commands = append(commands, map[string]string{"name": name})
+		}
+		writeOpenCodeJSON(response, commands)
+	case request.Method == http.MethodPost && request.URL.Path == "/session/"+f.sessionID+"/command":
+		f.requireDirectory(request)
+		var body map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			f.t.Error(err)
+			return
+		}
+		f.commandRequests <- body
+		if f.commandWait != nil {
+			select {
+			case <-f.commandWait:
+			case <-request.Context().Done():
+				return
+			}
+		}
+		if f.commandFailure != 0 {
+			http.Error(response, "command failed", f.commandFailure)
+			return
+		}
+		writeOpenCodeJSON(response, map[string]any{"info": map[string]string{"id": "command-message"}, "parts": []any{}})
 	case request.Method == http.MethodGet && request.URL.Path == "/config/providers":
 		f.requireDirectory(request)
 		writeOpenCodeJSON(response, map[string]any{"providers": []map[string]any{{
@@ -528,34 +558,6 @@ func newTestOpenCodeProvider(t *testing.T, fake *fakeOpenCodeServer, config Prov
 	return provider
 }
 
-type openCodeTestSink struct {
-	mu      sync.Mutex
-	events  []Event
-	inputs  chan InputRequest
-	answers map[string][]string
-}
-
-func newOpenCodeTestSink(answers map[string][]string) *openCodeTestSink {
-	return &openCodeTestSink{inputs: make(chan InputRequest, 4), answers: answers}
-}
-
-func (s *openCodeTestSink) Emit(event Event) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.events = append(s.events, event)
-}
-
-func (s *openCodeTestSink) RequestInput(_ context.Context, request InputRequest) (map[string][]string, error) {
-	s.inputs <- request
-	return s.answers, nil
-}
-
-func (s *openCodeTestSink) snapshot() []Event {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return append([]Event(nil), s.events...)
-}
-
 func receiveOpenCodePrompt(t *testing.T, prompts <-chan map[string]any) map[string]any {
 	t.Helper()
 	select {
@@ -563,17 +565,6 @@ func receiveOpenCodePrompt(t *testing.T, prompts <-chan map[string]any) map[stri
 		return prompt
 	case <-time.After(5 * time.Second):
 		t.Fatal("OpenCode prompt was not submitted")
-		return nil
-	}
-}
-
-func receiveOpenCodeResult(t *testing.T, results <-chan error) error {
-	t.Helper()
-	select {
-	case err := <-results:
-		return err
-	case <-time.After(5 * time.Second):
-		t.Fatal("OpenCode turn did not finish")
 		return nil
 	}
 }

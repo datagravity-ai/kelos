@@ -68,9 +68,9 @@ spec:
     worker:
       workspaceRef:
         name: agora-agent
-      model: gpt-6-astra
+      model: opus
       effort: xhigh
-      type: codex
+      type: claude-code
       credentials:
         type: oauth
         secretRef:
@@ -131,12 +131,6 @@ spec:
       - Understand the motivation and scope of the change
 
       ### 3. Review the diff
-      Use the `review-all` skill with `origin/main` as the base. Let its two
-      independent review paths examine the committed `origin/main...HEAD` diff,
-      then use the unified findings as the basis for this review. The skill
-      performs analysis only; after it returns, continue with the project-specific
-      checks below and publish the single sticky comment in step 6.
-
       Review the code:
       - Read the full diff: `git diff origin/main...HEAD`
       - For each changed file, read the surrounding context to understand how the

@@ -315,7 +315,7 @@ func runSessionPlainTerminalWithWidth(ctx context.Context, input io.Reader, outp
 				if hasEarlierHistory {
 					write("\n%s\n", formatter.muted("Earlier Session history is available. Use /history to load the previous page."))
 				}
-				write("\n%s\n\n", formatter.muted("Connected. Type a message, !COMMAND, /goal, /attach PATH, /history, /interrupt, /answer INPUT QUESTION VALUE, or /quit."))
+				write("\n%s\n\n", formatter.muted("Connected. Type a message, !COMMAND, /goal, /loop, /attach PATH, /history, /interrupt, /answer INPUT QUESTION VALUE, or /quit."))
 			case sessionruntime.EventRuntimeRecovered:
 				if !pageEvent {
 					recoveryActive = true
@@ -407,7 +407,7 @@ func runSessionPlainTerminalWithWidth(ctx context.Context, input io.Reader, outp
 					write("%s\n\n", formatter.turnSeparator(elapsed, terminalWidth()))
 					activeTurnID = ""
 					activeTurnStarted = time.Time{}
-				} else {
+				} else if !replayingHistory {
 					write("\n")
 				}
 			case sessionruntime.EventError:

@@ -1031,6 +1031,7 @@ func TestTaskSpawnerConvert_GitHubWebhookExcludeFiltersRoundTrip(t *testing.T) {
 					ExcludeFilters: []v1alpha2.GitHubWebhookFilter{
 						{PullRequestAuthor: "bot-user"},
 						{Event: "pull_request", Action: "closed"},
+						{RequestedReviewer: "reviewer"},
 					},
 				},
 			},
@@ -1065,14 +1066,17 @@ func TestTaskSpawnerConvert_GitHubWebhookExcludeFiltersRoundTrip(t *testing.T) {
 		t.Fatal("expected githubWebhook config after up-conversion")
 	}
 	got := up.Spec.When.GitHubWebhook.ExcludeFilters
-	if len(got) != 2 {
-		t.Fatalf("restored %d exclude filters, want 2: %#v", len(got), got)
+	if len(got) != 3 {
+		t.Fatalf("restored %d exclude filters, want 3: %#v", len(got), got)
 	}
 	if got[0].PullRequestAuthor != "bot-user" || got[0].Event != "" {
 		t.Errorf("unscoped rule not restored intact: %#v", got[0])
 	}
 	if got[1].Event != "pull_request" || got[1].Action != "closed" {
 		t.Errorf("scoped rule not restored intact: %#v", got[1])
+	}
+	if got[2].RequestedReviewer != "reviewer" || got[2].Event != "" {
+		t.Errorf("requested reviewer rule not restored intact: %#v", got[2])
 	}
 	if _, ok := up.Annotations[preservedGitHubWebhookExcludeFiltersAnnotation]; ok {
 		t.Error("preservation annotation not cleaned up after restore")
@@ -1126,6 +1130,7 @@ func TestTaskSpawnerToHub_OutOfSchemaExcludeFiltersAnnotationIgnored(t *testing.
 	}{
 		{name: "more rules than MaxItems", annotation: string(tooMany)},
 		{name: "pull request author over MaxLength", annotation: string(overLongAuthor)},
+		{name: "requested reviewer over MaxLength", annotation: `[{"requestedReviewer":"` + strings.Repeat("a", v1alpha2.GitHubWebhookFilterRequestedReviewerMaxLength+1) + `"}]`},
 		{name: "rule with no criteria would exclude everything", annotation: `[{}]`},
 		{name: "rule using unsupported filePatterns", annotation: `[{"filePatterns":{"include":["**/*.go"]}}]`},
 		{name: "not a JSON array", annotation: `{"pullRequestAuthor":"bot"}`},
@@ -1186,18 +1191,16 @@ func TestTaskSpawnerToHub_OutOfSchemaExcludeFiltersAnnotationIgnored(t *testing.
 	}
 }
 
-// TestTaskSpawnerConvert_FilterPullRequestAuthorDropsOnRoundTrip documents that
-// pullRequestAuthor on an accepting filter is dropped by a v1alpha1 round-trip,
-// the same way the other v1alpha2-only filter criteria (conclusion, checkName)
-// down-convert. Only the source-level excludeFilters list is preserved.
-func TestTaskSpawnerConvert_FilterPullRequestAuthorDropsOnRoundTrip(t *testing.T) {
+// v1alpha2-only accepting filter criteria are dropped by a v1alpha1 round-trip.
+// Only the source-level excludeFilters list is preserved.
+func TestTaskSpawnerConvert_FilterCriteriaDropOnRoundTrip(t *testing.T) {
 	src := &v1alpha2.TaskSpawner{
 		Spec: v1alpha2.TaskSpawnerSpec{
 			When: v1alpha2.When{
 				GitHubWebhook: &v1alpha2.GitHubWebhook{
 					Events: []string{"pull_request"},
 					Filters: []v1alpha2.GitHubWebhookFilter{
-						{Event: "pull_request", PullRequestAuthor: "bot-user"},
+						{Event: "pull_request", PullRequestAuthor: "bot-user", RequestedReviewer: "reviewer"},
 					},
 				},
 			},
@@ -1221,6 +1224,9 @@ func TestTaskSpawnerConvert_FilterPullRequestAuthorDropsOnRoundTrip(t *testing.T
 	}
 	if filter.PullRequestAuthor != "" {
 		t.Errorf("filter pullRequestAuthor = %q, want dropped", filter.PullRequestAuthor)
+	}
+	if filter.RequestedReviewer != "" {
+		t.Errorf("filter requestedReviewer = %q, want dropped", filter.RequestedReviewer)
 	}
 }
 

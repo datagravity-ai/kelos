@@ -3,11 +3,316 @@ package sessionruntime
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestClaudeLoopCommandsPreserveNativeInputAndShellContext(t *testing.T) {
+	for _, text := range []string{"/loop", "/loop 5m Check CI", "/loop Check CI", "/loop 15m"} {
+		t.Run(text, func(t *testing.T) {
+			stdin := &channelWriteCloser{writes: make(chan []byte, 2)}
+			provider := &ClaudeProvider{ctx: t.Context(), stdin: stdin, sessionID: "session-1"}
+			record := shellCommandRecord{command: "make test", output: "All tests pass"}
+			if err := provider.recordShellCommand(t.Context(), record); err != nil {
+				t.Fatal(err)
+			}
+			if err := provider.StartLoop(t.Context(), text); err != nil {
+				t.Fatal(err)
+			}
+			var message struct {
+				SessionID string `json:"session_id"`
+				Message   struct {
+					Content []struct {
+						Text string `json:"text"`
+					} `json:"content"`
+				} `json:"message"`
+			}
+			if err := json.Unmarshal(<-stdin.writes, &message); err != nil {
+				t.Fatal(err)
+			}
+			if message.SessionID != "session-1" || len(message.Message.Content) != 1 || message.Message.Content[0].Text != text {
+				t.Fatalf("Native loop input = %#v", message)
+			}
+			if err := provider.StartTurn(t.Context(), TurnInput{Text: "Continue"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(<-stdin.writes, &message); err != nil {
+				t.Fatal(err)
+			}
+			if len(message.Message.Content) != 2 || message.Message.Content[0].Text != formatShellCommandRecord(record) || message.Message.Content[1].Text != "Continue" {
+				t.Fatalf("Ordinary prompt after native loop = %#v", message)
+			}
+		})
+	}
+}
+
+func TestClaudeNativeLoopRunsAndQueuesCommands(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	reader, writer := io.Pipe()
+	stdin := &channelWriteCloser{writes: make(chan []byte, 1)}
+	provider := &ClaudeProvider{ctx: ctx, config: ProviderConfig{StateDir: t.TempDir()}, stdin: stdin, sessionID: "session-1", done: make(chan struct{})}
+	journal := NewJournal()
+	defer journal.Close()
+	server := NewServer(Config{AgentType: "claude-code"}, journal, provider)
+	server.readWorkspaceDiff = func(context.Context, string) string { return "" }
+	go provider.readLoop(reader)
+	done := make(chan struct{})
+	go func() { defer close(done); server.runTurns(ctx) }()
+	defer func() { cancel(); <-done; _ = writer.Close(); <-provider.done }()
+	write := func(line string) {
+		t.Helper()
+		if _, err := fmt.Fprintln(writer, line); err != nil {
+			t.Fatal(err)
+		}
+	}
+	readInput := func(text string) {
+		t.Helper()
+		select {
+		case data := <-stdin.writes:
+			if !strings.Contains(string(data), `"text":"`+text+`"`) {
+				t.Fatalf("Native input = %s, want %q", data, text)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("Native input %q was not submitted", text)
+		}
+	}
+	if err := server.submitClientMessage(ctx, "/loop 5m Check CI", "create"); err != nil {
+		t.Fatal(err)
+	}
+	readInput("/loop 5m Check CI")
+	write(`{"type":"assistant","message":{"content":[{"type":"text","text":"Loop scheduled"}]}}`)
+	write(`{"type":"result","subtype":"success"}`)
+	waitForSessionEvent(t, journal, func(event Event) bool { return event.Type == EventTurnCompleted && event.TurnID == "turn-1" })
+
+	write(`{"type":"assistant","message":{"content":[{"type":"text","text":"Checking CI on schedule"}]}}`)
+	waitForSessionEvent(t, journal, func(event Event) bool { return event.Type == EventAssistantMessage && event.TurnID == "turn-2" })
+	if err := server.submitClientMessage(ctx, "/loop 15m Review updates", "queued"); err != nil {
+		t.Fatal(err)
+	}
+	assertClaudeCommandQueued(t, stdin, journal, "turn-3")
+	write(`{"type":"result","subtype":"success"}`)
+	readInput("/loop 15m Review updates")
+	write(`{"type":"assistant","message":{"content":[{"type":"text","text":"Another loop scheduled"}]}}`)
+	write(`{"type":"result","subtype":"success"}`)
+	waitForSessionEvent(t, journal, func(event Event) bool { return event.Type == EventTurnCompleted && event.TurnID == "turn-3" })
+	prompts := promptHistoryItems(journal.Snapshot())
+	if len(prompts) != 2 || prompts[0].events[0].Text != "/loop 5m Check CI" || prompts[1].events[0].Text != "/loop 15m Review updates" {
+		t.Fatalf("Prompt history = %#v", prompts)
+	}
+}
+
+func TestSessionRejectsUnsupportedNativeLoop(t *testing.T) {
+	for _, agent := range []string{"codex", "opencode"} {
+		t.Run(agent, func(t *testing.T) {
+			journal := NewJournal()
+			defer journal.Close()
+			server := NewServer(Config{AgentType: agent}, journal, &fakeProvider{})
+			err := server.submitClientMessage(t.Context(), "/loop 5m Check CI", "loop")
+			if err == nil || err.Error() != "/loop is not available in this Session" {
+				t.Fatalf("Submitting unsupported loop = %v", err)
+			}
+			if len(server.turns) != 0 || len(journal.Snapshot()) != 0 {
+				t.Fatal("Unsupported command was accepted")
+			}
+		})
+	}
+}
+
+func TestClaudeGoalCommandsUseNativeInput(t *testing.T) {
+	for _, test := range []struct {
+		command goalCommand
+		text    string
+	}{
+		{command: goalCommand{action: goalCommandShow}, text: "/goal"},
+		{command: goalCommand{action: goalCommandCreate, objective: "All tests pass"}, text: "/goal All tests pass"},
+		{command: goalCommand{action: goalCommandClear}, text: "/goal clear"},
+	} {
+		t.Run(test.text, func(t *testing.T) {
+			stdin := &channelWriteCloser{writes: make(chan []byte, 1)}
+			provider := &ClaudeProvider{ctx: t.Context(), stdin: stdin, sessionID: "session-1"}
+			if err := provider.StartGoal(t.Context(), test.command); err != nil {
+				t.Fatal(err)
+			}
+			var message struct {
+				SessionID string `json:"session_id"`
+				Message   struct {
+					Content []struct {
+						Text string `json:"text"`
+					} `json:"content"`
+				} `json:"message"`
+			}
+			if err := json.Unmarshal(<-stdin.writes, &message); err != nil {
+				t.Fatal(err)
+			}
+			if message.SessionID != "session-1" || len(message.Message.Content) != 1 || message.Message.Content[0].Text != test.text {
+				t.Fatalf("Native goal input = %#v", message)
+			}
+		})
+	}
+}
+
+func TestClaudeGoalCommandsPreservePendingShellContext(t *testing.T) {
+	stdin := &channelWriteCloser{writes: make(chan []byte, 2)}
+	provider := &ClaudeProvider{ctx: t.Context(), stdin: stdin, sessionID: "session-1"}
+	record := shellCommandRecord{command: "make test", output: "All tests pass"}
+	if err := provider.recordShellCommand(t.Context(), record); err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.StartGoal(t.Context(), goalCommand{action: goalCommandCreate, objective: "All tests pass"}); err != nil {
+		t.Fatal(err)
+	}
+	var goal struct {
+		Message struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal(<-stdin.writes, &goal); err != nil {
+		t.Fatal(err)
+	}
+	if len(goal.Message.Content) != 1 || goal.Message.Content[0].Text != "/goal All tests pass" {
+		t.Fatalf("Native goal input = %#v", goal)
+	}
+	if err := provider.StartTurn(t.Context(), TurnInput{Text: "Continue"}); err != nil {
+		t.Fatal(err)
+	}
+	var ordinary struct {
+		Message struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal(<-stdin.writes, &ordinary); err != nil {
+		t.Fatal(err)
+	}
+	if len(ordinary.Message.Content) != 2 || ordinary.Message.Content[0].Text != formatShellCommandRecord(record) || ordinary.Message.Content[1].Text != "Continue" {
+		t.Fatalf("Ordinary prompt after native command = %#v", ordinary)
+	}
+}
+
+func TestClaudeGoalRejectsUnknownAction(t *testing.T) {
+	stdin := &channelWriteCloser{writes: make(chan []byte, 1)}
+	provider := &ClaudeProvider{ctx: t.Context(), stdin: stdin}
+	if err := provider.StartGoal(t.Context(), goalCommand{action: "unknown"}); err == nil || !strings.Contains(err.Error(), claudeGoalUsage) {
+		t.Fatalf("StartGoal(unknown) = %v", err)
+	}
+	if len(stdin.writes) != 0 || provider.active {
+		t.Fatal("Unknown goal action started work")
+	}
+}
+
+func TestClaudeNativeGoalStreamsAndQueuesControls(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	reader, writer := io.Pipe()
+	stdin := &channelWriteCloser{writes: make(chan []byte, 1)}
+	provider := &ClaudeProvider{ctx: ctx, config: ProviderConfig{StateDir: t.TempDir()}, stdin: stdin, sessionID: "session-1", done: make(chan struct{})}
+	journal := NewJournal()
+	defer journal.Close()
+	server := NewServer(Config{AgentType: "claude-code"}, journal, provider)
+	server.readWorkspaceDiff = func(context.Context, string) string { return "" }
+	go provider.readLoop(reader)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		server.runTurns(ctx)
+	}()
+	defer func() { cancel(); <-done; _ = writer.Close(); <-provider.done }()
+	if err := server.submitClientMessage(ctx, "/goal All tests pass", "create"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-stdin.writes:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Native goal was not submitted")
+	}
+	for _, line := range []string{
+		`{"type":"assistant","message":{"model":"<synthetic>","content":[{"type":"text","text":"Goal set: All tests pass"}]},"local_command_run":{"command":"goal","args":"All tests pass"}}`,
+		`{"type":"assistant","message":{"content":[{"type":"text","text":"First attempt"}]}}`,
+		`{"type":"assistant","message":{"content":[{"type":"text","text":"Second attempt"}]}}`,
+	} {
+		if _, err := fmt.Fprintln(writer, line); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitForSessionEvent(t, journal, func(event Event) bool { return event.Type == EventAssistantMessage && event.Text == "Second attempt" })
+	if err := server.submitClientMessage(ctx, "/goal clear", "clear"); err != nil {
+		t.Fatal(err)
+	}
+	assertClaudeCommandQueued(t, stdin, journal, "turn-2")
+	for _, event := range journal.Snapshot() {
+		if event.Type == EventTurnCompleted {
+			t.Fatal("Native goal completed before Claude's result")
+		}
+	}
+	if _, err := fmt.Fprintln(writer, `{"type":"result","subtype":"success"}`); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case data := <-stdin.writes:
+		if !strings.Contains(string(data), `"text":"/goal clear"`) {
+			t.Fatalf("Queued native goal input = %s", data)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Queued goal control did not run after Claude's result")
+	}
+	for _, line := range []string{
+		`{"type":"assistant","message":{"model":"<synthetic>","content":[{"type":"text","text":"No goal set"}]},"local_command_run":{"command":"goal","args":"clear"}}`,
+		`{"type":"result","subtype":"success","local_command":"goal"}`,
+	} {
+		if _, err := fmt.Fprintln(writer, line); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitForSessionEvent(t, journal, func(event Event) bool { return event.Type == EventTurnCompleted && event.TurnID == "turn-2" })
+	completed := 0
+	for _, event := range journal.Snapshot() {
+		if event.Type == EventTurnCompleted {
+			completed++
+			if event.Status != "completed" {
+				t.Fatalf("Goal completion = %#v", event)
+			}
+		}
+	}
+	if completed != 2 {
+		t.Fatalf("Completed turns = %d, want 2", completed)
+	}
+}
+
+func TestClaudeNativeCommandPreservesRuntimeModelAndUsage(t *testing.T) {
+	provider := &ClaudeProvider{model: "claude-sonnet-4-6", usage: &RuntimeUsage{InputTokens: 100, OutputTokens: 20, TotalTokens: 120, ContextTokens: 120}}
+	sink := newProviderTestSink(nil)
+	_, err := provider.handleClaudeLine([]byte(`{"type":"assistant","message":{"id":"local-command","model":"<synthetic>","usage":{"input_tokens":0,"output_tokens":0},"content":[{"type":"text","text":"No goal set"}]}}`), sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := provider.runtimeStatusSnapshot()
+	if status.Model != "claude-sonnet-4-6" || status.Usage == nil || status.Usage.TotalTokens != 120 || status.Usage.ContextTokens != 120 {
+		t.Fatalf("Runtime status after native goal command = %#v", status)
+	}
+	assertEventTypes(t, sink.snapshot(), EventAssistantMessage)
+}
+
+func assertClaudeCommandQueued(t *testing.T, stdin *channelWriteCloser, journal *Journal, turnID string) {
+	t.Helper()
+	// Dispatch runs on another goroutine, so an immediate poll cannot show
+	// whether the command waits for the active turn to finish.
+	select {
+	case data := <-stdin.writes:
+		t.Fatalf("Queued command reached Claude before active work completed: %s", data)
+	case <-time.After(100 * time.Millisecond):
+	}
+	for _, event := range journal.Snapshot() {
+		if event.Type == EventTurnStarted && event.TurnID == turnID {
+			t.Fatalf("Queued turn %s started before active work completed", turnID)
+		}
+	}
+}
 
 type channelWriteCloser struct {
 	writes chan []byte
@@ -44,10 +349,10 @@ func TestClaudeProviderIncludesShellCommandWithNextPrompt(t *testing.T) {
 	default:
 	}
 
-	turnDone := make(chan error, 1)
-	go func() {
-		turnDone <- provider.RunTurn(t.Context(), TurnInput{Text: "continue"}, &collectingSink{})
-	}()
+	provider.SetEventSink(newProviderTestSink(nil))
+	if err := provider.StartTurn(t.Context(), TurnInput{Text: "continue"}); err != nil {
+		t.Fatalf("StartTurn() error = %v", err)
+	}
 
 	var message struct {
 		Message struct {
@@ -69,18 +374,6 @@ func TestClaudeProviderIncludesShellCommandWithNextPrompt(t *testing.T) {
 	if len(message.Message.Content) != 2 || message.Message.Content[0].Type != "text" || message.Message.Content[0].Text != wantContext || message.Message.Content[1].Text != "continue" {
 		t.Fatalf("Claude prompt content = %#v", message.Message.Content)
 	}
-	provider.activeMu.Lock()
-	done := provider.turnDone
-	provider.activeMu.Unlock()
-	done <- claudeTurnResult{}
-	select {
-	case err := <-turnDone:
-		if err != nil {
-			t.Fatalf("RunTurn() error = %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("Claude turn did not finish")
-	}
 	provider.shellContextMu.Lock()
 	defer provider.shellContextMu.Unlock()
 	if len(provider.pendingShellCommands) != 0 {
@@ -93,7 +386,7 @@ func TestClaudeProviderIncludesShellCommandWithNextPrompt(t *testing.T) {
 // render them as separate bubbles instead of concatenating the whole turn.
 func TestClaudeProviderClosesEachTextBlock(t *testing.T) {
 	provider := &ClaudeProvider{blockText: map[int]*strings.Builder{}}
-	sink := newOpenCodeTestSink(nil)
+	sink := newProviderTestSink(nil)
 
 	events := []string{
 		`{"type":"content_block_start","index":0,"content_block":{"type":"text"}}`,
@@ -124,7 +417,7 @@ func TestClaudeProviderClosesEachTextBlock(t *testing.T) {
 // non-text content block (a tool_use) does not emit an empty assistant.message.
 func TestClaudeProviderStreamedToolBlockEmitsNoMessage(t *testing.T) {
 	provider := &ClaudeProvider{blockText: map[int]*strings.Builder{}}
-	sink := newOpenCodeTestSink(nil)
+	sink := newProviderTestSink(nil)
 
 	events := []string{
 		`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tool-1","name":"Bash"}}`,
@@ -147,7 +440,7 @@ func TestClaudeProviderStreamedToolBlockEmitsNoMessage(t *testing.T) {
 // assistant.message per text block.
 func TestClaudeProviderEmitsMessageWithoutStreaming(t *testing.T) {
 	provider := &ClaudeProvider{}
-	sink := newOpenCodeTestSink(nil)
+	sink := newProviderTestSink(nil)
 
 	message := `{"content":[{"type":"text","text":"First"},{"type":"text","text":"Second"}]}`
 	provider.emitClaudeMessage("assistant", json.RawMessage(message), sink)
@@ -168,9 +461,9 @@ func TestClaudeProviderEmitsMessageWithoutStreaming(t *testing.T) {
 // (it also covers API calls that never appear as assistant events).
 func TestClaudeProviderRuntimeStatusMapping(t *testing.T) {
 	provider := &ClaudeProvider{config: ProviderConfig{Effort: "high"}}
-	sink := newOpenCodeTestSink(nil)
+	sink := newProviderTestSink(nil)
 
-	// The init event arrives before any turn is active, so it has no sink.
+	// An init event records status even when no consumer is attached.
 	if _, err := provider.handleClaudeLine([]byte(`{"type":"system","subtype":"init","model":"claude-opus-4-6","session_id":"ses-1"}`), nil); err != nil {
 		t.Fatalf("handleClaudeLine() error = %v", err)
 	}
@@ -228,7 +521,7 @@ func TestClaudeProviderRuntimeStatusMapping(t *testing.T) {
 // message does not re-emit the same text as duplicate assistant.message events.
 func TestClaudeProviderStreamingSuppressesAssembledMessage(t *testing.T) {
 	provider := &ClaudeProvider{blockText: map[int]*strings.Builder{}}
-	sink := newOpenCodeTestSink(nil)
+	sink := newProviderTestSink(nil)
 
 	stream := []string{
 		`{"type":"content_block_start","index":0,"content_block":{"type":"text"}}`,

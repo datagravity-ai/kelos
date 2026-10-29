@@ -70,6 +70,9 @@ type GitHubEventData struct {
 	// push, create, release, and check_run (GitHub's check_run.pull_requests
 	// entries carry no user). Used by pullRequestAuthor filter matching.
 	PullRequestAuthor string
+	// RequestedReviewer is requested_reviewer.login from the webhook payload.
+	// It is empty for events without an individual review request.
+	RequestedReviewer string
 }
 
 // ParseGitHubWebhook parses a GitHub webhook payload using the go-github SDK.
@@ -160,6 +163,7 @@ func ParseGitHubWebhook(eventType string, payload []byte) (*GitHubEventData, err
 	case *github.PullRequestEvent:
 		data.Action = e.GetAction()
 		data.Sender = e.GetSender().GetLogin()
+		data.RequestedReviewer = e.GetRequestedReviewer().GetLogin()
 		if pr := e.GetPullRequest(); pr != nil {
 			data.ID = fmt.Sprintf("%d", pr.GetNumber())
 			data.Title = pr.GetTitle()
@@ -305,6 +309,9 @@ func ParseGitHubWebhook(eventType string, payload []byte) (*GitHubEventData, err
 			}
 			if action, ok := raw["action"].(string); ok {
 				data.Action = action
+			}
+			if reviewer, ok := raw["requested_reviewer"].(map[string]interface{}); ok {
+				data.RequestedReviewer, _ = reviewer["login"].(string)
 			}
 			// Recover the pull request author so pullRequestAuthor matching
 			// works here too. Of the event types that carry a top-level
@@ -465,6 +472,10 @@ func matchesFilterWithoutFilePatterns(filter kelos.GitHubWebhookFilter, eventDat
 	// is about rather than the sender. An event with no pull request author
 	// never matches, so a push or check_run delivery is unaffected by it.
 	if filter.PullRequestAuthor != "" && filter.PullRequestAuthor != eventData.PullRequestAuthor {
+		return false
+	}
+
+	if filter.RequestedReviewer != "" && filter.RequestedReviewer != eventData.RequestedReviewer {
 		return false
 	}
 

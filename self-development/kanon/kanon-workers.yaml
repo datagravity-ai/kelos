@@ -29,7 +29,7 @@ spec:
     worker:
       workspaceRef:
         name: kanon-session-agent
-      model: gpt-6-astra
+      model: gpt-6.1-sol
       effort: xhigh
       type: codex
       credentials:

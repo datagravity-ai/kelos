@@ -35,7 +35,33 @@
         sessionActionDelete: document.querySelector('#session-action-delete'),
         overviewButton: document.querySelector('#console-overview'),
         sessionsButton: document.querySelector('#console-sessions'),
+        sessionsAttentionCount: document.querySelector('#sessions-attention-count'),
         resourcesButton: document.querySelector('#console-resources'),
+        adminButton: document.querySelector('#console-admin'),
+        adminView: document.querySelector('#admin-view'),
+        adminCollections: document.querySelector('#admin-collections'),
+        adminStatus: document.querySelector('#admin-status'),
+        adminEditor: document.querySelector('#admin-editor'),
+        adminEditorTitle: document.querySelector('#admin-editor-title'),
+        adminEditorDescription: document.querySelector('#admin-editor-description'),
+        adminEditorError: document.querySelector('#admin-editor-error'),
+        adminForm: document.querySelector('#admin-form'),
+        adminYAML: document.querySelector('#admin-yaml'),
+        adminSave: document.querySelector('#save-admin-resource'),
+        memberStatus: document.querySelector('#member-status'),
+        memberList: document.querySelector('#member-list'),
+        memberGroups: document.querySelector('#member-groups'),
+        memberError: document.querySelector('#member-error'),
+        addMember: document.querySelector('#add-member'),
+        memberDialog: document.querySelector('#member-dialog'),
+        memberDialogTitle: document.querySelector('#member-dialog-title'),
+        memberDialogDescription: document.querySelector('#member-dialog-description'),
+        memberForm: document.querySelector('#member-form'),
+        memberSubject: document.querySelector('#member-subject'),
+        memberRole: document.querySelector('#member-role'),
+        memberHelp: document.querySelector('#member-help'),
+        memberDialogError: document.querySelector('#member-dialog-error'),
+        memberSave: document.querySelector('#save-member'),
         overviewView: document.querySelector('#overview-view'),
         sessionsView: document.querySelector('#sessions-view'),
         resourcesView: document.querySelector('#resources-view'),
@@ -67,8 +93,17 @@
         refreshResourceLogs: document.querySelector('#refresh-resource-logs'),
         resourceDetailLogs: document.querySelector('#resource-detail-logs'),
         resourceDetailYAML: document.querySelector('#resource-detail-yaml'),
+        taskSpawnerRunForm: document.querySelector('#taskspawner-run-form'),
+        taskSpawnerRunValues: document.querySelector('#taskspawner-run-values'),
+        taskSpawnerRunError: document.querySelector('#taskspawner-run-error'),
+        taskSpawnerRunButton: document.querySelector('#taskspawner-run-button'),
+        taskSpawnerLifecycle: document.querySelector('#taskspawner-lifecycle'),
+        taskSpawnerLifecycleButton: document.querySelector('#taskspawner-lifecycle-button'),
+        taskSpawnerLifecycleStatus: document.querySelector('#taskspawner-lifecycle-status'),
+        taskSpawnerLifecycleError: document.querySelector('#taskspawner-lifecycle-error'),
         namespaceLabels: document.querySelectorAll('.console-namespace'),
         newSessionButton: document.querySelector('#new-session'),
+        welcomeNew: document.querySelector('#welcome-new'),
         sectionSelect: document.querySelector('#session-section-select'),
         sectionCustom: document.querySelector('#session-section-custom'),
         sectionForm: document.querySelector('#session-section-form'),
@@ -79,10 +114,14 @@
         currentRequest: document.querySelector('#current-request'),
         currentRequestButton: document.querySelector('#current-request-button'),
         currentRequestText: document.querySelector('#current-request-text'),
+        jumpToLatest: document.querySelector('#jump-to-latest'),
         messages: document.querySelector('#messages'),
         changes: document.querySelector('#changes-view'),
         changesList: document.querySelector('#changes-list'),
         changesSummary: document.querySelector('#changes-summary'),
+        changesScope: document.querySelector('#changes-scope'),
+        changesBaseLabel: document.querySelector('#changes-base-label'),
+        changesBase: document.querySelector('#changes-base'),
         changesCount: document.querySelector('#changes-count'),
         viewTabs: document.querySelector('.view-tabs'),
         conversationTab: document.querySelector('#conversation-tab'),
@@ -108,16 +147,21 @@
         pendingAttachments: document.querySelector('#pending-attachments'),
         send: document.querySelector('#send-message'),
         composerHint: document.querySelector('#composer-hint'),
+        composerHighlight: document.querySelector('#composer-highlight'),
+        composerCommandHelp: document.querySelector('#composer-command-help'),
         runtimeStatus: document.querySelector('#session-runtime-status'),
         progress: document.querySelector('#session-progress'),
         progressLabel: document.querySelector('#session-progress-label'),
         progressElapsed: document.querySelector('#session-progress-elapsed'),
+        backgroundTasks: document.querySelector('#session-background-tasks'),
+        backgroundTaskStatus: document.querySelector('#session-background-tasks-status'),
         pending: document.querySelector('#pending-message'),
         connection: document.querySelector('#connection-pill'),
         dialog: document.querySelector('#session-dialog'),
         form: document.querySelector('#session-form'),
         dialogError: document.querySelector('#dialog-error'),
         namespaceForm: document.querySelector('#namespace-form'),
+        namespaceStatus: document.querySelector('#namespace-status'),
         activeNamespace: document.querySelector('#active-namespace'),
         namespace: document.querySelector('[name="namespace"]'),
         sessionSource: document.querySelector('#session-source'),
@@ -152,6 +196,7 @@
         consoleSettings: document.querySelector('#console-settings'),
         settingsButton: document.querySelector('#console-settings-button'),
         browserAlerts: document.querySelector('#browser-alerts'),
+        browserAlertsTest: document.querySelector('#browser-alerts-test'),
         browserAlertsStatus: document.querySelector('#browser-alerts-status'),
         toast: document.querySelector('#toast'),
     });
@@ -163,6 +208,9 @@
         reconnectTimer: null,
         reconnectDelay: 800,
         bottomScrollFrame: null,
+        messagesScrollTop: 0,
+        messagesScrollPaused: false,
+        jumpToLatestPending: false,
         sessionViews: new Map(),
         currentView: null,
         lastEventID: 0,
@@ -172,6 +220,11 @@
         inputs: new Map(),
         diffs: new Map(),
         fileChanges: new Map(),
+        workspaceChanges: null,
+        changesScope: 'uncommitted',
+        changesBaseRef: '',
+        changesRequestID: '',
+        changesRefreshPending: false,
         pendingMessage: null,
         promptDrafts: new Map(),
         attachmentDrafts: new Map(),
@@ -196,10 +249,11 @@
         historyRequestID: '',
         runtimeRecoveryActive: false,
         pinHistoryToBottom: false,
-        fileChangesDirty: false,
         defaultNamespace: 'default',
-        namespace: 'default',
+        namespace: '',
+        namespaces: [],
         namespaceGeneration: 0,
+        namespaceRefresh: null,
         sessionListGeneration: 0,
         options: { credentials: [], workspaces: [], agentConfigs: [], sessions: [] },
         selectedAgentConfigs: [],
@@ -210,12 +264,21 @@
         suspendingSession: false,
         resumingSession: false,
         consoleView: 'overview',
+        adminGeneration: 0,
+        memberGeneration: 0,
+        memberSaving: false,
+        memberInventory: null,
+        memberEditing: null,
+        adminEditorGeneration: 0,
+        adminEditing: null,
+        adminSaving: false,
         resourceGroups: [],
         resourceRelationships: [],
         resourceListGeneration: 0,
         resourceDetailGeneration: 0,
         resourceDetailLogGeneration: 0,
         resourceDetailTask: null,
+        resourceDetailSpawner: null,
         sourceStorageClassNamePresent: false,
         loadedSource: null,
         displayNameSaving: false,
@@ -228,7 +291,7 @@
         sidebarDrag: null,
         browserAlertsEnabled: false,
         browserAlertsPending: false,
-        browserAlertsUnavailable: '',
+        browserAlertsMessage: '',
     };
     const customOption = '__custom__';
     const maxCachedSessionViews = 5;
@@ -242,11 +305,11 @@
         });
         if (response.status === 401) {
             window.location.replace('/login');
-            throw new Error('Authentication required');
+            throw Object.assign(new Error('Authentication required'), { status: response.status });
         }
         if (!response.ok) {
             const body = await response.json().catch(() => ({}));
-            throw new Error(body.error || `${response.status} ${response.statusText}`);
+            throw Object.assign(new Error(body.error || `${response.status} ${response.statusText}`), { status: response.status });
         }
         if (response.status === 204)
             return undefined;
@@ -279,7 +342,10 @@
         toastTimer = window.setTimeout(() => elements.toast.classList.remove('show'), 3200);
     }
     const browserAlertsStorageKey = 'kelos-console-browser-alerts';
-    const browserNotifications = new Map();
+    let browserNotificationRegistration = null;
+    let browserNotificationQueue = Promise.resolve();
+    let browserAlertGeneration = -1;
+    const browserAlertEvents = new Map();
     function bindConsoleSettings() {
         const settings = elements.consoleSettings;
         settings.addEventListener('toggle', () => {
@@ -294,9 +360,10 @@
     function browserAlertSupportError() {
         if (!window.isSecureContext)
             return 'Browser alerts require HTTPS or localhost.';
-        if (typeof window.Notification !== 'function')
-            return 'This browser does not support browser alerts.';
-        return state.browserAlertsUnavailable;
+        if (!window.Notification || !navigator.serviceWorker || !navigator.locks) {
+            return 'This browser does not support notifications here. On iPhone or iPad, add the console to your Home Screen and open it there.';
+        }
+        return '';
     }
     function renderBrowserAlerts() {
         const unavailable = browserAlertSupportError();
@@ -304,24 +371,84 @@
         const enabled = !unavailable && state.browserAlertsEnabled && Notification.permission === 'granted';
         elements.browserAlerts.disabled = Boolean(unavailable || blocked || state.browserAlertsPending);
         elements.browserAlerts.checked = Boolean(enabled);
+        elements.browserAlertsTest.disabled = !enabled || state.browserAlertsPending;
         elements.browserAlertsStatus.textContent = unavailable || (blocked
             ? 'Allow notifications in your browser’s site settings to enable alerts.'
-            : state.browserAlertsPending ? 'Waiting for browser permission…' : '');
+            : state.browserAlertsPending ? 'Preparing browser notifications…' : state.browserAlertsMessage);
         elements.browserAlertsStatus.hidden = !elements.browserAlertsStatus.textContent;
     }
+    function notificationRegistration() {
+        if (!browserNotificationRegistration) {
+            browserNotificationRegistration = navigator.serviceWorker.register('/notifications.js').then(async (registration) => {
+                if (typeof registration.showNotification !== 'function') {
+                    throw new Error('This browser does not support service-worker notifications');
+                }
+                if (!registration.active) {
+                    const worker = registration.installing || registration.waiting;
+                    if (!worker)
+                        throw new Error('The notification service worker did not start');
+                    await new Promise((resolve, reject) => {
+                        const changed = () => {
+                            if (worker.state === 'activated' || worker.state === 'redundant') {
+                                worker.removeEventListener('statechange', changed);
+                                if (worker.state === 'activated')
+                                    resolve();
+                                else
+                                    reject(new Error('The notification service worker could not activate'));
+                            }
+                        };
+                        worker.addEventListener('statechange', changed);
+                        changed();
+                    });
+                }
+                return registration;
+            }).catch(error => {
+                browserNotificationRegistration = null;
+                throw error;
+            });
+        }
+        return browserNotificationRegistration;
+    }
+    function queueBrowserNotification(action, onError) {
+        browserNotificationQueue = browserNotificationQueue.then(action).catch(error => {
+            onError?.();
+            const message = `Could not display browser notification: ${errorMessage(error)}`;
+            if (state.browserAlertsMessage !== message)
+                showToast(message);
+            state.browserAlertsMessage = message;
+            renderBrowserAlerts();
+        });
+        return browserNotificationQueue;
+    }
     function closeBrowserNotifications() {
-        for (const notification of browserNotifications.values())
-            notification.close();
-        browserNotifications.clear();
+        if (browserAlertSupportError())
+            return;
+        return queueBrowserNotification(async () => {
+            const registration = await navigator.serviceWorker.getRegistration('/');
+            if (!registration)
+                return;
+            for (const notification of await registration.getNotifications())
+                notification.close();
+        });
     }
     function pruneBrowserNotifications(sessions) {
-        const current = new Set(sessions.map(sessionViewKey));
-        for (const [key, notification] of browserNotifications) {
-            if (current.has(key))
-                continue;
-            notification.close();
-            browserNotifications.delete(key);
-        }
+        if (browserAlertSupportError())
+            return;
+        const namespace = state.namespace;
+        const current = new Map(sessions.map(session => [sessionViewKey(session), session]));
+        return queueBrowserNotification(async () => {
+            const registration = await navigator.serviceWorker.getRegistration('/');
+            if (!registration)
+                return;
+            for (const notification of await registration.getNotifications()) {
+                const session = notification.data?.session;
+                if (session?.namespace !== namespace)
+                    continue;
+                const latest = current.get(sessionViewKey(session));
+                if (!latest || latest.resetting || latest.lastNotification?.id !== notification.data.id)
+                    notification.close();
+            }
+        });
     }
     function loadBrowserAlertPreference() {
         try {
@@ -330,6 +457,7 @@
         catch (_) {
             state.browserAlertsEnabled = false;
         }
+        state.browserAlertsMessage = '';
         if (!state.browserAlertsEnabled)
             closeBrowserNotifications();
         renderBrowserAlerts();
@@ -337,6 +465,7 @@
     async function toggleBrowserAlerts() {
         if (state.browserAlertsPending || browserAlertSupportError())
             return;
+        state.browserAlertsMessage = '';
         if (state.browserAlertsEnabled && Notification.permission === 'granted') {
             state.browserAlertsEnabled = false;
             closeBrowserNotifications();
@@ -348,8 +477,12 @@
                 const permission = Notification.permission === 'default'
                     ? await Notification.requestPermission()
                     : Notification.permission;
-                state.browserAlertsEnabled = permission === 'granted';
-                if (!state.browserAlertsEnabled) {
+                if (permission === 'granted') {
+                    await notificationRegistration();
+                    state.browserAlertsEnabled = true;
+                }
+                else {
+                    state.browserAlertsEnabled = false;
                     showToast(permission === 'denied'
                         ? 'Browser alerts are blocked in your browser’s site settings'
                         : 'Browser alerts were not enabled');
@@ -357,7 +490,8 @@
             }
             catch (error) {
                 state.browserAlertsEnabled = false;
-                showToast(`Could not enable browser alerts: ${errorMessage(error)}`);
+                state.browserAlertsMessage = `Could not enable browser notifications: ${errorMessage(error)}`;
+                showToast(state.browserAlertsMessage);
             }
             finally {
                 state.browserAlertsPending = false;
@@ -371,63 +505,118 @@
         }
         renderBrowserAlerts();
     }
-    function notifySessionEvent(event) {
-        if (!state.selected || state.replayingHistory || (event.id && event.id <= state.lastEventID))
-            return;
-        let title;
-        let body;
-        if (event.type === 'input.requested') {
-            title = 'Input needed';
-            body = 'Your Session is waiting for an answer.';
+    function browserAlertsAvailable() {
+        return state.browserAlertsEnabled && !browserAlertSupportError() && Notification.permission === 'granted';
+    }
+    function viewingSession(session) {
+        return document.visibilityState === 'visible' && document.hasFocus()
+            && state.consoleView === 'sessions' && !elements.messages.hidden
+            && state.selected && sessionViewKey(state.selected) === sessionViewKey(session);
+    }
+    function notifySessions(sessions) {
+        const initial = browserAlertGeneration !== state.namespaceGeneration;
+        if (initial) {
+            browserAlertGeneration = state.namespaceGeneration;
+            browserAlertEvents.clear();
         }
-        else if (event.type === 'turn.completed' && event.status === 'completed') {
-            title = 'Work completed';
-            body = 'Your Session has finished its work.';
+        const current = new Set(sessions.map(sessionViewKey));
+        for (const key of browserAlertEvents.keys()) {
+            if (current.has(key))
+                continue;
+            browserAlertEvents.delete(key);
+            try {
+                window.localStorage.removeItem(`kelos-console-notification-${key}`);
+            }
+            catch (_) { }
         }
-        else if (event.type === 'turn.completed' && event.status === 'failed') {
-            title = 'Work failed';
-            body = 'Open the conversation to see the error.';
+        for (const session of sessions) {
+            const key = sessionViewKey(session);
+            const notification = session.lastNotification;
+            const seen = browserAlertEvents.get(key) || new Set();
+            browserAlertEvents.set(key, seen);
+            if (!notification || seen.has(notification.id))
+                continue;
+            seen.add(notification.id);
+            if (initial || !browserAlertsAvailable() || viewingSession(session))
+                continue;
+            const generation = state.namespaceGeneration;
+            queueBrowserNotification(async () => {
+                const registration = await notificationRegistration();
+                await navigator.locks.request(`kelos-session-${key}`, async () => {
+                    const latest = state.sessions.find(item => sessionViewKey(item) === key);
+                    if (generation !== state.namespaceGeneration || !browserAlertsAvailable() || !latest
+                        || latest.lastNotification?.id !== notification.id || viewingSession(latest))
+                        return;
+                    const descriptions = {
+                        InputRequested: ['Input needed', 'Your Session is waiting for an answer.'],
+                        TurnCompleted: ['Work completed', 'Your Session has finished its work.'],
+                        TurnFailed: ['Work failed', 'Open the conversation to see the error.'],
+                    };
+                    const description = descriptions[notification.type];
+                    if (!description || latest.resetting)
+                        return;
+                    const options = {
+                        body: `${latest.namespace} · ${description[1]}`,
+                        tag: `kelos-session-${key}`,
+                        renotify: true,
+                        timestamp: Date.parse(notification.eventTime),
+                        data: { id: notification.id, session: { name: latest.name, namespace: latest.namespace, uid: latest.uid } },
+                    };
+                    const storageKey = `kelos-console-notification-${key}`;
+                    try {
+                        if (window.localStorage.getItem(storageKey) === notification.id)
+                            return;
+                    }
+                    catch (_) { }
+                    const displayed = await registration.getNotifications({ tag: options.tag });
+                    if (displayed.some(item => item.data?.id === notification.id))
+                        return;
+                    await registration.showNotification(`${description[0]} · ${sessionDisplayName(latest)}`, options);
+                    try {
+                        window.localStorage.setItem(storageKey, notification.id);
+                    }
+                    catch (_) { }
+                    state.browserAlertsMessage = '';
+                    renderBrowserAlerts();
+                });
+            }, () => { seen.delete(notification.id); });
         }
-        else {
+    }
+    function testBrowserNotification() {
+        if (!browserAlertsAvailable())
             return;
-        }
-        if (!state.browserAlertsEnabled || browserAlertSupportError() || Notification.permission !== 'granted')
-            return;
-        if (document.visibilityState === 'visible' && document.hasFocus()
-            && state.consoleView === 'sessions' && !elements.messages.hidden)
-            return;
-        const session = state.selected;
-        const key = sessionViewKey(session);
+        return queueBrowserNotification(async () => {
+            const registration = await notificationRegistration();
+            if (!browserAlertsAvailable())
+                return;
+            const options = {
+                body: 'You will receive alerts for Sessions in the active namespace while the console is open.',
+                tag: 'kelos-notification-test',
+                renotify: true,
+            };
+            await registration.showNotification('Kelos notifications are enabled', options);
+            state.browserAlertsMessage = 'Test sent. If no notification appeared, check your browser’s notifications in system settings and Focus / Do Not Disturb.';
+            renderBrowserAlerts();
+        });
+    }
+    async function openNotificationSession(target) {
         try {
-            browserNotifications.get(key)?.close();
-            const notification = new Notification(`${title} · ${sessionDisplayName(session)}`, {
-                body: `${session.namespace} · ${body}`,
-                tag: `kelos-session-${key}`,
-            });
-            browserNotifications.set(key, notification);
-            notification.addEventListener('close', () => {
-                if (browserNotifications.get(key) === notification)
-                    browserNotifications.delete(key);
-            });
-            notification.addEventListener('click', () => {
-                notification.close();
-                window.focus();
-                if (session.namespace !== state.namespace)
-                    return;
-                const current = state.sessions.find(item => sessionViewKey(item) === key);
-                if (!current) {
-                    showToast(`Session ${session.name} is no longer available`);
-                    return;
-                }
-                selectSession(current);
-                setConsoleView('sessions');
-            });
+            await consoleReady;
+            if (target.namespace !== state.namespace) {
+                await refreshNamespaces();
+                await switchNamespace(target.namespace);
+            }
+            else {
+                await loadSessions();
+            }
+            const session = state.sessions.find(item => sessionViewKey(item) === sessionViewKey(target));
+            if (!session)
+                throw new Error(`Session ${target.name} is no longer available`);
+            selectSession(session);
+            setConsoleView('sessions');
         }
         catch (error) {
-            state.browserAlertsUnavailable = 'This browser could not display alerts from the console.';
-            closeBrowserNotifications();
-            renderBrowserAlerts();
-            showToast(`Could not display browser alert: ${errorMessage(error)}`);
+            showToast(errorMessage(error));
         }
     }
     const allResourceKind = '__all__';
@@ -446,15 +635,17 @@
         return state.resourceGroups.flatMap(group => group.resources.map(resource => ({ ...resource, group: group.name })));
     }
     function setConsoleView(view) {
-        state.consoleView = ['overview', 'sessions', 'resources'].includes(view) ? view : 'overview';
+        state.consoleView = ['overview', 'sessions', 'resources', 'admin'].includes(view) ? view : 'overview';
         elements.overviewView.hidden = state.consoleView !== 'overview';
         elements.sessionsView.hidden = state.consoleView !== 'sessions';
         elements.resourcesView.hidden = state.consoleView !== 'resources';
+        elements.adminView.hidden = state.consoleView !== 'admin';
         elements.sessionSidebar.hidden = state.consoleView !== 'sessions';
         for (const [button, name] of [
             [elements.overviewButton, 'overview'],
             [elements.sessionsButton, 'sessions'],
             [elements.resourcesButton, 'resources'],
+            [elements.adminButton, 'admin'],
         ]) {
             if (name === state.consoleView)
                 button.setAttribute('aria-current', 'page');
@@ -463,9 +654,15 @@
         }
         if (state.consoleView === 'sessions' && !state.selected && state.sessions.length)
             selectSession(state.sessions[0]);
-        if (state.consoleView === 'sessions')
+        if (state.consoleView === 'sessions') {
+            resizeComposer();
             updateCurrentRequest();
+        }
+        if (state.consoleView === 'admin')
+            void loadAdmin();
+        updateJumpToLatest();
         setSidebarOpen(false);
+        scheduleCompletionRead();
     }
     function resourceAge(createdAt) {
         return createdAt ? formatSessionRecency({ createdAt }, true) : '—';
@@ -473,7 +670,7 @@
     function resourceStatus(item) {
         return item.phase || 'Configured';
     }
-    function createResourceTable(entries, emptyMessage = `No resources in ${state.namespace}.`) {
+    function createResourceTable(entries, emptyMessage = state.namespace ? `No resources in ${state.namespace}.` : 'Select a namespace to view resources.') {
         if (!entries.length) {
             const empty = document.createElement('div');
             empty.className = 'resource-empty';
@@ -553,7 +750,7 @@
         if (!collections.length) {
             const loading = document.createElement('div');
             loading.className = 'resource-empty';
-            loading.textContent = 'Loading Kelos resources…';
+            loading.textContent = state.namespace ? 'Loading Kelos resources…' : 'Select a namespace to view resources.';
             elements.summaryGrid.append(loading);
         }
         const recent = collections
@@ -770,7 +967,7 @@
         if (!focusKey) {
             const empty = document.createElement('div');
             empty.className = 'resource-empty';
-            empty.textContent = `No resources in ${state.namespace}.`;
+            empty.textContent = state.namespace ? `No resources in ${state.namespace}.` : 'Select a namespace to view resources.';
             elements.resourceDiagram.replaceChildren(empty);
             return;
         }
@@ -868,12 +1065,427 @@
             else
                 button.removeAttribute('aria-current');
         }
-        const emptyMessage = query
+        const emptyMessage = !state.namespace ? 'Select a namespace to view resources.' : query
             ? `No resources match “${query}”.`
             : `No ${collection?.label.toLowerCase() || 'resources'} in ${state.namespace}.`;
         elements.resourceList.replaceChildren(createResourceTable(filteredEntries, emptyMessage));
     }
+    function memberName(member) {
+        return member.username.startsWith(state.memberInventory?.usernamePrefix || '')
+            ? member.username.slice(state.memberInventory?.usernamePrefix?.length || 0) : member.username;
+    }
+    async function loadMembers({ preserveError = false } = {}) {
+        if (!preserveError)
+            elements.memberError.hidden = true;
+        const namespace = state.namespace;
+        const generation = ++state.memberGeneration;
+        state.memberInventory = null;
+        elements.memberStatus.hidden = false;
+        elements.memberStatus.textContent = namespace ? 'Loading members…' : 'Select a namespace to manage members.';
+        elements.addMember.hidden = true;
+        elements.memberList.replaceChildren();
+        elements.memberGroups.replaceChildren();
+        if (!namespace)
+            return;
+        try {
+            const inventory = await api(`/api/admin/members?namespace=${encodeURIComponent(namespace)}`);
+            if (generation !== state.memberGeneration || namespace !== state.namespace)
+                return;
+            if (!inventory.enabled) {
+                elements.memberStatus.textContent = 'Members require OIDC sign-in. Static-token mode uses one shared identity.';
+                return;
+            }
+            state.memberInventory = inventory;
+            elements.memberStatus.hidden = true;
+            elements.addMember.hidden = !inventory.roles.some(role => role.canAssign);
+            renderMembers();
+        }
+        catch (error) {
+            if (generation !== state.memberGeneration || namespace !== state.namespace)
+                return;
+            elements.memberStatus.textContent = `Unable to load members: ${errorMessage(error)}`;
+        }
+    }
+    function renderMembers() {
+        const inventory = state.memberInventory;
+        elements.memberList.replaceChildren();
+        elements.memberGroups.replaceChildren();
+        if (!inventory)
+            return;
+        const namespace = state.namespace;
+        if (!inventory.members.length) {
+            const empty = document.createElement('div');
+            empty.className = 'resource-empty';
+            empty.textContent = `No direct members in ${namespace}. Add a member to give them access.`;
+            elements.memberList.append(empty);
+        }
+        for (const member of inventory.members) {
+            const row = document.createElement('div');
+            row.className = 'admin-resource-row';
+            const info = document.createElement('div');
+            const name = document.createElement('div');
+            name.className = 'admin-resource-name';
+            name.textContent = memberName(member) + (member.username === inventory.currentUser ? ' (you)' : '');
+            const source = document.createElement('div');
+            source.className = 'admin-resource-status';
+            const external = member.sources.filter(source => !source.managed);
+            source.textContent = external.length
+                ? `External access: ${external.map(source => `${source.binding} (${source.role === 'admin' ? 'Admin' : 'User'})`).join(', ')}`
+                : 'Direct member';
+            info.append(name, source);
+            const actions = document.createElement('div');
+            actions.className = 'admin-resource-actions';
+            const badge = document.createElement('span');
+            badge.className = 'member-role-badge';
+            badge.textContent = member.role === 'admin' ? 'Admin' : 'User';
+            actions.append(badge);
+            if (member.canChange && inventory.roles.some(role => role.canAssign)) {
+                const change = document.createElement('button');
+                change.type = 'button';
+                change.className = 'secondary-button';
+                change.textContent = 'Change role';
+                change.setAttribute('aria-label', `Change role for ${memberName(member)}`);
+                change.addEventListener('click', () => openMemberDialog(member));
+                actions.append(change);
+            }
+            if (member.canRemove) {
+                const remove = document.createElement('button');
+                remove.type = 'button';
+                remove.className = 'secondary-button danger';
+                remove.textContent = external.length ? 'Remove direct access' : 'Remove member';
+                remove.setAttribute('aria-label', `Remove direct membership for ${memberName(member)}`);
+                remove.addEventListener('click', () => { void removeMember(member, namespace, remove); });
+                actions.append(remove);
+            }
+            row.append(info, actions);
+            elements.memberList.append(row);
+        }
+        if (inventory.groups.length) {
+            const title = document.createElement('h3');
+            title.textContent = 'Access through groups';
+            const description = document.createElement('p');
+            description.textContent = 'These groups grant access in this namespace and are managed outside Console. Individual group members are not listed.';
+            elements.memberGroups.append(title, description);
+            for (const group of inventory.groups) {
+                const row = document.createElement('p');
+                row.textContent = `${group.name} · ${group.role === 'admin' ? 'Admin' : 'User'} · ${group.binding}`;
+                elements.memberGroups.append(row);
+            }
+        }
+    }
+    function openMemberDialog(member = null) {
+        const inventory = state.memberInventory;
+        if (!inventory?.enabled || state.memberSaving || (member && !member.canChange))
+            return;
+        const roles = inventory.roles.filter(role => role.canAssign);
+        if (!roles.length)
+            return;
+        state.memberEditing = { member, namespace: state.namespace };
+        elements.memberDialogTitle.textContent = member ? `Change role for ${memberName(member)}` : 'Add member';
+        elements.memberDialogDescription.textContent = `Membership in ${state.namespace}`;
+        elements.memberSubject.value = member ? memberName(member) : '';
+        elements.memberSubject.disabled = Boolean(member);
+        elements.memberRole.disabled = false;
+        elements.memberRole.replaceChildren();
+        for (const role of roles)
+            addOption(elements.memberRole, role.name, role.label);
+        elements.memberRole.value = member && roles.some(role => role.name === member.role) ? member.role : roles[0].name;
+        elements.memberHelp.textContent = member ? 'This changes their direct role in this namespace.' : `Enter the identity provider's subject ID. The Console adds “${inventory.usernamePrefix}” automatically. Name and email lookup is not available yet.`;
+        elements.memberDialogError.hidden = true;
+        elements.memberSave.textContent = member ? 'Save role' : 'Add member';
+        elements.memberSave.disabled = false;
+        elements.memberDialog.showModal();
+        (member ? elements.memberRole : elements.memberSubject).focus();
+    }
+    function memberPath(member, namespace) {
+        return `/api/admin/members/${encodeURIComponent(namespace)}/${encodeURIComponent(member.id)}?version=${encodeURIComponent(member.version)}`;
+    }
+    async function saveMember() {
+        const editing = state.memberEditing;
+        if (!editing || state.memberSaving)
+            return;
+        const role = elements.memberRole.value;
+        const subject = elements.memberSubject.value.trim();
+        if (!state.memberInventory?.roles.some(option => option.name === role && option.canAssign) || (!editing.member && !subject))
+            return;
+        if (editing.member && editing.member.username === state.memberInventory.currentUser && editing.member.role === 'admin' && role === 'user' && !window.confirm(`Change your role to User in ${editing.namespace}? You may lose permission to manage members and configuration.`))
+            return;
+        state.memberSaving = true;
+        elements.memberSave.disabled = true;
+        elements.memberSubject.disabled = true;
+        elements.memberRole.disabled = true;
+        elements.memberDialogError.hidden = true;
+        try {
+            await api(editing.member ? memberPath(editing.member, editing.namespace) : `/api/admin/members?namespace=${encodeURIComponent(editing.namespace)}`, {
+                method: editing.member ? 'PUT' : 'POST', body: JSON.stringify(editing.member ? { role } : { subject, role }),
+            });
+            showToast(editing.member ? `Role updated in ${editing.namespace}.` : `Member added to ${editing.namespace}.`);
+            if (state.memberEditing === editing) {
+                elements.memberDialog.close();
+                state.memberEditing = null;
+            }
+            if (editing.namespace === state.namespace)
+                await loadAdmin();
+        }
+        catch (error) {
+            if (state.memberEditing !== editing)
+                return;
+            elements.memberDialogError.textContent = errorMessage(error);
+            elements.memberDialogError.hidden = false;
+            if (editing.member) {
+                await loadAdmin();
+                if (state.memberEditing !== editing)
+                    return;
+                state.memberEditing = null;
+                elements.memberDialogError.textContent += ' Close this dialog and check the member’s current role before trying again.';
+            }
+        }
+        finally {
+            state.memberSaving = false;
+            if (state.memberEditing === editing) {
+                elements.memberSave.disabled = false;
+                elements.memberSubject.disabled = Boolean(editing.member);
+                elements.memberRole.disabled = false;
+            }
+        }
+    }
+    async function removeMember(member, namespace, button) {
+        const ownMembership = member.username === state.memberInventory?.currentUser;
+        if (!window.confirm(`Remove ${memberName(member)} from ${namespace}?${ownMembership ? ' This may remove your access to this namespace.' : ''} Access through groups or external assignments remains.`))
+            return;
+        button.disabled = true;
+        elements.memberError.hidden = true;
+        try {
+            await api(memberPath(member, namespace), { method: 'DELETE' });
+            showToast(`Direct membership removed from ${namespace}.`);
+        }
+        catch (error) {
+            if (namespace !== state.namespace)
+                return;
+            elements.memberError.textContent = errorMessage(error);
+            elements.memberError.hidden = false;
+        }
+        finally {
+            if (namespace === state.namespace)
+                await Promise.all([loadMembers({ preserveError: true }), loadAdminResources()]);
+            button.disabled = false;
+        }
+    }
+    function adminResourcePath(resource, namespace, name) {
+        const path = `/api/admin/${encodeURIComponent(resource)}/${encodeURIComponent(namespace)}`;
+        return name ? `${path}/${encodeURIComponent(name)}` : path;
+    }
+    async function loadAdmin() {
+        await Promise.all([loadMembers(), loadAdminResources()]);
+    }
+    async function loadAdminResources() {
+        if (!state.namespace) {
+            elements.adminCollections.replaceChildren();
+            elements.adminStatus.hidden = false;
+            elements.adminStatus.textContent = 'Select a namespace to manage configuration.';
+            return;
+        }
+        const namespace = state.namespace;
+        const generation = ++state.adminGeneration;
+        elements.adminStatus.hidden = false;
+        elements.adminStatus.textContent = 'Loading configuration…';
+        elements.adminCollections.replaceChildren();
+        try {
+            const collections = await api(`/api/admin?namespace=${encodeURIComponent(namespace)}`);
+            if (generation !== state.adminGeneration || namespace !== state.namespace)
+                return;
+            elements.adminStatus.hidden = collections.length > 0;
+            elements.adminStatus.textContent = 'You do not have permission to list configuration resources in this namespace.';
+            for (const collection of collections) {
+                const card = document.createElement('section');
+                card.className = 'admin-card';
+                const header = document.createElement('div');
+                header.className = 'admin-card-header';
+                const heading = document.createElement('div');
+                const title = document.createElement('h2');
+                title.textContent = `${collection.label} · ${collection.items.length}`;
+                const description = document.createElement('p');
+                description.textContent = resourceDescriptions[collection.resource];
+                heading.append(title, description);
+                header.append(heading);
+                if (collection.canCreate) {
+                    const create = document.createElement('button');
+                    create.type = 'button';
+                    create.className = 'secondary-button';
+                    create.textContent = 'Create';
+                    create.setAttribute('aria-label', `Create ${collection.kind}`);
+                    create.addEventListener('click', () => { void openAdminEditor(collection); });
+                    header.append(create);
+                }
+                card.append(header);
+                for (const item of collection.items) {
+                    const row = document.createElement('div');
+                    row.className = 'admin-resource-row';
+                    const info = document.createElement('div');
+                    const name = document.createElement('div');
+                    name.className = 'admin-resource-name';
+                    name.textContent = item.name;
+                    const status = document.createElement('div');
+                    status.className = 'admin-resource-status';
+                    status.textContent = resourceStatus(item);
+                    info.append(name, status);
+                    const actions = document.createElement('div');
+                    actions.className = 'admin-resource-actions';
+                    if (item.canGet) {
+                        const edit = document.createElement('button');
+                        edit.type = 'button';
+                        edit.className = 'secondary-button';
+                        edit.textContent = item.canUpdate ? 'Edit YAML' : 'View YAML';
+                        edit.setAttribute('aria-label', `${edit.textContent} for ${collection.kind} ${item.name}`);
+                        edit.addEventListener('click', () => { void openAdminEditor(collection, item); });
+                        actions.append(edit);
+                    }
+                    if (item.canDelete) {
+                        const remove = document.createElement('button');
+                        remove.type = 'button';
+                        remove.className = 'secondary-button danger';
+                        remove.textContent = 'Delete';
+                        remove.setAttribute('aria-label', `Delete ${collection.kind} ${item.name}`);
+                        remove.addEventListener('click', () => { void deleteAdminResource(collection, item, remove); });
+                        actions.append(remove);
+                    }
+                    row.append(info, actions);
+                    card.append(row);
+                }
+                if (!collection.items.length) {
+                    const empty = document.createElement('div');
+                    empty.className = 'resource-empty';
+                    empty.textContent = `No ${collection.label.toLowerCase()} in ${namespace}.`;
+                    card.append(empty);
+                }
+                elements.adminCollections.append(card);
+            }
+        }
+        catch (error) {
+            if (generation !== state.adminGeneration || namespace !== state.namespace)
+                return;
+            elements.adminStatus.textContent = `Unable to load configuration: ${errorMessage(error)}`;
+        }
+    }
+    function defaultAdminYAML(collection) {
+        const specs = {
+            workspaces: '  repo: https://github.com/your-org/your-repo\n',
+            agentconfigs: '  agentsMD: |\n    Describe the shared instructions for your agents.\n',
+            workerpools: `  replicas: 1
+  worker:
+    type: codex
+    credentials:
+      type: api-key
+      secretRef:
+        name: codex-credentials
+    workspaceRef:
+      name: my-workspace
+  volumeClaimTemplate:
+    accessModes: [ReadWriteOnce]
+    resources:
+      requests:
+        storage: 10Gi
+`,
+        };
+        return `apiVersion: kelos.dev/v1alpha2
+kind: ${collection.kind}
+metadata:
+  name: my-${collection.kind.toLowerCase()}
+  namespace: ${JSON.stringify(state.namespace)}
+spec:
+${specs[collection.resource]}`;
+    }
+    async function openAdminEditor(collection, item) {
+        const generation = ++state.adminEditorGeneration;
+        const namespace = state.namespace;
+        const editable = item ? item.canUpdate : collection.canCreate;
+        state.adminEditing = null;
+        elements.adminEditorTitle.textContent = item ? `${editable ? 'Edit' : 'View'} ${collection.kind} ${item.name}` : `Create ${collection.kind}`;
+        elements.adminEditorDescription.textContent = `Namespace: ${namespace}. ${editable ? 'Edit the manifest, then save to the cluster.' : 'You have read-only access to this resource.'}`;
+        elements.adminEditorError.hidden = true;
+        elements.adminYAML.value = '';
+        elements.adminYAML.disabled = true;
+        elements.adminSave.hidden = !editable;
+        elements.adminSave.disabled = true;
+        elements.adminSave.textContent = item ? 'Save changes' : 'Create resource';
+        elements.adminEditor.showModal();
+        try {
+            const yaml = item
+                ? (await api(adminResourcePath(collection.resource, namespace, item.name))).yaml
+                : defaultAdminYAML(collection);
+            if (generation !== state.adminEditorGeneration || namespace !== state.namespace)
+                return;
+            elements.adminYAML.value = yaml;
+            elements.adminYAML.disabled = false;
+            elements.adminYAML.readOnly = !editable;
+            elements.adminSave.disabled = !editable || state.adminSaving;
+            if (editable)
+                state.adminEditing = { resource: collection.resource, namespace, name: item?.name };
+            elements.adminYAML.focus();
+            elements.adminYAML.setSelectionRange(0, 0);
+            elements.adminYAML.scrollTop = 0;
+        }
+        catch (error) {
+            if (generation !== state.adminEditorGeneration)
+                return;
+            elements.adminEditorError.textContent = errorMessage(error);
+            elements.adminEditorError.hidden = false;
+        }
+    }
+    async function saveAdminResource() {
+        const editing = state.adminEditing;
+        if (!editing || state.adminSaving)
+            return;
+        const generation = state.adminEditorGeneration;
+        state.adminSaving = true;
+        elements.adminSave.disabled = true;
+        elements.adminEditorError.hidden = true;
+        try {
+            const saved = await api(adminResourcePath(editing.resource, editing.namespace, editing.name), {
+                method: editing.name ? 'PUT' : 'POST',
+                headers: { 'Content-Type': 'application/yaml' },
+                body: elements.adminYAML.value,
+            });
+            if (generation === state.adminEditorGeneration)
+                elements.adminEditor.close();
+            showToast(`Resource ${saved.name} saved in ${editing.namespace}.`);
+            if (editing.namespace === state.namespace) {
+                await Promise.all([loadAdmin(), loadResources(), loadOptions().catch(error => showToast(errorMessage(error)))]);
+            }
+        }
+        catch (error) {
+            if (generation !== state.adminEditorGeneration)
+                return;
+            elements.adminEditorError.textContent = errorMessage(error);
+            elements.adminEditorError.hidden = false;
+        }
+        finally {
+            state.adminSaving = false;
+            elements.adminSave.disabled = !state.adminEditing;
+        }
+    }
+    async function deleteAdminResource(collection, item, button) {
+        const namespace = state.namespace;
+        if (!window.confirm(`Delete ${collection.kind} "${item.name}" in ${namespace}? Resources that use it may stop working. This cannot be undone.`))
+            return;
+        button.disabled = true;
+        try {
+            await api(adminResourcePath(collection.resource, namespace, item.name), { method: 'DELETE' });
+            showToast(`${collection.kind} ${item.name} deleted from ${namespace}.`);
+            if (namespace === state.namespace) {
+                await Promise.all([loadAdmin(), loadResources(), loadOptions().catch(error => showToast(errorMessage(error)))]);
+            }
+        }
+        catch (error) {
+            showToast(errorMessage(error));
+        }
+        finally {
+            button.disabled = false;
+        }
+    }
     async function loadResources({ quiet = false } = {}) {
+        if (!state.namespace)
+            return;
         const namespace = state.namespace;
         const generation = state.namespaceGeneration;
         const listGeneration = ++state.resourceListGeneration;
@@ -894,6 +1506,8 @@
     }
     async function refreshConsole() {
         try {
+            if (state.consoleView === 'admin')
+                await loadAdmin();
             await Promise.all([loadSessions(), loadOptions(), loadResources()]);
         }
         catch (error) {
@@ -956,6 +1570,17 @@
         elements.resourceDetailTitle.textContent = `${collection.kind} ${item.name}`;
         elements.resourceDetailSubtitle.textContent = `${item.namespace}/${item.name}`;
         elements.resourceDetailTabs.hidden = !showTaskLogs;
+        state.resourceDetailSpawner = collection.resource === 'taskspawners' ? { namespace: item.namespace, name: item.name } : null;
+        elements.taskSpawnerLifecycle.hidden = !state.resourceDetailSpawner;
+        elements.taskSpawnerLifecycleButton.disabled = true;
+        elements.taskSpawnerLifecycleButton.textContent = 'Suspend';
+        elements.taskSpawnerLifecycleStatus.textContent = 'Loading suspension state…';
+        elements.taskSpawnerLifecycleError.textContent = '';
+        elements.taskSpawnerRunForm.hidden = !state.resourceDetailSpawner;
+        elements.taskSpawnerRunValues.value = '';
+        elements.taskSpawnerRunError.textContent = '';
+        elements.taskSpawnerRunButton.disabled = true;
+        elements.taskSpawnerRunButton.textContent = 'Run task';
         state.resourceDetailTask = showTaskLogs ? { namespace: item.namespace, name: item.name } : null;
         if (!showTaskLogs) {
             state.resourceDetailLogGeneration++;
@@ -971,15 +1596,202 @@
                 if (generation !== state.resourceDetailGeneration)
                     return;
                 elements.resourceDetailYAML.textContent = detail.yaml;
+                elements.taskSpawnerRunButton.disabled = !state.resourceDetailSpawner;
+                if (state.resourceDetailSpawner)
+                    updateTaskSpawnerSuspension(detail);
             }
             catch (error) {
                 if (generation !== state.resourceDetailGeneration)
                     return;
                 elements.resourceDetailYAML.textContent = errorMessage(error);
+                if (state.resourceDetailSpawner)
+                    elements.taskSpawnerLifecycleStatus.textContent = 'Suspension state unavailable.';
             }
         })();
         const logsRequest = showTaskLogs ? loadResourceTaskLogs(state.resourceDetailTask, generation) : Promise.resolve();
         await Promise.all([manifestRequest, logsRequest]);
+    }
+    function updateTaskSpawnerSuspension(detail) {
+        const spawner = state.resourceDetailSpawner;
+        if (!spawner)
+            return;
+        spawner.suspended = !!detail.suspended;
+        elements.resourceDetailYAML.textContent = detail.yaml;
+        elements.taskSpawnerLifecycleButton.textContent = spawner.suspended ? 'Resume' : 'Suspend';
+        elements.taskSpawnerLifecycleButton.disabled = false;
+        elements.taskSpawnerLifecycleStatus.textContent = spawner.suspended
+            ? 'Automatic task creation is suspended.' : 'Automatic task creation is enabled.';
+    }
+    async function toggleTaskSpawnerSuspension() {
+        const spawner = state.resourceDetailSpawner;
+        if (!spawner || elements.taskSpawnerLifecycleButton.disabled)
+            return;
+        const generation = state.resourceDetailGeneration;
+        const action = spawner.suspended ? 'resume' : 'suspend';
+        elements.taskSpawnerLifecycleButton.disabled = true;
+        elements.taskSpawnerLifecycleButton.textContent = spawner.suspended ? 'Resuming…' : 'Suspending…';
+        elements.taskSpawnerLifecycleError.textContent = '';
+        try {
+            const detail = await api(`/api/resources/taskspawners/${encodeURIComponent(spawner.namespace)}/${encodeURIComponent(spawner.name)}/${action}`, { method: 'POST' });
+            showToast(`TaskSpawner ${spawner.name} ${action} requested`);
+            void loadResources();
+            if (generation !== state.resourceDetailGeneration)
+                return;
+            updateTaskSpawnerSuspension(detail);
+        }
+        catch (error) {
+            if (generation !== state.resourceDetailGeneration)
+                return;
+            elements.taskSpawnerLifecycleError.textContent = errorMessage(error);
+        }
+        finally {
+            if (generation === state.resourceDetailGeneration) {
+                elements.taskSpawnerLifecycleButton.disabled = false;
+                elements.taskSpawnerLifecycleButton.textContent = spawner.suspended ? 'Resume' : 'Suspend';
+            }
+        }
+    }
+    async function runTaskSpawner(event) {
+        event.preventDefault();
+        const spawner = state.resourceDetailSpawner;
+        if (!spawner || elements.taskSpawnerRunButton.disabled)
+            return;
+        const generation = state.resourceDetailGeneration;
+        elements.taskSpawnerRunButton.disabled = true;
+        elements.taskSpawnerRunButton.textContent = 'Creating task…';
+        elements.taskSpawnerRunError.textContent = '';
+        try {
+            const task = await api(`/api/resources/taskspawners/${encodeURIComponent(spawner.namespace)}/${encodeURIComponent(spawner.name)}/run`, {
+                method: 'POST',
+                body: JSON.stringify({ values: elements.taskSpawnerRunValues.value }),
+            });
+            showToast(`Created Task ${task.name}`);
+            void loadResources();
+            if (generation !== state.resourceDetailGeneration)
+                return;
+            await openResourceDetail({ resource: 'tasks', kind: 'Task', label: 'Tasks' }, task);
+        }
+        catch (error) {
+            if (generation !== state.resourceDetailGeneration)
+                return;
+            elements.taskSpawnerRunError.textContent = errorMessage(error);
+        }
+        finally {
+            if (generation === state.resourceDetailGeneration) {
+                elements.taskSpawnerRunButton.disabled = false;
+                elements.taskSpawnerRunButton.textContent = 'Run task';
+            }
+        }
+    }
+    const pendingCompletionReads = new Map();
+    const rejectedCompletionReads = new Map();
+    const completionReadsInFlight = new Set();
+    let completionReadFrame = null;
+    function hasUnreadCompletion(session) {
+        const notification = session.lastNotification;
+        return !session.resetting && notification && ['TurnCompleted', 'TurnFailed'].includes(notification.type)
+            ? session.readNotificationId !== notification.id : false;
+    }
+    function sessionAttentionLabel(session) {
+        if (session.resetting)
+            return '';
+        if (session.lastNotification?.type === 'InputRequested') {
+            return session.phase === 'Ready' && !session.userSuspended ? 'Input requested' : '';
+        }
+        if (!hasUnreadCompletion(session))
+            return '';
+        return session.lastNotification?.type === 'TurnFailed' ? 'Failed · Unread' : 'Completed · Unread';
+    }
+    function syncCompletionReads(sessions) {
+        const current = new Set(sessions.map(sessionViewKey));
+        for (const reads of [pendingCompletionReads, rejectedCompletionReads]) {
+            for (const key of reads.keys()) {
+                if (key.startsWith(`${state.namespace}/`) && !current.has(key))
+                    reads.delete(key);
+            }
+        }
+        for (const session of sessions) {
+            const key = sessionViewKey(session);
+            const id = pendingCompletionReads.get(key);
+            if (!id || session.resetting || session.lastNotification?.id !== id
+                || rejectedCompletionReads.get(key) === id || completionReadsInFlight.has(key))
+                continue;
+            if (session.readNotificationId === id) {
+                pendingCompletionReads.delete(key);
+                continue;
+            }
+            void saveCompletionRead(session, id);
+        }
+    }
+    async function saveCompletionRead(session, notificationID) {
+        const key = sessionViewKey(session);
+        const generation = state.namespaceGeneration;
+        completionReadsInFlight.add(key);
+        try {
+            await api(`/api/sessions/${encodeURIComponent(session.namespace)}/${encodeURIComponent(session.name)}/read`, {
+                method: 'POST', body: JSON.stringify({ uid: session.uid, notificationId: notificationID }),
+            });
+            if (pendingCompletionReads.get(key) === notificationID)
+                pendingCompletionReads.delete(key);
+            if (generation !== state.namespaceGeneration)
+                return;
+            // A list requested before the acknowledgment may still contain the unread state.
+            state.sessionListGeneration++;
+            for (const current of [...state.sessions, ...(state.selected ? [state.selected] : [])]) {
+                if (sessionViewKey(current) === key && current.lastNotification?.id === notificationID) {
+                    current.readNotificationId = notificationID;
+                }
+            }
+            renderSessions();
+        }
+        catch (error) {
+            const status = error?.status;
+            if (status && [400, 403, 404].includes(status)) {
+                rejectedCompletionReads.set(key, notificationID);
+                if (pendingCompletionReads.get(key) === notificationID)
+                    pendingCompletionReads.delete(key);
+            }
+            // Transient failures remain pending for the next Session refresh.
+        }
+        finally {
+            completionReadsInFlight.delete(key);
+        }
+    }
+    function renderSessionAttentionCount() {
+        const count = state.sessions.filter(sessionAttentionLabel).length;
+        elements.sessionsAttentionCount.hidden = count === 0;
+        elements.sessionsAttentionCount.textContent = String(count);
+        elements.sessionsButton.setAttribute('aria-label', count ? `Sessions, ${count} needing attention in ${state.namespace}` : 'Sessions');
+    }
+    function markVisibleCompletionRead() {
+        const session = state.selected;
+        if (!session || session.resetting || !viewingSession(session)
+            || state.replayingHistory || !state.currentView?.historyLoaded
+            || document.querySelector('dialog[open]')
+            || elements.sidebar.classList.contains('open'))
+            return;
+        const dividers = Array.from(elements.messages.querySelectorAll('.turn-divider'))
+            .filter(divider => divider.dataset.notificationId);
+        const divider = dividers.at(-1);
+        if (!divider)
+            return;
+        const id = divider.dataset.notificationId;
+        if (session.readNotificationId === id || rejectedCompletionReads.get(sessionViewKey(session)) === id)
+            return;
+        const viewport = elements.messages.getBoundingClientRect();
+        const bounds = divider.getBoundingClientRect();
+        if (bounds.height <= 0 || bounds.bottom <= viewport.top || bounds.top >= viewport.bottom)
+            return;
+        pendingCompletionReads.set(sessionViewKey(session), id);
+        syncCompletionReads(state.sessions);
+    }
+    function scheduleCompletionRead() {
+        if (completionReadFrame !== null)
+            return;
+        completionReadFrame = window.requestAnimationFrame(() => {
+            completionReadFrame = null;
+            markVisibleCompletionRead();
+        });
     }
     function sessionKey(session) {
         return `${session.namespace}/${session.name}`;
@@ -1009,6 +1821,9 @@
             inputs: new Map(),
             diffs: new Map(),
             fileChanges: new Map(),
+            workspaceChanges: null,
+            changesScope: 'uncommitted',
+            changesBaseRef: '',
             pendingMessage: null,
             activeTurn: false,
             activeTurnID: '',
@@ -1020,7 +1835,6 @@
             historyCursor: '',
             runtimeRecoveryActive: false,
             pinHistoryToBottom: false,
-            fileChangesDirty: false,
             historyLoaded: false,
             statusPlaceholder: false,
         };
@@ -1039,6 +1853,9 @@
         view.inputs = state.inputs;
         view.diffs = state.diffs;
         view.fileChanges = state.fileChanges;
+        view.workspaceChanges = state.workspaceChanges;
+        view.changesScope = state.changesScope;
+        view.changesBaseRef = state.changesBaseRef;
         view.pendingMessage = state.pendingMessage;
         view.activeTurn = state.activeTurn;
         view.activeTurnID = state.activeTurnID;
@@ -1050,14 +1867,25 @@
         view.historyCursor = state.historyCursor;
         view.runtimeRecoveryActive = state.runtimeRecoveryActive;
         view.pinHistoryToBottom = state.pinHistoryToBottom;
-        view.fileChangesDirty = state.fileChangesDirty;
     }
     function updateFileChangesHeader() {
+        renderChangesControls();
         const count = state.fileChanges.size;
         elements.changesCount.textContent = String(count);
-        elements.changesSummary.textContent = count === 1 ? '1 changed file' : `${count} changed files`;
+        const snapshot = state.workspaceChanges;
+        const summary = count === 1 ? '1 changed file' : `${count} changed files`;
+        const comparison = state.changesScope === 'branch'
+            ? `Committed against ${changesBranchLabel(state.changesBaseRef)} · Merge base ${snapshot?.base?.slice(0, 12)}`
+            : `Uncommitted · HEAD ${snapshot?.base?.slice(0, 12)}`;
+        elements.changesSummary.textContent = snapshot?.message || (snapshot
+            ? `${summary} · ${comparison}${snapshot.truncated ? ' · Diff content truncated' : ''}`
+            : 'Loading workspace changes…');
+        if (state.changesScope === 'branch' && snapshot?.branchesTruncated) {
+            elements.changesSummary.textContent += ' · Branch list truncated';
+        }
     }
     function activateSessionView(view) {
+        elements.backgroundTaskStatus.textContent = '';
         state.currentView = view;
         state.lastEventID = view.lastEventID;
         state.assistantSegmentByTurn = view.assistantSegmentByTurn;
@@ -1066,6 +1894,9 @@
         state.inputs = view.inputs;
         state.diffs = view.diffs;
         state.fileChanges = view.fileChanges;
+        state.workspaceChanges = view.workspaceChanges;
+        state.changesScope = view.changesScope;
+        state.changesBaseRef = view.changesBaseRef;
         state.pendingMessage = view.pendingMessage;
         state.activeTurn = view.activeTurn;
         state.activeTurnID = view.activeTurnID;
@@ -1083,7 +1914,6 @@
         state.historyRequestID = '';
         state.runtimeRecoveryActive = view.runtimeRecoveryActive;
         state.pinHistoryToBottom = view.pinHistoryToBottom;
-        state.fileChangesDirty = view.fileChangesDirty;
         const hasChanges = view.changes.hasChildNodes();
         elements.messages.replaceChildren(view.messages);
         elements.pending.replaceChildren(view.pending);
@@ -1096,6 +1926,7 @@
         renderRuntimeStatus();
         renderHistoryControl();
         updateCurrentRequest();
+        updateJumpToLatest();
     }
     function cachedSessionView(session) {
         const key = sessionViewKey(session);
@@ -1118,7 +1949,11 @@
             state.sessionViews.delete(sessionViewKey(session));
     }
     function resetCurrentSessionView() {
+        elements.backgroundTaskStatus.textContent = '';
         closePromptHistory();
+        state.messagesScrollTop = 0;
+        state.messagesScrollPaused = false;
+        state.jumpToLatestPending = false;
         const view = state.currentView;
         state.lastEventID = 0;
         state.assistantSegmentByTurn = new Map();
@@ -1127,6 +1962,7 @@
         state.inputs = new Map();
         state.diffs = new Map();
         state.fileChanges = new Map();
+        state.workspaceChanges = null;
         state.pendingMessage = null;
         state.activeTurn = false;
         state.activeTurnID = '';
@@ -1144,11 +1980,11 @@
         state.historyRequestID = '';
         state.runtimeRecoveryActive = false;
         state.pinHistoryToBottom = true;
-        state.fileChangesDirty = false;
         elements.messages.replaceChildren();
         elements.pending.replaceChildren();
         elements.pending.hidden = true;
         hideCurrentRequest();
+        elements.jumpToLatest.hidden = true;
         renderFileChanges();
         if (view) {
             view.historyLoaded = false;
@@ -1162,6 +1998,7 @@
             view.inputs = state.inputs;
             view.diffs = state.diffs;
             view.fileChanges = state.fileChanges;
+            view.workspaceChanges = state.workspaceChanges;
             view.pendingMessage = state.pendingMessage;
             view.activeTurn = false;
             view.activeTurnID = '';
@@ -1188,16 +2025,23 @@
         return `${hours}h ${String(minutes).padStart(2, '0')}m ${String(seconds).padStart(2, '0')}s`;
     }
     function renderSessionProgress(now = Date.now()) {
-        if (!state.activeTurn) {
+        const session = state.selected;
+        const backgroundTasks = state.runtimeStatus?.backgroundTasks || 0;
+        if (!session || session.phase !== 'Ready' || session.resetting || session.userSuspended || (!state.activeTurn && !backgroundTasks)) {
             elements.progress.hidden = true;
             elements.progress.dataset.state = 'idle';
             elements.progressLabel.textContent = '';
             elements.progressElapsed.textContent = '';
+            renderBackgroundTaskProgress(now);
             return;
         }
         let label = 'Working';
         let status = 'working';
-        if (state.interrupting) {
+        if (!state.activeTurn) {
+            label = `${backgroundTasks} background task${backgroundTasks === 1 ? '' : 's'} running`;
+            status = 'background';
+        }
+        else if (state.interrupting) {
             label = 'Interrupting';
             status = 'interrupting';
         }
@@ -1205,20 +2049,87 @@
             label = 'Waiting for input';
             status = 'waiting';
         }
+        if (state.activeTurn && backgroundTasks) {
+            label += ` · ${backgroundTasks} background task${backgroundTasks === 1 ? '' : 's'}`;
+        }
         const startedAt = state.activeTurnStartedAt || now;
         elements.progress.hidden = false;
         elements.progress.dataset.state = status;
         if (elements.progressLabel.textContent !== label)
             elements.progressLabel.textContent = label;
-        elements.progressElapsed.textContent = `(${formatSessionProgressElapsed(now - startedAt)})`;
+        elements.progressElapsed.textContent = state.activeTurn ? `(${formatSessionProgressElapsed(now - startedAt)})` : '';
+        renderBackgroundTaskProgress(now);
+    }
+    function renderBackgroundTaskProgress(now) {
+        const tasks = elements.progress.hidden ? [] : state.runtimeStatus?.backgroundTaskDetails || [];
+        elements.backgroundTasks.hidden = !tasks.length;
+        const taskIDs = [...elements.backgroundTasks.children].map(item => item.dataset.taskId);
+        if (taskIDs.length !== tasks.length || tasks.some((task, index) => task.id !== taskIDs[index])) {
+            elements.backgroundTasks.replaceChildren();
+            for (const task of tasks) {
+                const item = document.createElement('li');
+                item.dataset.taskId = task.id;
+                const name = document.createElement('span');
+                name.className = 'background-task-name';
+                const elapsed = document.createElement('span');
+                elapsed.className = 'background-task-elapsed';
+                item.append(name, elapsed);
+                elements.backgroundTasks.append(item);
+            }
+        }
+        for (const [index, task] of tasks.entries()) {
+            const item = elements.backgroundTasks.children[index];
+            const name = item.querySelector('.background-task-name');
+            const label = backgroundTaskName(task);
+            if (name.textContent !== label) {
+                name.textContent = label;
+                name.title = label;
+            }
+            const elapsed = item.querySelector('.background-task-elapsed');
+            const startedAt = Date.parse(task.startedAt);
+            const duration = Number.isNaN(startedAt) ? '' : `(${formatSessionProgressElapsed(now - startedAt)})`;
+            if (elapsed.textContent !== duration)
+                elapsed.textContent = duration;
+        }
+    }
+    function backgroundTaskName(task) {
+        return task.description || `Background task ${task.id}`;
+    }
+    function announceBackgroundTaskChanges(previousTasks, tasks) {
+        const session = state.selected;
+        if (state.replayingHistory || !session || session.phase !== 'Ready' || session.resetting || session.userSuspended)
+            return;
+        const previousIDs = new Set(previousTasks.map(task => task.id));
+        const taskIDs = new Set(tasks.map(task => task.id));
+        const messages = [
+            ...tasks.filter(task => !previousIDs.has(task.id)).map(task => `Background task started: ${backgroundTaskName(task)}`),
+            ...previousTasks.filter(task => !taskIDs.has(task.id)).map(task => `Background task finished: ${backgroundTaskName(task)}`),
+        ];
+        if (messages.length)
+            elements.backgroundTaskStatus.textContent = messages.join('. ');
     }
     function refreshSessionProgress() {
+        const session = state.selected;
+        if (session && (session.phase !== 'Ready' || session.resetting || session.userSuspended)) {
+            const activity = {
+                activeTurn: false,
+                activeTurnID: '',
+                activeTurnStartedAt: 0,
+                waitingForInput: false,
+                interrupting: false,
+                runtimeStatus: state.runtimeStatus ? { ...state.runtimeStatus, backgroundTasks: undefined, backgroundTaskDetails: undefined } : null,
+            };
+            Object.assign(state, activity);
+            if (state.currentView)
+                Object.assign(state.currentView, activity);
+        }
         if (state.progressTimer !== null) {
             window.clearInterval(state.progressTimer);
             state.progressTimer = null;
         }
         renderSessionProgress();
-        if (state.activeTurn) {
+        const timedBackgroundTask = state.runtimeStatus?.backgroundTaskDetails?.some(task => !Number.isNaN(Date.parse(task.startedAt)));
+        if (!elements.progress.hidden && (state.activeTurn || timedBackgroundTask)) {
             state.progressTimer = window.setInterval(() => renderSessionProgress(), 1000);
         }
     }
@@ -1462,13 +2373,15 @@
         return link;
     }
     function renderSessions() {
+        renderSessionAttentionCount();
+        scheduleCompletionRead();
         if (state.sessionActionKey)
             state.sessionActionTrigger = null;
         elements.list.replaceChildren();
         if (!state.sessions.length) {
             const empty = document.createElement('div');
             empty.className = 'sidebar-empty';
-            empty.textContent = `No Sessions in ${state.namespace}.`;
+            empty.textContent = state.namespace ? `No Sessions in ${state.namespace}.` : 'Select a namespace to view Sessions.';
             elements.list.append(empty);
             syncSessionActionsMenu();
             return;
@@ -1538,6 +2451,9 @@
         const key = sessionKey(session);
         const assigningSection = state.sectionAssignments.has(key);
         item.className = `session-item${state.selected && sessionKey(state.selected) === key ? ' active' : ''}${assigningSection ? ' section-saving' : ''}`;
+        const attentionLabel = sessionAttentionLabel(session);
+        if (attentionLabel)
+            item.classList.add('needs-attention');
         const button = document.createElement('button');
         button.className = 'session-item-select';
         button.type = 'button';
@@ -1553,8 +2469,17 @@
         name.textContent = sessionDisplayName(session);
         titleRow.append(name);
         const timestamp = createSessionTimestamp(session, true, 'session-item-time');
+        const recency = document.createElement('span');
+        recency.className = 'session-item-recency';
         if (timestamp)
-            titleRow.append(timestamp);
+            recency.append(timestamp);
+        if (attentionLabel) {
+            const attentionDot = document.createElement('span');
+            attentionDot.className = 'session-attention-dot';
+            attentionDot.setAttribute('aria-hidden', 'true');
+            recency.append(attentionDot);
+        }
+        titleRow.append(recency);
         const meta = document.createElement('div');
         meta.className = 'session-item-meta';
         const provider = document.createElement('span');
@@ -1576,6 +2501,12 @@
         }
         meta.append(namespace, activity);
         text.append(titleRow, meta);
+        if (attentionLabel) {
+            const label = document.createElement('div');
+            label.className = 'session-attention-label';
+            label.textContent = attentionLabel;
+            text.append(label);
+        }
         if (session.branch) {
             const branch = document.createElement('div');
             branch.className = 'session-item-branch';
@@ -1993,6 +2924,8 @@
         elements.sectionCustom.value = '';
     }
     async function loadSessions({ quiet = false } = {}) {
+        if (!state.namespace)
+            return;
         const namespace = state.namespace;
         const generation = state.namespaceGeneration;
         const listGeneration = ++state.sessionListGeneration;
@@ -2001,7 +2934,9 @@
             if (generation !== state.namespaceGeneration || listGeneration !== state.sessionListGeneration)
                 return;
             state.sessions = sessions;
+            syncCompletionReads(sessions);
             pruneBrowserNotifications(sessions);
+            notifySessions(sessions);
             renderSectionOptions();
             if (state.selected) {
                 const selected = state.selected;
@@ -2038,14 +2973,94 @@
                 showToast(errorMessage(error));
         }
     }
-    async function loadConfig() {
+    async function loadIdentity() {
         const config = await api('/api/config');
+        const identity = requiredElement('#console-identity');
+        identity.hidden = !config.username;
+        identity.textContent = config.username ? `Signed in as ${config.username}` : '';
+        return config;
+    }
+    async function loadNamespaceOptions(preferred = state.namespace, { onlyPreferred = false } = {}) {
+        const generation = state.namespaceGeneration;
+        elements.activeNamespace.setAttribute('aria-busy', 'true');
+        elements.newSessionButton.disabled = !state.namespace;
+        elements.welcomeNew.disabled = !state.namespace;
+        try {
+            const query = onlyPreferred ? `?namespace=${encodeURIComponent(preferred)}` : '';
+            const result = await api(`/api/namespaces${query}`);
+            if (generation !== state.namespaceGeneration)
+                return null;
+            if (onlyPreferred && !result.namespaces.length)
+                return '';
+            state.namespaces = result.namespaces;
+            const namespaces = state.namespaces.length ? state.namespaces : [''];
+            const options = elements.activeNamespace.options;
+            if (options.length !== namespaces.length || namespaces.some((namespace, index) => options[index].value !== namespace || options[index].textContent !== (namespace || 'No accessible namespaces'))) {
+                elements.activeNamespace.replaceChildren();
+                for (const namespace of namespaces)
+                    addOption(elements.activeNamespace, namespace, namespace || 'No accessible namespaces');
+            }
+            const selected = state.namespaces.includes(preferred) ? preferred
+                : state.namespaces.includes(state.defaultNamespace) ? state.defaultNamespace : state.namespaces[0] || '';
+            if (elements.activeNamespace.value !== selected)
+                elements.activeNamespace.value = selected;
+            elements.newSessionButton.disabled = !selected;
+            elements.welcomeNew.disabled = !selected;
+            elements.namespaceStatus.hidden = Boolean(selected);
+            elements.namespaceStatus.textContent = selected ? '' : 'No namespace access. Ask an administrator to add you as a member, then reopen this list.';
+            return selected;
+        }
+        catch (error) {
+            if (generation !== state.namespaceGeneration)
+                return null;
+            elements.namespaceStatus.hidden = false;
+            elements.namespaceStatus.textContent = `Unable to load namespaces: ${errorMessage(error)}`;
+            throw error;
+        }
+        finally {
+            elements.activeNamespace.setAttribute('aria-busy', 'false');
+        }
+    }
+    async function loadConfig() {
+        const config = await loadIdentity();
         state.defaultNamespace = config.defaultNamespace;
-        state.namespace = window.localStorage.getItem('kelos-console-namespace') || state.defaultNamespace;
-        elements.activeNamespace.value = state.namespace;
+        let discoverNamespaces = false;
+        try {
+            const preferred = window.localStorage.getItem('kelos-console-namespace') || state.defaultNamespace;
+            let namespace = await loadNamespaceOptions(preferred, { onlyPreferred: true });
+            discoverNamespaces = Boolean(namespace);
+            if (namespace === '')
+                namespace = await loadNamespaceOptions(preferred);
+            if (namespace !== null)
+                state.namespace = namespace;
+        }
+        catch {
+            state.namespace = '';
+            elements.activeNamespace.replaceChildren();
+            addOption(elements.activeNamespace, '', 'Open to load namespaces');
+        }
+        elements.activeNamespace.disabled = false;
         elements.namespace.value = state.namespace;
         for (const label of elements.namespaceLabels)
-            label.textContent = state.namespace;
+            label.textContent = state.namespace || 'No namespace selected';
+        if (state.namespace)
+            window.localStorage.setItem('kelos-console-namespace', state.namespace);
+        else {
+            window.localStorage.removeItem('kelos-console-namespace');
+            renderOverview();
+            renderResources();
+            renderSessions();
+        }
+        return discoverNamespaces;
+    }
+    function refreshNamespaces() {
+        if (!state.namespaceRefresh) {
+            state.namespaceRefresh = loadNamespaceOptions().then(async (namespace) => {
+                if (namespace !== null)
+                    await switchNamespace(namespace);
+            }).finally(() => { state.namespaceRefresh = null; });
+        }
+        return state.namespaceRefresh;
     }
     function defaultSessionYAML() {
         return `apiVersion: kelos.dev/v1alpha2
@@ -2083,6 +3098,8 @@ spec:
         elements.form.elements.accessMode.required = enabled;
     }
     async function loadOptions() {
+        if (!state.namespace)
+            return;
         const namespace = state.namespace;
         const generation = state.namespaceGeneration;
         let options;
@@ -2119,21 +3136,39 @@ spec:
     }
     async function switchNamespace(namespace) {
         namespace = namespace.trim();
-        if (!namespace || namespace === state.namespace)
+        if (namespace === state.namespace)
             return;
-        closeBrowserNotifications();
+        if (namespace && !state.namespaces.includes(namespace))
+            throw new Error('Choose an accessible namespace.');
         const hadLoadedSource = Boolean(state.loadedSource);
         state.namespace = namespace;
         state.namespaceGeneration += 1;
+        state.adminGeneration += 1;
+        state.memberGeneration += 1;
+        state.memberInventory = null;
+        state.memberEditing = null;
+        elements.memberDialog.close();
+        elements.memberList.replaceChildren();
+        elements.memberGroups.replaceChildren();
+        elements.memberError.hidden = true;
+        state.adminEditorGeneration += 1;
+        state.adminEditing = null;
+        elements.adminEditor.close();
+        elements.adminCollections.replaceChildren();
+        if (state.consoleView === 'admin')
+            void loadAdmin();
         state.sessions = [];
         state.resourceGroups = [];
         state.resourceRelationships = [];
         state.options = { credentials: [], workspaces: [], agentConfigs: [], sessions: [] };
-        window.localStorage.setItem('kelos-console-namespace', namespace);
+        if (namespace)
+            window.localStorage.setItem('kelos-console-namespace', namespace);
+        else
+            window.localStorage.removeItem('kelos-console-namespace');
         elements.activeNamespace.value = namespace;
         elements.namespace.value = namespace;
         for (const label of elements.namespaceLabels)
-            label.textContent = namespace;
+            label.textContent = namespace || 'No namespace selected';
         resetNamespaceReferences();
         elements.yaml.value = '';
         if (hadLoadedSource)
@@ -2453,6 +3488,8 @@ spec:
         closeSessionSectionEditor();
         closeSocket();
         saveCurrentSessionView();
+        state.messagesScrollTop = 0;
+        state.messagesScrollPaused = false;
         state.selected = session;
         state.currentView = null;
         setActiveView('conversation');
@@ -2596,6 +3633,7 @@ spec:
     }
     function renderHeader() {
         const session = state.selected;
+        refreshSessionProgress();
         elements.terminalTab.disabled = !sessionTerminal.available(session);
         elements.viewChoice.disabled = !session;
         elements.terminalChoice.disabled = elements.terminalTab.disabled;
@@ -2674,31 +3712,165 @@ spec:
     function composerInterruptAction() {
         return state.activeTurn && (elements.input.disabled || (!elements.input.value.trim() && currentAttachmentFiles().length === 0));
     }
+    function supportsSessionCommand(command) {
+        if (Array.isArray(state.runtimeStatus?.commands))
+            return state.runtimeStatus.commands.includes(command);
+        const provider = state.selected?.provider;
+        return command === 'goal' ? !provider || provider === 'codex' || provider === 'claude-code'
+            : command === 'loop' ? !provider || provider === 'claude-code' : true;
+    }
+    function composerCommand() {
+        const text = elements.input.value.trim().replace(/^\p{White_Space}+|\p{White_Space}+$/gu, '');
+        let kind = 'message';
+        let prefix = '';
+        let action = 'Send';
+        let detail = '';
+        let invalid = false;
+        if (text.startsWith('!')) {
+            kind = 'shell';
+            prefix = text.match(/^!\p{White_Space}*[^\p{White_Space}]*/u)[0];
+            action = state.activeTurn ? 'Queue command' : 'Run command';
+            invalid = !text.slice(1).match(/[^\p{White_Space}]/u);
+            detail = invalid ? 'Enter a command after !' : 'Runs directly in the Session workspace';
+        }
+        else if (/^\/loop(?:\p{White_Space}|$)/u.test(text)) {
+            kind = 'loop';
+            prefix = '/loop';
+            action = 'Start loop';
+            detail = state.activeTurn ? 'Queued until active work ends; use /interrupt to apply sooner' : "Uses Claude Code's native loop scheduling";
+            if (state.selected?.provider === 'codex') {
+                action = 'Run loop';
+                detail = 'Uses the enabled Codex loop skill';
+            }
+            else if (state.selected?.provider === 'opencode') {
+                action = 'Run loop';
+                detail = "Uses OpenCode's registered loop command";
+            }
+            if (state.activeTurn)
+                detail = 'Queued until active work ends; use /interrupt to apply sooner';
+            if (!supportsSessionCommand('loop')) {
+                invalid = true;
+                detail = '/loop is not available in this Session';
+            }
+        }
+        else if (/^\/goal(?:\p{White_Space}|$)/u.test(text)) {
+            kind = 'goal';
+            prefix = '/goal';
+            const args = text.match(/[^\p{White_Space}]+/gu).slice(1);
+            action = args.length === 0 ? 'Show goal' : 'Start goal';
+            if (args[0] === 'edit') {
+                action = 'Edit goal';
+                invalid = args.length === 1;
+            }
+            else if (args.length === 1 && ['pause', 'resume', 'clear'].includes(args[0])) {
+                action = `${args[0][0].toUpperCase()}${args[0].slice(1)} goal`;
+            }
+            if (args.length > 0 && action !== 'Start goal') {
+                prefix = text.match(/^\/goal\p{White_Space}+[^\p{White_Space}]+/u)[0];
+            }
+            const descriptions = {
+                'Show goal': 'View the current objective and status',
+                'Start goal': 'Start an objective with automatic continuation',
+                'Edit goal': 'Update the current objective',
+                'Pause goal': 'Finish the current turn, then pause automatic continuation',
+                'Resume goal': 'Resume automatic continuation',
+                'Clear goal': 'Remove the current goal',
+            };
+            detail = invalid ? 'Enter an objective after /goal edit' : descriptions[action];
+            if (state.selected?.provider === 'claude-code') {
+                invalid = false;
+                action = args.length === 0 ? 'Show goal' : args.length === 1 && ['clear', 'stop', 'off', 'reset', 'none', 'cancel'].includes(args[0].toLowerCase()) ? 'Clear goal' : 'Start goal';
+                prefix = action === 'Clear goal' ? text : '/goal';
+                detail = action === 'Start goal' ? "Sets or replaces Claude Code's completion condition" : descriptions[action];
+                if (state.activeTurn)
+                    detail = 'Queued until active work ends; use /interrupt to apply sooner';
+            }
+            else if (state.selected?.provider === 'opencode') {
+                action = 'Run goal';
+                prefix = '/goal';
+                invalid = false;
+                detail = "Uses OpenCode's registered goal command";
+                if (state.activeTurn)
+                    detail = 'Queued until active work ends; use /interrupt to apply sooner';
+            }
+            if (!supportsSessionCommand('goal')) {
+                invalid = true;
+                detail = '/goal is not available in this Session';
+            }
+        }
+        if (kind !== 'message' && currentAttachmentFiles().length > 0) {
+            invalid = true;
+            detail = 'Remove attachments to use a command';
+        }
+        if (state.pendingMessage && (kind === 'shell' || kind === 'loop' || kind === 'goal' && (!state.activeTurn || ['claude-code', 'opencode'].includes(state.selected?.provider || '')))) {
+            invalid = true;
+            detail = 'Wait for pending work to start or remove it before submitting a command';
+        }
+        return { kind, prefix, action, detail, invalid };
+    }
+    function syncComposerHighlight() {
+        if (elements.composerWrap.hidden || elements.sessionsView.hidden)
+            return;
+        elements.composerHighlight.style.width = `${elements.input.clientWidth}px`;
+        elements.composerHighlight.scrollTop = elements.input.scrollTop;
+        elements.composerHighlight.scrollLeft = elements.input.scrollLeft;
+    }
+    function renderComposerCommand(command, interrupt) {
+        const kind = elements.input.disabled || interrupt ? 'message' : command.kind;
+        const changed = elements.composer.dataset.command !== kind;
+        elements.composer.dataset.command = kind;
+        elements.composer.dataset.invalid = String(command.invalid);
+        elements.input.setAttribute('aria-label', kind === 'shell' ? 'Shell command' : kind === 'goal' ? 'Goal command' : 'Message');
+        elements.composerCommandHelp.hidden = kind === 'message';
+        if (elements.composerCommandHelp.textContent !== command.detail)
+            elements.composerCommandHelp.textContent = command.detail;
+        elements.composerHighlight.hidden = kind === 'message';
+        if (kind === 'message') {
+            elements.composerHighlight.replaceChildren();
+        }
+        else {
+            const text = elements.input.value;
+            const leading = text.slice(0, text.indexOf(command.prefix));
+            const prefix = document.createElement('mark');
+            prefix.textContent = command.prefix;
+            elements.composerHighlight.replaceChildren(document.createTextNode(leading), prefix, document.createTextNode(text.slice(leading.length + command.prefix.length) + '\u200b'));
+        }
+        if (changed)
+            resizeComposer();
+        syncComposerHighlight();
+    }
     function updateComposerAction() {
         const connected = state.socket && state.socket.readyState === WebSocket.OPEN;
         elements.promptsButton.disabled = !connected;
         const interrupt = composerInterruptAction();
-        const goalControl = state.activeTurn && /^\/goal(?:\s|$)/.test(elements.input.value.trim());
+        const command = composerCommand();
+        renderComposerCommand(command, interrupt);
         let action = 'send';
         if (interrupt)
             action = 'interrupt';
-        else if (goalControl)
-            action = 'run goal command';
+        else if (command.kind !== 'message')
+            action = command.action.toLowerCase();
         else if (state.activeTurn || state.pendingMessage)
             action = 'add to pending';
         const actionSymbol = interrupt ? '■' : '↑';
-        elements.send.dataset.action = interrupt ? 'interrupt' : 'send';
-        elements.send.textContent = actionSymbol;
-        elements.send.setAttribute('aria-label', interrupt ? 'Interrupt active work' : 'Send message');
-        elements.send.title = interrupt ? 'Interrupt active work' : 'Send message';
-        elements.send.disabled = !connected || state.sendingMessage || (interrupt ? state.interrupting : elements.input.disabled);
-        elements.composerHint.textContent = usesTouchComposer()
-            ? `Tap ${actionSymbol} to ${action} · Return for a new line · !COMMAND · /goal`
+        const buttonLabel = interrupt ? 'Interrupt active work' : command.kind === 'message' ? 'Send message' : command.action;
+        elements.send.dataset.action = interrupt ? 'interrupt' : command.kind === 'message' ? 'send' : 'command';
+        elements.send.textContent = !interrupt && command.kind !== 'message' ? command.action : actionSymbol;
+        elements.send.setAttribute('aria-label', buttonLabel);
+        elements.send.title = buttonLabel;
+        elements.send.disabled = !connected || state.sendingMessage || (interrupt ? state.interrupting : elements.input.disabled || command.invalid);
+        elements.composerHint.textContent = !interrupt && command.invalid ? command.detail : usesTouchComposer()
+            ? (!interrupt && command.kind !== 'message'
+                ? `Tap ${command.action} · Return for a new line`
+                : `Tap ${actionSymbol} to ${action} · Return for a new line · !COMMAND · /goal · /loop`)
             : (interrupt && elements.input.disabled
                 ? `Click ${actionSymbol} to interrupt`
-                : `Enter to ${action} · Shift+Enter for a new line · !COMMAND · /goal`);
+                : `Enter to ${action} · Shift+Enter for a new line · !COMMAND · /goal · /loop`);
     }
     function closeSocket() {
+        state.jumpToLatestPending = false;
+        state.changesRequestID = '';
+        state.changesRefreshPending = false;
         closePromptHistory();
         state.socketGeneration += 1;
         if (state.reconnectTimer !== null)
@@ -2748,7 +3920,7 @@ spec:
             setComposer(true);
             updateComposerAction();
             renderHistoryControl();
-            if (!elements.messages.hidden)
+            if (!elements.messages.hidden && !elements.messages.contains(document.activeElement))
                 elements.input.focus();
         });
         socket.addEventListener('message', event => {
@@ -2773,7 +3945,10 @@ spec:
             state.reconnectTimer = window.setTimeout(connectSocket, state.reconnectDelay);
             state.reconnectDelay = Math.min(state.reconnectDelay * 1.8, 10000);
         });
-        socket.addEventListener('error', () => socket.close());
+        socket.addEventListener('error', () => {
+            void loadIdentity().catch(() => { });
+            socket.close();
+        });
     }
     function ensureConversation() {
         if (!elements.messages.querySelector('.welcome'))
@@ -3536,8 +4711,6 @@ spec:
         state.activeTurnStartedAt = Number.isNaN(startedAt) ? 0 : startedAt;
         state.waitingForInput = Boolean(historyState.waitingForInput);
         state.interrupting = Boolean(historyState.turnInterrupting);
-        if (historyState.fileDiff)
-            updateFileChanges(parseFileDiffs(historyState.fileDiff));
         elements.pending.replaceChildren();
         elements.pending.hidden = true;
         state.pendingMessage = null;
@@ -3555,10 +4728,6 @@ spec:
         updateComposerAction();
     }
     function flushDeferredHistoryRendering() {
-        if (state.fileChangesDirty) {
-            state.fileChangesDirty = false;
-            renderFileChanges();
-        }
         for (const block of state.diffs.values()) {
             if (!block.dirty)
                 continue;
@@ -3584,7 +4753,6 @@ spec:
             lastEventID: state.lastEventID,
             assistantSegmentByTurn: state.assistantSegmentByTurn,
             assistantTextByTurn: state.assistantTextByTurn,
-            fileChanges: new Map(state.fileChanges),
         };
         elements.messages = page;
         state.assistantSegmentByTurn = new Map();
@@ -3593,8 +4761,6 @@ spec:
         state.pinHistoryToBottom = false;
         for (const event of events)
             handleEvent(event);
-        for (const [name, diff] of live.fileChanges)
-            state.fileChanges.set(name, diff);
         flushDeferredHistoryRendering();
         const rendered = moveChildren(page);
         elements.messages = messages;
@@ -3614,8 +4780,10 @@ spec:
         const scrollBehavior = messages.style.scrollBehavior;
         messages.style.scrollBehavior = 'auto';
         messages.scrollTop = Math.max(0, previousTop + (Number(messages.scrollHeight) || 0) - previousHeight);
+        state.messagesScrollTop = messages.scrollTop;
         messages.style.scrollBehavior = scrollBehavior;
         updateCurrentRequest();
+        updateJumpToLatest();
         refreshSessionProgress();
         updateComposerAction();
     }
@@ -3651,7 +4819,9 @@ spec:
             scheduleBottomAnchor();
         state.pinHistoryToBottom = false;
         updateCurrentRequest();
+        updateJumpToLatest();
         continuePromptJump();
+        scheduleCompletionRead();
     }
     function openPromptHistory() {
         if (!state.selected || !state.socket || state.socket.readyState !== WebSocket.OPEN)
@@ -3692,13 +4862,10 @@ spec:
         const target = row || (pending && (pending.event.id === prompt.id || (prompt.turnId && pending.event.turnId === prompt.turnId))
             ? pending.item : null);
         if (target) {
+            pauseMessagesScroll();
             closePromptHistory();
             setActiveView('conversation');
             hideCurrentRequest();
-            if (state.bottomScrollFrame !== null) {
-                window.cancelAnimationFrame(state.bottomScrollFrame);
-                state.bottomScrollFrame = null;
-            }
             target.tabIndex = -1;
             target.focus({ preventScroll: true });
             target.scrollIntoView({ behavior: 'instant', block: 'start' });
@@ -3805,6 +4972,10 @@ spec:
         }
     }
     function handleEvent(event) {
+        if (event.type === 'workspace.changes' || (event.type === 'error' && event.requestId?.startsWith('changes-'))) {
+            receiveWorkspaceChanges(event);
+            return;
+        }
         if (event.type === 'prompts' || (event.type === 'error' && event.requestId?.startsWith('prompts-'))) {
             receivePromptHistory(event);
             return;
@@ -3825,7 +4996,6 @@ spec:
                 return;
             }
         }
-        notifySessionEvent(event);
         if (event.id)
             state.lastEventID = Math.max(state.lastEventID, event.id);
         const recoveredCompletion = state.runtimeRecoveryActive && event.type === 'turn.completed' && event.status === 'interrupted';
@@ -3857,15 +5027,22 @@ spec:
                 break;
             }
             case 'history.end':
-                if (!event.historyPage)
+                if (!event.historyPage) {
                     finishHistoryReplay(event.historyState);
+                    requestWorkspaceChanges(true);
+                }
                 break;
-            case 'runtime.status':
+            case 'runtime.status': {
+                const previousTasks = state.runtimeStatus?.backgroundTaskDetails || [];
                 state.runtimeStatus = event.runtime || null;
+                updateComposerAction();
                 if (state.currentView)
                     state.currentView.runtimeStatus = state.runtimeStatus;
                 renderRuntimeStatus();
+                refreshSessionProgress();
+                announceBackgroundTaskChanges(previousTasks, state.runtimeStatus?.backgroundTaskDetails || []);
                 break;
+            }
             case 'runtime.recovered':
                 state.runtimeRecoveryActive = true;
                 renderRecovery(event);
@@ -3939,6 +5116,8 @@ spec:
             case 'turn.completed':
                 endAssistantSegment(event.turnId);
                 renderTurnEnd(event, recoveredCompletion);
+                if (!state.replayingHistory)
+                    requestWorkspaceChanges(true);
                 break;
             case 'error':
                 endAssistantSegment(event.turnId);
@@ -4006,13 +5185,29 @@ spec:
         const request = currentRequestRow;
         if (!request)
             return;
+        pauseMessagesScroll();
         hideCurrentRequest();
         request.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+    function updateJumpToLatest() {
+        elements.jumpToLatest.hidden = !state.selected || elements.sessionsView.hidden ||
+            elements.messages.hidden || messagesNearBottom();
+    }
+    function jumpToLatest() {
+        state.jumpToLatestPending = true;
+        state.messagesScrollPaused = false;
+        state.messagesScrollTop = elements.messages.scrollTop;
+        state.pinHistoryToBottom = state.replayingHistory;
+        scheduleBottomAnchor();
+        elements.jumpToLatest.hidden = true;
+        elements.messages.focus({ preventScroll: true });
     }
     function renderAcceptedUser(event) {
         ensureConversation();
         const row = document.createElement('div');
         row.className = 'event-row user';
+        if (state.replayingHistory)
+            row.style.animation = 'none';
         if (event.id)
             row.dataset.eventId = String(event.id);
         if (event.turnId)
@@ -4077,6 +5272,7 @@ spec:
         remove.setAttribute('aria-label', 'Remove pending message');
         remove.addEventListener('click', () => removePendingUser(pending.event.turnId));
         pending.actions.append(status, edit, remove);
+        updateComposerAction();
     }
     function removePendingUser(turnID) {
         const pending = state.pendingMessage;
@@ -4156,6 +5352,7 @@ spec:
                 preview.src = link.href;
                 preview.alt = attachment.name;
                 preview.loading = 'lazy';
+                preview.addEventListener('load', updateJumpToLatest);
                 link.append(preview);
             }
             const label = document.createElement('span');
@@ -4191,6 +5388,8 @@ spec:
         ensureConversation();
         const row = document.createElement('div');
         row.className = 'event-row assistant';
+        if (state.replayingHistory)
+            row.style.animation = 'none';
         const avatar = document.createElement('div');
         avatar.className = 'agent-avatar';
         avatar.textContent = providerInitials(state.selected?.provider);
@@ -4488,7 +5687,6 @@ spec:
         if (!event.diff)
             return;
         const files = parseFileDiffs(event.diff);
-        updateFileChanges(files);
         const key = event.turnId || `diff-${event.id || 'current'}`;
         let block = state.diffs.get(key);
         const created = !block;
@@ -4522,13 +5720,81 @@ spec:
                 scrollToBottom();
         }
     }
-    function updateFileChanges(files) {
-        for (const file of files)
-            state.fileChanges.set(file.name, file.diff);
-        if (state.replayingHistory)
-            state.fileChangesDirty = true;
-        else
+    function changesBranchLabel(ref) {
+        return ref.replace(/^refs\/(heads|remotes)\//, '');
+    }
+    function renderChangesControls() {
+        elements.changesScope.value = state.changesScope;
+        elements.changesBaseLabel.hidden = state.changesScope !== 'branch';
+        const branches = state.workspaceChanges?.branches || [];
+        const refs = state.changesBaseRef && !branches.includes(state.changesBaseRef)
+            ? [...branches, state.changesBaseRef] : branches;
+        const key = JSON.stringify(refs);
+        if (elements.changesBase.dataset.branches !== key) {
+            elements.changesBase.dataset.branches = key;
+            const placeholder = document.createElement('option');
+            placeholder.value = '';
+            placeholder.textContent = 'Select base branch';
+            const options = refs.map(ref => {
+                const option = document.createElement('option');
+                option.value = ref;
+                option.textContent = changesBranchLabel(ref);
+                return option;
+            });
+            elements.changesBase.replaceChildren(placeholder, ...options);
+        }
+        elements.changesBase.value = state.changesBaseRef;
+    }
+    function changeChangesComparison() {
+        state.changesScope = elements.changesScope.value;
+        state.changesBaseRef = elements.changesBase.value;
+        state.changesRequestID = '';
+        state.changesRefreshPending = false;
+        state.workspaceChanges = {
+            files: [], branches: state.workspaceChanges?.branches, branchesTruncated: state.workspaceChanges?.branchesTruncated,
+            message: 'Loading workspace changes…',
+        };
+        state.fileChanges = new Map();
+        renderFileChanges();
+        requestWorkspaceChanges();
+    }
+    function requestWorkspaceChanges(refreshPending = false) {
+        if (!state.socket || state.socket.readyState !== WebSocket.OPEN)
+            return;
+        if (state.changesRequestID) {
+            state.changesRefreshPending ||= refreshPending;
+            return;
+        }
+        state.changesRequestID = sessionRequestID('changes');
+        state.socket.send(JSON.stringify({
+            type: 'workspace.changes', requestId: state.changesRequestID,
+            scope: state.changesScope, baseRef: state.changesScope === 'branch' ? state.changesBaseRef : undefined,
+        }));
+    }
+    function receiveWorkspaceChanges(event) {
+        if (!state.changesRequestID || event.requestId !== state.changesRequestID)
+            return;
+        state.changesRequestID = '';
+        const previous = state.workspaceChanges;
+        const received = event.changes || { files: [], message: event.text || 'Workspace changes are unavailable' };
+        const snapshot = state.changesScope === 'branch' && received.scope !== 'branch'
+            ? { files: [], branches: received.branches, message: 'Branch changes require an updated Session runtime' }
+            : received;
+        const unchanged = previous && previous.base === snapshot.base && previous.message === snapshot.message
+            && previous.scope === snapshot.scope && previous.baseRef === snapshot.baseRef
+            && JSON.stringify(previous.branches) === JSON.stringify(snapshot.branches)
+            && previous.branchesTruncated === snapshot.branchesTruncated
+            && previous.truncated === snapshot.truncated && previous.files.length === snapshot.files.length
+            && previous.files.every((file, index) => file.name === snapshot.files[index].name && file.diff === snapshot.files[index].diff);
+        if (!unchanged) {
+            state.workspaceChanges = snapshot;
+            state.fileChanges = new Map(state.workspaceChanges.files.map(file => [file.name, file.diff]));
             renderFileChanges();
+        }
+        if (state.changesRefreshPending) {
+            state.changesRefreshPending = false;
+            requestWorkspaceChanges();
+        }
     }
     function parseFileDiffs(diff) {
         const lines = diff.split('\n');
@@ -4612,7 +5878,10 @@ spec:
             elements.changesList.replaceChildren();
             const empty = document.createElement('div');
             empty.className = 'changes-empty';
-            empty.textContent = state.selected ? 'No file changes yet.' : 'Choose a Session to inspect its file changes.';
+            empty.textContent = !state.selected ? 'Choose a Session to inspect its file changes.'
+                : state.workspaceChanges?.message || (state.workspaceChanges
+                    ? (state.changesScope === 'branch' ? 'No committed branch changes.' : 'No uncommitted changes.')
+                    : 'Loading workspace changes…');
             elements.changesList.append(empty);
             return;
         }
@@ -4695,6 +5964,8 @@ spec:
         elements.viewPicker.dataset.view = view;
         const conversationActive = view === 'conversation';
         const changesActive = view === 'changes';
+        if (changesActive)
+            requestWorkspaceChanges();
         const terminalActive = view === 'terminal';
         elements.messages.hidden = !conversationActive;
         elements.composerWrap.hidden = !conversationActive;
@@ -4705,12 +5976,16 @@ spec:
             tab.setAttribute('aria-selected', String(active));
             tab.tabIndex = active ? 0 : -1;
         }
-        if (conversationActive)
+        if (conversationActive) {
+            resizeComposer();
             updateCurrentRequest();
+        }
         else
             hideCurrentRequest();
+        updateJumpToLatest();
         if (terminalActive)
             sessionTerminal.show(state.selected);
+        scheduleCompletionRead();
     }
     function handleViewTabKeydown(event) {
         const tabs = [elements.conversationTab, elements.changesTab, elements.terminalTab].filter(tab => !tab.disabled);
@@ -4772,42 +6047,84 @@ spec:
             showToast('Active work interrupted');
         const divider = document.createElement('div');
         divider.className = 'turn-divider';
+        if (event.notificationId)
+            divider.dataset.notificationId = event.notificationId;
         if (elapsed !== null)
             divider.textContent = `Worked for ${formatSessionProgressElapsed(elapsed)}`;
         elements.messages.append(divider);
         scrollToBottom();
+        scheduleCompletionRead();
     }
     function isRuntimeRecoveryEvent(event) {
         return event.type === 'runtime.recovered'
             || (event.type === 'input.resolved' && event.status === 'cancelled')
             || (event.type === 'turn.completed' && event.status === 'interrupted');
     }
-    function scrollToBottom(smooth = true) {
+    function scrollToBottom() {
         if (state.replayingHistory) {
             if (state.pinHistoryToBottom)
                 scheduleBottomAnchor();
             return;
         }
-        const distance = messagesBottomDistance();
-        if (distance < 240 || !smooth) {
-            elements.messages.scrollTo({ top: elements.messages.scrollHeight, behavior: smooth ? 'smooth' : 'auto' });
-        }
+        if (messagesNearBottom())
+            scheduleBottomAnchor();
+        updateJumpToLatest();
     }
     function messagesBottomDistance() {
         return elements.messages.scrollHeight - elements.messages.scrollTop - elements.messages.clientHeight;
     }
     function messagesNearBottom() {
-        return messagesBottomDistance() < 240;
+        if (state.messagesScrollPaused)
+            return false;
+        const distance = messagesBottomDistance();
+        // Layout can clamp the viewport when a streaming segment shrinks.
+        if (distance <= 1)
+            state.messagesScrollTop = elements.messages.scrollTop;
+        return distance < 240;
+    }
+    function pauseMessagesScroll() {
+        state.jumpToLatestPending = false;
+        state.messagesScrollPaused = true;
+        state.pinHistoryToBottom = false;
+        if (state.bottomScrollFrame !== null) {
+            window.cancelAnimationFrame(state.bottomScrollFrame);
+            state.bottomScrollFrame = null;
+        }
+    }
+    function handleMessagesScroll() {
+        if (state.jumpToLatestPending)
+            return;
+        const top = Math.max(0, elements.messages.scrollTop);
+        if (messagesBottomDistance() <= 1) {
+            state.messagesScrollPaused = false;
+            state.pinHistoryToBottom = state.replayingHistory;
+        }
+        else if (top < state.messagesScrollTop) {
+            pauseMessagesScroll();
+        }
+        state.messagesScrollTop = top;
+        updateJumpToLatest();
     }
     function scheduleBottomAnchor() {
         if (state.bottomScrollFrame !== null)
             return;
         state.bottomScrollFrame = window.requestAnimationFrame(() => {
             state.bottomScrollFrame = null;
+            if (state.jumpToLatestPending) {
+                state.jumpToLatestPending = false;
+            }
+            else if (elements.messages.scrollTop < state.messagesScrollTop) {
+                // Scrolling can move the viewport before its scroll event is delivered.
+                handleMessagesScroll();
+            }
+            if (state.messagesScrollPaused)
+                return;
             const scrollBehavior = elements.messages.style.scrollBehavior;
             elements.messages.style.scrollBehavior = 'auto';
             elements.messages.scrollTop = elements.messages.scrollHeight;
+            state.messagesScrollTop = elements.messages.scrollTop;
             elements.messages.style.scrollBehavior = scrollBehavior;
+            updateJumpToLatest();
         });
     }
     function currentAttachmentFiles() {
@@ -4886,6 +6203,8 @@ spec:
             interruptActiveTurn();
             return;
         }
+        if (composerCommand().invalid)
+            return;
         const session = state.selected;
         const files = [...currentAttachmentFiles()];
         if (!session)
@@ -4958,9 +6277,13 @@ spec:
         resizeComposer();
         updateComposerAction();
     });
+    elements.input.addEventListener('scroll', syncComposerHighlight);
     function resizeComposer() {
+        if (elements.composerWrap.hidden || elements.sessionsView.hidden)
+            return;
         elements.input.style.height = 'auto';
         elements.input.style.height = `${Math.min(elements.input.scrollHeight, 160)}px`;
+        syncComposerHighlight();
     }
     async function openDialog() {
         try {
@@ -4970,6 +6293,8 @@ spec:
             showToast(errorMessage(error));
             return;
         }
+        if (!state.namespace)
+            return;
         setConsoleView('sessions');
         elements.dialogError.textContent = '';
         setCreationMode(state.creationMode);
@@ -4978,15 +6303,21 @@ spec:
         window.setTimeout(() => (state.creationMode === 'yaml' ? elements.yaml : elements.form.elements.name).focus(), 0);
     }
     elements.newSessionButton.addEventListener('click', openDialog);
-    requiredElement('#welcome-new').addEventListener('click', openDialog);
+    elements.welcomeNew.addEventListener('click', openDialog);
     document.querySelectorAll('.close-dialog').forEach(button => button.addEventListener('click', () => elements.dialog.close()));
-    elements.namespaceForm.addEventListener('submit', async (event) => {
-        event.preventDefault();
-        try {
-            await switchNamespace(elements.activeNamespace.value);
-        }
-        catch (error) {
-            showToast(errorMessage(error));
+    elements.namespaceForm.addEventListener('submit', event => event.preventDefault());
+    elements.activeNamespace.addEventListener('change', () => {
+        void switchNamespace(elements.activeNamespace.value).catch(error => showToast(errorMessage(error)));
+    });
+    for (const event of ['focus', 'pointerdown']) {
+        elements.activeNamespace.addEventListener(event, () => {
+            void refreshNamespaces().catch(error => showToast(errorMessage(error)));
+        });
+    }
+    elements.activeNamespace.addEventListener('keydown', event => {
+        const key = event;
+        if ([' ', 'Enter', 'F4'].includes(key.key) || key.altKey && ['ArrowDown', 'ArrowUp'].includes(key.key)) {
+            void refreshNamespaces().catch(error => showToast(errorMessage(error)));
         }
     });
     elements.sessionSource.addEventListener('change', () => loadSessionSource(elements.sessionSource.value));
@@ -5384,11 +6715,16 @@ spec:
     elements.sessionActionsMenu.addEventListener('focusout', handleSessionActionsFocusOut);
     elements.conversationTab.addEventListener('click', () => setActiveView('conversation'));
     elements.changesTab.addEventListener('click', () => setActiveView('changes'));
+    elements.changesScope.addEventListener('change', changeChangesComparison);
+    elements.changesBase.addEventListener('change', changeChangesComparison);
     elements.terminalTab.addEventListener('click', () => setActiveView('terminal'));
     elements.viewChoice.addEventListener('change', () => setActiveView(elements.viewChoice.value));
     elements.viewTabs.addEventListener('keydown', handleViewTabKeydown);
     elements.currentRequestButton.addEventListener('click', jumpToCurrentRequest);
     elements.messages.addEventListener('scroll', scheduleCurrentRequestUpdate);
+    elements.jumpToLatest.addEventListener('click', jumpToLatest);
+    elements.messages.addEventListener('scroll', handleMessagesScroll);
+    elements.messages.addEventListener('scroll', scheduleCompletionRead);
     window.addEventListener('pagehide', () => {
         sessionTerminal.close();
         if (!elements.terminalView.hidden)
@@ -5405,6 +6741,26 @@ spec:
     elements.overviewButton.addEventListener('click', () => setConsoleView('overview'));
     elements.sessionsButton.addEventListener('click', () => setConsoleView('sessions'));
     elements.resourcesButton.addEventListener('click', () => setConsoleView('resources'));
+    elements.adminButton.addEventListener('click', () => setConsoleView('admin'));
+    elements.addMember.addEventListener('click', () => openMemberDialog());
+    elements.memberForm.addEventListener('submit', event => {
+        event.preventDefault();
+        void saveMember();
+    });
+    requiredElement('#cancel-member').addEventListener('click', () => elements.memberDialog.close());
+    elements.memberDialog.addEventListener('close', () => { state.memberEditing = null; });
+    requiredElement('#refresh-admin').addEventListener('click', () => { void loadAdmin(); });
+    elements.adminForm.addEventListener('submit', event => {
+        event.preventDefault();
+        void saveAdminResource();
+    });
+    document.querySelectorAll('.close-admin-editor').forEach(button => {
+        button.addEventListener('click', () => elements.adminEditor.close());
+    });
+    elements.adminEditor.addEventListener('close', () => {
+        state.adminEditorGeneration += 1;
+        state.adminEditing = null;
+    });
     elements.resourceDiagramTab.addEventListener('click', () => setResourceView('diagram'));
     elements.resourceInventoryTab.addEventListener('click', () => setResourceView('inventory'));
     requiredElement('.resource-view-tabs').addEventListener('keydown', event => handleResourceViewTabKeydown(event));
@@ -5414,6 +6770,13 @@ spec:
     document.querySelectorAll('.close-resource-detail').forEach(button => {
         button.addEventListener('click', () => elements.resourceDetailDialog.close());
     });
+    elements.resourceDetailDialog.addEventListener('close', () => {
+        state.resourceDetailGeneration++;
+        state.resourceDetailLogGeneration++;
+        state.resourceDetailSpawner = null;
+    });
+    elements.taskSpawnerRunForm.addEventListener('submit', runTaskSpawner);
+    elements.taskSpawnerLifecycleButton.addEventListener('click', toggleTaskSpawnerSuspension);
     elements.resourceDetailLogsTab.addEventListener('click', () => setResourceDetailView('logs'));
     elements.resourceDetailManifestTab.addEventListener('click', () => setResourceDetailView('manifest'));
     elements.resourceDetailTabs.addEventListener('keydown', handleResourceDetailTabKeydown);
@@ -5425,9 +6788,9 @@ spec:
         void refreshConsole();
     });
     requiredElement('#logout').addEventListener('click', async () => {
-        closeBrowserNotifications();
-        await api('/api/logout', { method: 'POST' }).catch(() => { });
-        window.location.replace('/login');
+        await closeBrowserNotifications();
+        const result = await api('/api/logout', { method: 'POST' }).catch(() => undefined);
+        window.location.replace(result?.logoutURL || '/login');
     });
     function setSidebarOpen(open) {
         elements.sidebar.classList.toggle('open', open);
@@ -5444,8 +6807,10 @@ spec:
     elements.sidebarScrim.addEventListener('click', () => setSidebarOpen(false));
     elements.sidebarScroll.addEventListener('scroll', () => closeSessionActionsMenu());
     window.addEventListener('resize', () => {
+        resizeComposer();
         closeSessionActionsMenu();
         scheduleCurrentRequestUpdate();
+        updateJumpToLatest();
     });
     document.addEventListener('pointerdown', event => {
         if (elements.sessionActionsMenu.hidden)
@@ -5472,17 +6837,39 @@ spec:
     });
     bindConsoleSettings();
     elements.browserAlerts.addEventListener('change', toggleBrowserAlerts);
+    elements.browserAlertsTest.addEventListener('click', testBrowserNotification);
     window.addEventListener('focus', renderBrowserAlerts);
-    window.addEventListener('pagehide', closeBrowserNotifications);
+    window.addEventListener('focus', scheduleCompletionRead);
+    window.addEventListener('resize', scheduleCompletionRead);
+    document.addEventListener('visibilitychange', scheduleCompletionRead);
+    navigator.serviceWorker?.addEventListener('message', event => {
+        if (event.data?.type === 'notification.clicked' && event.data.session)
+            void openNotificationSession(event.data.session);
+    });
     window.addEventListener('storage', event => {
         if (event.key === browserAlertsStorageKey || event.key === null)
             loadBrowserAlertPreference();
     });
     loadBrowserAlertPreference();
     const configReady = loadConfig();
-    configReady.then(() => Promise.all([loadOptions(), loadSessions(), loadResources()])).then(() => {
+    const consoleReady = configReady.then(discoverNamespaces => {
+        if (discoverNamespaces)
+            void refreshNamespaces().catch(error => showToast(errorMessage(error)));
+        return Promise.all([loadOptions(), loadSessions(), loadResources()]);
+    }).then(() => {
         setConsoleView('overview');
     }).catch(error => showToast(error.message));
+    void consoleReady.then(() => {
+        const target = new URLSearchParams(location.search);
+        if (target.has('session') && target.has('namespace')) {
+            void openNotificationSession({ name: target.get('session'), namespace: target.get('namespace'), uid: target.get('uid') || undefined });
+            window.history.replaceState(null, '', location.pathname);
+        }
+    });
     window.setInterval(() => loadSessions({ quiet: true }), 5000);
     window.setInterval(() => loadResources({ quiet: true }), 10000);
+    window.setInterval(() => {
+        if (!elements.sessionsView.hidden && !elements.changes.hidden && !document.hidden)
+            requestWorkspaceChanges();
+    }, 5000);
 }

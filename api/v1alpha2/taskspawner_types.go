@@ -384,7 +384,7 @@ type Jira struct {
 }
 
 // GitHubWebhook configures matching for GitHub webhook events.
-// +kubebuilder:validation:XValidation:rule="!has(self.excludeFilters) || self.excludeFilters.all(f, (has(f.action) && size(f.action) > 0) || (has(f.author) && size(f.author) > 0) || (has(f.pullRequestAuthor) && size(f.pullRequestAuthor) > 0) || (has(f.branch) && size(f.branch) > 0) || (has(f.tag) && size(f.tag) > 0) || (has(f.state) && size(f.state) > 0) || (has(f.commentOn) && size(f.commentOn) > 0) || (has(f.conclusion) && size(f.conclusion) > 0) || (has(f.checkName) && size(f.checkName) > 0) || (has(f.bodyPattern) && size(f.bodyPattern) > 0) || (has(f.labels) && size(f.labels) > 0) || has(f.draft))",message="excludeFilters[] must set at least one non-empty matching criterion besides event"
+// +kubebuilder:validation:XValidation:rule="!has(self.excludeFilters) || self.excludeFilters.all(f, (has(f.action) && size(f.action) > 0) || (has(f.author) && size(f.author) > 0) || (has(f.pullRequestAuthor) && size(f.pullRequestAuthor) > 0) || (has(f.requestedReviewer) && size(f.requestedReviewer) > 0) || (has(f.branch) && size(f.branch) > 0) || (has(f.tag) && size(f.tag) > 0) || (has(f.state) && size(f.state) > 0) || (has(f.commentOn) && size(f.commentOn) > 0) || (has(f.conclusion) && size(f.conclusion) > 0) || (has(f.checkName) && size(f.checkName) > 0) || (has(f.bodyPattern) && size(f.bodyPattern) > 0) || (has(f.labels) && size(f.labels) > 0) || has(f.draft))",message="excludeFilters[] must set at least one non-empty matching criterion besides event"
 // +kubebuilder:validation:XValidation:rule="!has(self.excludeFilters) || self.excludeFilters.all(f, !has(f.filePatterns) && !has(f.bodyContains) && !has(f.excludeAuthors) && !has(f.excludeLabels) && !has(f.excludeBodyPatterns))",message="excludeFilters[] cannot use filePatterns, bodyContains, or the exclude* criteria"
 // +kubebuilder:validation:XValidation:rule="!has(self.excludeFilters) || self.excludeFilters.all(f, (has(f.event) && size(f.event) > 0) || (!has(f.labels) && !has(f.state) && !has(f.draft) && !has(f.commentOn) && !has(f.bodyPattern) && !has(f.conclusion) && !has(f.checkName)))",message="excludeFilters[] must set event when using a criterion that only applies to certain event types"
 // +kubebuilder:validation:XValidation:rule="!has(self.filters) || self.filters.all(f, has(f.event) && size(f.event) > 0)",message="filters[].event is required"
@@ -427,8 +427,8 @@ type GitHubWebhook struct {
 	// it. Unlike Filters, an entry here may omit Event, in which case it applies
 	// to every subscribed event type.
 	//
-	// Only Action, Author, PullRequestAuthor, Branch, and Tag are safe to use in
-	// a rule that omits Event: for those, a value the event does not carry never
+	// Only Action, Author, PullRequestAuthor, RequestedReviewer, Branch, and Tag
+	// are safe to use in a rule that omits Event: a value the event does not carry never
 	// matches, so the rule does not reject the event. An event carrying no pull
 	// request author, such as push or check_run, is therefore never rejected by
 	// a PullRequestAuthor rule. The remaining criteria are evaluated only for
@@ -553,6 +553,16 @@ type GitHubWebhookFilter struct {
 	// +optional
 	// +kubebuilder:validation:MaxLength=64
 	PullRequestAuthor string `json:"pullRequestAuthor,omitempty"`
+
+	// RequestedReviewer filters by requested_reviewer.login in the webhook
+	// payload. Matching is exact and case-sensitive. Events without a requested
+	// reviewer, including team review requests, never match this criterion.
+	// Available on pull_request and pull_request_target events with action
+	// review_requested or review_request_removed. Set Action to review_requested
+	// to match only new review requests.
+	// +optional
+	// +kubebuilder:validation:MaxLength=64
+	RequestedReviewer string `json:"requestedReviewer,omitempty"`
 
 	// ExcludeAuthors excludes events sent by any of these usernames.
 	// +optional
@@ -692,11 +702,11 @@ type GenericWebhookFilter struct {
 	Pattern string `json:"pattern,omitempty"`
 }
 
-// Slack triggers task spawning from Slack messages via the centralized
+// Slack triggers spawning from Slack messages via the centralized
 // kelos-slack-server. The server connects to Slack via Socket Mode (outbound
-// WebSocket — no ingress required) and routes messages to matching
-// TaskSpawners. Authentication tokens (SLACK_BOT_TOKEN, SLACK_APP_TOKEN)
-// are configured on the server, not per-TaskSpawner.
+// WebSocket — no ingress required) and routes messages to matching TaskSpawners
+// and SessionSpawners. Authentication tokens (SLACK_BOT_TOKEN, SLACK_APP_TOKEN)
+// are configured on the server, not per-spawner.
 //
 // The bot must be invited to each channel it should listen in; the Channels
 // and ExcludeFilters fields are post-delivery filters, not a privacy scope.
@@ -726,15 +736,17 @@ type Slack struct {
 	// ExcludePatterns — the exclusion also covers slash commands. A criterion
 	// the event does not carry never matches, so it does not reject the event.
 	//
-	// The rules are only guaranteed while the object is managed through
-	// v1alpha2. This field does not exist in v1alpha1; it survives a v1alpha1
-	// round-trip through a preservation annotation, so a v1alpha1 client that
-	// drops unknown annotations drops the exclusions with them.
+	// On a TaskSpawner, the rules are only guaranteed while the object is managed
+	// through v1alpha2: this field does not exist in the v1alpha1 TaskSpawner, and
+	// it survives a v1alpha1 round-trip through a preservation annotation, so a
+	// v1alpha1 client that drops unknown annotations drops the exclusions with
+	// them. SessionSpawner has no v1alpha1 version, so the caveat does not apply
+	// there.
 	// +optional
 	// +kubebuilder:validation:MaxItems=20
 	ExcludeFilters []SlackFilter `json:"excludeFilters,omitempty"`
 
-	// BotMessages controls whether bot-originated messages can trigger this
+	// BotMessagePolicy controls whether bot-originated messages can trigger this
 	// spawner. Accepting bot messages carries loop risk — especially "All"
 	// which includes the bot's own output. Use ExcludePatterns or Triggers
 	// to guard against runaway self-triggering.

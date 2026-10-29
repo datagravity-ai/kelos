@@ -15,7 +15,7 @@ Every spawner references the root [`base-agent`](../base-agent.yaml) for shared
 instructions and skills. The issue and PR pick-up SessionSpawners reference
 only `base-agent`. The remaining TaskSpawners add repository- or role-specific
 instructions where needed: triage and squash-commits share `agentconfig.yaml`
-(`agora-dev-agent`), while planner, the two reviewers, fake-user, and fake-strategist
+(`agora-dev-agent`), while planner, the reviewer, fake-user, and fake-strategist
 define their own AgentConfig inline.
 
 Autonomous discovery agents that publish GitHub issues maintain at most one
@@ -29,7 +29,7 @@ discovery jobs.
 
 The two SessionSpawners operate on the Agora repository through the
 `agora-session-agent` Workspace, which uses the personal Session token. Six
-Seven TaskSpawners use the `agora-agent` Workspace. The two meta-maintenance spawners
+TaskSpawners use the `agora-agent` Workspace. The two meta-maintenance spawners
 (`agora-config-update`, `agora-self-update`) are different: the files they
 maintain (`self-development/agora/*`) live in *this* repository, so they use the
 `kelos-agent` Workspace and the `kelos-dev-agent` role AgentConfig from
@@ -40,17 +40,16 @@ maintain (`self-development/agora/*`) live in *this* repository, so they use the
 
 | Spawner | Trigger | Agent | Description |
 |---|---|---|---|
-| **agora-workers** | Webhook: issue comment `/kelos pick-up` | Codex | Creates a durable Session with the open issue URL and a dedicated issue branch |
-| **agora-planner** | Webhook: issue comment `/kelos plan` | Codex | Investigates an issue and posts a structured implementation plan — advisory only, no code changes |
-| **agora-reviewer** | Webhook: PR comment `/kelos review` | Codex | Reviews PRs on demand — analyzes code, checks conventions, and updates a sticky review comment |
-| **agora-claude-reviewer** | Webhook: PR comment `/kelos claude-review` | Claude Fable | Runs an independent review path through Claude Code and updates a Claude-specific sticky review comment |
-| **agora-pr-responder** | Webhook: PR review/comment with `/kelos pick-up` | Codex | Creates a durable Session with the open PR URL on its existing branch |
-| **agora-triage** | Webhook: issue opened/reopened (untriaged) | Codex | Classifies issues by kind/priority, detects duplicates, and recommends an actor |
-| **agora-fake-user** | Cron (daily 09:00 UTC) | Codex | Tests DX as a new user and maintains one unassigned issue slot for the highest-impact problem found |
-| **agora-fake-strategist** | Cron (every 12 hours) | Codex | Explores new use cases, integrations, and API/UI/deployment capabilities while maintaining one unassigned strategic issue slot |
-| **agora-config-update** | Cron (daily 18:00 UTC) | Codex | Reviews recent Agora PR feedback and creates or updates unassigned configuration PRs accordingly |
-| **agora-self-update** | Cron (daily 06:00 UTC) | Codex | Reviews and tunes the `self-development/agora/` prompts, configs, and README while maintaining one unassigned improvement issue slot |
-| **agora-squash-commits** | Webhook: PR comment `/kelos squash-commits` | Codex | Rebases and squashes PR branch commits into a single clean commit |
+| **agora-workers** | Webhook: issue comment `/kelos pick-up` | GPT-6.1 Sol | Creates a durable Session with the open issue URL and a dedicated issue branch |
+| **agora-planner** | Webhook: issue comment `/kelos plan` | Claude Opus | Investigates an issue and posts a structured implementation plan — advisory only, no code changes |
+| **agora-reviewer** | Webhook: PR comment `/kelos review` | Claude Opus | Reviews PRs on demand — analyzes code, checks conventions, and updates a sticky review comment |
+| **agora-pr-responder** | Webhook: PR review/comment with `/kelos pick-up` | GPT-6.1 Sol | Creates a durable Session with the open PR URL on its existing branch |
+| **agora-triage** | Webhook: issue opened/reopened (untriaged) | Claude Opus | Classifies issues by kind/priority, detects duplicates, and recommends an actor |
+| **agora-fake-user** | Cron (daily 09:00 UTC) | Claude Sonnet | Tests DX as a new user and maintains one unassigned issue slot for the highest-impact problem found |
+| **agora-fake-strategist** | Cron (every 12 hours) | Claude Opus | Explores new use cases, integrations, and API/UI/deployment capabilities while maintaining one unassigned strategic issue slot |
+| **agora-config-update** | Cron (daily 18:00 UTC) | Claude Opus | Reviews recent Agora PR feedback and creates or updates unassigned configuration PRs accordingly |
+| **agora-self-update** | Cron (daily 06:00 UTC) | Claude Opus | Reviews and tunes the `self-development/agora/` prompts, configs, and README while maintaining one unassigned improvement issue slot |
+| **agora-squash-commits** | Webhook: PR comment `/kelos squash-commits` | Claude Sonnet | Rebases and squashes PR branch commits into a single clean commit |
 
 > **Not ported from `self-development/`:** the Kelos API reviewers (Agora has no
 > Kubernetes CRDs to review) and `kelos-image-update` (it updates
@@ -80,7 +79,7 @@ the agent to find the best way to address it.
 | | |
 |---|---|
 | **Trigger** | GitHub `issue_comment` webhook with `/kelos pick-up` |
-| **Agent** | Codex |
+| **Agent** | GPT-6.1 Sol via Codex |
 | **Storage** | 10 Gi PVC |
 
 **Key features:**
@@ -102,7 +101,7 @@ Reacts to `/kelos plan` comments on open issues. Investigates the issue, inspect
 | | |
 |---|---|
 | **Trigger** | GitHub `issue_comment` webhook with `/kelos plan` |
-| **Agent** | Codex |
+| **Agent** | Claude Opus via Claude Code |
 | **Concurrency** | 2 |
 
 **Handoff flow:**
@@ -122,11 +121,10 @@ posts `/kelos review`.
 | | |
 |---|---|
 | **Trigger** | GitHub PR comment webhook with `/kelos review` from a maintainer or `kelos-bot[bot]` |
-| **Agent** | Codex |
+| **Agent** | Claude Opus via Claude Code |
 | **Concurrency** | 3 |
 
 **Key features:**
-- Uses the `review-all` skill to reconcile two independent reviews of the same diff
 - Reads the full diff and surrounding context to understand changes
 - Checks correctness, tests, project conventions, security, and code quality
 - Pays special attention to public-contract changes (naming, shape, backward compatibility)
@@ -143,30 +141,6 @@ posts `/kelos review`.
 kubectl apply -f self-development/agora/agora-reviewer.yaml
 ```
 
-### agora-claude-reviewer.yaml
-
-Runs a Claude Fable review when a maintainer or `kelos-bot[bot]` posts
-`/kelos claude-review`.
-
-| | |
-|---|---|
-| **Trigger** | GitHub PR comment or review webhook with `/kelos claude-review` from a maintainer or `kelos-bot[bot]` |
-| **Agent** | Claude Fable via Claude Code |
-| **Concurrency** | 3 |
-
-**Key features:**
-
-- Uses the same repository-specific checklist and sticky comment format as `agora-reviewer`
-- Pays special attention to public-contract changes
-- Creates or updates a Claude-specific sticky PR comment
-- Read-only agent — does not push code, modify files, or run local validation
-
-**Deploy:**
-
-```bash
-kubectl apply -f self-development/agora/agora-claude-reviewer.yaml
-```
-
 ### agora-pr-responder.yaml
 
 Picks up open GitHub pull requests when a reviewer requests changes with
@@ -176,7 +150,7 @@ find the best way to address it.
 | | |
 |---|---|
 | **Trigger** | GitHub PR comment with `/kelos pick-up`, or a PR review whose body contains `/kelos pick-up` |
-| **Agent** | Codex |
+| **Agent** | GPT-6.1 Sol via Codex |
 | **Storage** | 10 Gi PVC |
 
 **Key features:**
@@ -199,7 +173,7 @@ Triages newly opened (and certain reopened) GitHub issues.
 | | |
 |---|---|
 | **Trigger** | GitHub issue opened (no `triage-accepted`), or reopened with `needs-actor` |
-| **Agent** | Codex |
+| **Agent** | Claude Opus via Claude Code |
 | **Concurrency** | 8 |
 
 **For each issue, the agent:**
@@ -224,7 +198,7 @@ Runs daily to test the developer experience as if you were a new user.
 | | |
 |---|---|
 | **Trigger** | Cron `0 9 * * *` (daily at 09:00 UTC) |
-| **Agent** | Codex |
+| **Agent** | Claude Sonnet via Claude Code |
 | **Concurrency** | 1 |
 
 Each run picks one focus area:
@@ -248,7 +222,7 @@ Runs every 12 hours to strategically explore new ways to use and improve Agora.
 | | |
 |---|---|
 | **Trigger** | Cron `0 */12 * * *` (every 12 hours) |
-| **Agent** | Codex |
+| **Agent** | Claude Opus via Claude Code |
 | **Concurrency** | 1 |
 
 Each run picks one focus area:
@@ -272,7 +246,7 @@ Runs daily to update the Agora agent configuration based on patterns found in Ag
 | | |
 |---|---|
 | **Trigger** | Cron `0 18 * * *` (daily at 18:00 UTC) |
-| **Agent** | Codex |
+| **Agent** | Claude Opus via Claude Code |
 | **Workspace** | `kelos-agent` (edits `self-development/agora/` in this repo) |
 | **Concurrency** | 1 |
 
@@ -292,7 +266,7 @@ Runs daily to review and improve the `self-development/agora/` workflow files th
 | | |
 |---|---|
 | **Trigger** | Cron `0 6 * * *` (daily at 06:00 UTC) |
-| **Agent** | Codex |
+| **Agent** | Claude Opus via Claude Code |
 | **Workspace** | `kelos-agent` (reasons about `self-development/agora/` in this repo) |
 | **Concurrency** | 1 |
 
@@ -314,7 +288,7 @@ Rebases and squashes PR branch commits into a single clean commit when a maintai
 | | |
 |---|---|
 | **Trigger** | GitHub PR comment webhook with `/kelos squash-commits` |
-| **Agent** | Codex |
+| **Agent** | Claude Sonnet via Claude Code |
 | **Concurrency** | 1 |
 
 **Key features:**
@@ -343,7 +317,7 @@ Three Workspaces are referenced:
   [`session-workspaces.yaml`](../session-workspaces.yaml) and references the
   `personal-github-token` Secret.
 
-- **`agora-agent`** — points at the Agora repository and is used by the seven
+- **`agora-agent`** — points at the Agora repository and is used by the six
   TaskSpawners that operate directly on Agora. It is defined in
   [`workspaces.yaml`](../workspaces.yaml) and references the
   `kelos-agent-credentials` Secret.
@@ -420,18 +394,23 @@ existing issue or PR with a fresh matching event if needed.
 
 ### 5. Agent Credentials Secret
 
-The spawners reuse the `kelos-credentials` secret (the AI agent credentials are
-the same regardless of repository). The Codex spawners use Codex OAuth, and
-the Claude reviewer uses Claude Code OAuth:
+All spawners share the `kelos-credentials` Secret and use OAuth. Workers and
+PR responders use Codex; other agents use Claude Code. Run `codex login`
+locally, then create or update the Secret with both credentials:
 
 ```bash
 kubectl create secret generic kelos-credentials \
-  --from-file=CODEX_AUTH_JSON=$HOME/.codex/auth.json \
-  --from-literal=CLAUDE_CODE_OAUTH_TOKEN=<your-claude-code-oauth-token>
+  --from-literal=CLAUDE_CODE_OAUTH_TOKEN=<your-claude-code-oauth-token> \
+  --from-file=CODEX_AUTH_JSON="$HOME/.codex/auth.json" \
+  --dry-run=client -o yaml | kubectl apply -f -
+kubectl label secret kelos-credentials kelos.dev/codex-oauth-refresh=true --overwrite
 ```
 
-For Codex API-key auth, change the worker credential type to `api-key` and use
-`--from-literal=CODEX_API_KEY=<your-openai-api-key>`.
+The label enables scheduled refresh of `CODEX_AUTH_JSON`; the shared Claude
+credential is preserved.
+
+For API-key auth, change each agent's worker credential type to `api-key` and
+use `CODEX_API_KEY` for Codex or `ANTHROPIC_API_KEY` for Claude Code.
 
 ## Customizing
 

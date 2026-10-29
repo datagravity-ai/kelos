@@ -134,7 +134,7 @@ React to GitHub webhook events in real time — issues, pull requests, pushes, r
 | Event Type | Description | Available Filter Fields | Template Variables |
 |---|---|---|---|
 | `issues` | Issue opened, edited, labeled, closed, etc. | `action`, `labels`, `excludeLabels`, `state`, `bodyPattern`, `excludeBodyPatterns` | `{{.ID}}`, `{{.Title}}`, `{{.Number}}`, `{{.Body}}`, `{{.URL}}` |
-| `pull_request` | PR opened, closed, synchronize, labeled, etc. | `action`, `labels`, `excludeLabels`, `state`, `branch`, `draft`, `bodyPattern`, `excludeBodyPatterns`, `filePatterns` | `{{.ID}}`, `{{.Title}}`, `{{.Number}}`, `{{.Body}}`, `{{.URL}}`, `{{.Branch}}` |
+| `pull_request` | PR opened, closed, synchronize, labeled, etc. | `action`, `requestedReviewer`, `labels`, `excludeLabels`, `state`, `branch`, `draft`, `bodyPattern`, `excludeBodyPatterns`, `filePatterns` | `{{.ID}}`, `{{.Title}}`, `{{.Number}}`, `{{.Body}}`, `{{.URL}}`, `{{.Branch}}` |
 | `pull_request_review` | Review submitted, edited, dismissed | `action`, `labels`, `excludeLabels`, `state`, `draft`, `bodyPattern`, `excludeBodyPatterns` | `{{.ID}}`, `{{.Title}}`, `{{.Number}}`, `{{.Body}}`, `{{.URL}}`, `{{.Branch}}`, `{{.CommentBody}}`, `{{.CommentURL}}` |
 | `pull_request_review_comment` | Review comment created, edited, deleted | `action`, `labels`, `excludeLabels`, `state`, `draft`, `bodyPattern`, `excludeBodyPatterns` | `{{.ID}}`, `{{.Title}}`, `{{.Number}}`, `{{.Body}}`, `{{.URL}}`, `{{.Branch}}`, `{{.CommentBody}}`, `{{.CommentURL}}` |
 | `pull_request_target` | Like `pull_request` but runs in context of the base branch | Same as `pull_request` | Same as `pull_request` |
@@ -147,7 +147,21 @@ All event types support the `author` and `excludeAuthors` filter fields, and exp
 
 `author` and `excludeAuthors` match the **event sender** — the account that produced the delivery. They do not match the pull request author, so a human acting on a bot-authored PR (taking it out of draft, reopening it, commenting) produces an event that `excludeAuthors` admits. To match the pull request author instead, use the `pullRequestAuthor` criterion. It is available on pull-request-bearing events, including `pull_request`, `pull_request_target`, `pull_request_review`, `pull_request_review_comment`, `pull_request_review_thread`, and `issue_comment` on a pull request; an event carrying no pull request author never matches it. Matching is exact and case-sensitive. To exclude rather than accept, put the criterion in `excludeFilters`: entries there reject an event when any of them matches, are evaluated outside the accepting `filters` list, and may omit `event` to apply across every subscribed event type. Note that on the polling sources `githubIssues` and `githubPullRequests`, the identically named `excludeAuthors` field matches the issue or PR author rather than a sender.
 
-Events not in this list can still be specified in `events` — they will be parsed with best-effort field extraction from the raw JSON payload: the sender, the action, and the pull request author when the payload carries a top-level `pull_request` object. That last one is what makes `pullRequestAuthor` work for `pull_request_target` and `pull_request_review_thread`. The criteria that read structured issue, pull request, or check-run fields — `labels`, `excludeLabels`, `state`, `draft`, `commentOn`, `bodyPattern`, `excludeBodyPatterns`, `conclusion`, `checkName` — do not apply to these events.
+To start a Task only when a review is requested from a particular user, match `requestedReviewer` together with `action: review_requested`:
+
+```yaml
+when:
+  githubWebhook:
+    events: ["pull_request"]
+    filters:
+      - event: pull_request
+        action: review_requested
+        requestedReviewer: gunju-kim
+```
+
+`requestedReviewer` matches `requested_reviewer.login` exactly and case-sensitively. It is available on `pull_request` and `pull_request_target` events with action `review_requested` or `review_request_removed`; omitting `action` also matches removed review requests. It does not match the sender, the PR author, or the PR's list of pending reviewers. Events without a requested reviewer, including requests to a team (`requested_team`), never match. It is also safe in an `excludeFilters` rule that omits `event`.
+
+Events not in this list can still be specified in `events` — they will be parsed with best-effort field extraction from the raw JSON payload: the sender, the action, the requested reviewer when `requested_reviewer` is present, and the pull request author when the payload carries a top-level `pull_request` object. That last one is what makes `pullRequestAuthor` work for `pull_request_target` and `pull_request_review_thread`. The criteria that read structured issue, pull request, or check-run fields — `labels`, `excludeLabels`, `state`, `draft`, `commentOn`, `bodyPattern`, `excludeBodyPatterns`, `conclusion`, `checkName` — do not apply to these events.
 
 ```yaml
 apiVersion: kelos.dev/v1alpha2
@@ -195,7 +209,7 @@ spec:
 
 **Setup:** Configure your GitHub repository to send webhooks to your Kelos instance and create a secret with the webhook signing secret. See [example 10](../examples/10-taskspawner-github-webhook/) for full setup instructions.
 
-**Filtering options:** `events` (required), `repository`, `excludeAuthors`, `excludeFilters`, and per-filter fields: `action`, `labels`, `excludeLabels`, `state`, `branch`, `draft`, `author`, `pullRequestAuthor`, `bodyPattern`, `excludeBodyPatterns`, `commentOn` (scopes `issue_comment` events to `"Issue"` or `"PullRequest"`). The legacy `bodyContains` substring filter is **deprecated** — use `bodyPattern` (Go re2 regular expression) instead.
+**Filtering options:** `events` (required), `repository`, `excludeAuthors`, `excludeFilters`, and per-filter fields: `action`, `labels`, `excludeLabels`, `state`, `branch`, `draft`, `author`, `pullRequestAuthor`, `requestedReviewer`, `bodyPattern`, `excludeBodyPatterns`, `commentOn` (scopes `issue_comment` events to `"Issue"` or `"PullRequest"`). The legacy `bodyContains` substring filter is **deprecated** — use `bodyPattern` (Go re2 regular expression) instead.
 
 **Status reporting:** Like `githubPullRequests`, the webhook source supports `reporting.comments` (status comments back to the originating issue or PR) and `reporting.checks.name` (GitHub Check Runs for branch protection). Comment mode defaults to `PerTask`; `Sticky` maintains one comment per TaskSpawner and originating issue or PR across Tasks. Check Runs require `events` to include at least one pull-request event type (`pull_request`, `pull_request_review`, `pull_request_review_comment`, or `pull_request_target`), or to include `issue_comment` with at least one matching filter and every `issue_comment` filter set to `commentOn: PullRequest`. Other configurations are rejected at admission. An `issue_comment` Check Run is associated with the pull request's current head SHA, which Kelos fetches from GitHub before creating the Task.
 

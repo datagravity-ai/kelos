@@ -135,8 +135,9 @@ type SessionSpec struct {
 type SessionIdlePolicy struct {
 	// SuspendAfterSeconds stops the Session runtime once it has been continuously
 	// idle for the given number of seconds without changing Session.spec.suspend.
-	// Selecting the Session in the web interface or starting a terminal connection
-	// resumes it. If this field is unset, the Session is never suspended for
+	// Selecting the Session in the web interface, starting a terminal connection,
+	// or — for a Session backing a Slack thread — a later matching message in
+	// that thread, resumes it. If this field is unset, the Session is never suspended for
 	// idleness. If it is set to zero, the Session is eligible for suspension as
 	// soon as it goes idle. When DeleteAfterSeconds is also set,
 	// SuspendAfterSeconds must be less than DeleteAfterSeconds.
@@ -181,6 +182,13 @@ type SessionStatus struct {
 	// +optional
 	LastActivityTime *metav1.Time `json:"lastActivityTime,omitempty"`
 
+	// LastNotification describes the latest input request or turn outcome needing attention.
+	// Answered or cancelled requests are excluded without restoring older outcomes.
+	// If no pending request or later outcome remains, the field is cleared.
+	// Interrupted turns and removal of the event from retained history also clear it.
+	// +optional
+	LastNotification *SessionNotification `json:"lastNotification,omitempty"`
+
 	// Model is the model reported by the Session runtime.
 	// +optional
 	Model string `json:"model,omitempty"`
@@ -200,6 +208,33 @@ type SessionStatus struct {
 	// +patchMergeKey=type
 	// +patchStrategy=merge
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
+}
+
+// SessionNotificationType identifies why a Session needs attention.
+type SessionNotificationType string
+
+const (
+	// SessionNotificationTypeInputRequested means the Session needs an answer.
+	SessionNotificationTypeInputRequested SessionNotificationType = "InputRequested"
+	// SessionNotificationTypeTurnCompleted means the Session finished its work.
+	SessionNotificationTypeTurnCompleted SessionNotificationType = "TurnCompleted"
+	// SessionNotificationTypeTurnFailed means the Session's work failed.
+	SessionNotificationTypeTurnFailed SessionNotificationType = "TurnFailed"
+)
+
+// SessionNotification describes an event that may need a user's attention.
+type SessionNotification struct {
+	// ID is an opaque event identity, stable across runtime restarts.
+	// Clients should compare IDs only for equality.
+	// +kubebuilder:validation:MinLength=1
+	ID string `json:"id"`
+
+	// Type identifies the reason for the notification.
+	// +kubebuilder:validation:Enum=InputRequested;TurnCompleted;TurnFailed
+	Type SessionNotificationType `json:"type"`
+
+	// EventTime is when the event occurred.
+	EventTime metav1.Time `json:"eventTime"`
 }
 
 // +genclient
@@ -224,7 +259,6 @@ type Session struct {
 	// +kubebuilder:validation:XValidation:rule="(!has(self.worker.image) ? '' : self.worker.image) == (!has(oldSelf.worker.image) ? '' : oldSelf.worker.image)",message="worker.image is immutable"
 	// +kubebuilder:validation:XValidation:rule="has(self.worker.workspaceRef) == has(oldSelf.worker.workspaceRef) && (!has(self.worker.workspaceRef) || self.worker.workspaceRef == oldSelf.worker.workspaceRef)",message="worker.workspaceRef is immutable"
 	// +kubebuilder:validation:XValidation:rule="has(self.worker.agentConfigRefs) == has(oldSelf.worker.agentConfigRefs) && (!has(self.worker.agentConfigRefs) || self.worker.agentConfigRefs == oldSelf.worker.agentConfigRefs)",message="worker.agentConfigRefs is immutable"
-	// +kubebuilder:validation:XValidation:rule="(has(self.worker.podOverrides) && has(self.worker.podOverrides.serviceAccountName) ? self.worker.podOverrides.serviceAccountName : '') == (has(oldSelf.worker.podOverrides) && has(oldSelf.worker.podOverrides.serviceAccountName) ? oldSelf.worker.podOverrides.serviceAccountName : '')",message="worker.podOverrides.serviceAccountName is immutable"
 	// +kubebuilder:validation:XValidation:rule="(!has(self.initialBranch) ? '' : self.initialBranch) == (!has(oldSelf.initialBranch) ? '' : oldSelf.initialBranch)",message="initialBranch is immutable"
 	// +kubebuilder:validation:XValidation:rule="(!has(self.initialPrompt) ? '' : self.initialPrompt) == (!has(oldSelf.initialPrompt) ? '' : oldSelf.initialPrompt)",message="initialPrompt is immutable"
 	// +kubebuilder:validation:XValidation:rule="has(self.volumeClaimTemplate) == has(oldSelf.volumeClaimTemplate) && (!has(self.volumeClaimTemplate) || self.volumeClaimTemplate == oldSelf.volumeClaimTemplate)",message="volumeClaimTemplate is immutable"

@@ -40,11 +40,6 @@ func (e *openCodeHTTPError) Error() string {
 	return fmt.Sprintf("OpenCode server returned HTTP %d: %s", e.statusCode, e.body)
 }
 
-type openCodeTurnResult struct {
-	err         string
-	interrupted bool
-}
-
 type openCodeEvent struct {
 	Type       string          `json:"type"`
 	Properties json.RawMessage `json:"properties"`
@@ -90,9 +85,10 @@ type OpenCodeProvider struct {
 	errMu         sync.Mutex
 	terminalErr   error
 
-	statusMu sync.Mutex
-	model    string
-	usage    *RuntimeUsage
+	statusMu       sync.Mutex
+	nativeCommands map[string]bool
+	model          string
+	usage          *RuntimeUsage
 	// countedSteps holds step-finish part IDs whose usage was already added to
 	// the totals, since a part can be republished on later updates.
 	countedSteps   map[string]struct{}
@@ -100,16 +96,13 @@ type OpenCodeProvider struct {
 
 	sessionMu sync.RWMutex
 	sessionID string
-	turnMu    sync.Mutex
 	activeMu  sync.Mutex
 
-	activeSink        EventSink
-	turnDone          chan openCodeTurnResult
+	eventSink         EventSink
 	activeReady       chan struct{}
 	interactionCtx    context.Context
 	interactionCancel context.CancelFunc
 	activeStarted     bool
-	activeFinished    bool
 	interrupted       bool
 	activeError       string
 	messageRoles      map[string]string
@@ -168,11 +161,12 @@ func newOpenCodeProviderWithClient(ctx context.Context, config ProviderConfig, c
 func newOpenCodeProviderState(ctx context.Context, config ProviderConfig, client *openCodeClient) *OpenCodeProvider {
 	providerCtx, cancel := context.WithCancel(ctx)
 	return &OpenCodeProvider{
-		config: config,
-		client: client,
-		ctx:    providerCtx,
-		cancel: cancel,
-		done:   make(chan struct{}),
+		eventSink: config.EventSink,
+		config:    config,
+		client:    client,
+		ctx:       providerCtx,
+		cancel:    cancel,
+		done:      make(chan struct{}),
 	}
 }
 
@@ -200,9 +194,31 @@ func (p *OpenCodeProvider) initialize(ctx context.Context) error {
 	if err := p.openSession(ctx); err != nil {
 		return err
 	}
+	if err := p.loadNativeCommands(ctx); err != nil {
+		return err
+	}
 	// Context windows only enrich the runtime status display, so a failed
 	// lookup must not block the session.
 	p.loadContextWindows(ctx)
+	return nil
+}
+
+func (p *OpenCodeProvider) loadNativeCommands(ctx context.Context) error {
+	var commands []struct {
+		Name string `json:"name"`
+	}
+	if err := p.client.doJSON(ctx, http.MethodGet, "/command", true, nil, &commands); err != nil {
+		return fmt.Errorf("discovering OpenCode commands: %w", err)
+	}
+	available := map[string]bool{}
+	for _, command := range commands {
+		if command.Name == "loop" || command.Name == "goal" {
+			available[command.Name] = true
+		}
+	}
+	p.statusMu.Lock()
+	p.nativeCommands = available
+	p.statusMu.Unlock()
 	return nil
 }
 
@@ -379,22 +395,21 @@ func openCodeVariant(provider, effort string) string {
 	}
 }
 
-// RunTurn submits one prompt to the persistent OpenCode session.
-func (p *OpenCodeProvider) RunTurn(ctx context.Context, input TurnInput, sink EventSink) error {
-	p.turnMu.Lock()
-	defer p.turnMu.Unlock()
-
-	done := make(chan openCodeTurnResult, 1)
-	ready := make(chan struct{})
-	interactionCtx, interactionCancel := context.WithCancel(ctx)
+func (p *OpenCodeProvider) SetEventSink(sink EventSink) {
 	p.activeMu.Lock()
-	p.activeSink = sink
-	p.turnDone = done
+	p.eventSink = sink
+	p.activeMu.Unlock()
+}
+
+func (p *OpenCodeProvider) beginTurn(ctx context.Context, ready chan struct{}) {
+	p.activeMu.Lock()
+	if p.activeReady != nil {
+		p.activeMu.Unlock()
+		return
+	}
 	p.activeReady = ready
-	p.interactionCtx = interactionCtx
-	p.interactionCancel = interactionCancel
+	p.interactionCtx, p.interactionCancel = context.WithCancel(ctx)
 	p.activeStarted = false
-	p.activeFinished = false
 	p.interrupted = false
 	p.activeError = ""
 	p.messageRoles = map[string]string{}
@@ -403,29 +418,18 @@ func (p *OpenCodeProvider) RunTurn(ctx context.Context, input TurnInput, sink Ev
 	p.toolStates = map[string]string{}
 	p.questions = map[string]struct{}{}
 	p.permissions = map[string]struct{}{}
+	sink := p.eventSink
 	p.activeMu.Unlock()
-	p.emitRuntimeStatus(sink)
-	defer func() {
-		interactionCancel()
-		p.activeMu.Lock()
-		select {
-		case <-ready:
-		default:
-			close(ready)
-		}
-		p.activeSink = nil
-		p.turnDone = nil
-		p.activeReady = nil
-		p.interactionCtx = nil
-		p.interactionCancel = nil
-		p.messageRoles = nil
-		p.partTypes = nil
-		p.partText = nil
-		p.toolStates = nil
-		p.questions = nil
-		p.permissions = nil
-		p.activeMu.Unlock()
-	}()
+	if sink != nil {
+		sink.Emit(Event{Type: EventTurnStarted, Status: "running"})
+		p.emitRuntimeStatus(sink)
+	}
+}
+
+// StartTurn submits a prompt; the session event stream reports its completion.
+func (p *OpenCodeProvider) StartTurn(ctx context.Context, input TurnInput) error {
+	ready := make(chan struct{})
+	p.beginTurn(ctx, ready)
 
 	parts := []map[string]string{{"type": "text", "text": attachmentPrompt(input)}}
 	for _, attachment := range input.Attachments {
@@ -440,29 +444,57 @@ func (p *OpenCodeProvider) RunTurn(ctx context.Context, input TurnInput, sink Ev
 		"parts": parts,
 	}
 	if err := p.client.doJSON(ctx, http.MethodPost, "/session/"+url.PathEscape(p.currentSessionID())+"/prompt_async", true, request, nil); err != nil {
+		p.activeMu.Lock()
+		if p.activeReady == ready {
+			p.activeReady = nil
+			if p.interactionCancel != nil {
+				p.interactionCancel()
+			}
+			p.interactionCtx, p.interactionCancel = nil, nil
+		}
+		p.activeMu.Unlock()
 		return fmt.Errorf("starting OpenCode turn: %w", err)
 	}
 	p.activeMu.Lock()
 	close(ready)
 	p.activeMu.Unlock()
 
-	select {
-	case result := <-done:
-		if result.interrupted {
-			return ErrTurnInterrupted
-		}
-		if result.err != "" {
-			return errors.New(result.err)
-		}
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-p.done:
-		if err := p.providerError(); err != nil {
-			return err
-		}
-		return errors.New("OpenCode server stopped")
+	return nil
+}
+
+// StartGoal invokes the goal command registered with the OpenCode server.
+func (p *OpenCodeProvider) StartGoal(ctx context.Context, command goalCommand) error {
+	return p.startCommand(ctx, "goal", command.objective)
+}
+
+// StartLoop invokes the loop command registered with the OpenCode server.
+func (p *OpenCodeProvider) StartLoop(ctx context.Context, text string) error {
+	return p.startCommand(ctx, "loop", strings.TrimSpace(strings.TrimPrefix(text, "/loop")))
+}
+
+func (p *OpenCodeProvider) startCommand(ctx context.Context, name, arguments string) error {
+	p.statusMu.Lock()
+	available := p.nativeCommands[name]
+	p.statusMu.Unlock()
+	if !available {
+		return fmt.Errorf("OpenCode has no registered %s command", name)
 	}
+	ready := make(chan struct{})
+	close(ready)
+	p.beginTurn(ctx, ready)
+	p.activeMu.Lock()
+	requestCtx := p.interactionCtx
+	p.activeMu.Unlock()
+	// The command endpoint waits for the model turn, so keep input and interrupts
+	// available while its result arrives through the event stream.
+	go func() {
+		err := p.client.doJSON(requestCtx, http.MethodPost, "/session/"+url.PathEscape(p.currentSessionID())+"/command", true, map[string]string{"command": name, "arguments": arguments}, nil)
+		if err == nil {
+			return
+		}
+		p.completeTurn(true, ready, fmt.Sprintf("Running OpenCode %s command: %v", name, err))
+	}()
+	return nil
 }
 
 func (p *OpenCodeProvider) recordShellCommand(ctx context.Context, record shellCommandRecord) error {
@@ -496,7 +528,7 @@ func (p *OpenCodeProvider) Interrupt(ctx context.Context) error {
 	}
 
 	p.activeMu.Lock()
-	if p.turnDone == nil || p.activeFinished {
+	if p.activeReady == nil {
 		p.activeMu.Unlock()
 		return ErrNoActiveTurn
 	}
@@ -599,8 +631,8 @@ func (p *OpenCodeProvider) handleMessageUpdated(raw json.RawMessage) {
 		return
 	}
 	p.activeMu.Lock()
-	sink := p.activeSink
-	if sink == nil {
+	sink := p.eventSink
+	if sink == nil || p.activeReady == nil {
 		p.activeMu.Unlock()
 		return
 	}
@@ -642,12 +674,12 @@ func (p *OpenCodeProvider) handlePartUpdated(raw json.RawMessage) {
 	}
 	part := properties.Part
 	p.activeMu.Lock()
-	if p.activeSink == nil {
+	if p.eventSink == nil || p.activeReady == nil {
 		p.activeMu.Unlock()
 		return
 	}
 	p.partTypes[part.ID] = part.Type
-	sink := p.activeSink
+	sink := p.eventSink
 	role := p.messageRoles[part.MessageID]
 	text := ""
 	if part.Type == "text" && role == "assistant" {
@@ -723,7 +755,12 @@ func (p *OpenCodeProvider) emitRuntimeStatus(sink EventSink) {
 func (p *OpenCodeProvider) runtimeStatusSnapshot() RuntimeStatus {
 	p.statusMu.Lock()
 	defer p.statusMu.Unlock()
-	status := RuntimeStatus{Model: p.model, Effort: p.config.Effort}
+	status := RuntimeStatus{Model: p.model, Effort: p.config.Effort, Commands: []string{"shell"}}
+	for _, command := range []string{"goal", "loop"} {
+		if p.nativeCommands[command] {
+			status.Commands = append(status.Commands, command)
+		}
+	}
 	if p.usage != nil {
 		usage := *p.usage
 		if window, ok := p.contextWindows[p.model]; ok {
@@ -746,12 +783,12 @@ func (p *OpenCodeProvider) handlePartDelta(raw json.RawMessage) {
 		return
 	}
 	p.activeMu.Lock()
-	if p.activeSink == nil || p.partTypes[properties.PartID] != "text" || p.messageRoles[properties.MessageID] != "assistant" {
+	if p.eventSink == nil || p.activeReady == nil || p.partTypes[properties.PartID] != "text" || p.messageRoles[properties.MessageID] != "assistant" {
 		p.activeMu.Unlock()
 		return
 	}
 	p.partText[properties.PartID] += properties.Delta
-	sink := p.activeSink
+	sink := p.eventSink
 	p.activeMu.Unlock()
 	sink.Emit(Event{Type: EventAssistantDelta, Text: properties.Delta})
 }
@@ -804,9 +841,12 @@ func (p *OpenCodeProvider) handleSessionStatus(raw json.RawMessage) {
 	if status == "" {
 		_ = json.Unmarshal(properties.Status, &status)
 	}
-	if status == "busy" {
+	if status == "busy" || status == "retry" {
+		ready := make(chan struct{})
+		close(ready)
+		p.beginTurn(p.ctx, ready)
 		p.activeMu.Lock()
-		if p.turnDone != nil {
+		if p.activeReady != nil {
 			p.activeStarted = true
 		}
 		p.activeMu.Unlock()
@@ -846,18 +886,37 @@ func (p *OpenCodeProvider) handleSessionError(raw json.RawMessage) {
 }
 
 func (p *OpenCodeProvider) completeActiveTurn(force bool) {
+	p.completeTurn(force, nil, "")
+}
+
+func (p *OpenCodeProvider) completeTurn(force bool, expected chan struct{}, failure string) {
 	p.activeMu.Lock()
-	if p.turnDone == nil || p.activeFinished || (!force && !p.activeStarted) {
+	if expected != nil && p.activeReady != expected {
 		p.activeMu.Unlock()
 		return
 	}
-	p.activeFinished = true
-	result := openCodeTurnResult{err: p.activeError, interrupted: p.interrupted}
-	done := p.turnDone
+	if p.activeReady == nil || (!force && !p.activeStarted) {
+		p.activeMu.Unlock()
+		return
+	}
+	if failure != "" {
+		p.activeError = failure
+	}
+	status, message := "completed", p.activeError
+	if p.interrupted {
+		status, message = "interrupted", ""
+	} else if message != "" {
+		status = "failed"
+	}
+	sink := p.eventSink
+	p.activeReady = nil
+	if p.interactionCancel != nil {
+		p.interactionCancel()
+	}
+	p.interactionCtx, p.interactionCancel = nil, nil
 	p.activeMu.Unlock()
-	select {
-	case done <- result:
-	default:
+	if sink != nil {
+		sink.Emit(Event{Type: EventTurnCompleted, Status: status, Text: message})
 	}
 }
 
@@ -906,7 +965,7 @@ func (p *OpenCodeProvider) handleQuestion(eventType string, raw json.RawMessage)
 	}
 
 	p.activeMu.Lock()
-	if p.activeSink == nil {
+	if p.eventSink == nil || p.activeReady == nil {
 		p.activeMu.Unlock()
 		return
 	}
@@ -915,7 +974,7 @@ func (p *OpenCodeProvider) handleQuestion(eventType string, raw json.RawMessage)
 		return
 	}
 	p.questions[requestID] = struct{}{}
-	sink := p.activeSink
+	sink := p.eventSink
 	interactionCtx := p.interactionCtx
 	p.activeMu.Unlock()
 
@@ -965,7 +1024,7 @@ func (p *OpenCodeProvider) handlePermission(eventType string, raw json.RawMessag
 		return
 	}
 	p.activeMu.Lock()
-	if p.activeSink == nil {
+	if p.eventSink == nil || p.activeReady == nil {
 		p.activeMu.Unlock()
 		return
 	}

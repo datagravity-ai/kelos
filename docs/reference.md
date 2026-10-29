@@ -301,8 +301,7 @@ active finish before the TaskPipeline enters `Failed`.
 A Session is one interactive Claude Code, Codex, or OpenCode conversation that
 web and terminal clients can share and reconnect to. The spec is immutable
 except for `spec.worker.credentials`, `spec.worker.model`,
-`spec.suspend`, `spec.idlePolicy`, and fields under `spec.worker.podOverrides`
-other than `serviceAccountName`.
+`spec.suspend`, `spec.idlePolicy`, and fields under `spec.worker.podOverrides`.
 Conversation events and history are retained on the Session workspace rather
 than in the Kubernetes API. If configured, `spec.initialPrompt` also remains in
 the Session resource and is visible through the Kubernetes API.
@@ -317,7 +316,7 @@ the Session resource and is visible through the Kubernetes API.
 | `spec.worker.workspaceRef.name` | Workspace cloned into the Session Pod | No |
 | `spec.worker.agentConfigRefs[].name` | Ordered AgentConfig resources | No |
 | `spec.worker.podOverrides` | Pod resources, scheduling, environment, volumes, and sidecars | No |
-| `spec.worker.podOverrides.serviceAccountName` | Service account for the Session Pod; immutable after creation | No |
+| `spec.worker.podOverrides.serviceAccountName` | Service account for the Session Pod; omit or clear to use the Session's managed service account | No |
 | `spec.suspend` | Stop the Session runtime without deleting the Session or its persistent workspace (defaults to `false`) | No |
 | `spec.initialBranch` | Git branch used to initialize the Session workspace. Checks out the branch from `origin` when it exists, or creates it from the Workspace ref. Requires `spec.worker.workspaceRef` | No |
 | `spec.initialPrompt` | Prompt submitted when the Session starts without retained conversation history. An `emptyDir` workspace may submit it again after Pod replacement | No |
@@ -328,9 +327,10 @@ the Session resource and is visible through the Kubernetes API.
 | `status.podName` | Session Pod name | Output |
 | `status.podUID` | Identity of the Pod running the live conversation | Output |
 | `status.lastActivityTime` | When runtime activity was first reported or last changed; Pod replacement does not change it | Output |
+| `status.lastNotification` | Latest input request or turn outcome needing attention, with an opaque non-empty `id`, `type` (`InputRequested`, `TurnCompleted`, or `TurnFailed`), and `eventTime`. Answered or cancelled requests are excluded without restoring older outcomes; if no pending request or later outcome remains, the field is cleared. An interrupted turn or removal from retained history also clears it | Output |
 | `status.model` | Model reported by the live Session runtime; empty when the runtime does not report a model | Output |
 | `status.conditions[type=Ready]` | Whether the Session infrastructure is ready for clients | Output |
-| `status.conditions[type=Active]` | Whether the runtime has an unfinished turn; `reason: WaitingForInput` means the turn is waiting for a user response, and `Unknown` means activity has not been reported | Output |
+| `status.conditions[type=Active]` | Whether the runtime has an unfinished turn or reported unfinished Claude Code background work; `reason: WaitingForInput` means the turn is waiting for a user response, and `Unknown` means activity has not been reported | Output |
 | `status.branch` | Currently checked-out git branch in the Session workspace | Output |
 | `status.pullRequest.url` | Web URL of the pull request associated with the current branch | Output |
 | `status.pullRequest.state` | Pull request state: `Draft`, `Open`, `Queued`, `Merged`, or `Closed`. `Queued` means the pull request is in a merge queue | Output |
@@ -379,6 +379,11 @@ Session clears its prompt history.
 
 On phones, Prompt history keeps its text label and a 44-pixel touch target.
 
+Scrolling up in the console conversation pauses automatic following, so you can
+read earlier messages while a response streams. **Jump to latest** appears when
+following is paused, even near the bottom, or when you are scrolled away from the
+bottom. Scroll to the bottom or select **Jump to latest** to resume following.
+
 Attach a local file with `/attach PATH`; the next message includes all staged
 files. In the interactive terminal UI, dragging a file into a terminal that
 supports bracketed paste stages the file directly. Use `/send` in the plain
@@ -392,9 +397,18 @@ and are removed by Session reset or deletion. Retained messages show attachment
 names, and the web client provides authenticated previews or downloads while
 the Session is ready.
 
-Both terminal and web chat recognize `!COMMAND` and `/goal` before ordinary
-messages are submitted. `!COMMAND` runs `/bin/sh -lc COMMAND` directly in the
-Session working directory with the Session environment. It does not ask the
+Both terminal and web chat recognize `!COMMAND`, `/goal`, and `/loop` before
+ordinary messages are submitted. The web and interactive terminal composers
+identify shell, goal, and loop commands as you type and show the submit action.
+The web composer highlights the command prefix and styles shell commands
+separately from goals and loops. It labels the submit button; touch clients use
+this button and reserve Return for a new line. Both composers explain incomplete
+or unavailable commands and commands blocked by staged attachments or pending
+work, and prevent their submission until the problem is resolved. Removing the command
+prefix restores the ordinary message composer.
+
+`!COMMAND` runs `/bin/sh -lc COMMAND` directly in the Session working directory
+with the Session environment. It does not ask the
 agent for approval or start a model turn. The command, exit code, duration, and
 retained output are added to the agent conversation context for subsequent
 turns. Claude Code includes pending command results with the next ordinary
@@ -402,8 +416,20 @@ prompt; Codex and OpenCode record them immediately. Live and retained command
 output appears as tool activity, and interrupting the Session turn stops the
 command.
 
-`/goal` is available only in Codex Sessions and uses the persisted goal owned by
-the Codex conversation:
+`/goal` and `/loop` use the configured agent's native capabilities. The runtime
+reports command availability to both composers:
+
+| Agent | `/goal` | `/loop` |
+|-------|---------|---------|
+| Claude Code | Built-in goal command | Built-in loop skill |
+| Codex | Built-in thread goal API | Enabled skill named `loop`, when installed |
+| OpenCode | Registered command named `goal`, when configured | Registered command named `loop`, when configured |
+
+Commands absent from the reported capabilities are rejected before they enter
+the turn queue. Agent policy can still reject an available command at execution.
+Kelos does not install skills or commands, or supply a scheduling engine.
+
+Codex supports these goal commands:
 
 | Command | Behavior |
 |---------|----------|
@@ -420,6 +446,53 @@ Interrupting active goal work pauses the goal before interrupting its current
 turn; detaching with `/quit` or `/exit` leaves it running. The goal and its
 accounting survive client reconnection and runtime container restart. They
 survive Pod replacement only when the Session workspace is persistent.
+
+Claude Code supports `/goal CONDITION` to set or replace a completion condition,
+`/goal` to show its native status, and `/goal clear` to remove it. Claude Code
+evaluates the condition after each model turn and continues until it is met,
+judged impossible, or stopped by a native error or continuation limit. Its
+native command output appears in the conversation. Goal commands submitted
+while Claude is working are queued until that work ends; use `/interrupt` to
+stop active work and let a queued command run sooner. Claude Code also accepts
+`stop`, `off`, `reset`, `none`, and `cancel` as aliases for `clear`. Other arguments
+are completion conditions, including words that Codex treats as controls such
+as `edit`, `pause`, and `resume`.
+
+Claude Code retains the goal with its conversation history. After runtime or
+Pod replacement, send a prompt to continue the resumed conversation and its
+retained goal; Pod replacement requires persistent workspace storage. Claude
+Code's native policy and settings can disable goal commands.
+
+In Claude Code, `/loop` invokes the native loop skill. Kelos passes its arguments
+through, including `/loop 5m Check CI`, `/loop Check CI` for agent-chosen pacing,
+and bare `/loop` for Claude's default maintenance prompt.
+
+Claude owns scheduling, interval validation, task limits, and cancellation. Ask
+Claude to list or cancel scheduled tasks. `/loop pause`, `/loop resume`, and
+`/loop clear` are not Kelos controls. Commands submitted during active work are
+queued; use `/interrupt` to let a queued command run sooner. Native scheduled
+runs appear as ordinary agent turns in the conversation.
+
+Native schedules run only while the agent process is running. Waiting schedules
+do not keep the Kelos Session active between turns, so configure
+`Session.spec.idlePolicy.suspendAfterSeconds` and
+`Session.spec.idlePolicy.deleteAfterSeconds` accordingly. Schedule
+restoration depends on Claude Code's native persistence and settings; Kelos does
+not retain or replay schedules. See [Claude Code's scheduling documentation](https://code.claude.com/docs/en/scheduled-tasks)
+for interval rounding, expiration, and resume limits.
+
+Codex loop support invokes an enabled `loop` skill and passes its arguments
+to that skill. The pinned Codex CLI does not ship
+a built-in `/loop` scheduler. Skill discovery runs at startup and refreshes when
+Codex reports changed skills; disabled skills are unavailable.
+
+OpenCode loop and goal support uses the commands registered with its server,
+including configured commands and skills. The pinned OpenCode version supplies
+neither command by default. Kelos discovers commands at runtime startup and
+forwards their arguments unchanged. Their syntax, controls, and scheduling
+behavior come from the registered command;
+Codex's goal controls do not apply. Restart the runtime after changing OpenCode's
+registered commands to refresh their availability.
 
 The terminal client shows live connecting, reconnecting, working,
 waiting-for-input, and interrupting progress with elapsed time. After a
@@ -468,6 +541,39 @@ intentional upward scroll position and the loaded conversation view. When the
 request for the visible response has scrolled out of view, a compact **Current
 request** link follows it while browsing history and scrolls back to the full
 request when clicked. The link stays hidden while viewing file changes.
+
+The web client's **Changes** tab offers two review scopes for every supported
+Session agent:
+
+- **Uncommitted** (default) compares the Git workspace with the current `HEAD`
+  commit. It includes staged and unstaged changes, plus untracked files that Git
+  does not ignore. Existing uncommitted changes are included. Committed changes
+  disappear on the next refresh, while remaining uncommitted edits stay visible.
+  A repository without commits uses an empty comparison base.
+- **Branch changes** compares the current `HEAD` commit with its merge base with
+  the **Base branch** you select. It shows committed changes, so you can review
+  an agent's work after it commits. Staged, unstaged, and untracked work appears
+  under **Uncommitted**. Choose from local branches and remote-tracking branches
+  already available in the workspace; the Console does not fetch remote refs.
+  An unavailable base or branches without shared history produce an error.
+  Before the current branch's first commit, this scope shows no committed changes.
+  The base selector displays up to 1,000 branches and 128 KiB of encoded branch
+  names, retaining the selected base when the list is truncated.
+
+Automatic refreshes, commits, and reconnects preserve the selected scope and base
+branch. Reloading the browser page resets the selection to **Uncommitted**.
+Renames appear as a deletion and an addition.
+
+Changes refresh after connecting and completing a turn, when opening the tab,
+and every five seconds while the tab is visible. This includes edits made through
+the terminal. Reverted changes disappear from the list, and browsing conversation
+history does not change it. The tab displays its comparison base, reports Git
+errors and non-Git workspaces, and displays up to 1,000 changed files and 1 MiB
+of diff content. Very long paths can reduce the number of displayed files. The
+tab reports when the file list or diff is truncated, or when files cannot be
+included (for example, a nested repository without commits). Git inspection
+errors do not prevent the Session from starting; subsequent refreshes retry the
+comparison.
 
 The Session sidebar shows compact relative activity times, and the selected
 Session header shows whether it is active now, when it was last active, or when
@@ -527,19 +633,68 @@ management policy, volume claim templates, and revision history limit—remain a
 originally created.
 
 When reconciliation changes the Pod template of an active Session, Kelos stops
-accepting new turns and waits for accepted work to finish before replacing the
+accepting new turns and waits for accepted turns to finish before replacing the
 Pod. Pending user input delays the update until it is answered or interrupted.
+Background tasks do not delay Pod replacement and stop when the runtime is replaced.
 Rejected turns are not retried automatically; submit them again after the
 Session reconnects. Suspended Sessions remain at zero replicas while their
 StatefulSet is updated and use the updated template when resumed. Changes to
-`spec.worker.credentials`, `spec.worker.model`, and mutable fields under
+`spec.worker.credentials`, `spec.worker.model`, and fields under
 `spec.worker.podOverrides` follow this process. Session Pods that use the default
 runtime image also follow it when a Kelos upgrade changes that image; an
 explicitly tagged or digested runtime image remains pinned.
 
-`Active=True` means the runtime has an unfinished turn. Its reason is
-`WaitingForInput` when the turn needs a user response and `TurnActive` while the
-agent is working. `Active=False` means it is idle. Activity becomes `Unknown` when
+Changing `spec.worker.podOverrides.serviceAccountName` follows the same process.
+The running Pod keeps its Session runtime permissions while draining. Once the
+replacement Pod is observed, Kelos removes the previous service account from
+the Session's runtime RoleBinding. For suspended Sessions, the replacement
+starts when the Session resumes.
+
+The Session runtime and agent share the Pod's service-account token. The runtime
+Role permits patching the Session resource, including its spec, so the agent can
+change its own `spec.worker.podOverrides.serviceAccountName` to another existing
+account in the same namespace. This can grant that account's Kubernetes
+permissions and any configured workload identity. Kelos does not restrict this
+change to operators: Session agents must be trusted to select service accounts
+in their namespace. Deployments that require restrictions must enforce them
+through an administrator-managed admission policy.
+
+Some nested `spec.worker.podOverrides` field descriptions inherit Kubernetes
+wording such as "Cannot be updated". Those restrictions apply to editing an
+existing Pod, not to updating the Session, which replaces its Pod.
+
+Sessions receive provider-initiated follow-up replies from Claude Code, Codex,
+and OpenCode without another user message. Replies are retained in conversation
+history even when no client is connected. Background work remains owned by the
+agent runtime and does not survive stopping or replacing that runtime. Replies
+that arrive during a local shell command appear after that command finishes.
+Long-running Claude Code background tasks, such as development servers or file
+watchers, keep the Session active and prevent idle suspension or deletion until
+they stop. Ask the agent to stop them when they are no longer needed. Tasks
+marked by Claude Code as internal housekeeping do not count as activity.
+
+The Console and interactive terminal keep a progress indicator visible while
+Claude Code reports unfinished background tasks, even after the parent turn
+ends. It shows the number of background tasks running; during a turn, the count
+appears alongside `Working`, `Waiting for input`, or `Interrupting`. Background
+work alone leaves the composer available for another message. When the runtime
+reports individual task details, the Console lists each running task with its
+own elapsed time, including during a foreground turn. Task descriptions identify
+the rows, with task IDs used when a description is unavailable. Each timer starts
+when the runtime observes that task starting, survives reconnects and page
+refreshes, and disappears when the task finishes. Runtimes that report only a
+count show the count without individual timers. The Console clears
+live activity while the Session is suspended, resetting, or not Ready and
+refreshes it from the runtime after resuming. The count is
+refreshed on reconnect and includes reported subagents and background commands,
+not internal housekeeping. It does not indicate that the parent agent is blocked
+on a specific subtask. Providers that do not report a background-task count keep
+their usual turn progress indicator.
+
+`Active=True` means the runtime has an unfinished turn or Claude Code has
+reported unfinished background work. Its reason is `WaitingForInput` when the
+turn needs a user response and `TurnActive` while the agent is working.
+`Active=False` means it is idle. Activity becomes `Unknown` when
 it cannot be reported, such as while the Session Pod is being replaced. Clients
 can use the `WaitingForInput` reason to highlight turns that need a response;
 other condition reasons and messages are informational unless documented as
@@ -552,7 +707,8 @@ text-labeled state in both the Session sidebar and conversation header.
 
 Idle suspension and deletion use the same idle period, measured from the later
 of Session creation and `status.lastActivityTime`. Before either action, the
-runtime stops accepting new turns and waits for any in-flight turn to finish.
+runtime stops accepting new turns and waits for in-flight turns and reported
+Claude Code background work to finish.
 When `spec.idlePolicy.suspendAfterSeconds` is reached, Kelos scales the runtime
 to zero and reports `status.phase: Suspended` with the `IdlePolicyTriggered`
 Ready-condition reason. `IdlePolicyTriggered` is stable and machine-readable so
@@ -614,19 +770,44 @@ connect to Sessions across namespaces while operating on one active namespace
 at a time. Users can switch the active namespace live from the sidebar.
 `consoleServer.defaultNamespace` sets its initial value, and resource inventory,
 Session form options, and credential options are loaded only from the active namespace.
+Sessions needing attention have a blue dot and bold title. Pending input requests
+show an **Input requested** label while the Session is Ready and has not been
+suspended by the user. Answering or cancelling the request clears its alert;
+opening the conversation does not. Completed and failed results show a
+**Completed · Unread** or **Failed · Unread** label until their turn ending is
+visible in the focused **Conversation** view. The **Sessions** navigation item
+counts Sessions with input alerts or unread results in the active namespace.
+These markers track the latest retained notification for each Session,
+independently of browser notifications. Interrupted turns do not receive a marker.
+Completion read state is shared across browsers and devices for the same signed-in username.
+With token authentication, all users share the read state. Other browsers pick up
+acknowledgments on the next Session refresh, normally within five seconds. Clearing
+browser storage does not restore unread markers. If saving an acknowledgment
+fails, the marker stays unread. Temporary failures retry on a later Session
+refresh; rejected requests (invalid request, access denied, or Session not found)
+stop retrying for that result until the page is reloaded.
 Open **Settings** using the gear icon in the sidebar footer, then enable
 **Browser notifications** to opt in. The Settings popover also shows permission
 or browser-support guidance when needed. Press Escape or click outside to close it.
-Alerts cover input requests and completed or failed work in the connected Session
-when you are away from its conversation, including in another console view,
-browser tab, or application. Clicking an alert opens that Session if it is still
-available in the active namespace. Alerts are dismissed when the console detects
-that a Session was removed or replaced. The setting is saved in this browser;
-notifications require browser permission, a secure connection (HTTPS or localhost),
-and support for notifications from an open page. Most mobile browsers do not support
-these page notifications.
-Keep the console tab open and connected: other Sessions and events replayed after
-a reconnect do not produce alerts. Interrupted work does not produce an alert.
+Alerts cover input requests and completed or failed work across the active
+namespace, including Sessions you have not selected. Each tab suppresses alerts
+for its own visible, focused conversation; another open tab can still alert for
+that Session. Tabs coordinate delivery to avoid
+repeating the same event. If browser storage is unavailable, this coordination
+lasts only while the notification is displayed. The console checks for events when
+the Session list refreshes, normally every five seconds, and can report the latest
+retained event after a connection interruption. Opening the console or switching
+namespaces establishes a baseline without notifying about existing history.
+Interrupted work does not produce an alert.
+Clicking an alert opens its Session, switching namespaces if necessary. Alerts
+are dismissed when the console detects that a Session was removed or replaced.
+The setting is saved in this browser. Notifications require browser permission,
+HTTPS or localhost, service-worker notifications, and Web Locks support. On iPhone
+and iPad, add the console to the Home Screen and open it there before enabling notifications.
+Use **Send test notification** to check delivery. If it does not appear, check
+browser and operating-system notification settings, including Focus or Do Not Disturb.
+Keep the console open: notification delivery stops when the page is closed or
+suspended by the browser. There is no server-side Web Push delivery.
 Sessions open in the **Conversation** view. Select the **Terminal** tab alongside
 **Conversation** and **Changes** on a Ready Session to start an interactive shell
 in its agent container. The shell uses the agent container's workspace and
@@ -649,6 +830,56 @@ and can be refreshed while the Task is running. WorkerPool-backed Task views
 include only the selected Task's segment from the recent shared worker Pod log.
 The Console reports that the segment is unavailable when its markers are
 outside the bounded log window.
+Select a TaskSpawner from either resource view and choose **Run task** to create
+one standalone Task from its template. Supply optional template values as a YAML
+or JSON object when the template needs event fields. The Console opens the
+created Task's logs and manifest. Manual runs bypass the schedule, source filters,
+suspension, and spawner task limits; see [Manual Task Creation](#manual-task-creation).
+
+The **Admin** page manages namespace members and lists Workspaces, AgentConfigs, and
+WorkerPools in the active namespace. Use **Create** or **Edit YAML** to save one `kelos.dev/v1alpha2` manifest,
+or **Delete** to remove a resource after confirmation. The editor supports the
+spec, labels, and annotations. Updates must preserve the name and resource version;
+if the resource changes while you edit, reopen it and reapply your changes.
+Actions follow Kubernetes permissions in OIDC and GitHub modes, with **View YAML** for resources
+you can read but cannot update. The `kelos-console-user` role grants read access
+to these resources; administrators need additional `create`, `update`, and `delete`
+permissions. Changing or deleting configuration can affect workloads that use it.
+
+The **Namespace** dropdown lists namespaces where you can list at least one
+Console resource type, including access granted through groups or custom roles.
+The Console remembers your selection in this browser. At sign-in, it checks your
+remembered namespace (or the configured default) first. If accessible, you can
+start working while the remaining namespace options load in the background.
+Otherwise, the Console loads the full list and selects the configured default
+when accessible, or the first accessible namespace. Opening or focusing the
+dropdown refreshes the namespace choices and keeps your current selection when
+it is still accessible. If you have no accessible namespaces, ask an administrator
+to add you as a member, then reopen the dropdown.
+
+With OIDC sign-in, **Admin → Members** shows each direct member once in the active
+namespace. Use **Add member** to enter an OIDC subject ID and choose **User**
+(the default) or **Admin**. User members can use Sessions and inspect resources;
+Admin members can also manage configuration and membership in that namespace.
+The configured username prefix is added automatically. The Console does not query
+an identity provider's directory, so name and email lookup are unavailable.
+
+**Change role** promotes or demotes a direct member in one action. **Remove
+member** removes their Console-managed membership. With external user assignments,
+this action is labeled **Remove direct access**. Both operations reject stale
+membership details; refresh Members after a conflict.
+A failed role change can leave multiple direct grants, shown as one member with
+Admin taking precedence. Refresh Members to see the current role before retrying.
+Changing or removing your own membership can remove your administrative access.
+
+External User assignments are labeled with their source and cannot be changed
+here. Namespace group grants to the Console roles appear under **Access through
+groups**; individual group members are not listed. Removing direct membership
+preserves external assignments and group access. Other roles and
+ClusterRoleBindings must be managed separately. Membership management requires
+OIDC. A cluster administrator must bind the first Console administrator; see the
+[Console setup guide](../internal/manifests/charts/kelos/README.md#console-oidc-authentication).
+
 Selecting an existing Session as a source populates both the form fields and the
 editable YAML manifest. Settings that the form cannot represent remain editable
 in YAML mode.
@@ -659,12 +890,143 @@ applies one `kelos.dev/v1alpha2` Session manifest in the active namespace. The
 manifest may include labels, annotations, `initialBranch`, `initialPrompt`, the complete
 `WorkerSpec`, and an optional persistent volume claim.
 
+### Console authentication and authorization
+
+The Console chart supports `consoleServer.auth.mode: staticToken` (default),
+`oidc`, and `github`. Static-token mode represents one shared user with the Console
+ServiceAccount's permissions. OIDC and GitHub modes authenticate individuals through an
+OAuth2 Proxy sidecar and check Kubernetes authorization for each API operation
+and each new chat or terminal connection. See the
+[OIDC setup guide](../internal/manifests/charts/kelos/README.md#console-oidc-authentication)
+and [GitHub/GHES setup guide](../internal/manifests/charts/kelos/README.md#console-github-and-ghes-authentication)
+for HTTPS, client registration, secrets, identity prefixes, and RoleBindings.
+
+OIDC usernames are the configured prefix followed by the verified OIDC subject.
+GitHub usernames are the prefix followed by the GitHub login name, which can
+change and be reused by another account. Update User RoleBindings when accounts
+are renamed or removed; use OIDC with stable subjects if immutable per-user
+identity is required. GitHub groups contain organization names and `org:team-slug`
+values. Choose distinct identity prefixes for each provider and GHES instance.
+Groups receive their own prefix. The IdP must supply comma-free group identifiers.
+Kelos accepts at most 1024 groups, 256 bytes per group, and 65536 bytes (64 KiB)
+in the comma-separated group header before prefixing; exceeding these limits
+returns 401 without truncating groups. In GitHub mode,
+`consoleServer.auth.github.org` restricts sign-in to an organization. Adding
+`consoleServer.auth.github.team` restricts sign-in to a single team slug within
+that organization; `team` requires `org`. These sign-in restrictions do not
+filter RBAC groups or grant permissions.
+Only the managed loopback proxy may provide identities. Static tokens and static
+cookies cannot authenticate requests in OIDC or GitHub mode.
+
+All permissions below are in the `kelos.dev` API group and the requested
+namespace. Named reads and actions are checked against the exact resource name.
+
+| Console operation | Required permissions |
+| --- | --- |
+| Inventory and relationship graph | `list` each displayed resource kind |
+| Admin inventory | `list` each displayed resource kind |
+| Admin manifest | `get` the named Workspace, AgentConfig, or WorkerPool |
+| Admin create | `create` the resource kind |
+| Admin update | `get` and `update` the named resource |
+| Admin delete | `delete` the named resource |
+| Resource YAML | `get` the resource |
+| Task logs | `get tasks` and `get tasks/logs` |
+| Run a TaskSpawner manually | `get` the named TaskSpawner and `create tasks` |
+| Suspend a TaskSpawner | `get taskspawners` and `create taskspawners/suspend` |
+| Resume a TaskSpawner | `get taskspawners` and `create taskspawners/resume` |
+| Session list | `list sessions` |
+| Session creation options | `list sessions`, `list workspaces`, and `list agentconfigs` |
+| Read or clone a Session source | `get sessions` |
+| Create a Session | `create sessions` |
+| Apply Session YAML | `get sessions`, `patch sessions`, and `create sessions` |
+| Mark a result read | `get sessions` and `patch sessions` |
+| Set section or display name | `get sessions` and `patch sessions` |
+| Delete a Session | `delete sessions` |
+| Reset a Session | `get sessions` and `create sessions/reset` |
+| Suspend a Session | `get sessions` and `create sessions/suspend` |
+| Resume a Session | `get sessions` and `create sessions/resume` |
+| Chat or terminal connection | `get sessions` and `create sessions/connect` |
+| Upload an attachment | `get sessions` and `create sessions/attachments` |
+| Download an attachment | `get sessions` and `get sessions/attachments` |
+
+Membership administration uses the `rbac.authorization.k8s.io` API group in the
+active namespace:
+
+| Console operation | Required permissions |
+| --- | --- |
+| List members and namespace group grants | `list rolebindings` |
+| Add a member | `list` and `create rolebindings`, plus `bind clusterroles` for the selected `kelos-console-user` or `kelos-console-admin` role |
+| Change a member's role | Add-member permissions plus `delete` each Console-managed RoleBinding for that member |
+| Remove direct membership | `list rolebindings`, plus `delete` each Console-managed RoleBinding for that member |
+
+Only the two Console roles can be assigned. The Console ServiceAccount needs
+`list namespaces` for the namespace picker; signed-in users do not need that
+cluster-wide permission. Each namespace is filtered using the user's resource
+permissions before it is returned.
+
+The slash-separated permissions are authorization subresources; they are not
+served CRD endpoints. TaskSpawner suspend/resume permissions do not grant general
+TaskSpawner editing. Human users do not need `pods/log` or `pods/exec`.
+`sessions/connect` grants full interactive access: retained conversations,
+prompts, tool activity, input responses, pending messages, goals, direct shell
+commands, attachment metadata, workspace changes, and terminal access. It does
+not provide read-only chat or command-level restrictions. Shell access also
+permits reading files and mounted credentials in the Session container.
+
+Inventory omits resource kinds the caller cannot list and relationships to or
+from those kinds. If no kind is allowed, the request returns 403. Reading an
+allowed resource's YAML can still expose references stored in that resource;
+RBAC does not redact individual fields. Creation options require all three
+list permissions in the table.
+
+YAML apply requires all three permissions even when updating an existing
+Session, because apply can also create a missing resource. General Session
+patch permission permits editing spec and metadata, including suspend/reset
+requests and `Session.spec.worker.podOverrides.serviceAccountName`. Dedicated
+lifecycle permissions do not constrain a caller who also has general Session
+patch/update permissions. Session creation/editing remains subject to the
+cluster's workload admission policies; Console RBAC is not workload sandboxing.
+
+Invalid authentication returns 401; an authorization denial returns 403.
+Authorization transport or evaluation errors return 503 and prevent the
+operation. Kelos does not cache authorization decisions. RoleBinding changes
+affect subsequent requests once observed by Kubernetes authorization. An
+established WebSocket retains access for its connection lifetime; reconnects
+are checked again. IdP disablement and group changes also depend on the proxy
+session's refresh/expiry behavior. Proxy cookies expire after eight hours and
+are refreshed after five minutes; refresh can renew their lifetime. The GitHub
+provider validates its access token during refresh but does not reload group
+membership. Removing a user from a GitHub organization or team does not end
+their Console login or update its group identities; activity can keep renewing
+the cookie beyond eight hours. A fresh login is required to update groups.
+Revoking the user's OAuth grant or access token for the app invalidates that
+session on its next request after the five-minute validation interval elapses.
+To invalidate all Console logins, rotate the configured cookie secret and
+restart all Console server Pods; the proxy reads the cookie secret only at
+startup. Token revocation and RBAC changes do not terminate established
+WebSockets; restart the Console server Pods to disconnect them. Signing out
+clears the proxy session, not necessarily the IdP's SSO session.
+
+State-changing requests and WebSocket upgrades require an `Origin` matching
+the configured HTTPS Console origin. Authorization audit events record the
+prefixed username, groups, action, decision, namespace, resource, subresource,
+and name. They do not include prompts, transcripts, commands, logs, file data,
+cookies, or provider credentials. Kubernetes resource operations run as the
+Console ServiceAccount, so Kubernetes resource audit entries identify that
+ServiceAccount; use Console audit events for the human identity.
+
+
 ## SessionSpawner
 
-A SessionSpawner turns matching GitHub webhooks into durable Session
-conversations. Each matching webhook delivery attempts to create one Session from
+A SessionSpawner turns matching GitHub webhooks or Slack messages into durable
+Session conversations. Set exactly one of `spec.when.githubWebhook` and
+`spec.when.slack`.
+
+A GitHub source creates one Session per matching webhook delivery from
 `spec.sessionTemplate`, using the same event and filter mechanism as a
-webhook-driven TaskSpawner.
+webhook-driven TaskSpawner. A Slack source creates one Session per Slack thread
+and reuses it for every later message in that thread, so the conversation keeps
+its history — see [Slack Threads](#slack-threads).
 
 | Field | Description | Required |
 |-------|-------------|----------|
@@ -672,31 +1034,59 @@ webhook-driven TaskSpawner.
 | `spec.when.githubWebhook.repository` | Repository filter in `owner/repo` format; omit to accept any repository | No |
 | `spec.when.githubWebhook.gatewayRef.name` | Bind this source to a [WebhookGateway](#webhookgateway) in the same namespace whose `spec.github` field is set. The per-source webhook server ignores this spawner when the reference is present | No |
 | `spec.when.githubWebhook.excludeAuthors` | GitHub senders ignored before filter evaluation | No |
-| `spec.when.githubWebhook.excludeFilters` | Reject an event when **any** entry matches (OR across entries; the criteria within one entry are ANDed). Evaluated outside `filters`, so a matching exclusion rejects the event regardless of which `filters` entry would have accepted it. Entries use the same fields as `filters[]`, except that `event` may be omitted and that `filePatterns`, the deprecated `bodyContains`, and `excludeAuthors` / `excludeLabels` / `excludeBodyPatterns` are rejected — a negative criterion inverts inside an exclusion rule, so a rule built from one rejects every event that does *not* match it. Only `action`, `author`, `pullRequestAuthor`, `branch`, and `tag` are safe in a rule that omits `event`: for those, a value the event does not carry never matches. Every other criterion is evaluated only for the event types that carry it and is otherwise skipped and treated as satisfied, so a rule using one must set `event` (enforced by CEL validation). Scoping to an event type that still does not carry the criterion leaves it satisfied — `draft` under `event: issue_comment` rejects every comment. An entry must set at least one non-empty criterion besides `event`. Max 20 entries | No |
+| `spec.when.githubWebhook.excludeFilters` | Reject an event when **any** entry matches (OR across entries; the criteria within one entry are ANDed). Evaluated outside `filters`, so a matching exclusion rejects the event regardless of which `filters` entry would have accepted it. Entries use the same fields as `filters[]`, except that `event` may be omitted and that `filePatterns`, the deprecated `bodyContains`, and `excludeAuthors` / `excludeLabels` / `excludeBodyPatterns` are rejected — a negative criterion inverts inside an exclusion rule, so a rule built from one rejects every event that does *not* match it. Only `action`, `author`, `pullRequestAuthor`, `requestedReviewer`, `branch`, and `tag` are safe in a rule that omits `event`: for those, a value the event does not carry never matches. Every other criterion is evaluated only for the event types that carry it and is otherwise skipped and treated as satisfied, so a rule using one must set `event` (enforced by CEL validation). Scoping to an event type that still does not carry the criterion leaves it satisfied — `draft` under `event: issue_comment` rejects every comment. An entry must set at least one non-empty criterion besides `event`. Max 20 entries | No |
 | `spec.when.githubWebhook.filters` | GitHub webhook filters using the same fields and OR semantics as TaskSpawner. Max 50 entries | No |
+| `spec.when.slack.channels` | Restrict which Slack channels drive Sessions (channel IDs like `"C0123456789"`); when empty, every invited channel drives them | No |
+| `spec.when.slack.excludeFilters` | Exclusion rules using the same fields and semantics as `TaskSpawner.spec.when.slack.excludeFilters`. SessionSpawner has no `v1alpha1` version, so that field's round-trip caveat does not apply here | No |
+| `spec.when.slack.botMessagePolicy` | Whether bot-originated messages drive a Session turn, using the same values as `TaskSpawner.spec.when.slack.botMessagePolicy`. Defaults to `None` | No |
+| `spec.when.slack.triggers[].pattern` | RE2 regex matched against message text, using the same semantics as `TaskSpawner.spec.when.slack.triggers[].pattern` | No |
+| `spec.when.slack.triggers[].mentionOptional` | When `true`, fire on pattern match alone without requiring a bot @-mention | No |
+| `spec.when.slack.excludePatterns` | RE2 regex patterns that reject messages when any pattern matches | No |
 | `spec.credentials[].name` | Unique name for a credential distributed by this SessionSpawner. The name is recorded in the `kelos.dev/spawner-credential` label on generated Sessions | Yes when `spec.credentials` is set |
 | `spec.credentials[].type` | Credential type (`api-key` or `oauth`) | Yes when `spec.credentials` is set |
 | `spec.credentials[].secretRef.name` | Secret containing the agent credential | Yes when `spec.credentials` is set |
 | `spec.sessionTemplate.worker` | Worker configuration copied to each Session | Yes |
 | `spec.sessionTemplate.worker.workspaceRef.name` | Workspace cloned into each Session | Yes |
 | `spec.sessionTemplate.initialBranch` | Go text/template rendered for the Session's initial branch | No |
-| `spec.sessionTemplate.initialPrompt` | Go text/template submitted when the created Session starts | Yes |
-| `spec.sessionTemplate.suspend` | Whether each created Session starts suspended (defaults to `false`) | No |
+| `spec.sessionTemplate.initialPrompt` | Go text/template submitted when the created Session starts. Rejected for `when.slack` | Yes for `when.githubWebhook` |
+| `spec.sessionTemplate.suspend` | Whether each created Session starts suspended (defaults to `false`). Rejected for `when.slack`, because a suspended Session cannot answer the thread that created it | No |
 | `spec.sessionTemplate.volumeClaimTemplate` | Persistent workspace for each Session; recommended so conversation history survives Pod replacement | No |
-| `spec.sessionTemplate.idlePolicy.suspendAfterSeconds` | Applied to each created Session as `Session.spec.idlePolicy.suspendAfterSeconds`: automatically stop its runtime after this much continuous idleness without changing `Session.spec.suspend`. When deletion is also configured, this value must be less than `deleteAfterSeconds` | No |
+| `spec.sessionTemplate.idlePolicy` | Required for `when.slack`, which must set `suspendAfterSeconds` or `deleteAfterSeconds`: every matching thread gets a Pod, and a volume when `volumeClaimTemplate` is set, so without an idle policy they accumulate for as long as the spawner exists | Yes for `when.slack` |
+| `spec.sessionTemplate.idlePolicy.suspendAfterSeconds` | Applied to each created Session as `Session.spec.idlePolicy.suspendAfterSeconds`: automatically stop its runtime after this much continuous idleness without changing `Session.spec.suspend`. A later matching message in the Slack thread resumes it. When deletion is also configured, this value must be less than `deleteAfterSeconds` | No |
 | `spec.sessionTemplate.idlePolicy.deleteAfterSeconds` | Applied to each created Session as `Session.spec.idlePolicy.deleteAfterSeconds`: automatically delete the Session once it has been continuously idle for this many seconds, which removes its workspace storage. Omit to never delete; zero deletes as soon as it goes idle. When suspension is also configured, this value must be greater than `suspendAfterSeconds` | No |
 | `status.observedGeneration` | Most recent generation observed by the controller | Output |
-| `status.totalSessions` | Current number of Sessions associated with this spawner | Output |
-| `status.lastSessionName` | Session most recently created or confirmed to exist | Output |
-| `status.lastDeliveryTime` | Time of the most recently attempted matching delivery | Output |
-| `status.conditions[type=LastDeliverySucceeded]` | Result of the most recent attempted matching delivery; absent until one is attempted | Output |
+| `status.totalSessions` | Current number of Sessions associated with this spawner. Maintained for both sources | Output |
+| `status.lastSessionName` | Session most recently created or confirmed to exist. Set only for `when.githubWebhook` | Output |
+| `status.lastDeliveryTime` | Time of the most recently attempted matching webhook delivery. Set only for `when.githubWebhook` | Output |
+| `status.conditions[type=LastDeliverySucceeded]` | Result of the most recent attempted matching webhook delivery; absent until one is attempted. Set only for `when.githubWebhook` | Output |
 
-`initialPrompt` and `initialBranch` support the same GitHub webhook template
-values as TaskSpawner `promptTemplate` and `branch`. Templates use strict
-missing-key handling; use `{{with index . "Branch"}}{{.}}{{else}}main{{end}}`
-when an event may not provide `Branch`.
+A Slack spawner does not currently set `lastSessionName`, `lastDeliveryTime` or
+the `LastDeliverySucceeded` condition: the Slack bridge reports a failure into
+the thread that caused it rather than onto the spawner, so an empty status does
+not mean no message matched. Use `status.totalSessions`, or list the Sessions it
+owns, to confirm a Slack spawner is working.
 
-Session names use the same deterministic naming behavior as webhook-driven
+For `when.githubWebhook`, `initialPrompt` and `initialBranch` support the same
+GitHub webhook template values as TaskSpawner `promptTemplate` and `branch`.
+Templates use strict missing-key handling; use
+`{{with index . "Branch"}}{{.}}{{else}}main{{end}}` when an event may not
+provide `Branch`.
+
+For `when.slack`, `initialBranch` renders against the Slack message that opened
+the thread, with the variables a Slack TaskSpawner `promptTemplate` receives:
+`{{.ID}}` (the message timestamp), `{{.Title}}` (its first line), `{{.Body}}`
+(the message, or the thread context when the bot was mentioned in an existing
+thread), `{{.URL}}` (its permalink) and `{{.Kind}}` (always `SlackMessage`).
+Strict missing-key handling applies here too.
+
+`initialPrompt` is rejected for a Slack source. The bridge already submits the
+opening message as the thread's first turn, so an initial prompt would run as an
+extra turn whose reply nothing posts, delaying the message that actually asked
+for something — and `{{.Body}}` would send that message twice. Put standing
+instructions in an [AgentConfig](#agentconfig) `spec.agentsMD` instead.
+
+For `when.githubWebhook`, Session names use the same deterministic naming
+behavior as webhook-driven
 TaskSpawners: the SessionSpawner name, event type, and delivery-ID hash are
 combined and then truncated to the Kubernetes 63-character limit. A redelivery
 therefore attempts to create the same Session and is treated as already
@@ -704,7 +1094,8 @@ processed. If a long SessionSpawner name causes the delivery hash to be
 truncated, distinct deliveries can resolve to the same name and the later
 delivery is also treated as already processed. Use a shorter SessionSpawner
 name until [collision-safe truncation](https://github.com/kelos-dev/kelos/issues/1527)
-is implemented.
+is implemented. A `when.slack` spawner names Sessions after the thread instead —
+see [Slack Threads](#slack-threads).
 Created Sessions have a `kelos.dev/sessionspawner` label whose value is the
 SessionSpawner UID, a `kelos.dev/sessionspawner-name` annotation for the
 human-readable name, and a controller owner reference to the SessionSpawner.
@@ -739,16 +1130,107 @@ spec:
 `spec.credentials` is mutually exclusive with
 `spec.sessionTemplate.worker.credentials`.
 
-Before the first matching delivery, the SessionSpawner
-`LastDeliverySucceeded` condition is absent. A creation failure returns an
-error to the webhook sender so it can retry and sets the condition to `False`
-with an actionable reason and message. Successful creation sets it to `True`;
-an individual Session's runtime health is reported on that Session.
+For a `when.githubWebhook` spawner, the `LastDeliverySucceeded` condition is
+absent before the first matching delivery. A creation failure returns an error
+to the webhook sender so it can retry and sets the condition to `False` with an
+actionable reason and message. Successful creation sets it to `True`; an
+individual Session's runtime health is reported on that Session. A `when.slack`
+spawner reports the equivalent failures into the Slack thread instead, and
+leaves this condition absent.
 
 An `emptyDir` Session remains supported for development, but its conversation
 history is lost on Pod replacement. Use
 `spec.sessionTemplate.volumeClaimTemplate` for SessionSpawner workflows that
 must retain a conversation across Pod recovery.
+
+### Slack Threads
+
+A SessionSpawner with `spec.when.slack` gives each Slack thread its own Session.
+The first matching message in a thread creates the Session; every later matching
+message in the same thread runs as another conversation turn in it, so the agent
+keeps what it has already been told.
+
+What the Session sees is the thread as it stood when the first turn ran, plus
+each later message that matched. A reply that does not match — by default, any
+that does not @-mention the bot — never reaches the Session, so a side
+conversation in the thread is invisible to the agent.
+
+Matching uses the same channel, trigger, exclusion, and bot-message rules as a
+Slack TaskSpawner. Slash commands never drive a Session, because they have no
+thread to hold one. A TaskSpawner and a SessionSpawner that both match a message
+each act on it, so scope them to different channels or triggers to avoid two
+replies.
+
+While a turn runs, the bot posts a "Working on your request..." reply into the
+thread and edits it in place once the turn finishes. A reply too long for one
+Slack message continues in further thread replies. A turn that fails, is
+interrupted, or whose Session never becomes ready reports the reason in the same
+place.
+
+An agent that asks a question mid-turn — Claude Code's `AskUserQuestion`, or the
+equivalent in Codex and OpenCode — is told the question was cancelled, because a
+thread has no way to answer one while the turn is running. The agent continues
+and normally says what it assumed. Ask for a decision in the message itself
+rather than relying on the agent to prompt for one.
+
+A turn does not survive a restart of the Slack server. On shutdown the bot
+replaces the running turn's reply with a note saying so, and tells any queued
+thread its message was dropped; send another message to continue, since the
+Session and its history are unaffected. If the process is killed outright rather
+than asked to stop, those notices are not sent and the thread is left showing
+"Working on your request..." until the next message.
+
+Messages that arrive in a thread while its turn is still running are queued and
+run in order, one at a time. Up to eight messages may wait; beyond that the bot
+says so in the thread and drops the message. A turn is abandoned after 60
+minutes, and a Session that does not become ready within 10 minutes reports a
+failure. Both the queue bound and the turn timeout are Slack server flags —
+`--session-max-queued-turns` and `--session-turn-timeout`, set through the
+`slackServer.sessionMaxQueuedTurns` and `slackServer.sessionTurnTimeout` Helm
+values.
+
+Each thread's Session is named `<spawner>-slack-<hash>`, where the hash covers
+the spawner's name and UID along with the channel ID and thread timestamp, so
+redelivery of the same message resolves to the same Session while two spawners
+never resolve one thread to the same name. A SessionSpawner deleted and
+recreated under the same name has a new UID, so its threads get new Sessions
+rather than inheriting ones it does not own; the old spawner's Sessions are
+garbage-collected with it. Created Sessions carry `kelos.dev/slack-channel`,
+`kelos.dev/slack-thread-ts`, and `kelos.dev/slack-user-id` annotations recording
+the thread they serve, alongside the labels and owner reference every generated
+Session gets.
+
+Every thread that matches gets a Pod and, when `volumeClaimTemplate` is set, a
+persistent volume, and those outlive the conversation. A Slack spawner must
+therefore set `spec.sessionTemplate.idlePolicy.suspendAfterSeconds` or
+`deleteAfterSeconds`; the API rejects one that sets neither. Set both before the
+first deploy so idle threads release their compute and, eventually, their
+storage — suspension alone leaves every thread's volume in place. An idle-suspended Session is resumed
+automatically when its thread receives another message; a Session suspended
+through `spec.suspend` is not, and the thread is told the Session is suspended.
+
+The first turn to reach a thread's Session carries the thread's context as it
+stood at that point. Later turns send only the new message, because the Session
+retains the rest. Until a turn is known to have landed — after a first turn lost
+to a cold start, say — every turn resends the context, so a thread is never left
+talking to a Session that never heard its opening request. The Slack server
+tracks this on the Session itself; it is internal state, not something to set by
+hand.
+
+`spec.sessionTemplate.suspend` is also rejected for a Slack source, because a
+suspended Session cannot answer the thread that created it.
+
+The Kelos Slack server drives these turns by exec-ing into the Session Pod, so
+it needs `create` on `pods/exec`, `get`/`list`/`watch` on `sessionspawners`, and
+`create`, `get`, `list`, `watch` and `patch` on `sessions`. `patch` is not
+optional: resuming an idle-suspended Session, acknowledging that resume, and
+recording that a thread's context has landed all patch the Session. The bundled
+Helm chart grants these; a hand-written Role must too, or idle threads will fail
+to wake.
+
+The chart grants `pods/exec` cluster-wide. The Slack server acts on input from
+any channel it has been invited to, so scoping that grant to the namespaces
+holding Sessions is worth doing in a deployment that can.
 
 ## WorkerPool
 
@@ -880,6 +1362,10 @@ to receive refreshed credentials during long-running work.
 | `spec.plugins[].name` | Plugin name (used as directory name and namespace) | Yes (per plugin) |
 | `spec.plugins[].skills[].name` | Skill name (becomes `skills/<name>/SKILL.md`) | Yes (per skill) |
 | `spec.plugins[].skills[].content` | Skill content (markdown with frontmatter) | Yes (per skill) |
+| `spec.plugins[].skills[].files` | Supporting text files written alongside the skill's `SKILL.md` | No |
+| `spec.plugins[].skills[].files[].path` | Relative path inside the skill directory, using forward slashes (e.g., `references/checklist.md`), 1–4096 characters. Absolute paths, backslashes, empty segments, `.` or `..` segments, and duplicate paths within a skill are rejected on create/update. When consumed, each component is limited to 255 bytes and the full projected path `<plugin>/skills/<skill>/<path>` to 4096 bytes. Conflicts with `SKILL.md`, file/directory conflicts, and duplicate destinations across combined configs are also rejected when consumed | Yes (per file) |
+| `spec.plugins[].skills[].files[].content` | UTF-8 file content, preserved verbatim | Yes (per file) |
+| `spec.plugins[].skills[].files[].executable` | Write the file with mode `0755` instead of `0644`. Defaults to `false` | No |
 | `spec.plugins[].agents[].name` | Agent name (becomes `agents/<name>.md`) | Yes (per agent) |
 | `spec.plugins[].agents[].content` | Agent content (markdown with frontmatter) | Yes (per agent) |
 | `spec.skills[].source` | skills.sh package in `owner/repo` format for github.com (e.g., `vercel-labs/agent-skills`) or a full HTTPS git URL for private/GitHub Enterprise Server repositories (e.g., `https://ghe.example.com/org/private-skills.git`). Installed skills are exposed to the agent as a plugin named `skills-sh`; when `AgentConfig.spec.skills` is set, that name is reserved and must not be used in `AgentConfig.spec.plugins[].name` | Yes (per skill) |
@@ -898,6 +1384,41 @@ to receive refreshed credentials during long-running work.
 | `spec.mcpServers[].env[].valueFrom.configMapKeyRef` | ConfigMap key reference for an MCP env value. Set `name` and `key`; when `optional: true`, a missing ConfigMap or key omits the variable instead of failing the Task | No |
 | `spec.mcpServers[].env[].valueFrom` | Only `secretKeyRef` and `configMapKeyRef` are supported for MCP server env. Other Kubernetes `EnvVarSource` variants are rejected when a Task consumes the AgentConfig | No |
 | `spec.mcpServers[].envFrom.secretRef.name` | Secret whose data keys become stdio MCP environment variable names and values. Values from `envFrom` override inline `env` on key conflicts | No |
+
+### Bundling a skill directory
+
+Inline skills can include reference documents, scripts, and templates using
+`spec.plugins[].skills[].files`. Paths are relative to that skill's directory,
+so `SKILL.md` can refer to `references/checklist.md` or `scripts/check.sh`.
+
+To bundle a local directory into an AgentConfig manifest:
+
+```bash
+kelos create agentconfig reviewer \
+  --skill review=@./skills/review \
+  --dry-run > reviewer.yaml
+kubectl apply --server-side -f reviewer.yaml
+```
+
+The directory must contain a root `SKILL.md`. Kelos recursively includes all
+regular UTF-8 text files, including hidden files, preserves their content and
+relative paths, and sets `executable: true` for supporting files with any execute
+bit set. The directory argument may be a symbolic link. Symbolic links within
+the directory and non-UTF-8 files are rejected. The generated manifest contains
+the files; the directory is not needed when a Task consumes the config.
+The existing `name=content` and `name=@file` forms still define only `SKILL.md`.
+
+All inline plugin content combined, including supporting files and agents, must
+fit within a 900 KiB budget per consumer. For larger bundles or binary assets,
+use Git-backed packages through `AgentConfig.spec.skills`.
+
+Use server-side apply or `kubectl create` for large bundles. Client-side
+`kubectl apply` copies the manifest into a last-applied annotation, which is
+subject to Kubernetes' 256 KiB total annotation limit.
+
+Supporting files require `kelos.dev/v1alpha2`. Use that API version to manage
+bundled skills. Reading an AgentConfig through `kelos.dev/v1alpha1` omits
+`files`, and writing it through that API version removes them.
 
 ## TaskSpawner
 
@@ -944,7 +1465,7 @@ to receive refreshed credentials during long-running work.
 | `spec.when.githubWebhook.events` | GitHub event types to listen for (e.g., `"issues"`, `"pull_request"`, `"push"`, `"issue_comment"`) | Yes (when using githubWebhook) |
 | `spec.when.githubWebhook.repository` | Restrict webhooks to a specific repository (`owner/repo` format); if empty, webhooks from any repository are accepted | No |
 | `spec.when.githubWebhook.excludeAuthors` | Exclude webhook events **sent by** any of these usernames; applied before filter evaluation. Matches the event sender, not the pull request author — unlike the same-named field on `githubIssues` and `githubPullRequests`. Use an `excludeFilters` rule with `pullRequestAuthor` for the latter | No |
-| `spec.when.githubWebhook.excludeFilters` | Reject an event when **any** entry matches (OR across entries; the criteria within one entry are ANDed). Evaluated outside `filters`, so a matching exclusion rejects the event regardless of which `filters` entry would have accepted it. Entries use the same fields as `filters[]`, except that `event` may be omitted and that `filePatterns`, the deprecated `bodyContains`, and `excludeAuthors` / `excludeLabels` / `excludeBodyPatterns` are rejected — a negative criterion inverts inside an exclusion rule, so a rule built from one rejects every event that does *not* match it. Only `action`, `author`, `pullRequestAuthor`, `branch`, and `tag` are safe in a rule that omits `event`: for those, a value the event does not carry never matches. Every other criterion is evaluated only for the event types that carry it and is otherwise skipped and treated as satisfied, so a rule using one must set `event` (enforced by CEL validation). Scoping to an event type that still does not carry the criterion leaves it satisfied — `draft` under `event: issue_comment` rejects every comment. An entry must set at least one non-empty criterion besides `event`. Max 20 entries | No |
+| `spec.when.githubWebhook.excludeFilters` | Reject an event when **any** entry matches (OR across entries; the criteria within one entry are ANDed). Evaluated outside `filters`, so a matching exclusion rejects the event regardless of which `filters` entry would have accepted it. Entries use the same fields as `filters[]`, except that `event` may be omitted and that `filePatterns`, the deprecated `bodyContains`, and `excludeAuthors` / `excludeLabels` / `excludeBodyPatterns` are rejected — a negative criterion inverts inside an exclusion rule, so a rule built from one rejects every event that does *not* match it. Only `action`, `author`, `pullRequestAuthor`, `requestedReviewer`, `branch`, and `tag` are safe in a rule that omits `event`: for those, a value the event does not carry never matches. Every other criterion is evaluated only for the event types that carry it and is otherwise skipped and treated as satisfied, so a rule using one must set `event` (enforced by CEL validation). Scoping to an event type that still does not carry the criterion leaves it satisfied — `draft` under `event: issue_comment` rejects every comment. An entry must set at least one non-empty criterion besides `event`. Max 20 entries | No |
 | `spec.when.githubWebhook.excludeFilters[].pullRequestAuthor` | Match the username that **opened the pull request** the event is about, rather than the sender. Available on pull-request-bearing events, including `pull_request`, `pull_request_target`, `pull_request_review`, `pull_request_review_comment`, `pull_request_review_thread`, and `issue_comment` on a pull request; events carrying no pull-request author (`push`, `issues`, `create`, `release`, `check_run`) never match it. Matching is exact and case-sensitive. Max 64 characters | No |
 | `spec.when.githubWebhook.filters` | Accepting filters; an event matches when **any** entry for its event type matches (OR semantics). Every entry must set `event`. Max 50 entries | No |
 | `spec.when.githubWebhook.filters[].event` | GitHub event type this filter applies to | Yes (per filter) |
@@ -959,6 +1480,7 @@ to receive refreshed credentials during long-running work.
 | `spec.when.githubWebhook.filters[].draft` | Filter PRs by draft status | No |
 | `spec.when.githubWebhook.filters[].author` | Filter by the event sender's username | No |
 | `spec.when.githubWebhook.filters[].pullRequestAuthor` | Filter by the username that opened the pull request the event is about, using the same semantics and event coverage as `excludeFilters[].pullRequestAuthor`. Not preserved across a v1alpha1 round-trip, like `conclusion` and `checkName` | No |
+| `spec.when.githubWebhook.filters[].requestedReviewer` | Filter by `requested_reviewer.login` in the webhook payload. Matching is exact and case-sensitive; events without a requested reviewer, including team review requests, never match. Available on `pull_request` and `pull_request_target` events with action `review_requested` or `review_request_removed`. Set `action: review_requested` to match only new review requests. Max 64 characters. Also supported in `excludeFilters[]` without `event`. Like `pullRequestAuthor`, this criterion in accepting filters is not preserved across a v1alpha1 round-trip | No |
 | `spec.when.githubWebhook.filters[].excludeAuthors` | Exclude events sent by any of these usernames | No |
 | `spec.when.githubWebhook.filters[].filePatterns.include` | Doublestar globs for changed files to include after `exclude` patterns are removed. Applies to `push` and `pull_request` webhook filters | No |
 | `spec.when.githubWebhook.filters[].filePatterns.exclude` | Doublestar globs for changed files to remove before include matching. Events with no remaining changed files are skipped | No |
@@ -1095,6 +1617,22 @@ Run a standalone Task from any TaskSpawner's `taskTemplate`:
 kelos run --from taskspawner/daily-audit
 kelos run --from taskspawner/issue-worker -f values.yaml
 ```
+
+In the Console, select a TaskSpawner on the **Resources** page and choose
+**Suspend** or **Resume** to set `TaskSpawner.spec.suspend`. The action and
+automatic task creation state reflect the requested suspension setting while
+the controller applies it. Existing Tasks keep running. The `kelos-console-user`
+role and, in OIDC mode, the `kelos-console-admin` role include the required
+TaskSpawner suspend/resume permissions.
+
+To run a Task manually, select a TaskSpawner on the **Resources** page, enter any
+required template values, and choose **Run task**. Console runs use the same
+defaults and standalone Task behavior as the CLI, with an automatically generated
+Task name. The `kelos-console-user` role and, in OIDC mode, `kelos-console-admin`
+include Task creation permission. The chart does not grant the Console
+ServiceAccount access to Secrets. Context sources that use Secrets require an
+explicit namespaced grant of `get` on each referenced Secret to that
+ServiceAccount; see the [chart setup example](../internal/manifests/charts/kelos/README.md#console-context-source-secrets).
 
 The values file is a YAML or JSON object whose top-level keys are exposed
 directly to the Go template. Use `-f -` to read it from stdin. For example:
@@ -1677,7 +2215,7 @@ Enable them via the `podMonitor` values:
 
 | Value | Default | Description |
 |-------|---------|-------------|
-| `podMonitor.enabled` | `false` | Ship a PodMonitor for the control-plane pods (controller manager, webhook servers, slack server). They all expose the `metrics` port (8080). Target discovery spans both `kelos-system` (where the controller manager runs) and the release namespace (where the webhook and slack servers run); under `kelos install` these are the same namespace. The Console server is not scraped — its 8080 port serves the web app, not metrics. |
+| `podMonitor.enabled` | `false` | Ship a PodMonitor for the control-plane pods (controller manager, webhook servers, slack server). They all run in the release namespace and expose the `metrics` port (8080). The Console server is not scraped — its 8080 port serves the web app, not metrics. |
 | `podMonitor.interval` | `30s` | Scrape interval. |
 | `podMonitor.scrapeTimeout` | `10s` | Per-scrape timeout. |
 | `podMonitor.honorLabels` | `false` | Keep target-exposed labels when they collide with labels Prometheus would add. |

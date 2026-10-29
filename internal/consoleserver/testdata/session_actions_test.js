@@ -105,6 +105,8 @@ global.window = {
   setTimeout,
 };
 
+global.sessionAttentionLabel = () => '';
+
 const application = fs.readFileSync(path.join(__dirname, '..', 'web', 'app.js'), 'utf8');
 const index = fs.readFileSync(path.join(__dirname, '..', 'web', 'index.html'), 'utf8');
 const styles = fs.readFileSync(path.join(__dirname, '..', 'web', 'styles.css'), 'utf8');

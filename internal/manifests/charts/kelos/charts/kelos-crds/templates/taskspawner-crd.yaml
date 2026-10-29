@@ -2,7 +2,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    cert-manager.io/inject-ca-from: kelos-system/kelos-serving-cert
+    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/kelos-serving-cert
     controller-gen.kubebuilder.io/version: v0.20.0
     {{- if .Values.keep }}
     "helm.sh/resource-policy": keep
@@ -22,7 +22,7 @@ spec:
       clientConfig:
         service:
           name: kelos-webhook
-          namespace: kelos-system
+          namespace: {{ .Release.Namespace }}
           path: /convert
           port: 443
       conversionReviewVersions:
@@ -22966,8 +22966,8 @@ spec:
                           it. Unlike Filters, an entry here may omit Event, in which case it applies
                           to every subscribed event type.
 
-                          Only Action, Author, PullRequestAuthor, Branch, and Tag are safe to use in
-                          a rule that omits Event: for those, a value the event does not carry never
+                          Only Action, Author, PullRequestAuthor, RequestedReviewer, Branch, and Tag
+                          are safe to use in a rule that omits Event: a value the event does not carry never
                           matches, so the rule does not reject the event. An event carrying no pull
                           request author, such as push or check_run, is therefore never rejected by
                           a PullRequestAuthor rule. The remaining criteria are evaluated only for
@@ -23127,6 +23127,16 @@ spec:
                                 An event carrying no pull request author (push, issues, create, release,
                                 check_run) never matches this criterion. Matching is exact and
                                 case-sensitive.
+                              maxLength: 64
+                              type: string
+                            requestedReviewer:
+                              description: |-
+                                RequestedReviewer filters by requested_reviewer.login in the webhook
+                                payload. Matching is exact and case-sensitive. Events without a requested
+                                reviewer, including team review requests, never match this criterion.
+                                Available on pull_request and pull_request_target events with action
+                                review_requested or review_request_removed. Set Action to review_requested
+                                to match only new review requests.
                               maxLength: 64
                               type: string
                             state:
@@ -23292,6 +23302,16 @@ spec:
                                 case-sensitive.
                               maxLength: 64
                               type: string
+                            requestedReviewer:
+                              description: |-
+                                RequestedReviewer filters by requested_reviewer.login in the webhook
+                                payload. Matching is exact and case-sensitive. Events without a requested
+                                reviewer, including team review requests, never match this criterion.
+                                Available on pull_request and pull_request_target events with action
+                                review_requested or review_request_removed. Set Action to review_requested
+                                to match only new review requests.
+                              maxLength: 64
+                              type: string
                             state:
                               description: State filters by issue/PR state ("open",
                                 "closed").
@@ -23374,6 +23394,7 @@ spec:
                       rule: '!has(self.excludeFilters) || self.excludeFilters.all(f,
                         (has(f.action) && size(f.action) > 0) || (has(f.author) &&
                         size(f.author) > 0) || (has(f.pullRequestAuthor) && size(f.pullRequestAuthor)
+                        > 0) || (has(f.requestedReviewer) && size(f.requestedReviewer)
                         > 0) || (has(f.branch) && size(f.branch) > 0) || (has(f.tag)
                         && size(f.tag) > 0) || (has(f.state) && size(f.state) > 0)
                         || (has(f.commentOn) && size(f.commentOn) > 0) || (has(f.conclusion)
@@ -23523,7 +23544,7 @@ spec:
                     properties:
                       botMessagePolicy:
                         description: |-
-                          BotMessages controls whether bot-originated messages can trigger this
+                          BotMessagePolicy controls whether bot-originated messages can trigger this
                           spawner. Accepting bot messages carries loop risk — especially "All"
                           which includes the bot's own output. Use ExcludePatterns or Triggers
                           to guard against runaway self-triggering.
@@ -23551,10 +23572,12 @@ spec:
                           ExcludePatterns — the exclusion also covers slash commands. A criterion
                           the event does not carry never matches, so it does not reject the event.
 
-                          The rules are only guaranteed while the object is managed through
-                          v1alpha2. This field does not exist in v1alpha1; it survives a v1alpha1
-                          round-trip through a preservation annotation, so a v1alpha1 client that
-                          drops unknown annotations drops the exclusions with them.
+                          On a TaskSpawner, the rules are only guaranteed while the object is managed
+                          through v1alpha2: this field does not exist in the v1alpha1 TaskSpawner, and
+                          it survives a v1alpha1 round-trip through a preservation annotation, so a
+                          v1alpha1 client that drops unknown annotations drops the exclusions with
+                          them. SessionSpawner has no v1alpha1 version, so the caveat does not apply
+                          there.
                         items:
                           description: |-
                             SlackFilter is a set of matching criteria for a Slack event. Every criterion

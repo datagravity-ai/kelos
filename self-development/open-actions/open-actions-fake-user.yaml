@@ -39,9 +39,9 @@ spec:
     worker:
       workspaceRef:
         name: open-actions-agent
-      model: gpt-5.6-luna
+      model: sonnet
       effort: medium
-      type: codex
+      type: claude-code
       credentials:
         type: oauth
         secretRef:

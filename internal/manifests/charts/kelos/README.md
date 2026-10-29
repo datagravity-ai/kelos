@@ -19,6 +19,53 @@ for the current recommended installation method.
 `kelos install` checks for cert-manager and fails fast with this guidance if it
 is missing.
 
+## Release Namespace
+
+The chart installs every namespaced resource, including the controller
+manager, into the Helm release namespace. When the release namespace is
+`kelos-system`, the namespace `kelos install` uses, the chart also renders that
+`Namespace`; any other release namespace must already exist or be created with
+`--create-namespace`.
+
+Kelos CRDs send conversion requests to the `kelos-webhook` Service in the
+namespace they name. CRDs rendered with `crds.install=true` name the release
+namespace, and CRDs installed by `kelos install` name `kelos-system`. With
+`crds.install=false`, Helm installs and upgrades fail if the existing
+`tasks.kelos.dev` CRD names a namespace other than the release namespace. This
+check reads the CRD, so the Helm identity needs `get` on
+`customresourcedefinitions`. Tools that render with `helm template`, such as
+Argo CD, skip it.
+
+### Releases That Own `kelos-system` From Another Namespace
+
+A release in another namespace that owns `Namespace/kelos-system` runs the
+controller manager there. Check with:
+
+```bash
+helm get manifest kelos -n <namespace> | grep -A2 '^kind: Namespace'
+```
+
+Upgrading such a release moves the controller manager, webhook Service,
+certificate, leader-election RBAC, and telemetry CronJob into the release
+namespace. Helm then deletes `Namespace/kelos-system` with everything in it, and
+the telemetry installation ID is regenerated. To keep the namespace, annotate
+it before upgrading:
+
+```bash
+kubectl annotate namespace kelos-system helm.sh/resource-policy=keep
+```
+
+The CRDs must point at the new webhook Service in the same upgrade, so do not
+use the two-phase flow from [Upgrades](#upgrades) for this upgrade:
+
+- If Helm owns the CRDs, upgrade once with `--set crds.install=true`.
+- If the CRDs are managed outside Helm, label and annotate them as in
+  [Option 2](#option-2-adopt-existing-crds-into-helm) with `NAMESPACE` set to
+  the release namespace, then upgrade once with `--set crds.install=true`.
+
+Conversion requests fail until the controller manager and its serving
+certificate are ready in the release namespace.
+
 ## First-Time Install
 
 For most first-time installs, use `kelos install`; it stages the controller,
@@ -78,6 +125,10 @@ With `crds.install=false`, Helm manages only the controller resources.
 The CRDs are packaged in a conditional subchart, so controller-only releases
 do not store the CRD payload in Helm's release Secret.
 
+CRDs installed by `kelos install` send conversion requests to `kelos-system`,
+so this option requires the release namespace `kelos-system`. See
+[Release Namespace](#release-namespace).
+
 ### Option 2: Adopt Existing CRDs Into Helm
 
 Use this if you want Helm to manage future Kelos CRD upgrades by default.
@@ -92,8 +143,10 @@ for crd in \
   sessionspawners.kelos.dev \
   tasks.kelos.dev \
   taskbudgets.kelos.dev \
+  taskpipelines.kelos.dev \
   taskrecords.kelos.dev \
   taskspawners.kelos.dev \
+  webhookgateways.kelos.dev \
   workerpools.kelos.dev \
   workspaces.kelos.dev
 do
@@ -143,7 +196,10 @@ Session workspaces survive the replacement, while `emptyDir` workspaces do
 not.
 
 If Helm owns the CRDs and the release includes CRD changes, upgrade in two
-phases so the new webhook is ready before Helm applies conversion-backed CRDs:
+phases so the new webhook is ready before Helm applies conversion-backed CRDs.
+A release that owns `kelos-system` from another namespace upgrades in one
+phase instead; see
+[Releases That Own `kelos-system` From Another Namespace](#releases-that-own-kelos-system-from-another-namespace).
 
 ```bash
 helm upgrade kelos oci://ghcr.io/kelos-dev/charts/kelos \
@@ -206,12 +262,17 @@ is deleted with its owning Session; the StorageClass reclaim policy controls
 the underlying PersistentVolume.
 
 The Console provides an overview and manifest browser for Kelos resources in
-the active namespace. Its Sessions view creates and organizes Sessions, bridges
+the active namespace. Select a TaskSpawner and choose **Suspend** or **Resume**
+to pause or enable automatic task creation. Existing Tasks keep running.
+Choose **Run task** to create a standalone Task, with optional YAML or JSON
+template values. Manual runs bypass the schedule, source filters, suspension,
+and spawner task limits.
+Its Sessions view creates and organizes Sessions, bridges
 each chat to its Session Pod through Kubernetes exec, and can request a
 destructive Session workspace reset after user confirmation. Long conversations
 open at a bounded recent page and load earlier messages on demand. The Console
-is disabled by default and requires a non-empty static token in an existing
-Secret:
+is disabled by default. Static-token mode is the default and is intended for
+local or single-user access. It requires a non-empty token in an existing Secret:
 
 ```bash
 kubectl create secret generic kelos-console-auth \
@@ -231,14 +292,364 @@ kubectl port-forward -n kelos-system service/kelos-console-server 8080:80
 ```
 
 Then open `http://localhost:8080` and enter the token. The token represents one
-shared user that can inspect Kelos resources and create, reset, delete, and
-connect to Sessions in any namespace. It also grants interactive shell access
+shared user that can inspect Kelos resources, manage Workspaces, AgentConfigs,
+and WorkerPools through the Admin page, suspend or resume TaskSpawners, run Tasks
+from TaskSpawners, and create, reset, delete, and connect to Sessions in any
+namespace. It also grants interactive shell access
 to Ready Sessions' agent containers, including their workspaces and mounted
 credentials. Treat it as a credential. For access
 beyond a local port-forward,
 terminate TLS at a trusted proxy, set `consoleServer.secureCookie=true`, and
 restrict access to the endpoint at the network or proxy layer. The Console does
-not provide separate user identities or per-user authorization.
+not provide separate user identities or per-user authorization in static-token
+mode. Use OIDC or GitHub mode for shared team access.
+
+### Console OIDC authentication
+
+OIDC mode adds an OAuth2 Proxy sidecar and authorizes Console operations with
+Kubernetes SubjectAccessReview. The cluster API server does not need to trust
+the OIDC issuer. Namespace RoleBindings determine access; enabling OIDC does
+not grant any user permission automatically.
+
+Register a confidential OIDC client with the callback URL
+`https://console.example.com/oauth2/callback`. The issuer must support the
+Authorization Code flow with PKCE S256 and supply a stable `sub`, a verified email,
+and the configured groups claim. Set up HTTPS at your ingress or reverse proxy;
+the chart does not create an Ingress or certificate.
+
+Create an existing Secret in the release namespace containing `client-secret`
+and a `cookie-secret` with 32 random bytes encoded as URL-safe base64. For example,
+`openssl rand -base64 32 | tr -- '+/' '-_'` generates a cookie secret. Keep both values out of
+Helm values and command-line arguments. Then configure:
+
+```yaml
+consoleServer:
+  enabled: true
+  defaultNamespace: team-frontend
+  auth:
+    mode: oidc
+    oidc:
+      issuerURL: https://identity.example.com
+      clientID: kelos-console
+      redirectURL: https://console.example.com/oauth2/callback
+      secretName: kelos-console-oidc
+      usernamePrefix: "oidc:example:"
+      groupsPrefix: "oidc:example:"
+      groupsClaim: groups
+      scope: openid profile email groups
+      reverseProxy: true
+      trustedProxyIPs:
+        - 10.20.1.0/24
+```
+
+Set `trustedProxyIPs` to the actual ingress proxy addresses, including every
+trusted hop that appears in `X-Forwarded-For`. Use narrowly scoped ranges;
+catch-all CIDRs are rejected. OAuth2 Proxy validates IP/CIDR syntax at startup
+and fails to start for invalid entries. These addresses identify trusted proxies and
+never exempt clients from login. The proxy exposes the Service port, and
+Kelos listens only on loopback. HTTP and WebSockets follow the same proxy
+path. `/healthz` and `/readyz` accept unauthenticated GET probes through the
+proxy to Kelos. Incoming identity and credential headers are removed; only
+the verified subject and group identities are passed to Kelos.
+
+Choose prefixes unique to this issuer; changing issuer while reusing its
+prefixes can associate existing RoleBindings with different identities.
+Prefixes are required and must not start with `system:` or be a prefix of it
+(such as `system` or `sys`). Usernames use the OIDC
+`sub`, not the display name or email. Bind groups rather than mutable display
+names. Group claims must contain **comma-free group identifiers**: the proxy
+uses commas to delimit groups, so group names containing commas are not
+supported and must be mapped to identifiers at the IdP. Kelos accepts at most
+1024 groups, 256 bytes per group, 65536 bytes (64 KiB) for the group header,
+and 1024 bytes for the subject. Empty, repeated, or malformed identity headers
+are rejected; a user may have no groups and receive permissions through a User
+RoleBinding.
+Large sessions also require ingress request and response header limits that
+accommodate the proxy's session cookies.
+
+The chart creates unbound `kelos-console-user` and `kelos-console-admin`
+ClusterRoles in OIDC mode; GitHub mode creates only `kelos-console-user`.
+Both roles allow manual Task creation from TaskSpawners and suspending or resuming
+automatic task creation. The suspend/resume permissions do not grant general
+TaskSpawner editing. To grant Session access, manual Task creation, TaskSpawner
+suspension, and resource inspection in one namespace:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kelos-console-developers
+  namespace: team-frontend
+subjects:
+  - kind: Group
+    name: oidc:example:frontend-developers
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: kelos-console-user
+  apiGroup: rbac.authorization.k8s.io
+```
+
+Use narrower Roles for read-only or limited access. The permission table and
+limitations are in [the Console authentication reference](../../../../docs/reference.md#console-authentication-and-authorization).
+The generated user role grants no Pod permissions. The Console ServiceAccount
+performs the underlying Pod operations after checking the caller's permissions.
+
+The Admin page uses the same namespace RoleBindings. To bootstrap an
+administrator who can manage configuration and assign User or Admin roles,
+bind `kelos-console-admin` in the namespace:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kelos-console-administrators
+  namespace: team-frontend
+subjects:
+  - kind: Group
+    name: oidc:example:frontend-administrators
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: kelos-console-admin
+  apiGroup: rbac.authorization.k8s.io
+```
+
+The Admin role grants `list`, `create`, and `delete` on every RoleBinding in
+its bound namespace, including bindings for other applications. The Console
+ServiceAccount has those permissions across all namespaces. Kubernetes RBAC
+cannot restrict them to bindings with the Console's membership label; the
+Console's HTTP handlers enforce that restriction for membership changes. A
+compromised Console server could read, delete, or create RoleBindings in any
+namespace, including bindings that grant other identities permissions the Console
+ServiceAccount already holds, such as `pods/exec`. Kubernetes allows creating a
+binding to a role whose permissions the caller already holds without explicit
+`bind` permission. A user with the Admin role can also manage RoleBindings
+directly through the Kubernetes API, including granting permissions they hold.
+Grant Admin access only to people trusted to manage the namespace's RoleBindings.
+Explicit `bind` permission is restricted to the two Console ClusterRoles; neither
+role grants permission to edit or escalate ClusterRoles.
+
+Choose an accessible namespace from the sidebar dropdown, then open **Admin →
+Members**. **Add member** takes an OIDC subject ID and defaults to **User**.
+The Console adds the configured username prefix and grants membership in the
+selected namespace. User members can use Sessions and inspect resources;
+Admin members can also manage configuration and members. The Console remembers
+the selected namespace. Reopen the dropdown after access changes to refresh the
+namespace list.
+
+Use **Change role** to promote or demote a member, or **Remove member** to remove
+their direct membership. When external user assignments remain, the action is
+labeled **Remove direct access**. Role changes require permission to create RoleBindings
+and bind the selected Console ClusterRole, plus delete permission for the
+member's Console-managed bindings. The page shows each direct member once and
+rejects changes based on stale membership versions. If a role change fails,
+refresh Members to inspect the resulting role before retrying.
+
+External User assignments and namespace group grants to the Console roles are
+shown with their sources. External assignments cannot be changed here, and
+removing direct membership preserves external and group access. The Console does
+not query the identity provider for user names, email addresses, or individual
+group members. Other roles and ClusterRoleBindings remain managed separately.
+Membership management requires OIDC; it is unavailable with GitHub authentication
+or a shared static token.
+The Console ServiceAccount lists namespaces and filters them by the signed-in
+user's permissions; human users do not need permission to list namespaces.
+Discovery runs at most eight authorization checks concurrently per request. The
+number of checks still grows with namespace count and the resource permissions
+that must be evaluated.
+
+`secretName`, `tokenKey`, and `secureCookie` at the `consoleServer` level belong
+to static-token mode; do not combine static settings with OIDC. OIDC cookies
+are always Secure and HttpOnly. Optional OIDC `clientSecretKey` and
+`cookieSecretKey` default to `client-secret` and `cookie-secret`.
+`groupsClaim` defaults to `groups`; `scope` defaults to `openid profile email groups`.
+Some issuers require adding `offline_access` to issue refresh tokens. The
+proxy requests a refresh after five minutes and uses an eight-hour cookie
+expiry. Successful refreshes can renew the cookie; this is not an absolute
+maximum login duration. IdP account and group changes depend on the issuer's
+refresh and expiry behavior. Signing out clears the Console proxy cookie;
+it does not necessarily end the IdP's SSO session.
+
+The proxy image defaults to `quay.io/oauth2-proxy/oauth2-proxy:v7.15.5` and can
+be set with `auth.oidc.image`. An explicit release tag of v7.15.5 or later is
+required; a digest may follow the tag. The chart uses the proxy's structured
+configuration to strip credential headers and preserve only the required
+identity claims. Validate this configuration with `make test-integration` when
+updating the proxy version. This target downloads the pinned proxy release
+with the GitHub CLI and requires `gh` authentication (or `GH_TOKEN`).
+
+### Console GitHub and GHES authentication
+
+GitHub mode uses the managed OAuth2 Proxy sidecar's GitHub provider directly.
+It supports GitHub.com and GitHub Enterprise Server (GHES), without requiring
+an OIDC issuer or Dex. HTTPS ingress and namespace RoleBindings are required,
+as in OIDC mode; the chart does not create an Ingress or certificate.
+
+Register an OAuth application on the GitHub instance with callback URL
+`https://console.example.com/oauth2/callback`. Create a Secret in the release
+namespace with `client-secret` containing the OAuth application's secret and
+`cookie-secret` containing 32 random bytes encoded as URL-safe base64. Keep
+secret values out of Helm values and command-line arguments; supply protected
+files to `kubectl create secret`:
+
+```bash
+kubectl -n kelos-system create secret generic kelos-console-github \
+  --from-file=client-secret=/secure/path/github-client-secret \
+  --from-file=cookie-secret=/secure/path/cookie-secret
+```
+
+The cookie secret can be generated with
+`openssl rand -base64 32 | tr -- '+/' '-_'`. Save the following as
+`console-github.yaml` and replace the example values:
+
+```yaml
+consoleServer:
+  enabled: true
+  defaultNamespace: team-frontend
+  auth:
+    mode: github
+    github:
+      enterpriseURL: https://github.company.example
+      clientID: kelos-console-oauth-client
+      redirectURL: https://console.example.com/oauth2/callback
+      secretName: kelos-console-github
+      usernamePrefix: "github:company:"
+      groupsPrefix: "github:company:"
+      org: my-org
+      reverseProxy: true
+      trustedProxyIPs:
+        - 10.20.1.0/24
+```
+
+Set `trustedProxyIPs` to your actual ingress proxy addresses and trusted
+forwarding hops. Configure the ingress to forward HTTP and WebSocket requests
+to `kelos-console-server:80`. Then install with the values file:
+
+```bash
+kelos install --values console-github.yaml
+```
+
+Omit `enterpriseURL` to use GitHub.com. For GHES it must be an HTTPS origin,
+optionally including a port, without credentials, a query, fragment, or path
+other than `/`. The chart derives `/login/oauth/authorize`,
+`/login/oauth/access_token`, and `/api/v3` from this origin.
+
+For a private GHES certificate authority, create a Secret containing `ca.crt`
+and set `consoleServer.auth.github.caSecretName` to its name. Only the proxy
+mounts this certificate; it adds the CA to the system trust store and keeps
+TLS verification enabled:
+
+```bash
+kubectl -n kelos-system create secret generic ghes-ca \
+  --from-file=ca.crt=/secure/path/company-ca.pem
+kelos install --values console-github.yaml \
+  --set consoleServer.auth.github.caSecretName=ghes-ca
+```
+
+The provider requests `user:email read:org` and requires a verified primary
+email. `org` optionally restricts sign-in to members of one organization;
+authorize the OAuth application to read that organization's membership.
+To restrict sign-in to one team within that organization, also set
+`consoleServer.auth.github.team` to its slug, for example:
+
+```yaml
+consoleServer:
+  auth:
+    mode: github
+    github:
+      # Include the client, callback, Secret, and prefix settings shown above.
+      org: my-org
+      team: frontend-developers
+```
+
+`team` requires `org` and accepts a single team slug, not a display name,
+comma-separated list, or `org:team-slug`. With only `org`, any organization
+member may sign in. With both, the user must belong to that organization's team.
+Login restrictions grant no Kubernetes permissions. To grant the
+`my-org:frontend-developers` group Console access in an existing namespace:
+
+```bash
+kubectl -n team-frontend create rolebinding kelos-console-developers \
+  --clusterrole=kelos-console-user \
+  --group=github:company:my-org:frontend-developers
+```
+
+User identities use the prefixed GitHub login name, such as
+`github:company:alice`, rather than an immutable numeric account ID. Login
+names can change and be reused. Update User RoleBindings when accounts are
+renamed or removed, and choose identity prefixes unique to each GitHub/GHES
+instance. For immutable personal identities, use OIDC with stable subjects.
+GitHub groups include all organization names and `org:team-slug` values
+returned by the GitHub API for the user's OAuth token; `org` and `team` do not
+filter these groups. Kelos accepts at most 1024 groups, 256 bytes per group, and
+65536 bytes (64 KiB) for the comma-separated group header, before adding the
+configured prefix. All groups are retained for RBAC; exceeding any of these
+limits returns 401 rather than truncating the identity. Large sessions also
+require ingress request and response header limits that accommodate the proxy's
+session cookies. Groups are loaded at sign-in; the proxy's five-minute token
+validation does not reload organization or team membership. Sign out and sign
+in again to update these claims.
+
+Removing a user from a GitHub organization or team does not end their existing
+Console login or update its groups. Activity can keep renewing the eight-hour
+cookie, so waiting eight hours does not guarantee access ends. To invalidate
+an existing login, [revoke the user's OAuth grant or access token for the app](https://docs.github.com/en/rest/apps/oauth-applications#delete-an-app-authorization);
+the proxy rejects that session on its next request after the five-minute
+validation interval elapses. To invalidate all Console logins, rotate the
+configured cookie secret and restart all Console server Pods; updating the
+Secret alone does not reload the proxy's cookie secret. Do this when tightening
+`org` or `team` restrictions to require existing users to sign in again.
+Kubernetes RoleBinding changes affect subsequent requests. Token revocation and
+RBAC changes do not terminate established WebSockets; restart the Console server
+Pods to disconnect them.
+
+GitHub mode accepts the same `clientSecretKey`, `cookieSecretKey`, `image`,
+`reverseProxy`, and `trustedProxyIPs` settings as OIDC mode. Its cookies are
+Secure, HttpOnly, and use a separate name from OIDC cookies. Do not combine
+`auth.github` with `auth.oidc` or static-token settings. When changing the
+provider instance, use a separate cookie secret and identity prefixes.
+
+### Console context-source Secrets
+
+The chart does not grant the Console ServiceAccount access to Secrets. For
+manual TaskSpawner runs that use authenticated context sources, grant `get` on
+each referenced Secret in the TaskSpawner's namespace. For example:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kelos-console-context-secrets
+  namespace: team-frontend
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [context-auth]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kelos-console-context-secrets
+  namespace: team-frontend
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kelos-console-context-secrets
+subjects:
+  - kind: ServiceAccount
+    name: kelos-console-server
+    namespace: kelos-system
+```
+
+Replace `team-frontend`, `context-auth`, and the ServiceAccount namespace with
+the TaskSpawner namespace, Secret name, and chart release namespace.
+Context-source requests use the Console ServiceAccount's access, rather than
+the signed-in user's Secret permissions. Template values can affect the request
+URL, headers, and body; users can read fetched context rendered into their Tasks.
+
+### Console namespaces
 
 The Console operates on one active namespace at a time and can switch it live
 from the sidebar. `consoleServer.defaultNamespace` (`default` unless
@@ -279,6 +690,12 @@ already removed the controller that clears custom-resource finalizers.
 For a full cleanup, use `kelos uninstall` instead of `helm uninstall`, or delete
 all Kelos custom resources while the controller is still running, upgrade the
 release with `crds.keep=false`, and then uninstall the chart.
+
+`kelos uninstall` also removes Console membership RoleBindings labeled
+`kelos.dev/console-membership=true` across all namespaces. Unlabeled bootstrap
+and externally managed bindings remain; remove them separately if their grants
+should not become active again when the Console roles are reinstalled. Helm
+uninstall does not remove membership bindings created through Console.
 
 ## Webhook Server Configuration
 

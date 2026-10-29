@@ -27,6 +27,7 @@ import (
 )
 
 type fakeProvider struct {
+	testEventSource
 	mu              sync.Mutex
 	prompts         []string
 	inputs          []TurnInput
@@ -49,27 +50,29 @@ type fakeGoalProvider struct {
 	stopOnce     sync.Once
 }
 
-func (p *fakeGoalProvider) RunGoal(ctx context.Context, command goalCommand, sink EventSink) error {
-	p.goalCommands <- command
-	p.mu.Lock()
-	p.goal = &Goal{Objective: command.objective, Status: "active"}
-	p.mu.Unlock()
-	if p.goalStarted != nil {
-		p.startOnce.Do(func() { close(p.goalStarted) })
-	}
-	if p.goalStopped != nil {
-		select {
-		case <-p.goalStopped:
-		case <-ctx.Done():
-			return ctx.Err()
+func (p *fakeGoalProvider) StartGoal(ctx context.Context, command goalCommand) error {
+	return p.startTurn(ctx, func() error {
+		p.goalCommands <- command
+		p.mu.Lock()
+		p.goal = &Goal{Objective: command.objective, Status: "active"}
+		p.mu.Unlock()
+		if p.goalStarted != nil {
+			p.startOnce.Do(func() { close(p.goalStarted) })
 		}
-	}
-	p.mu.Lock()
-	p.goal.Status = "complete"
-	goal := cloneGoal(p.goal)
-	p.mu.Unlock()
-	sink.Emit(Event{Type: EventGoalUpdated, Goal: goal, Status: goal.Status})
-	return nil
+		if p.goalStopped != nil {
+			select {
+			case <-p.goalStopped:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		p.mu.Lock()
+		p.goal.Status = "complete"
+		goal := cloneGoal(p.goal)
+		p.mu.Unlock()
+		p.sink.Emit(Event{Type: EventGoalUpdated, Goal: goal, Status: goal.Status})
+		return nil
+	})
 }
 
 func (p *fakeGoalProvider) ControlGoal(_ context.Context, command goalCommand, sink EventSink) error {
@@ -96,25 +99,28 @@ func (p *fakeGoalProvider) ActiveGoal() *Goal {
 }
 
 type inputProvider struct {
+	testEventSource
 	answers   chan map[string][]string
 	done      chan struct{}
 	closeOnce sync.Once
 }
 
-func (p *inputProvider) RunTurn(ctx context.Context, _ TurnInput, sink EventSink) error {
-	answers, err := sink.RequestInput(ctx, InputRequest{
-		ID: "input-test",
-		Questions: []InputQuestion{
-			{ID: "first", Question: "Choose the first value"},
-			{ID: "second", Question: "Choose the second value", MultiSelect: true},
-		},
+func (p *inputProvider) StartTurn(ctx context.Context, _ TurnInput) error {
+	return p.startTurn(ctx, func() error {
+		answers, err := p.sink.RequestInput(ctx, InputRequest{
+			ID: "input-test",
+			Questions: []InputQuestion{
+				{ID: "first", Question: "Choose the first value"},
+				{ID: "second", Question: "Choose the second value", MultiSelect: true},
+			},
+		})
+		if err != nil {
+			return err
+		}
+		p.answers <- answers
+		p.sink.Emit(Event{Type: EventAssistantMessage, Text: "answers received"})
+		return nil
 	})
-	if err != nil {
-		return err
-	}
-	p.answers <- answers
-	sink.Emit(Event{Type: EventAssistantMessage, Text: "answers received"})
-	return nil
 }
 
 func (p *inputProvider) Interrupt(context.Context) error { return ErrNoActiveTurn }
@@ -125,6 +131,7 @@ func (p *inputProvider) Close() error {
 }
 
 type interruptProvider struct {
+	testEventSource
 	started     chan struct{}
 	interrupted chan struct{}
 	done        chan struct{}
@@ -134,6 +141,7 @@ type interruptProvider struct {
 }
 
 type stuckInterruptProvider struct {
+	testEventSource
 	started                chan struct{}
 	interruptCalled        chan struct{}
 	runStopped             chan struct{}
@@ -147,6 +155,7 @@ type stuckInterruptProvider struct {
 }
 
 type turnCompletionRaceProvider struct {
+	testEventSource
 	mu              sync.Mutex
 	runCount        int
 	firstStarted    chan struct{}
@@ -159,27 +168,29 @@ type turnCompletionRaceProvider struct {
 	closeOnce       sync.Once
 }
 
-func (p *turnCompletionRaceProvider) RunTurn(ctx context.Context, _ TurnInput, _ EventSink) error {
-	p.mu.Lock()
-	p.runCount++
-	runCount := p.runCount
-	p.mu.Unlock()
-	switch runCount {
-	case 1:
-		close(p.firstStarted)
-		select {
-		case <-p.finishFirst:
-			return nil
-		case <-ctx.Done():
+func (p *turnCompletionRaceProvider) StartTurn(ctx context.Context, _ TurnInput) error {
+	return p.startTurn(ctx, func() error {
+		p.mu.Lock()
+		p.runCount++
+		runCount := p.runCount
+		p.mu.Unlock()
+		switch runCount {
+		case 1:
+			close(p.firstStarted)
+			select {
+			case <-p.finishFirst:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		case 2:
+			close(p.secondStarted)
+			<-ctx.Done()
 			return ctx.Err()
+		default:
+			return errors.New("unexpected provider turn")
 		}
-	case 2:
-		close(p.secondStarted)
-		<-ctx.Done()
-		return ctx.Err()
-	default:
-		return errors.New("unexpected provider turn")
-	}
+	})
 }
 
 func (p *turnCompletionRaceProvider) Interrupt(ctx context.Context) error {
@@ -198,10 +209,12 @@ func (p *turnCompletionRaceProvider) Close() error {
 	return nil
 }
 
-func (p *stuckInterruptProvider) RunTurn(ctx context.Context, _ TurnInput, _ EventSink) error {
-	p.startOnce.Do(func() { close(p.started) })
-	<-p.runStopped
-	return ctx.Err()
+func (p *stuckInterruptProvider) StartTurn(ctx context.Context, _ TurnInput) error {
+	return p.startTurn(ctx, func() error {
+		p.startOnce.Do(func() { close(p.started) })
+		<-p.runStopped
+		return ctx.Err()
+	})
 }
 
 func (p *stuckInterruptProvider) Interrupt(ctx context.Context) error {
@@ -229,10 +242,12 @@ func (p *stuckInterruptProvider) Close() error {
 	return nil
 }
 
-func (p *interruptProvider) RunTurn(context.Context, TurnInput, EventSink) error {
-	p.startOnce.Do(func() { close(p.started) })
-	<-p.interrupted
-	return ErrTurnInterrupted
+func (p *interruptProvider) StartTurn(ctx context.Context, _ TurnInput) error {
+	return p.startTurn(ctx, func() error {
+		p.startOnce.Do(func() { close(p.started) })
+		<-p.interrupted
+		return ErrTurnInterrupted
+	})
 }
 
 func (p *interruptProvider) Interrupt(context.Context) error {
@@ -246,21 +261,23 @@ func (p *interruptProvider) Close() error {
 	return nil
 }
 
-func (p *fakeProvider) RunTurn(ctx context.Context, input TurnInput, sink EventSink) error {
-	p.mu.Lock()
-	p.prompts = append(p.prompts, input.Text)
-	p.inputs = append(p.inputs, input)
-	p.mu.Unlock()
-	sink.Emit(Event{Type: EventAssistantDelta, Text: "working"})
-	if p.resume != nil {
-		select {
-		case <-p.resume:
-		case <-ctx.Done():
-			return ctx.Err()
+func (p *fakeProvider) StartTurn(ctx context.Context, input TurnInput) error {
+	return p.startTurn(ctx, func() error {
+		p.mu.Lock()
+		p.prompts = append(p.prompts, input.Text)
+		p.inputs = append(p.inputs, input)
+		p.mu.Unlock()
+		p.sink.Emit(Event{Type: EventAssistantDelta, Text: "working"})
+		if p.resume != nil {
+			select {
+			case <-p.resume:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 		}
-	}
-	sink.Emit(Event{Type: EventAssistantDelta, Text: " done"})
-	return nil
+		p.sink.Emit(Event{Type: EventAssistantDelta, Text: " done"})
+		return nil
+	})
 }
 
 func (p *fakeProvider) recordShellCommand(_ context.Context, record shellCommandRecord) error {
@@ -350,11 +367,7 @@ func TestServerEditsPendingMessage(t *testing.T) {
 
 	turn := <-server.turns
 	<-turn.accepted
-	pending, exists := server.takePendingTurn(turn)
-	if !exists {
-		t.Fatal("pending turn was not available")
-	}
-	server.runTurn(t.Context(), pending)
+	server.runTurn(t.Context(), turn)
 
 	provider.mu.Lock()
 	prompts := append([]string(nil), provider.prompts...)
@@ -874,7 +887,7 @@ func TestSubmitMessageRejectsGoalForOtherProviders(t *testing.T) {
 	server := NewServer(Config{}, journal, &fakeProvider{})
 
 	err := server.submitClientMessage(t.Context(), "/goal improve coverage", "request-goal")
-	if err == nil || !strings.Contains(err.Error(), "only in Codex Sessions") {
+	if err == nil || !strings.Contains(err.Error(), "/goal is not available in this Session") {
 		t.Fatalf("submitMessage() error = %v", err)
 	}
 	if len(journal.Snapshot()) != 0 {
@@ -964,6 +977,7 @@ func TestPublishObservedSessionStatusPublishesActivityWhenWorkspaceReadFails(t *
 		true,
 		true,
 		"gpt-5.6-sol",
+		nil,
 		func(context.Context) (WorkspaceStatus, error) {
 			return WorkspaceStatus{}, readErr
 		},
@@ -984,6 +998,7 @@ func TestPublishObservedSessionStatusReturnsPublisherError(t *testing.T) {
 		true,
 		false,
 		"gpt-5.6-sol",
+		nil,
 		func(context.Context) (WorkspaceStatus, error) { return WorkspaceStatus{}, nil },
 	)
 	if !errors.Is(err, publishErr) {
@@ -1234,6 +1249,83 @@ func TestRequestInputPublishesWaitingForInputTransitions(t *testing.T) {
 	}
 }
 
+func TestConcurrentInputRequestsPublishNotificationChanges(t *testing.T) {
+	journal := NewJournal()
+	defer journal.Close()
+	server := NewServer(Config{}, journal, &fakeProvider{})
+	server.activeTurn = "turn-1"
+	server.sessionStatusPublishInterval = time.Hour
+	ctx, cancel := context.WithCancel(t.Context())
+	statuses := make(chan *kelos.SessionNotification, 1)
+	release := make(chan struct{})
+	server.publishSessionStatus = func(ctx context.Context, active, waiting bool) error {
+		if !active || !waiting {
+			return errors.New("expected active Session waiting for input")
+		}
+		statuses <- journal.LatestNotification()
+		select {
+		case <-release:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	var workers sync.WaitGroup
+	defer func() { cancel(); workers.Wait() }()
+	workers.Go(func() { server.runSessionStatusPublishes(ctx) })
+	startInput := func(id string) <-chan error {
+		result := make(chan error, 1)
+		workers.Go(func() {
+			_, err := (&turnSink{server: server, turnID: "turn-1"}).RequestInput(ctx, InputRequest{
+				ID: id, Questions: []InputQuestion{{ID: "question", Question: "Continue?"}},
+			})
+			result <- err
+		})
+		return result
+	}
+	readStatus := func() *kelos.SessionNotification {
+		t.Helper()
+		select {
+		case notification := <-statuses:
+			if notification == nil || notification.Type != kelos.SessionNotificationTypeInputRequested {
+				t.Fatalf("published notification = %#v, want input request", notification)
+			}
+			return notification
+		case <-time.After(time.Second):
+			t.Fatal("Notification change was not published")
+			return nil
+		}
+	}
+	startInput("first")
+	first := readStatus()
+	secondResult := startInput("second")
+	select {
+	case <-server.sessionStatusPublishWakeups:
+	case <-time.After(time.Second):
+		t.Fatal("Second input did not queue a publication while the first was in flight")
+	}
+	release <- struct{}{}
+	second := readStatus()
+	if second.ID == first.ID || second.ID != journal.LatestNotification().ID {
+		t.Fatalf("published notification = %#v, want latest concurrent input", second)
+	}
+	if err := server.resolveInput("second", nil, true, "cancel-second"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-secondResult:
+		if !errors.Is(err, ErrInputCancelled) {
+			t.Fatalf("input result = %v, want cancellation", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Second input was not cancelled")
+	}
+	release <- struct{}{}
+	if got := readStatus(); got.ID != first.ID {
+		t.Fatalf("published notification = %#v, want remaining input %#v", got, first)
+	}
+}
+
 func assertActivity(t *testing.T, activity <-chan bool, want bool) {
 	t.Helper()
 	select {
@@ -1348,10 +1440,6 @@ func TestServerTreatsCommandLikeInitialPromptsAsMessages(t *testing.T) {
 			}
 			turn := <-server.turns
 			<-turn.accepted
-			turn, ok := server.takePendingTurn(turn)
-			if !ok {
-				t.Fatal("initial prompt was not pending")
-			}
 			server.runTurn(t.Context(), turn)
 
 			provider.mu.Lock()
@@ -1930,7 +2018,7 @@ func TestServerPreservesPendingTurnAcrossForcedProviderRestart(t *testing.T) {
 		t.Fatalf("runtime update report = %#v, want Draining while pending work remains", report)
 	}
 
-	recovery, err := recoverJournal(server.journal)
+	recovery, err := recoverJournal(server.journal, "codex")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2072,7 +2160,7 @@ func TestServerRecoversActiveTurnAfterShutdown(t *testing.T) {
 		t.Fatal("active turn did not stop")
 	}
 
-	if _, err := recoverJournal(journal); err != nil {
+	if _, err := recoverJournal(journal, "codex"); err != nil {
 		t.Fatal(err)
 	}
 	recovered := journal.Snapshot()
@@ -2333,7 +2421,7 @@ func TestServerWithholdsIdleDrainAfterRecoveringInterruptedWork(t *testing.T) {
 	if err := journal.Append(Event{Type: EventTurnStarted, TurnID: "turn-1", Status: "running"}); err != nil {
 		t.Fatal(err)
 	}
-	recovery, err := recoverJournal(journal)
+	recovery, err := recoverJournal(journal, "codex")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2392,7 +2480,7 @@ func TestServerWithholdsIdleDrainForUnpublishedCompletedTurn(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	recovery, err := recoverJournal(journal)
+	recovery, err := recoverJournal(journal, "codex")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2668,6 +2756,54 @@ func TestServerResetsHistoryForReplacedJournalWithOverlappingIDs(t *testing.T) {
 	}
 }
 
+func TestServerCompletionNotificationIdentity(t *testing.T) {
+	journal := NewJournal()
+	defer journal.Close()
+	if err := journal.Append(Event{Type: EventTurnCompleted, Status: "completed"}); err != nil {
+		t.Fatal(err)
+	}
+	want := journal.LatestNotification().ID
+	server := &Server{journal: journal}
+	serverConnection, clientConnection := net.Pipe()
+	defer clientConnection.Close()
+	if err := clientConnection.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	go server.handleConnection(t.Context(), serverConnection)
+	if err := json.NewEncoder(clientConnection).Encode(ClientRequest{Type: "subscribe", HistoryBounds: true, HistoryItems: DefaultHistoryItemLimit, HistoryBytes: DefaultHistoryByteLimit}); err != nil {
+		t.Fatal(err)
+	}
+	decoder := json.NewDecoder(clientConnection)
+	for _, kind := range []string{EventHistoryStart, EventTurnCompleted, EventHistoryEnd} {
+		var event Event
+		if err := decoder.Decode(&event); err != nil {
+			t.Fatal(err)
+		}
+		if event.Type != kind {
+			t.Fatalf("event type = %q, want %q", event.Type, kind)
+		}
+		if kind == EventTurnCompleted && event.NotificationID != want {
+			t.Fatalf("history notification ID = %q, want %q", event.NotificationID, want)
+		}
+	}
+	for _, status := range []string{"completed", "failed", "interrupted"} {
+		if err := journal.Append(Event{Type: EventTurnCompleted, Status: status}); err != nil {
+			t.Fatal(err)
+		}
+		var event Event
+		if err := decoder.Decode(&event); err != nil {
+			t.Fatal(err)
+		}
+		want = ""
+		if notification := journal.LatestNotification(); notification != nil {
+			want = notification.ID
+		}
+		if event.Status != status || event.NotificationID != want {
+			t.Fatalf("live event = %#v, want status %q and notification ID %q", event, status, want)
+		}
+	}
+}
+
 func TestServerPagesProjectedHistoryItems(t *testing.T) {
 	journal := NewJournal()
 	defer journal.Close()
@@ -2695,7 +2831,7 @@ func TestServerPagesProjectedHistoryItems(t *testing.T) {
 	if err := json.NewEncoder(clientConnection).Encode(ClientRequest{
 		Type:          "subscribe",
 		HistoryBounds: true,
-		HistoryItems:  2,
+		HistoryItems:  3,
 		HistoryBytes:  DefaultHistoryByteLimit,
 	}); err != nil {
 		t.Fatal(err)
@@ -2723,7 +2859,7 @@ func TestServerPagesProjectedHistoryItems(t *testing.T) {
 		}
 		retained = append(retained, event)
 	}
-	wantIDs := []int64{7, 9}
+	wantIDs := []int64{7, 9, 10}
 	if len(retained) != len(wantIDs) {
 		t.Fatalf("retained events = %#v, want IDs %v", retained, wantIDs)
 	}
@@ -2735,7 +2871,10 @@ func TestServerPagesProjectedHistoryItems(t *testing.T) {
 			t.Fatalf("projected event retains turn state: %#v", retained)
 		}
 	}
-	assertEventTypes(t, retained, EventUserMessage, EventAssistantMessage)
+	assertEventTypes(t, retained, EventUserMessage, EventAssistantMessage, EventTurnCompleted)
+	if retained[2].NotificationID != journal.LatestNotification().ID {
+		t.Fatalf("completion notification ID = %q, want %q", retained[2].NotificationID, journal.LatestNotification().ID)
+	}
 	if end.HistoryState == nil {
 		t.Fatalf("history end = %#v, want state snapshot", end)
 	}
@@ -2768,7 +2907,7 @@ func TestServerPagesProjectedHistoryItems(t *testing.T) {
 		}
 		retained = append(retained, event)
 	}
-	wantIDs = []int64{1, 5}
+	wantIDs = []int64{1, 5, 6}
 	if len(retained) != len(wantIDs) {
 		t.Fatalf("older retained events = %#v, want IDs %v", retained, wantIDs)
 	}
@@ -2777,7 +2916,10 @@ func TestServerPagesProjectedHistoryItems(t *testing.T) {
 			t.Fatalf("older retained events = %#v, want projected IDs %v", retained, wantIDs)
 		}
 	}
-	assertEventTypes(t, retained, EventUserMessage, EventAssistantMessage)
+	assertEventTypes(t, retained, EventUserMessage, EventAssistantMessage, EventTurnCompleted)
+	if retained[2].NotificationID != journal.notificationID(6) {
+		t.Fatalf("older completion notification ID = %q, want %q", retained[2].NotificationID, journal.notificationID(6))
+	}
 }
 
 func TestServerPreservesStateOutsideProjectedHistoryPage(t *testing.T) {
@@ -2848,9 +2990,6 @@ func TestServerPreservesStateOutsideProjectedHistoryPage(t *testing.T) {
 	}
 	if state.PendingTurn == nil || state.PendingTurn.TurnID != "turn-2" {
 		t.Fatalf("pending turn = %#v, want turn-2", state.PendingTurn)
-	}
-	if state.FileDiff != "diff --git a/old.txt b/old.txt\n-old\n+new" {
-		t.Fatalf("file diff = %q, want state outside projected history page", state.FileDiff)
 	}
 	if text := state.PendingTurn.Text; len(text) > maxHistoryMessageBytes || !strings.Contains(text, historyTruncationMarker) {
 		t.Fatalf("pending message preview has %d bytes", len(text))
@@ -3049,10 +3188,10 @@ func TestClaudeInputResponse(t *testing.T) {
 	reader, writer := io.Pipe()
 	sink := &inputAnswerSink{answers: map[string][]string{"question-1": {"PostgreSQL"}}}
 	provider := &ClaudeProvider{
-		ctx:        context.Background(),
-		stdin:      writer,
-		sessionID:  "session-1",
-		activeSink: sink,
+		ctx:       context.Background(),
+		stdin:     writer,
+		sessionID: "session-1",
+		eventSink: sink,
 	}
 	done := make(chan struct{})
 	go func() {
@@ -3121,9 +3260,12 @@ done
 	if _, err := os.Stat(sessionPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("Claude session ID exists before a completed turn: %v", err)
 	}
-	if err := provider.RunTurn(t.Context(), TurnInput{Text: "hello"}, &collectingSink{}); err != nil {
-		t.Fatalf("RunTurn() error = %v", err)
+	sink := newProviderTestSink(nil)
+	provider.SetEventSink(sink)
+	if err := provider.StartTurn(t.Context(), TurnInput{Text: "hello"}); err != nil {
+		t.Fatalf("StartTurn() error = %v", err)
 	}
+	sink.waitForCompletion(t, "completed")
 	data, err := os.ReadFile(sessionPath)
 	if err != nil {
 		t.Fatal(err)
@@ -3138,7 +3280,7 @@ func TestClaudeInterruptUsesControlProtocol(t *testing.T) {
 	interactionCtx, interactionCancel := context.WithCancel(context.Background())
 	provider := &ClaudeProvider{
 		stdin:             writer,
-		turnDone:          make(chan claudeTurnResult, 1),
+		active:            true,
 		interactionCtx:    interactionCtx,
 		interactionCancel: interactionCancel,
 		controlPending:    map[string]chan error{},
@@ -3170,22 +3312,22 @@ func TestClaudeInterruptUsesControlProtocol(t *testing.T) {
 }
 
 func TestCodexEventMapping(t *testing.T) {
-	sink := &collectingSink{}
-	done := make(chan codexTurnResult, 1)
-	provider := &CodexProvider{activeSink: sink, turnDone: done}
+	sink := newProviderTestSink(nil)
+	done := sink.completed
+	provider := &CodexProvider{eventSink: sink, interactionKind: codexInteractionMessage}
 	provider.handleNotification("item/agentMessage/delta", json.RawMessage(`{"delta":"hello"}`))
 	provider.handleNotification("item/started", json.RawMessage(`{"item":{"type":"commandExecution","id":"tool-1","command":"make test"}}`))
 	provider.handleNotification("item/commandExecution/outputDelta", json.RawMessage(`{"itemId":"tool-1","delta":"ok\n"}`))
 	provider.handleNotification("item/completed", json.RawMessage(`{"item":{"type":"commandExecution","id":"tool-1","command":"make test","status":"completed"}}`))
 	provider.handleNotification("turn/diff/updated", json.RawMessage(`{"diff":"+updated"}`))
 	provider.handleNotification("turn/completed", json.RawMessage(`{"turn":{"status":"completed"}}`))
-	assertEventTypes(t, sink.events, EventAssistantDelta, EventToolStarted, EventToolCompleted, EventFileDiff)
+	assertEventTypes(t, sink.snapshot(), EventAssistantDelta, EventToolStarted, EventToolCompleted, EventFileDiff, EventTurnCompleted)
 	if got := sink.events[2].Output; got != "ok\n" {
 		t.Fatalf("Codex tool output = %q, want %q", got, "ok\n")
 	}
 	select {
 	case result := <-done:
-		if result.status != "completed" || result.error != "" {
+		if result.Status != "completed" || result.Text != "" {
 			t.Fatalf("Codex turn result = %#v", result)
 		}
 	default:
@@ -3194,9 +3336,10 @@ func TestCodexEventMapping(t *testing.T) {
 }
 
 func TestCodexOrdinaryInteractionCompletesWhileGoalIsActive(t *testing.T) {
-	done := make(chan codexTurnResult, 1)
+	sink := newProviderTestSink(nil)
+	done := sink.completed
 	provider := &CodexProvider{
-		turnDone:        done,
+		eventSink:       sink,
 		activeTurn:      "codex-turn-1",
 		interactionKind: codexInteractionMessage,
 	}
@@ -3205,7 +3348,7 @@ func TestCodexOrdinaryInteractionCompletesWhileGoalIsActive(t *testing.T) {
 	provider.handleNotification("turn/completed", json.RawMessage(`{"turn":{"status":"completed"}}`))
 	select {
 	case result := <-done:
-		if result.status != "completed" {
+		if result.Status != "completed" {
 			t.Fatalf("Codex turn result = %#v", result)
 		}
 	default:
@@ -3214,9 +3357,10 @@ func TestCodexOrdinaryInteractionCompletesWhileGoalIsActive(t *testing.T) {
 }
 
 func TestCodexGoalNotificationDoesNotCompleteOrdinaryInteraction(t *testing.T) {
-	done := make(chan codexTurnResult, 1)
+	sink := newProviderTestSink(nil)
+	done := sink.completed
 	provider := &CodexProvider{
-		turnDone:        done,
+		eventSink:       sink,
 		interactionKind: codexInteractionMessage,
 	}
 	provider.setGoal(&Goal{Objective: "improve coverage", Status: "active"})
@@ -3232,9 +3376,9 @@ func TestCodexGoalNotificationDoesNotCompleteOrdinaryInteraction(t *testing.T) {
 }
 
 func TestCodexGoalKeepsInteractionOpenUntilTerminalTurnCompletes(t *testing.T) {
-	sink := &collectingSink{}
-	done := make(chan codexTurnResult, 1)
-	provider := &CodexProvider{activeSink: sink, turnDone: done, activeTurn: "codex-turn-1", interactionKind: codexInteractionGoal}
+	sink := newProviderTestSink(nil)
+	done := sink.completed
+	provider := &CodexProvider{eventSink: sink, activeTurn: "codex-turn-1", interactionKind: codexInteractionGoal}
 
 	provider.handleNotification("thread/goal/updated", json.RawMessage(`{
 		"goal":{"objective":"improve coverage","status":"active","tokensUsed":100}
@@ -3259,15 +3403,17 @@ func TestCodexGoalKeepsInteractionOpenUntilTerminalTurnCompletes(t *testing.T) {
 
 	select {
 	case result := <-done:
-		if result.status != "completed" {
+		if result.Status != "completed" {
 			t.Fatalf("Codex goal result = %#v", result)
 		}
 	default:
 		t.Fatal("completed Codex goal did not finish the interaction")
 	}
-	assertEventTypes(t, sink.events, EventGoalUpdated, EventGoalUpdated)
-	if sink.events[1].Goal == nil || sink.events[1].Goal.Status != "complete" {
-		t.Fatalf("completed goal event = %#v", sink.events[1])
+	events := sink.snapshot()
+	if len(events) != 4 || events[0].Type != EventGoalUpdated || events[1].Type != EventTurnStarted ||
+		events[2].Type != EventGoalUpdated || events[2].Goal == nil || events[2].Goal.Status != "complete" ||
+		events[3].Type != EventTurnCompleted {
+		t.Fatalf("Codex goal events = %#v", events)
 	}
 }
 
@@ -3325,7 +3471,7 @@ func TestCodexGoalCommandUsesAppServerProtocol(t *testing.T) {
 
 func TestCodexRuntimeStatusMapping(t *testing.T) {
 	sink := &collectingSink{}
-	provider := &CodexProvider{activeSink: sink}
+	provider := &CodexProvider{eventSink: sink}
 	provider.handleNotification("thread/tokenUsage/updated", json.RawMessage(`{
 		"tokenUsage": {
 			"total": {
@@ -3517,7 +3663,7 @@ func TestCodexToolResultOutputMapping(t *testing.T) {
 func TestCodexMcpElicitationUsesProtocolResponse(t *testing.T) {
 	reader, writer := io.Pipe()
 	sink := &collectingSink{}
-	provider := &CodexProvider{stdin: writer, activeSink: sink}
+	provider := &CodexProvider{stdin: writer, eventSink: sink}
 	done := make(chan struct{})
 	go func() {
 		provider.handleServerRequest(json.RawMessage(`2`), "mcpServer/elicitation/request", json.RawMessage(`{"message":"Choose a value"}`))
@@ -3542,7 +3688,7 @@ func TestCodexMcpElicitationUsesProtocolResponse(t *testing.T) {
 func TestCodexInputResponse(t *testing.T) {
 	reader, writer := io.Pipe()
 	sink := &inputAnswerSink{answers: map[string][]string{"database": {"PostgreSQL"}}}
-	provider := &CodexProvider{ctx: context.Background(), stdin: writer, activeSink: sink}
+	provider := &CodexProvider{ctx: context.Background(), stdin: writer, eventSink: sink}
 	done := make(chan struct{})
 	go func() {
 		provider.handleServerRequest(json.RawMessage(`3`), "item/tool/requestUserInput", json.RawMessage(`{"questions":[{"id":"database","header":"Database","question":"Which database?","options":[{"label":"PostgreSQL","description":"Relational database"}]}]}`))
@@ -3626,7 +3772,7 @@ func TestCodexInterruptPausesActiveGoalBeforeInterruptingTurn(t *testing.T) {
 		stdin:             writer,
 		pending:           map[string]chan codexResponse{},
 		threadID:          "thread-1",
-		activeSink:        sink,
+		eventSink:         sink,
 		activeTurn:        "turn-1",
 		activeReady:       ready,
 		interactionKind:   codexInteractionGoal,
@@ -3684,59 +3830,66 @@ func TestCodexInterruptPausesActiveGoalBeforeInterruptingTurn(t *testing.T) {
 }
 
 func TestCodexInterruptPausesActiveGoalBetweenTurns(t *testing.T) {
-	reader, writer := io.Pipe()
-	ready := make(chan struct{})
-	close(ready)
-	sink := &collectingSink{}
-	provider := &CodexProvider{
-		ctx:             context.Background(),
-		stdin:           writer,
-		pending:         map[string]chan codexResponse{},
-		threadID:        "thread-1",
-		activeSink:      sink,
-		activeReady:     ready,
-		interactionKind: codexInteractionGoal,
-		turnDone:        make(chan codexTurnResult, 1),
-		done:            make(chan struct{}),
-	}
-	provider.setGoal(&Goal{Objective: "improve coverage", Status: "active"})
-
-	interruptDone := make(chan error, 1)
-	go func() { interruptDone <- provider.Interrupt(t.Context()) }()
-	decoder := json.NewDecoder(reader)
-	for _, wantMethod := range []string{"thread/goal/get", "thread/goal/set"} {
-		var request struct {
-			ID     int64  `json:"id"`
-			Method string `json:"method"`
-			Params struct {
-				Status string `json:"status"`
-			} `json:"params"`
-		}
-		if err := decoder.Decode(&request); err != nil {
-			t.Fatal(err)
-		}
-		if request.Method != wantMethod {
-			t.Fatalf("request method = %q, want %q", request.Method, wantMethod)
-		}
-		if wantMethod == "thread/goal/get" {
-			respondCodexRequest(t, provider, request.ID, `{"goal":{"objective":"improve coverage","status":"active"}}`)
-		} else {
-			if request.Params.Status != "paused" {
-				t.Fatalf("goal status = %q, want paused", request.Params.Status)
+	for _, readyClosed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("nativeTurnStarted=%t", readyClosed), func(t *testing.T) {
+			reader, writer := io.Pipe()
+			ready := make(chan struct{})
+			if readyClosed {
+				close(ready)
 			}
-			respondCodexRequest(t, provider, request.ID, `{"goal":{"objective":"improve coverage","status":"paused"}}`)
-		}
-	}
-	if err := <-interruptDone; err != nil {
-		t.Fatalf("Interrupt() error = %v", err)
-	}
-	select {
-	case result := <-provider.turnDone:
-		if result.status != "completed" {
-			t.Fatalf("Codex goal result = %#v", result)
-		}
-	default:
-		t.Fatal("paused Codex goal did not finish its interaction")
+			sink := newProviderTestSink(nil)
+			provider := &CodexProvider{
+				ctx:             context.Background(),
+				stdin:           writer,
+				pending:         map[string]chan codexResponse{},
+				threadID:        "thread-1",
+				eventSink:       sink,
+				activeReady:     ready,
+				interactionKind: codexInteractionGoal,
+				done:            make(chan struct{}),
+			}
+			provider.setGoal(&Goal{Objective: "improve coverage", Status: "active"})
+
+			interruptDone := make(chan error, 1)
+			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+			defer cancel()
+			go func() { interruptDone <- provider.Interrupt(ctx) }()
+			decoder := json.NewDecoder(reader)
+			for _, wantMethod := range []string{"thread/goal/get", "thread/goal/set"} {
+				var request struct {
+					ID     int64  `json:"id"`
+					Method string `json:"method"`
+					Params struct {
+						Status string `json:"status"`
+					} `json:"params"`
+				}
+				if err := decoder.Decode(&request); err != nil {
+					t.Fatal(err)
+				}
+				if request.Method != wantMethod {
+					t.Fatalf("request method = %q, want %q", request.Method, wantMethod)
+				}
+				if wantMethod == "thread/goal/get" {
+					respondCodexRequest(t, provider, request.ID, `{"goal":{"objective":"improve coverage","status":"active"}}`)
+				} else {
+					if request.Params.Status != "paused" {
+						t.Fatalf("goal status = %q, want paused", request.Params.Status)
+					}
+					respondCodexRequest(t, provider, request.ID, `{"goal":{"objective":"improve coverage","status":"paused"}}`)
+				}
+			}
+			if err := <-interruptDone; err != nil {
+				t.Fatalf("Interrupt() error = %v", err)
+			}
+			select {
+			case result := <-sink.completed:
+				if result.Status != "completed" {
+					t.Fatalf("Codex goal result = %#v", result)
+				}
+			default:
+				t.Fatal("paused Codex goal did not finish its interaction")
+			}
+		})
 	}
 }
 

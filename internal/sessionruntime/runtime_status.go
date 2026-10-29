@@ -2,6 +2,7 @@ package sessionruntime
 
 import (
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -23,7 +24,7 @@ func newRuntimeStatus(config Config) RuntimeStatus {
 }
 
 func (s RuntimeStatus) empty() bool {
-	return s.SessionName == "" &&
+	return len(s.Commands) == 0 && s.SessionName == "" &&
 		s.AgentType == "" &&
 		s.Model == "" &&
 		s.Effort == "" &&
@@ -32,10 +33,18 @@ func (s RuntimeStatus) empty() bool {
 		s.Branch == "" &&
 		s.PullRequestNumber == 0 &&
 		s.Usage == nil &&
-		s.WeeklyLimit == nil
+		s.WeeklyLimit == nil &&
+		s.BackgroundTasks == nil &&
+		len(s.BackgroundTaskDetails) == 0
 }
 
 func cloneRuntimeStatus(status RuntimeStatus) RuntimeStatus {
+	status.Commands = slices.Clone(status.Commands)
+	if status.BackgroundTasks != nil {
+		count := *status.BackgroundTasks
+		status.BackgroundTasks = &count
+	}
+	status.BackgroundTaskDetails = slices.Clone(status.BackgroundTaskDetails)
 	if status.Usage != nil {
 		usage := *status.Usage
 		status.Usage = &usage
@@ -83,6 +92,17 @@ func (s *Server) updateWorkspaceRuntimeStatus(status WorkspaceStatus) {
 
 func (s *Server) updateProviderRuntimeStatus(update RuntimeStatus) {
 	s.runtimeStatusMu.Lock()
+	if update.Commands != nil {
+		s.runtimeStatus.Commands = slices.Clone(update.Commands)
+	}
+	backgroundChanged := false
+	if update.BackgroundTasks != nil {
+		count := *update.BackgroundTasks
+		backgroundChanged = s.runtimeStatus.BackgroundTasks == nil || *s.runtimeStatus.BackgroundTasks != count
+		s.runtimeStatus.BackgroundTasks = &count
+		s.runtimeStatus.BackgroundTaskDetails = slices.Clone(update.BackgroundTaskDetails)
+		s.backgroundActive.Store(count > 0)
+	}
 	if update.Model != "" {
 		s.runtimeStatus.Model = update.Model
 	}
@@ -99,6 +119,10 @@ func (s *Server) updateProviderRuntimeStatus(update RuntimeStatus) {
 	}
 	s.broadcastRuntimeStatusLocked()
 	s.runtimeStatusMu.Unlock()
+	if backgroundChanged {
+		s.requestSessionStatusPublish()
+		s.signalSessionUpdateReport()
+	}
 }
 
 func (s *Server) broadcastRuntimeStatusLocked() {

@@ -81,12 +81,21 @@ jobs:
 
   test-integration:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+
+      - name: Download OAuth2 Proxy
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: make oauth2-proxy
 
       - name: Integration Test
         run: make test-integration TEST_FLAGS=-race

@@ -20,7 +20,7 @@ Every spawner references the root [`base-agent`](../base-agent.yaml) for shared
 instructions and skills. The issue and PR pick-up SessionSpawners reference
 only `base-agent`. The remaining TaskSpawners add repository- or role-specific
 instructions where needed: triage and squash-commits share `agentconfig.yaml`
-(`open-actions-dev-agent`), while the planner, the four reviewers, fake-user,
+(`open-actions-dev-agent`), while the planner, the two reviewers, fake-user,
 and fake-strategist define their own AgentConfig inline.
 
 Autonomous discovery agents that publish GitHub issues maintain at most one
@@ -34,7 +34,7 @@ discovery jobs.
 
 The two SessionSpawners operate on the Open Actions repository through the
 `open-actions-session-agent` Workspace, which uses the personal Session token.
-Nine TaskSpawners use the `open-actions-agent` Workspace. The two
+Seven TaskSpawners use the `open-actions-agent` Workspace. The two
 meta-maintenance spawners (`open-actions-config-update`,
 `open-actions-self-update`) are different: the files they maintain
 (`self-development/open-actions/*`) live in *this* repository, so they use the
@@ -46,19 +46,17 @@ meta-maintenance spawners (`open-actions-config-update`,
 
 | Spawner | Trigger | Agent | Description |
 |---|---|---|---|
-| **open-actions-workers** | Webhook: issue comment `/kelos pick-up` | Codex | Creates a durable Session with the open issue URL and a dedicated issue branch |
-| **open-actions-planner** | Webhook: issue comment `/kelos plan` | Codex | Investigates an issue, establishes documented GitHub Actions behavior, and posts a structured implementation plan — advisory only, no code changes |
-| **open-actions-reviewer** | Webhook: PR comment or review `/kelos review` | Codex | Reviews PRs for code quality and GitHub Actions behavioral compatibility, then updates a sticky review comment |
-| **open-actions-api-reviewer** | Webhook: issue/PR comment or review `/kelos api-review` | Codex | Reviews Kubernetes API design and its preservation of documented GitHub Actions semantics |
-| **open-actions-claude-reviewer** | Webhook: PR comment or review `/kelos claude-review` | Claude Fable | Runs an independent code and GitHub Actions compatibility review through Claude Code |
-| **open-actions-claude-api-reviewer** | Webhook: issue/PR comment or review `/kelos claude-api-review` | Claude Fable | Runs an independent API and GitHub Actions semantics review through Claude Code |
-| **open-actions-pr-responder** | Webhook: PR review/comment with `/kelos pick-up` | Codex | Creates a durable Session with the open PR URL on its existing branch |
-| **open-actions-triage** | Webhook: issue opened/reopened (untriaged) | Codex | Classifies documented GitHub Actions gaps as bugs, detects duplicates, assesses priority, and recommends an actor |
-| **open-actions-fake-user** | Cron (daily 09:00 UTC) | Codex | Reproduces concrete workflow behavior and tests DX while maintaining one unassigned issue slot |
-| **open-actions-fake-strategist** | Cron (every 12 hours) | Codex | Prioritizes the compatibility roadmap, enabling architecture, and adoption strategy while maintaining one unassigned strategic issue slot |
-| **open-actions-config-update** | Cron (daily 18:00 UTC) | Codex | Reviews recent Open Actions PR feedback and creates or updates unassigned configuration PRs accordingly |
-| **open-actions-self-update** | Cron (daily 06:00 UTC) | Codex | Reviews and tunes the `self-development/open-actions/` prompts, configs, and README while maintaining one unassigned improvement issue slot |
-| **open-actions-squash-commits** | Webhook: PR comment `/kelos squash-commits` | Codex | Rebases and squashes PR branch commits into a single clean commit |
+| **open-actions-workers** | Webhook: issue comment `/kelos pick-up` | GPT-6.1 Sol | Creates a durable Session with the open issue URL and a dedicated issue branch |
+| **open-actions-planner** | Webhook: issue comment `/kelos plan` | Claude Opus | Investigates an issue, establishes documented GitHub Actions behavior, and posts a structured implementation plan — advisory only, no code changes |
+| **open-actions-reviewer** | Webhook: PR comment or review `/kelos review` | Claude Opus | Reviews PRs for code quality and GitHub Actions behavioral compatibility, then updates a sticky review comment |
+| **open-actions-api-reviewer** | Webhook: issue/PR comment or review `/kelos api-review` | Claude Opus | Reviews Kubernetes API design and its preservation of documented GitHub Actions semantics |
+| **open-actions-pr-responder** | Webhook: PR review/comment with `/kelos pick-up` | GPT-6.1 Sol | Creates a durable Session with the open PR URL on its existing branch |
+| **open-actions-triage** | Webhook: issue opened/reopened (untriaged) | Claude Opus | Classifies documented GitHub Actions gaps as bugs, detects duplicates, assesses priority, and recommends an actor |
+| **open-actions-fake-user** | Cron (daily 09:00 UTC) | Claude Sonnet | Reproduces concrete workflow behavior and tests DX while maintaining one unassigned issue slot |
+| **open-actions-fake-strategist** | Cron (every 12 hours) | Claude Opus | Prioritizes the compatibility roadmap, enabling architecture, and adoption strategy while maintaining one unassigned strategic issue slot |
+| **open-actions-config-update** | Cron (daily 18:00 UTC) | Claude Opus | Reviews recent Open Actions PR feedback and creates or updates unassigned configuration PRs accordingly |
+| **open-actions-self-update** | Cron (daily 06:00 UTC) | Claude Opus | Reviews and tunes the `self-development/open-actions/` prompts, configs, and README while maintaining one unassigned improvement issue slot |
+| **open-actions-squash-commits** | Webhook: PR comment `/kelos squash-commits` | Claude Sonnet | Rebases and squashes PR branch commits into a single clean commit |
 
 > **Not ported from `self-development/`:** `kelos-image-update` (Open Actions
 > builds its own controller and runner images in-repo; there are no
@@ -88,7 +86,7 @@ the agent to find the best way to address it.
 | | |
 |---|---|
 | **Trigger** | GitHub `issue_comment` webhook with `/kelos pick-up` |
-| **Agent** | Codex |
+| **Agent** | GPT-6.1 Sol via Codex |
 | **Storage** | 10 Gi PVC |
 
 **Key features:**
@@ -116,7 +114,7 @@ GitHub Actions documentation and plans tests for the documented behavior.
 | | |
 |---|---|
 | **Trigger** | GitHub `issue_comment` webhook with `/kelos plan` |
-| **Agent** | Codex |
+| **Agent** | Claude Opus via Claude Code |
 | **Concurrency** | 2 |
 
 **Handoff flow:**
@@ -136,11 +134,10 @@ posts `/kelos review`.
 | | |
 |---|---|
 | **Trigger** | GitHub PR comment or review webhook with `/kelos review` from a maintainer or `kelos-bot[bot]` |
-| **Agent** | Codex |
+| **Agent** | Claude Opus via Claude Code |
 | **Concurrency** | 3 |
 
 **Key features:**
-- Uses the `review-all` skill to reconcile two independent reviews of the same diff
 - Reads the full diff and surrounding context to understand changes
 - Checks correctness, tests, project conventions, security, code quality, and
   behavior against the official GitHub Actions documentation
@@ -153,31 +150,6 @@ posts `/kelos review`.
 kubectl apply -f self-development/open-actions/open-actions-reviewer.yaml
 ```
 
-### open-actions-claude-reviewer.yaml
-
-Runs a Claude Fable review when a maintainer or `kelos-bot[bot]` posts
-`/kelos claude-review`.
-
-| | |
-|---|---|
-| **Trigger** | GitHub PR comment or review webhook with `/kelos claude-review` from a maintainer or `kelos-bot[bot]` |
-| **Agent** | Claude Fable via Claude Code |
-| **Concurrency** | 3 |
-
-**Key features:**
-
-- Uses the same repository-specific checklist and sticky comment format as `open-actions-reviewer`
-- Checks workflow behavior against the official GitHub Actions documentation
-- Flags obvious CRD permanence risks and defers the deep API checklist to `/kelos claude-api-review`
-- Creates or updates a Claude-specific sticky PR comment
-- Read-only agent — does not push code, modify files, or run local validation
-
-**Deploy:**
-
-```bash
-kubectl apply -f self-development/open-actions/open-actions-claude-reviewer.yaml
-```
-
 ### open-actions-api-reviewer.yaml
 
 Reviews issues and pull requests for Kubernetes API design conventions,
@@ -187,7 +159,7 @@ compatibility, and best practices when a maintainer or `kelos-bot[bot]` posts
 | | |
 |---|---|
 | **Trigger** | GitHub issue/PR comment or review webhook with `/kelos api-review` from a maintainer or `kelos-bot[bot]` |
-| **Agent** | Codex |
+| **Agent** | Claude Opus via Claude Code |
 | **Concurrency** | 3 |
 
 **Key features:**
@@ -206,33 +178,6 @@ compatibility, and best practices when a maintainer or `kelos-bot[bot]` posts
 kubectl apply -f self-development/open-actions/open-actions-api-reviewer.yaml
 ```
 
-### open-actions-claude-api-reviewer.yaml
-
-Runs a Claude Fable API design review when a maintainer or `kelos-bot[bot]`
-posts `/kelos claude-api-review`.
-
-| | |
-|---|---|
-| **Trigger** | GitHub issue/PR comment or review webhook with `/kelos claude-api-review` from a maintainer or `kelos-bot[bot]` |
-| **Agent** | Claude Fable via Claude Code |
-| **Concurrency** | 3 |
-
-**Key features:**
-
-- Uses the `api-review` skill for API design analysis and verdicts
-- Covers the same user-facing API surfaces as `open-actions-api-reviewer`
-- Checks API designs that model GitHub Actions concepts against official semantics
-- Works on both issues and pull requests
-- Creates or updates a Claude-specific sticky PR comment for pull requests
-- Posts a structured API design comment for issues
-- Read-only agent — does not push code or modify files
-
-**Deploy:**
-
-```bash
-kubectl apply -f self-development/open-actions/open-actions-claude-api-reviewer.yaml
-```
-
 ### open-actions-pr-responder.yaml
 
 Picks up open GitHub pull requests when a reviewer requests changes with
@@ -242,7 +187,7 @@ find the best way to address it.
 | | |
 |---|---|
 | **Trigger** | GitHub PR comment with `/kelos pick-up`, or a PR review whose body contains `/kelos pick-up` |
-| **Agent** | Codex |
+| **Agent** | GPT-6.1 Sol via Codex |
 | **Storage** | 10 Gi PVC |
 
 **Key features:**
@@ -265,7 +210,7 @@ Triages newly opened (and certain reopened) GitHub issues.
 | | |
 |---|---|
 | **Trigger** | GitHub issue opened (no `triage-accepted`), or reopened with `needs-actor` |
-| **Agent** | Codex |
+| **Agent** | Claude Opus via Claude Code |
 | **Concurrency** | 8 |
 
 **For each issue, the agent:**
@@ -290,7 +235,7 @@ Runs daily to test the developer experience as if you were a new user.
 | | |
 |---|---|
 | **Trigger** | Cron `0 9 * * *` (daily at 09:00 UTC) |
-| **Agent** | Codex |
+| **Agent** | Claude Sonnet via Claude Code |
 | **Concurrency** | 1 |
 
 Each run picks one focus area:
@@ -319,7 +264,7 @@ Actions.
 | | |
 |---|---|
 | **Trigger** | Cron `0 */12 * * *` (every 12 hours) |
-| **Agent** | Codex |
+| **Agent** | Claude Opus via Claude Code |
 | **Concurrency** | 1 |
 
 Each run picks one focus area:
@@ -348,7 +293,7 @@ found in Open Actions' PR reviews.
 | | |
 |---|---|
 | **Trigger** | Cron `0 18 * * *` (daily at 18:00 UTC) |
-| **Agent** | Codex |
+| **Agent** | Claude Opus via Claude Code |
 | **Workspace** | `kelos-agent` (edits `self-development/open-actions/` in this repo) |
 | **Concurrency** | 1 |
 
@@ -374,7 +319,7 @@ files themselves.
 | | |
 |---|---|
 | **Trigger** | Cron `0 6 * * *` (daily at 06:00 UTC) |
-| **Agent** | Codex |
+| **Agent** | Claude Opus via Claude Code |
 | **Workspace** | `kelos-agent` (reasons about `self-development/open-actions/` in this repo) |
 | **Concurrency** | 1 |
 
@@ -401,7 +346,7 @@ maintainer posts `/kelos squash-commits`.
 | | |
 |---|---|
 | **Trigger** | GitHub PR comment webhook with `/kelos squash-commits` |
-| **Agent** | Codex |
+| **Agent** | Claude Sonnet via Claude Code |
 | **Concurrency** | 1 |
 
 **Key features:**
@@ -431,7 +376,7 @@ Three Workspaces are referenced:
   references the `personal-github-token` Secret.
 
 - **`open-actions-agent`** — points at the Open Actions repository and is used
-  by the nine TaskSpawners that operate directly on Open Actions. It is
+  by the seven TaskSpawners that operate directly on Open Actions. It is
   defined in [`workspaces.yaml`](../workspaces.yaml) and references the
   `kelos-agent-credentials` Secret, which must contain the Kelos GitHub App
   credentials so reviews and comments are published by `kelos-bot[bot]`.
@@ -509,18 +454,23 @@ existing issue or PR with a fresh matching event if needed.
 
 ### 5. Agent Credentials Secret
 
-The spawners reuse the `kelos-credentials` secret (the AI agent credentials are
-the same regardless of repository). The Codex spawners use Codex OAuth, and
-the Claude reviewers use Claude Code OAuth:
+All spawners share the `kelos-credentials` Secret and use OAuth. Workers and
+PR responders use Codex; other agents use Claude Code. Run `codex login`
+locally, then create or update the Secret with both credentials:
 
 ```bash
 kubectl create secret generic kelos-credentials \
-  --from-file=CODEX_AUTH_JSON=$HOME/.codex/auth.json \
-  --from-literal=CLAUDE_CODE_OAUTH_TOKEN=<your-claude-code-oauth-token>
+  --from-literal=CLAUDE_CODE_OAUTH_TOKEN=<your-claude-code-oauth-token> \
+  --from-file=CODEX_AUTH_JSON="$HOME/.codex/auth.json" \
+  --dry-run=client -o yaml | kubectl apply -f -
+kubectl label secret kelos-credentials kelos.dev/codex-oauth-refresh=true --overwrite
 ```
 
-For Codex API-key auth, change the worker credential type to `api-key` and use
-`--from-literal=CODEX_API_KEY=<your-openai-api-key>`.
+The label enables scheduled refresh of `CODEX_AUTH_JSON`; the shared Claude
+credential is preserved.
+
+For API-key auth, change each agent's worker credential type to `api-key` and
+use `CODEX_API_KEY` for Codex or `ANTHROPIC_API_KEY` for Claude Code.
 
 ## Customizing
 

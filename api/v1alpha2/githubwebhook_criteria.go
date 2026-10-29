@@ -33,7 +33,7 @@ var (
 	// safe unscoped: a value the event does not carry never matches, so the
 	// criterion is usable in a rule that omits Event.
 	gitHubWebhookExcludeFilterSafeUnscopedCriteria = []string{
-		"action", "author", "pullRequestAuthor", "branch", "tag",
+		"action", "author", "pullRequestAuthor", "requestedReviewer", "branch", "tag",
 	}
 
 	// event scoped: evaluated only inside their arm of the matcher's event
@@ -82,6 +82,9 @@ const (
 	// GitHubWebhookFilterPullRequestAuthorMaxLength bounds a filter's
 	// pullRequestAuthor, in runes.
 	GitHubWebhookFilterPullRequestAuthorMaxLength = 64
+	// GitHubWebhookFilterRequestedReviewerMaxLength bounds a filter's
+	// requestedReviewer, in runes.
+	GitHubWebhookFilterRequestedReviewerMaxLength = 64
 )
 
 // GitHubWebhookExcludeFilterSafeUnscopedCriteria returns the criteria usable in

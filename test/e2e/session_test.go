@@ -25,6 +25,7 @@ import (
 	gomegatypes "github.com/onsi/gomega/types"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apiMeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -390,6 +391,38 @@ var _ = Describe("Session remote control", func() {
 		Expect(os.WriteFile(terminalAttachmentPath, []byte("terminal attachment contents\n"), 0o600)).To(Succeed())
 		runTerminalAttachmentTurn(f.Namespace, sessionName, terminalAttachmentPath, "attachment-check", ContainSubstring("agent › attachment: terminal attachment contents"))
 
+		By("receiving a background follow-up without another user message")
+		sendSessionRequest(connection, sessionruntime.ClientRequest{Type: "message", Text: "background"})
+		waitForSessionEvent(connection, func(event sessionruntime.Event) bool {
+			return event.Type == sessionruntime.EventAssistantDelta && event.Text == "Background task started"
+		})
+		waitForTurnCompletion(connection, "completed")
+		followup := waitForSessionEvent(connection, func(event sessionruntime.Event) bool {
+			return event.Type == sessionruntime.EventAssistantDelta && event.Text == "Background task finished without another prompt"
+		})
+		Expect(followup.TurnID).NotTo(BeEmpty())
+		waitForTurnCompletion(connection, "completed")
+
+		By("replaying the background follow-up after reconnecting")
+		Expect(connection.Close()).To(Succeed())
+		connection = connectSessionWebSocket(webClient, baseURL, f.Namespace, sessionName)
+		sendSessionRequest(connection, sessionruntime.ClientRequest{
+			Type: "subscribe", HistoryBounds: true,
+			HistoryItems: sessionruntime.DefaultHistoryItemLimit, HistoryBytes: sessionruntime.DefaultHistoryByteLimit,
+		})
+		var replayed []string
+		var backgroundTasks *int
+		for event := readSessionEvent(connection); event.Type != sessionruntime.EventHistoryEnd; event = readSessionEvent(connection) {
+			if event.Type == sessionruntime.EventAssistantMessage {
+				replayed = append(replayed, event.Text)
+			}
+			if event.Type == sessionruntime.EventRuntimeStatus && event.Runtime != nil {
+				backgroundTasks = event.Runtime.BackgroundTasks
+			}
+		}
+		Expect(replayed).To(ContainElement(followup.Text))
+		Expect(backgroundTasks).To(HaveValue(Equal(0)))
+
 		By("deleting the Session and its StatefulSet-backed Pod")
 		Expect(f.KelosClientset.ApiV1alpha2().Sessions(f.Namespace).Delete(context.TODO(), sessionName, metav1.DeleteOptions{})).To(Succeed())
 		waitForPodDeletion(f, f.Namespace, pod.Name)
@@ -408,10 +441,18 @@ var _ = Describe("Session remote control", func() {
 			runtimeVersionLabel  = "app.kubernetes.io/version"
 			updatedModel         = "e2e-updated-model"
 			updatedVersion       = "e2e-updated-version"
+			serviceAccountName   = sessionName + "-identity"
 		)
+		_, err := f.Clientset.CoreV1().ServiceAccounts(f.Namespace).Create(context.TODO(), &corev1.ServiceAccount{
+			ObjectMeta: metav1.ObjectMeta{Name: serviceAccountName},
+		}, metav1.CreateOptions{})
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() {
+			_ = f.Clientset.CoreV1().ServiceAccounts(f.Namespace).Delete(context.TODO(), serviceAccountName, metav1.DeleteOptions{})
+		})
 		configMapName := sessionName + "-provider"
 		mode := int32(0555)
-		_, err := f.Clientset.CoreV1().ConfigMaps(f.Namespace).Create(context.TODO(), &corev1.ConfigMap{
+		_, err = f.Clientset.CoreV1().ConfigMaps(f.Namespace).Create(context.TODO(), &corev1.ConfigMap{
 			ObjectMeta: metav1.ObjectMeta{Name: configMapName, Namespace: f.Namespace},
 			Data:       map[string]string{"claude": fakeClaude},
 		}, metav1.CreateOptions{})
@@ -504,6 +545,7 @@ var _ = Describe("Session remote control", func() {
 				SecretRef: &kelos.SecretReference{Name: credentialSecretName},
 			}
 			currentSession.Spec.Worker.Model = updatedModel
+			currentSession.Spec.Worker.PodOverrides.ServiceAccountName = serviceAccountName
 			if currentSession.Spec.Worker.PodOverrides.Labels == nil {
 				currentSession.Spec.Worker.PodOverrides.Labels = map[string]string{}
 			}
@@ -526,6 +568,12 @@ var _ = Describe("Session remote control", func() {
 			g.Expect(decodeErr).NotTo(HaveOccurred())
 			g.Expect(report.PodUID).To(Equal(podUID))
 			g.Expect(report.Phase).To(Equal(sessionupdate.PhaseDraining))
+			binding, getErr := f.Clientset.RbacV1().RoleBindings(f.Namespace).Get(context.TODO(), pod.Spec.ServiceAccountName, metav1.GetOptions{})
+			g.Expect(getErr).NotTo(HaveOccurred())
+			g.Expect(binding.Subjects).To(ConsistOf(
+				rbacv1.Subject{Kind: rbacv1.ServiceAccountKind, Namespace: f.Namespace, Name: pod.Spec.ServiceAccountName},
+				rbacv1.Subject{Kind: rbacv1.ServiceAccountKind, Namespace: f.Namespace, Name: serviceAccountName},
+			))
 		}, time.Minute, 200*time.Millisecond).Should(Succeed())
 		Consistently(func() bool {
 			currentStatefulSet, getErr := f.Clientset.AppsV1().StatefulSets(f.Namespace).Get(context.TODO(), statefulSet.Name, metav1.GetOptions{})
@@ -566,6 +614,12 @@ var _ = Describe("Session remote control", func() {
 			currentPod, getErr := f.Clientset.CoreV1().Pods(f.Namespace).Get(context.TODO(), session.Status.PodName, metav1.GetOptions{})
 			g.Expect(getErr).NotTo(HaveOccurred())
 			g.Expect(currentPod.UID).To(Equal(session.Status.PodUID))
+			g.Expect(currentPod.Spec.ServiceAccountName).To(Equal(serviceAccountName))
+			binding, getErr := f.Clientset.RbacV1().RoleBindings(f.Namespace).Get(context.TODO(), pod.Spec.ServiceAccountName, metav1.GetOptions{})
+			g.Expect(getErr).NotTo(HaveOccurred())
+			g.Expect(binding.Subjects).To(Equal([]rbacv1.Subject{{
+				Kind: rbacv1.ServiceAccountKind, Namespace: f.Namespace, Name: serviceAccountName,
+			}}))
 			g.Expect(podSessionRuntimeImage(currentPod)).To(Equal(originalRuntimeImage))
 			g.Expect(currentPod.Labels).To(HaveKeyWithValue(runtimeVersionLabel, updatedVersion))
 			g.Expect(currentPod.Labels).To(HaveKeyWithValue(appsv1.StatefulSetRevisionLabel, currentStatefulSet.Status.UpdateRevision))

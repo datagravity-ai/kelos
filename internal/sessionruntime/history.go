@@ -63,7 +63,6 @@ func projectHistory(source []Event) ([]historyItem, HistoryState, []Event) {
 
 	turns := make(map[string]*historyTurn)
 	pendingInputs := make(map[string]Event)
-	fileDiff := ""
 	for index := range events {
 		event := events[index]
 		if event.TurnID != "" {
@@ -110,12 +109,10 @@ func projectHistory(source []Event) ([]historyItem, HistoryState, []Event) {
 			}
 		case EventInputResolved:
 			delete(pendingInputs, event.InputID)
-		case EventFileDiff:
-			fileDiff = boundedHistoryText(event.Diff, maxHistoryDiffBytes)
 		}
 	}
 
-	state := HistoryState{FileDiff: fileDiff}
+	state := HistoryState{}
 	var pending *HistoryPendingTurn
 	var pendingEventID int64
 	var activeEventID int64
@@ -277,7 +274,8 @@ func projectHistory(source []Event) ([]historyItem, HistoryState, []Event) {
 			event.Text = boundedHistoryText(event.Text, maxHistoryNoticeBytes)
 			addItem(event.ID, event.ID, normalizedHistoryEvent(event))
 		case EventTurnCompleted:
-			if event.Status == "interrupted" {
+			if event.Status == "completed" || event.Status == "failed" || event.Status == "interrupted" {
+				event.Text = boundedHistoryText(event.Text, maxHistoryNoticeBytes)
 				addItem(event.ID, event.ID, normalizedHistoryEvent(event))
 			}
 		}

@@ -2956,6 +2956,139 @@ func TestExtractGitHubWorkItem_CheckRunEventWithoutPR(t *testing.T) {
 	}
 }
 
+func TestMatchesGitHubEvent_RequestedReviewer(t *testing.T) {
+	tests := []struct {
+		name      string
+		eventType string
+		payload   string
+		wantMatch bool
+	}{
+		{
+			name:      "requested reviewer differs from sender and PR author",
+			eventType: "pull_request",
+			payload:   `{"action":"review_requested","sender":{"login":"sender"},"pull_request":{"user":{"login":"author"}},"requested_reviewer":{"login":"gunju-kim"}}`,
+			wantMatch: true,
+		},
+		{
+			name:      "sender PR author and existing reviewers do not match",
+			eventType: "pull_request",
+			payload:   `{"action":"review_requested","sender":{"login":"gunju-kim"},"pull_request":{"user":{"login":"gunju-kim"},"requested_reviewers":[{"login":"gunju-kim"}]},"requested_reviewer":{"login":"someone-else"}}`,
+		},
+		{
+			name:      "case must match",
+			eventType: "pull_request",
+			payload:   `{"action":"review_requested","requested_reviewer":{"login":"Gunju-Kim"}}`,
+		},
+		{
+			name:      "login must match exactly",
+			eventType: "pull_request",
+			payload:   `{"action":"review_requested","requested_reviewer":{"login":"gunju-kim-bot"}}`,
+		},
+		{
+			name:      "team review request does not match",
+			eventType: "pull_request",
+			payload:   `{"action":"review_requested","requested_team":{"name":"gunju-kim","slug":"gunju-kim"}}`,
+		},
+		{
+			name:      "missing requested reviewer does not match",
+			eventType: "pull_request",
+			payload:   `{"action":"opened","sender":{"login":"gunju-kim"}}`,
+		},
+		{
+			name:      "null requested reviewer does not match",
+			eventType: "pull_request",
+			payload:   `{"action":"review_requested","requested_reviewer":null}`,
+		},
+		{
+			name:      "missing login does not match",
+			eventType: "pull_request",
+			payload:   `{"action":"review_requested","requested_reviewer":{}}`,
+		},
+		{
+			name:      "empty login does not match",
+			eventType: "pull_request",
+			payload:   `{"action":"review_requested","requested_reviewer":{"login":""}}`,
+		},
+		{
+			name:      "criterion also matches a removed review request",
+			eventType: "pull_request",
+			payload:   `{"action":"review_request_removed","requested_reviewer":{"login":"gunju-kim"}}`,
+			wantMatch: true,
+		},
+		{
+			name:      "pull request target extracts requested reviewer",
+			eventType: "pull_request_target",
+			payload:   `{"action":"review_requested","requested_reviewer":{"login":"gunju-kim"}}`,
+			wantMatch: true,
+		},
+		{
+			name:      "pull request target without requested reviewer does not match",
+			eventType: "pull_request_target",
+			payload:   `{"action":"review_requested","requested_team":{"slug":"gunju-kim"}}`,
+		},
+		{
+			name:      "unrelated event does not match",
+			eventType: "push",
+			payload:   `{"ref":"refs/heads/main","sender":{"login":"gunju-kim"}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, mode := range []string{"filters", "excludeFilters"} {
+				t.Run(mode, func(t *testing.T) {
+					spawner := &kelos.GitHubWebhook{Events: []string{tt.eventType}}
+					want := tt.wantMatch
+					if mode == "filters" {
+						spawner.Filters = []kelos.GitHubWebhookFilter{{Event: tt.eventType, RequestedReviewer: "gunju-kim"}}
+					} else {
+						spawner.ExcludeFilters = []kelos.GitHubWebhookFilter{{RequestedReviewer: "gunju-kim"}}
+						want = !want
+					}
+					got, err := parseAndMatch(t, spawner, tt.eventType, []byte(tt.payload))
+					if err != nil {
+						t.Fatalf("MatchesGitHubEvent() error = %v", err)
+					}
+					if got != want {
+						t.Errorf("MatchesGitHubEvent() = %v, want %v", got, want)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestMatchesGitHubEvent_RequestedReviewerWithAction(t *testing.T) {
+	spawner := &kelos.GitHubWebhook{
+		Events: []string{"pull_request"},
+		Filters: []kelos.GitHubWebhookFilter{{
+			Event:             "pull_request",
+			Action:            "review_requested",
+			RequestedReviewer: "gunju-kim",
+		}},
+	}
+	for _, tt := range []struct {
+		action   string
+		reviewer string
+		want     bool
+	}{
+		{"review_requested", "gunju-kim", true},
+		{"review_requested", "someone-else", false},
+		{"review_request_removed", "gunju-kim", false},
+	} {
+		t.Run(tt.action+"/"+tt.reviewer, func(t *testing.T) {
+			payload := fmt.Sprintf(`{"action":%q,"requested_reviewer":{"login":%q}}`, tt.action, tt.reviewer)
+			got, err := parseAndMatch(t, spawner, "pull_request", []byte(payload))
+			if err != nil {
+				t.Fatalf("MatchesGitHubEvent() error = %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("MatchesGitHubEvent() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestMatchesGitHubEvent_PullRequestAuthorFilter(t *testing.T) {
 	// The positive criterion, used on an accepting filter.
 	spawner := &kelos.GitHubWebhook{
@@ -3385,6 +3518,7 @@ func TestMatchesCriteria_TypeSpecificCriteriaSkippedOutsideTheirArm(t *testing.T
 		{"action", kelos.GitHubWebhookFilter{Action: "opened"}},
 		{"author", kelos.GitHubWebhookFilter{Author: "someone-else"}},
 		{"pullRequestAuthor", kelos.GitHubWebhookFilter{PullRequestAuthor: "bot-user"}},
+		{"requestedReviewer", kelos.GitHubWebhookFilter{RequestedReviewer: "gunju-kim"}},
 		{"tag", kelos.GitHubWebhookFilter{Tag: "v1.0.0"}},
 	} {
 		t.Run(tt.name+" is safe unscoped", func(t *testing.T) {

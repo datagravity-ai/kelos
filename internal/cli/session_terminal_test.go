@@ -403,6 +403,9 @@ func TestSessionPlainTerminalOmitsUnknownHistoryDuration(t *testing.T) {
 	if got := output.String(); strings.Contains(got, "Worked for") {
 		t.Fatalf("terminal output = %q, want unknown history duration omitted", got)
 	}
+	if got := output.String(); !strings.Contains(got, "Historical reply\n\nConnected.") {
+		t.Fatalf("terminal output = %q, want one blank line before the connection notice", got)
+	}
 }
 
 func TestSessionPlainTerminalOmitsRuntimeRecoveryDuration(t *testing.T) {

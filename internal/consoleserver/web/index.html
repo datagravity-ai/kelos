@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
   <meta name="color-scheme" content="light dark">
   <title>Kelos Console</title>
+  <link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials">
   <meta name="terminal-style-nonce" content="{{STYLE_NONCE}}">
   <link rel="stylesheet" href="/assets/xterm.css">
   <link rel="stylesheet" href="/assets/styles.css">
@@ -20,21 +21,20 @@
         </div>
         <button class="icon-button mobile-only" id="close-sidebar" aria-label="Close navigation">×</button>
       </div>
-      <button class="new-session-button" id="new-session" type="button">
+      <button class="new-session-button" id="new-session" disabled type="button">
         <span aria-hidden="true">＋</span> New session
       </button>
       <div class="sidebar-scroll">
         <form class="namespace-form" id="namespace-form">
           <label for="active-namespace">Namespace</label>
-          <div>
-            <input id="active-namespace" required autocomplete="off" aria-label="Active namespace">
-            <button type="submit">Switch</button>
-          </div>
+          <select id="active-namespace" required aria-label="Active namespace" aria-describedby="namespace-status" disabled><option value="">Loading namespaces…</option></select>
+          <p id="namespace-status" role="status" hidden></p>
         </form>
         <nav class="console-nav" aria-label="Console">
           <button id="console-overview" type="button" aria-current="page"><span aria-hidden="true">⌂</span> Overview</button>
-          <button id="console-sessions" type="button"><span aria-hidden="true">◌</span> Sessions</button>
+          <button id="console-sessions" type="button"><span aria-hidden="true">◌</span> Sessions <span class="attention-count" id="sessions-attention-count" aria-hidden="true" hidden></span></button>
           <button id="console-resources" type="button"><span aria-hidden="true">◇</span> Resources</button>
+          <button id="console-admin" type="button"><span aria-hidden="true">⚙</span> Admin</button>
         </nav>
         <div class="session-sidebar" id="session-sidebar" hidden>
           <div class="session-sidebar-header">
@@ -49,11 +49,13 @@
           <summary class="icon-button" id="console-settings-button" aria-label="Settings" aria-controls="console-settings-panel" title="Settings"><span aria-hidden="true">⚙</span></summary>
           <section class="settings-popover" id="console-settings-panel" aria-labelledby="console-settings-title">
             <h2 id="console-settings-title">Settings</h2>
+            <p id="console-identity" hidden></p>
             <label class="settings-toggle" for="browser-alerts">
               <span>Browser notifications</span>
               <input id="browser-alerts" type="checkbox" role="switch" aria-describedby="browser-alerts-description browser-alerts-status">
             </label>
-            <p id="browser-alerts-description">Notify when the connected Session needs input or finishes while you’re away. Keep this tab open.</p>
+            <p id="browser-alerts-description">Notify when any Session in this namespace needs input or finishes while you’re away from its conversation. Keep this tab open.</p>
+            <button id="browser-alerts-test" class="secondary-button" type="button" disabled>Send test notification</button>
             <p id="browser-alerts-status" role="status" hidden></p>
           </section>
         </details>
@@ -148,6 +150,61 @@
       </section>
     </main>
 
+    <main class="console-page" id="admin-view" hidden>
+      <header class="console-page-header">
+        <button class="icon-button mobile-only open-sidebar-button" type="button" aria-label="Open navigation" aria-controls="sidebar" aria-expanded="false">☰</button>
+        <div>
+          <h1>Admin</h1>
+          <p>Manage members and configuration in <span class="console-namespace">default</span></p>
+        </div>
+      </header>
+      <section class="console-page-body">
+        <div class="admin-intro">
+          <div>
+            <h2>Administration</h2>
+            <p>Give people access to this namespace and manage its configuration. Available actions follow your Kubernetes permissions.</p>
+          </div>
+          <button class="secondary-button" id="refresh-admin" type="button">Refresh</button>
+        </div>
+        <section class="admin-card" aria-labelledby="members-title">
+          <div class="admin-card-header">
+            <div>
+              <h2 id="members-title">Members of <span class="console-namespace">default</span></h2>
+              <p>User members can use Sessions and inspect resources. Admin members can also manage members and configuration.</p>
+            </div>
+            <button id="add-member" class="primary-button" type="button" hidden>Add member</button>
+          </div>
+          <p class="member-status" id="member-status" role="status">Loading members…</p>
+          <p class="admin-error member-status" id="member-error" role="alert" hidden></p>
+          <div id="member-list"></div>
+          <div id="member-groups" class="member-groups"></div>
+          <p class="member-note">Removing direct membership does not remove access through groups or external permissions. Other roles and cluster-wide access are managed outside Console.</p>
+        </section>
+        <p class="admin-status" id="admin-status" role="status">Loading configuration…</p>
+        <div id="admin-collections"></div>
+      </section>
+    </main>
+
+    <dialog id="member-dialog" class="session-dialog member-dialog" aria-labelledby="member-dialog-title">
+      <form id="member-form">
+        <div class="dialog-header">
+          <h2 id="member-dialog-title">Add member</h2>
+          <p id="member-dialog-description"></p>
+        </div>
+        <label for="member-subject">OIDC user ID</label>
+        <input id="member-subject" required maxlength="1024" autocomplete="off" placeholder="Subject from your identity provider" aria-describedby="member-help">
+        <p id="member-help"></p>
+        <label for="member-role">Role in this namespace</label>
+        <select id="member-role" required aria-describedby="member-permissions"></select>
+        <p id="member-permissions">User: use Sessions and inspect resources. Admin: also manage members and configuration.</p>
+        <p class="admin-error" id="member-dialog-error" role="alert" hidden></p>
+        <div class="dialog-actions">
+          <button id="cancel-member" class="secondary-button" type="button">Cancel</button>
+          <button id="save-member" class="primary-button" type="submit">Add member</button>
+        </div>
+      </form>
+    </dialog>
+
     <main class="conversation" id="sessions-view" hidden>
       <header class="conversation-header">
         <button class="icon-button mobile-only open-sidebar-button" id="open-sidebar" aria-label="Open navigation" aria-controls="sidebar" aria-expanded="false">☰</button>
@@ -202,14 +259,18 @@
         </button>
       </div>
 
-      <section class="messages" id="messages" role="tabpanel" aria-labelledby="conversation-tab" aria-live="polite">
+      <section class="messages" id="messages" role="tabpanel" aria-labelledby="conversation-tab" aria-live="polite" tabindex="-1">
         <div class="welcome" id="welcome">
           <div class="welcome-orbit"><span>K</span></div>
           <h1>What should we work on?</h1>
           <p>Start an agent session, keep the full thread, and continue the same conversation here or from your terminal.</p>
-          <button class="primary-button" id="welcome-new">Create your first session</button>
+          <button class="primary-button" id="welcome-new" disabled>Create your first session</button>
         </div>
       </section>
+
+      <button class="jump-to-latest" id="jump-to-latest" type="button" aria-controls="messages" hidden>
+        <span aria-hidden="true">↓</span> Jump to latest
+      </button>
 
       <section class="changes-view" id="changes-view" role="tabpanel" aria-labelledby="changes-tab" hidden>
         <header class="changes-header">
@@ -217,9 +278,22 @@
             <h2>File changes</h2>
             <p id="changes-summary">No changed files</p>
           </div>
+          <div class="changes-controls">
+            <label>Show
+              <select id="changes-scope">
+                <option value="uncommitted">Uncommitted</option>
+                <option value="branch">Branch changes</option>
+              </select>
+            </label>
+            <label id="changes-base-label" hidden>Base branch
+              <select id="changes-base">
+                <option value="">Select base branch</option>
+              </select>
+            </label>
+          </div>
         </header>
         <div class="changes-list" id="changes-list" aria-live="polite">
-          <div class="changes-empty">No file changes yet.</div>
+          <div class="changes-empty">No uncommitted changes.</div>
         </div>
       </section>
 
@@ -237,11 +311,17 @@
           <span id="session-progress-label"></span>
           <span id="session-progress-elapsed" aria-hidden="true"></span>
         </div>
+        <ul class="session-background-tasks" id="session-background-tasks" aria-label="Background tasks" hidden></ul>
+        <div class="visually-hidden" id="session-background-tasks-status" role="status" aria-live="polite" aria-atomic="true"></div>
         <div class="pending-message" id="pending-message" aria-label="Pending message" aria-live="polite" hidden></div>
         <div class="pending-attachments" id="pending-attachments" aria-label="Files ready to attach" hidden></div>
         <form class="composer" id="composer">
           <input id="attachment-input" type="file" multiple hidden>
-          <textarea id="message-input" rows="1" placeholder="Choose a ready session to start chatting" aria-label="Message" disabled></textarea>
+          <div class="composer-editor">
+            <div class="composer-highlight" id="composer-highlight" aria-hidden="true" hidden></div>
+            <textarea id="message-input" rows="1" placeholder="Choose a ready session to start chatting" aria-label="Message" aria-describedby="composer-command-help" disabled></textarea>
+          </div>
+          <div class="composer-command-help" id="composer-command-help" role="status" aria-live="polite" hidden></div>
           <div class="composer-actions">
             <button class="attach-button" id="attach-files" type="button" aria-label="Attach files" title="Attach files" disabled>＋</button>
             <button class="prompt-history-button" id="session-prompts" type="button" aria-haspopup="dialog" aria-controls="prompts-dialog" disabled>
@@ -256,6 +336,25 @@
       </footer>
     </main>
   </div>
+
+  <dialog class="session-dialog admin-editor" id="admin-editor" aria-labelledby="admin-editor-title">
+    <form id="admin-form">
+      <div class="dialog-header">
+        <div>
+          <h2 id="admin-editor-title">Edit resource</h2>
+          <p id="admin-editor-description"></p>
+        </div>
+        <button class="icon-button close-admin-editor" type="button" aria-label="Close editor">×</button>
+      </div>
+      <label for="admin-yaml">Manifest YAML</label>
+      <textarea id="admin-yaml" spellcheck="false" required aria-describedby="admin-editor-description"></textarea>
+      <p class="admin-error" id="admin-editor-error" role="alert" hidden></p>
+      <div class="admin-editor-actions">
+        <button class="secondary-button close-admin-editor" type="button">Cancel</button>
+        <button class="primary-button" id="save-admin-resource" type="submit">Save changes</button>
+      </div>
+    </form>
+  </dialog>
 
   <dialog class="session-dialog prompt-history-dialog" id="prompts-dialog" aria-labelledby="prompts-title">
     <div class="dialog-header">
@@ -444,6 +543,27 @@
         </div>
         <button class="icon-button close-resource-detail" type="button" aria-label="Close">×</button>
       </div>
+      <div id="taskspawner-lifecycle" hidden>
+        <div class="taskspawner-lifecycle-toolbar">
+          <span id="taskspawner-lifecycle-status" role="status"></span>
+          <button class="secondary-button" id="taskspawner-lifecycle-button" type="button">Suspend</button>
+        </div>
+        <p class="taskspawner-lifecycle-help">Suspension stops automatic task creation. Existing Tasks keep running.</p>
+        <div class="dialog-error" id="taskspawner-lifecycle-error" role="alert"></div>
+      </div>
+      <form id="taskspawner-run-form" hidden>
+        <div class="form-grid">
+          <label class="form-wide">
+            <span>Template values <em>Optional</em></span>
+            <textarea id="taskspawner-run-values" rows="4" spellcheck="false" placeholder="Title: Manual run&#10;Body: Describe the task" aria-describedby="taskspawner-run-help"></textarea>
+            <small id="taskspawner-run-help">Enter a YAML or JSON object for templates that need event values. Creates one standalone Task, bypassing the schedule, source filters, suspension, and spawner task limits.</small>
+          </label>
+        </div>
+        <div class="dialog-error" id="taskspawner-run-error" role="alert"></div>
+        <div class="dialog-actions">
+          <button class="primary-button" id="taskspawner-run-button" type="submit">Run task</button>
+        </div>
+      </form>
       <div class="mode-switch resource-detail-tabs" id="resource-detail-tabs" role="tablist" aria-label="Task details" hidden>
         <button id="resource-detail-logs-tab" type="button" role="tab" aria-selected="true" aria-controls="resource-detail-logs-panel">Logs</button>
         <button id="resource-detail-manifest-tab" type="button" role="tab" aria-selected="false" aria-controls="resource-detail-manifest-panel" tabindex="-1">Manifest</button>

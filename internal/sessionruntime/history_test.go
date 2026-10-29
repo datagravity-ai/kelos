@@ -57,6 +57,7 @@ func TestProjectHistoryNormalizesProviderEventsAndPreservesState(t *testing.T) {
 		EventToolCompleted,
 		EventInputRequested,
 		EventInputResolved,
+		EventTurnCompleted,
 		EventUserMessage,
 		EventAssistantMessage,
 	)
@@ -65,8 +66,8 @@ func TestProjectHistoryNormalizesProviderEventsAndPreservesState(t *testing.T) {
 			t.Fatalf("projected event retains transient state: %#v", event)
 		}
 	}
-	if projected[1].Text != "Claude answer" || projected[7].Text != "OpenCode answer" {
-		t.Fatalf("assistant messages = %q, %q", projected[1].Text, projected[7].Text)
+	if projected[1].Text != "Claude answer" || projected[8].Text != "OpenCode answer" {
+		t.Fatalf("assistant messages = %q, %q", projected[1].Text, projected[8].Text)
 	}
 	if len(projected[3].Output) > maxHistoryToolOutputBytes || !strings.Contains(projected[3].Output, historyTruncationMarker) {
 		t.Fatalf("tool output preview has %d bytes", len(projected[3].Output))
@@ -160,6 +161,24 @@ func TestProjectHistoryBoundsLargeMessages(t *testing.T) {
 	}
 }
 
+func TestProjectHistoryBoundsCompletionNotices(t *testing.T) {
+	for _, status := range []string{"completed", "failed", "interrupted"} {
+		t.Run(status, func(t *testing.T) {
+			items, _, _ := projectHistory([]Event{{
+				ID: 1, Type: EventTurnCompleted, Status: status,
+				Text: strings.Repeat("界", DefaultHistoryByteLimit),
+			}})
+			page, cursor := historyItemsPage(items, 0, DefaultHistoryItemLimit, DefaultHistoryByteLimit)
+			if cursor != 0 || len(page) != 1 || page[0].Type != EventTurnCompleted {
+				t.Fatalf("history page = %#v, cursor %d", page, cursor)
+			}
+			if len(page[0].Text) > maxHistoryNoticeBytes || !strings.Contains(page[0].Text, historyTruncationMarker) || !utf8.ValidString(page[0].Text) {
+				t.Fatal("Completion notice is not a bounded UTF-8 string")
+			}
+		})
+	}
+}
+
 func TestProjectHistoryBoundsPendingMessage(t *testing.T) {
 	_, state, _ := projectHistory([]Event{{
 		ID:     1,
@@ -195,7 +214,7 @@ func TestProjectHistoryUsesLatestPendingMessageRevision(t *testing.T) {
 	)
 	items, _, _ = projectHistory(events)
 	page, cursor := historyItemsPage(items, 0, DefaultHistoryItemLimit, DefaultHistoryByteLimit)
-	if cursor != 0 || len(page) != 1 || page[0].Type != EventUserMessage || page[0].Text != "revised" || page[0].ID != 1 {
+	if cursor != 0 || len(page) != 2 || page[0].Type != EventUserMessage || page[0].Text != "revised" || page[0].ID != 1 || page[1].Type != EventTurnCompleted {
 		t.Fatalf("projected history = %#v cursor=%d", page, cursor)
 	}
 }

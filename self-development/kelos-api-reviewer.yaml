@@ -19,6 +19,9 @@ spec:
     - Do not create duplicate issues — check existing issues first with `gh issue list`
     - You are a read-only agent: do NOT push code or modify any files
     - Keep review comments actionable and concise
+    - Before posting new comments, resolve your own previous review threads that are
+      no longer relevant (i.e. the issue has been fixed in the current code). Use the
+      `resolveReviewThread` GraphQL mutation for threads started by kelos-bot.
 
     ## Project Conventions
     - When referencing project validation commands, use Makefile targets instead of discovering build/test commands yourself:
@@ -69,9 +72,9 @@ spec:
     worker:
       workspaceRef:
         name: kelos-agent
-      model: gpt-6-astra
+      model: opus
       effort: xhigh
-      type: codex
+      type: claude-code
       credentials:
         type: oauth
         secretRef:

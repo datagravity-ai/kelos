@@ -64,6 +64,7 @@ func TestSessionStatusPublisherPatchesLiveSession(t *testing.T) {
 	}
 
 	want.WaitingForInput = true
+	want.LastNotification = &kelos.SessionNotification{ID: "journal/1", Type: kelos.SessionNotificationTypeInputRequested, EventTime: metav1.NewTime(time.Now().UTC().Truncate(time.Second))}
 	if err := publisher(context.Background(), want); err != nil {
 		t.Fatal(err)
 	}
@@ -75,9 +76,14 @@ func TestSessionStatusPublisherPatchesLiveSession(t *testing.T) {
 	if active == nil || active.Status != metav1.ConditionTrue || active.Reason != "WaitingForInput" {
 		t.Fatalf("Session Active condition = %#v, want True with reason WaitingForInput", active)
 	}
+	if got.Status.LastNotification == nil || got.Status.LastNotification.ID != want.LastNotification.ID ||
+		got.Status.LastNotification.Type != want.LastNotification.Type || !got.Status.LastNotification.EventTime.Equal(&want.LastNotification.EventTime) {
+		t.Fatalf("Session notification = %#v, want %#v", got.Status.LastNotification, want.LastNotification)
+	}
 
 	want.Active = false
 	want.WaitingForInput = false
+	want.LastNotification = nil
 	if err := publisher(context.Background(), want); err != nil {
 		t.Fatal(err)
 	}
@@ -88,6 +94,9 @@ func TestSessionStatusPublisherPatchesLiveSession(t *testing.T) {
 	active = apiMeta.FindStatusCondition(got.Status.Conditions, kelos.SessionConditionActive)
 	if active == nil || active.Status != metav1.ConditionFalse || active.Reason != "Idle" {
 		t.Fatalf("Session Active condition = %#v, want False with reason Idle", active)
+	}
+	if got.Status.LastNotification != nil {
+		t.Fatalf("Resolved notification was not cleared: %#v", got.Status.LastNotification)
 	}
 	if got.Status.LastActivityTime == nil {
 		t.Fatalf("Session lastActivityTime was cleared: %#v", got.Status)

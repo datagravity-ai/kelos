@@ -120,6 +120,198 @@ func TestSessionTUIComposerGapFollowsProgress(t *testing.T) {
 	}
 }
 
+func TestSessionTUIComposerIdentifiesCommands(t *testing.T) {
+	tests := []struct {
+		text     string
+		active   bool
+		provider string
+		want     string
+	}{
+		{text: "Explain this code", want: "Message · Enter to send"},
+		{text: "/review", want: "Message · Enter to send"},
+		{text: "/goals", want: "Message · Enter to send"},
+		{text: "/goalkeeper", want: "Message · Enter to send"},
+		{text: "!make test", want: "Shell command · Enter to run command · Runs directly in the Session workspace"},
+		{text: "  ! make test\n", want: "Shell command · Enter to run command · Runs directly in the Session workspace"},
+		{text: "![diagram](image.png)", want: "Shell command · Enter to run command · Runs directly in the Session workspace"},
+		{text: "!", want: "Shell command · Enter a command after !"},
+		{text: "!make test", active: true, want: "Shell command · Enter to queue command · Runs directly in the Session workspace"},
+		{text: "/goal", want: "Goal command · Enter to show goal"},
+		{text: "/goal improve coverage", want: "Goal command · Enter to start goal"},
+		{text: "/goal\nimprove coverage", want: "Goal command · Enter to start goal"},
+		{text: "\u00a0/goal\u00a0pause\u00a0", want: "Goal command · Enter to pause goal"},
+		{text: "/goal edit improve tests", want: "Goal command · Enter to edit goal"},
+		{text: "/goal edit", want: "Goal command · Enter an objective after /goal edit"},
+		{text: "/goal pause", active: true, want: "Goal command · Enter to pause goal"},
+		{text: "/goal resume", want: "Goal command · Enter to resume goal"},
+		{text: "/goal clear", want: "Goal command · Enter to clear goal"},
+		{text: "/goal clear tech debt", want: "Goal command · Enter to start goal"},
+		{text: "/goal", provider: "claude-code", want: "Goal command · Enter to show goal"},
+		{text: "/goal All tests pass", provider: "claude-code", want: "Goal command · Enter to start goal · Sets or replaces Claude Code's completion condition"},
+		{text: "/goal clear", provider: "claude-code", want: "Goal command · Enter to clear goal"},
+		{text: "/goal clear", provider: "claude-code", active: true, want: "Goal command · Enter to clear goal · Queued until active work ends; use /interrupt to apply sooner"},
+		{text: "/goal stop", provider: "claude-code", want: "Goal command · Enter to clear goal"},
+		{text: "/goal STOP", provider: "claude-code", want: "Goal command · Enter to clear goal"},
+		{text: "/goal edit All tests pass", provider: "claude-code", want: "Goal command · Enter to start goal · Sets or replaces Claude Code's completion condition"},
+		{text: "/goal", provider: "opencode", want: "Goal command · /goal is not available in this Session"},
+		{text: "/loop", provider: "claude-code", want: "Loop command · Enter to start loop · Uses Claude Code's native loop scheduling"},
+		{text: "/loop 5m Check CI", provider: "claude-code", want: "Loop command · Enter to start loop · Uses Claude Code's native loop scheduling"},
+		{text: "/loop Check CI", provider: "claude-code", want: "Loop command · Enter to start loop · Uses Claude Code's native loop scheduling"},
+		{text: "/loop 15m", provider: "claude-code", want: "Loop command · Enter to start loop · Uses Claude Code's native loop scheduling"},
+		{text: "/loop 5m Check CI", provider: "claude-code", active: true, want: "Loop command · Enter to start loop · Queued until active work ends; use /interrupt to apply sooner"},
+		{text: "/loop", provider: "codex", want: "Loop command · /loop is not available in this Session"},
+		{text: "/loop", provider: "opencode", want: "Loop command · /loop is not available in this Session"},
+		{text: "/quit", want: "Session command · Enter to disconnect"},
+		{text: " /exit\n", want: "Session command · Enter to disconnect"},
+		{text: "/history", want: "Session command · Enter to load earlier history"},
+		{text: "/attach /tmp/file.txt", want: "Session command · Enter to attach file"},
+		{text: "/interrupt", want: "Session command · Enter to interrupt active work"},
+		{text: "/answer input-1 question-1 yes", want: "Session command · Enter to answer input request"},
+		{text: "/cancel-input input-1", want: "Session command · Enter to cancel input request"},
+	}
+	for _, test := range tests {
+		t.Run(test.text+test.provider+fmt.Sprint(test.active), func(t *testing.T) {
+			model, _ := newSessionTUITestModel()
+			model.Update(tea.WindowSizeMsg{Width: 160, Height: 20})
+			model.ready = true
+			model.turnActive = test.active
+			model.runtimeStatus.AgentType = test.provider
+			model.input.SetValue(test.text)
+			if got := model.composerHint(); got != test.want {
+				t.Fatalf("composer hint = %q, want %q", got, test.want)
+			}
+			heading := strings.TrimSpace(strings.Split(stripSessionTUIANSI(model.composerView()), "\n")[0])
+			if heading != test.want {
+				t.Fatalf("composer heading = %q, want %q", heading, test.want)
+			}
+		})
+	}
+}
+
+func TestSessionTUIComposerCommandHintFitsWithAttachments(t *testing.T) {
+	model, _ := newSessionTUITestModel()
+	model.ready = true
+	model.input.SetValue("!pwd")
+	model.pendingAttachments = []sessionruntime.Attachment{{Name: "file.txt"}}
+	if got := model.composerHint(); got != "Shell command · Remove attachments to use a command" {
+		t.Fatalf("composer hint = %q", got)
+	}
+	for _, width := range []int{14, 40, 80} {
+		model.Update(tea.WindowSizeMsg{Width: width, Height: 20})
+		composer := model.composerView()
+		assertSessionTUIBlockWidth(t, composer, width)
+		if got := len(strings.Split(stripSessionTUIANSI(composer), "\n")); got != model.composerHeight() {
+			t.Fatalf("composer has %d rows, want %d", got, model.composerHeight())
+		}
+	}
+}
+
+func TestSessionTUIComposerHighlightsCommands(t *testing.T) {
+	model, _ := newSessionTUITestModel()
+	renderer := lipgloss.NewRenderer(io.Discard)
+	renderer.SetColorProfile(termenv.ANSI)
+	model.styles = newSessionTUIStyles(renderer, true, nil)
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventHistoryEnd})
+	for _, test := range []struct {
+		text     string
+		color    string
+		provider string
+	}{
+		{text: "!make test", color: "33"},
+		{text: "/goal pause", color: "32"},
+		{text: "/goal edit", color: "31"},
+		{text: "/goal pause", provider: "claude-code", color: "32"},
+		{text: "ordinary message"},
+	} {
+		model.input.SetValue(test.text)
+		model.runtimeStatus.AgentType = test.provider
+		lines := strings.Split(model.composerView(), "\n")
+		line := lines[1]
+		if got := strings.TrimSpace(stripSessionTUIANSI(line)); got != "> "+test.text {
+			t.Fatalf("composer input = %q, want %q", got, test.text)
+		}
+		for _, row := range lines[:2] {
+			if test.color != "" && !regexp.MustCompile(`\x1b\[[0-9;]*`+test.color+`m`).MatchString(row) {
+				t.Fatalf("composer row %q is missing command color %s", row, test.color)
+			}
+			if test.color == "" && regexp.MustCompile(`\x1b\[[0-9;]*(31|32|33)m`).MatchString(row) {
+				t.Fatalf("ordinary message retained command highlighting: %q", row)
+			}
+		}
+	}
+}
+
+func TestSessionTUICommandSubmission(t *testing.T) {
+	for _, test := range []struct {
+		text        string
+		provider    string
+		attachments bool
+		pending     bool
+		active      bool
+		edit        bool
+		blocked     bool
+	}{
+		{text: "!", blocked: true},
+		{text: "/goal edit", blocked: true},
+		{text: "/goal pause", provider: "claude-code"},
+		{text: "!pwd", attachments: true, blocked: true},
+		{text: "/goal pause", attachments: true, blocked: true},
+		{text: "!pwd", pending: true, active: true, blocked: true},
+		{text: "/goal pause", pending: true, blocked: true},
+		{text: "!pwd"},
+		{text: "/goal pause", pending: true, active: true},
+		{text: "!pwd", pending: true, edit: true},
+	} {
+		t.Run(fmt.Sprintf("%+v", test), func(t *testing.T) {
+			model, requests := newSessionTUITestModel()
+			model.runtimeStatus.AgentType = test.provider
+			model.turnActive = test.active
+			model.input.SetValue(test.text)
+			if test.attachments {
+				model.pendingAttachments = []sessionruntime.Attachment{{ID: "file-1", Name: "file.txt"}}
+			}
+			if test.pending {
+				model.pendingTurnID = "turn-2"
+			}
+			if test.edit {
+				model.pendingEditTurnID = "turn-2"
+				if got := model.composerHint(); got != "Shell command · Enter to save pending work · Runs directly in the Session workspace" {
+					t.Fatalf("pending edit hint = %q", got)
+				}
+			}
+			attachmentCount := len(model.pendingAttachments)
+			model.submitInput()
+			if test.blocked {
+				if requests.Len() != 0 || model.input.Value() != test.text || len(model.pendingAttachments) != attachmentCount {
+					t.Fatalf("blocked submission changed draft or sent request: %s", requests)
+				}
+				return
+			}
+			var request sessionruntime.ClientRequest
+			if err := json.NewDecoder(requests).Decode(&request); err != nil {
+				t.Fatal(err)
+			}
+			wantType := "message"
+			if test.edit {
+				wantType = "message.edit"
+			}
+			if request.Type != wantType || request.Text != test.text {
+				t.Fatalf("submitted request = %#v", request)
+			}
+		})
+	}
+}
+
+func TestSessionTUIWhitespaceQuitCommands(t *testing.T) {
+	for _, text := range []string{" /quit ", "\n/exit\t"} {
+		model, requests := newSessionTUITestModel()
+		model.input.SetValue(text)
+		if cmd := model.submitInput(); cmd == nil || !model.quitRequested || requests.Len() != 0 {
+			t.Fatalf("%q did not disconnect without sending a request", text)
+		}
+	}
+}
+
 func TestSessionTUIStatusBarShowsRuntimeAndWorkspaceDetails(t *testing.T) {
 	model, _ := newSessionTUITestModel()
 	model.Update(tea.WindowSizeMsg{Width: 180, Height: 12})
@@ -350,6 +542,39 @@ func TestSessionTUIStreamsToolOutputIntoCompletion(t *testing.T) {
 	}
 }
 
+func TestSessionTUIDiscoveredNativeCommands(t *testing.T) {
+	for _, agent := range []string{"codex", "claude-code", "opencode"} {
+		for _, command := range []string{"goal", "loop"} {
+			for _, available := range []bool{false, true} {
+				model, _ := newSessionTUITestModel()
+				model.runtimeStatus.AgentType = agent
+				model.runtimeStatus.Commands = []string{"shell"}
+				if available {
+					model.runtimeStatus.Commands = append(model.runtimeStatus.Commands, command)
+				}
+				model.input.SetValue("/" + command + " Check CI")
+				if got := model.composerCommandError(); (got == "") != available {
+					t.Fatalf("Agent %s command %s available %v: %q", agent, command, available, got)
+				}
+			}
+		}
+	}
+	model, _ := newSessionTUITestModel()
+	model.runtimeStatus = sessionruntime.RuntimeStatus{AgentType: "opencode", Commands: []string{"shell", "goal"}}
+	model.input.SetValue("/goal edit")
+	if got := model.composerHint(); got != "Goal command · Enter to run goal · Uses OpenCode's registered goal command" {
+		t.Fatalf("Native goal hint = %q", got)
+	}
+	model.turnActive = true
+	if got := model.composerHint(); got != "Goal command · Enter to run goal · Queued until active work ends; use /interrupt to apply sooner" {
+		t.Fatalf("Active native goal hint = %q", got)
+	}
+	model.pendingTurnID = "pending"
+	if model.composerCommandError() == "" {
+		t.Fatal("Native goal bypassed pending work")
+	}
+}
+
 func TestSessionTUIRendersGoalStatus(t *testing.T) {
 	model, _ := newSessionTUITestModel()
 	budget := int64(1000)
@@ -456,6 +681,60 @@ func TestSessionTUIShowsTurnProgressUntilCompletion(t *testing.T) {
 	}
 	if transcript := stripSessionTUIANSI(model.renderTranscript()); !strings.Contains(transcript, "─ Worked for 1m 05s ─") {
 		t.Fatalf("completed transcript = %q, want live fallback duration", transcript)
+	}
+}
+
+func TestSessionTUIShowsBackgroundWorkBetweenTurns(t *testing.T) {
+	model, _ := newSessionTUITestModel()
+	model.now = func() time.Time { return time.Date(2026, time.October, 1, 12, 0, 0, 0, time.UTC) }
+	model.Update(tea.WindowSizeMsg{Width: 120, Height: 12})
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventHistoryEnd})
+	draft := strings.Repeat("draft line\n", 8) + "last line"
+	model.input.SetValue(draft)
+	model.resizeComposer()
+	idleComposerHeight := model.input.Height()
+	report := func(count int) {
+		model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventRuntimeStatus, Runtime: &sessionruntime.RuntimeStatus{BackgroundTasks: &count}})
+	}
+	progress := func() string { return strings.TrimSpace(stripSessionTUIANSI(model.progressView())) }
+	report(1)
+	if got := progress(); got != "• 1 background task running" {
+		t.Fatalf("Background progress = %q", got)
+	}
+	if got := model.input.Height(); got != idleComposerHeight-1 {
+		t.Fatalf("Composer height with background progress = %d, want %d", got, idleComposerHeight-1)
+	}
+	if model.canInterruptTurn() {
+		t.Fatal("Background work alone enabled turn interruption")
+	}
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventTurnStarted, TurnID: "turn-1"})
+	if got := progress(); got != "• Working · 1 background task (0s • esc to interrupt)" {
+		t.Fatalf("Working progress = %q", got)
+	}
+	report(2)
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventInputRequested, InputID: "input-1", TurnID: "turn-1"})
+	if got := progress(); got != "• Waiting for input · 2 background tasks (0s • esc to interrupt)" {
+		t.Fatalf("Input progress = %q", got)
+	}
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventTurnCompleted, TurnID: "turn-1", Status: "completed"})
+	if got := progress(); got != "• 2 background tasks running" {
+		t.Fatalf("Progress after parent turn = %q", got)
+	}
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventHistoryStart, Reset: true})
+	report(1)
+	model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventHistoryEnd, HistoryState: &sessionruntime.HistoryState{}})
+	if got := progress(); got != "• 1 background task running" {
+		t.Fatalf("Reconnected progress = %q", got)
+	}
+	report(0)
+	if got := progress(); got != "" {
+		t.Fatalf("Idle progress = %q", got)
+	}
+	if got := model.input.Height(); got != idleComposerHeight {
+		t.Fatalf("Composer height after background completion = %d, want %d", got, idleComposerHeight)
+	}
+	if got := model.input.Value(); got != draft {
+		t.Fatalf("Draft after background completion = %q, want %q", got, draft)
 	}
 }
 
@@ -765,6 +1044,39 @@ func TestSessionTUIAppliesStateFromProjectedHistory(t *testing.T) {
 	}
 	if transcript := stripSessionTUIANSI(model.renderTranscript()); !strings.Contains(transcript, "active request") || !strings.Contains(transcript, "Continue?") {
 		t.Fatalf("projected transcript = %q", transcript)
+	}
+}
+
+func TestSessionTUIReplaysProjectedCompletedTurns(t *testing.T) {
+	for _, status := range []string{"completed", "failed"} {
+		t.Run(status, func(t *testing.T) {
+			model, _ := newSessionTUITestModel()
+			model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventHistoryStart})
+			model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventUserMessage, Text: "question"})
+			model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventAssistantMessage, Text: "answer"})
+			model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventTurnCompleted, Status: status})
+			if len(model.blocks) != 2 || model.blocks[0].kind != sessionTUIBlockUser || model.blocks[1].kind != sessionTUIBlockAssistant {
+				t.Fatalf("projected history blocks = %#v, want one question and one answer", model.blocks)
+			}
+			model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventHistoryEnd})
+			model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventHistoryStart, HistoryPage: true, RequestID: "older"})
+			model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventUserMessage, Text: "older question"})
+			model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventAssistantMessage, Text: "older answer"})
+			model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventTurnCompleted, Status: status})
+			model.applyEvent(sessionruntime.Event{Type: sessionruntime.EventHistoryEnd, HistoryPage: true, RequestID: "older"})
+			var users, assistants int
+			for _, block := range model.blocks {
+				if block.kind == sessionTUIBlockUser {
+					users++
+				}
+				if block.kind == sessionTUIBlockAssistant {
+					assistants++
+				}
+			}
+			if users != 2 || assistants != 2 {
+				t.Fatalf("history has %d user blocks and %d assistant blocks, want two of each", users, assistants)
+			}
+		})
 	}
 }
 

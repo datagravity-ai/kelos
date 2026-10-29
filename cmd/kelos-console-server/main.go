@@ -4,6 +4,8 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -15,6 +17,7 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	authorizationclient "k8s.io/client-go/kubernetes/typed/authorization/v1"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -27,20 +30,30 @@ func main() {
 	var tokenFile string
 	var defaultNamespace string
 	var secureCookie bool
+	var authMode string
+	var proxyAuth consoleserver.ProxyAuthConfig
 	flag.StringVar(&address, "bind-address", ":8080", "HTTP listen address")
-	flag.StringVar(&tokenFile, "token-file", "", "Path to the required static authentication token")
+	flag.StringVar(&tokenFile, "token-file", "", "Path to the static authentication token")
+	flag.StringVar(&authMode, "auth-mode", consoleserver.AuthModeStaticToken, "Authentication mode: staticToken, oidc or github")
+	flag.StringVar(&proxyAuth.ExternalURL, "external-url", "", "HTTPS origin of the Console")
+	flag.StringVar(&proxyAuth.UsernamePrefix, "username-prefix", "", "Prefix for authenticated user identities")
+	flag.StringVar(&proxyAuth.GroupsPrefix, "groups-prefix", "", "Prefix for authenticated group identities")
 	flag.StringVar(&defaultNamespace, "default-namespace", "default", "Initial namespace in the Console")
 	flag.BoolVar(&secureCookie, "secure-cookie", false, "Mark the authentication cookie as HTTPS-only")
 	flag.Parse()
 
-	if tokenFile == "" {
-		fmt.Fprintln(os.Stderr, "Invalid configuration: --token-file is required")
+	if err := validateAuthFlags(authMode, address, tokenFile, secureCookie, proxyAuth); err != nil {
+		fmt.Fprintf(os.Stderr, "Invalid configuration: %v\n", err)
 		os.Exit(1)
 	}
-	token, err := readToken(tokenFile)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Invalid authentication token: %v\n", err)
-		os.Exit(1)
+	var token string
+	if authMode == consoleserver.AuthModeStaticToken {
+		var err error
+		token, err = readToken(tokenFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Invalid authentication token: %v\n", err)
+			os.Exit(1)
+		}
 	}
 
 	restConfig, err := rest.InClusterConfig()
@@ -61,14 +74,27 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Failed to create Kubernetes clientset: %v\n", err)
 		os.Exit(1)
 	}
-	handler, err := consoleserver.New(consoleserver.Config{
+	config := consoleserver.Config{
+		AuthMode:         authMode,
 		Token:            token,
 		Client:           controllerClient,
 		Clientset:        clientset,
 		RESTConfig:       restConfig,
+		HTTPClient:       http.DefaultClient,
 		DefaultNamespace: defaultNamespace,
 		SecureCookie:     secureCookie,
-	})
+	}
+	if authMode == consoleserver.AuthModeOIDC || authMode == consoleserver.AuthModeGitHub {
+		authorizationClient, err := newAuthorizationClient(restConfig)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to create authorization client: %v\n", err)
+			os.Exit(1)
+		}
+		proxyAuth.Reviewer = authorizationClient.SubjectAccessReviews()
+		proxyAuth.Logger = slog.New(slog.NewJSONHandler(os.Stdout, nil))
+		config.ProxyAuth = &proxyAuth
+	}
+	handler, err := consoleserver.New(config)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Invalid server configuration: %v\n", err)
 		os.Exit(1)
@@ -94,6 +120,37 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Console server failed: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func newAuthorizationClient(config *rest.Config) (*authorizationclient.AuthorizationV1Client, error) {
+	config = rest.CopyConfig(config)
+	// Namespace discovery can require ten authorization requests per namespace.
+	config.QPS = 50
+	config.Burst = 100
+	return authorizationclient.NewForConfig(config)
+}
+
+func validateAuthFlags(mode, address, tokenFile string, secureCookie bool, proxyAuth consoleserver.ProxyAuthConfig) error {
+	switch mode {
+	case consoleserver.AuthModeStaticToken:
+		if tokenFile == "" {
+			return fmt.Errorf("--token-file is required")
+		}
+		if proxyAuth.ExternalURL != "" || proxyAuth.UsernamePrefix != "" || proxyAuth.GroupsPrefix != "" {
+			return fmt.Errorf("proxy flags require --auth-mode=oidc or github")
+		}
+	case consoleserver.AuthModeOIDC, consoleserver.AuthModeGitHub:
+		if tokenFile != "" || secureCookie {
+			return fmt.Errorf("static token flags cannot be used with proxy authentication")
+		}
+		host, _, err := net.SplitHostPort(address)
+		if err != nil || !net.ParseIP(host).IsLoopback() {
+			return fmt.Errorf("proxy authentication requires a loopback IP in --bind-address")
+		}
+	default:
+		return fmt.Errorf("unsupported authentication mode %q", mode)
+	}
+	return nil
 }
 
 func readToken(path string) (string, error) {

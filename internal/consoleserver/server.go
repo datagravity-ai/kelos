@@ -76,21 +76,27 @@ var webFiles embed.FS
 
 // Config contains dependencies and authentication configuration for the Console server.
 type Config struct {
+	AuthMode         string
+	ProxyAuth        *ProxyAuthConfig
 	Token            string
 	Client           client.Client
 	Clientset        *kubernetes.Clientset
 	RESTConfig       *rest.Config
+	HTTPClient       *http.Client
 	DefaultNamespace string
 	SecureCookie     bool
 }
 
 // Server serves the Kelos Console and its Kubernetes-backed API.
 type Server struct {
+	authMode         string
+	proxyAuth        *ProxyAuthConfig
 	token            []byte
 	cookieValue      string
 	client           client.Client
 	clientset        *kubernetes.Clientset
 	restConfig       *rest.Config
+	httpClient       *http.Client
 	defaultNamespace string
 	secureCookie     bool
 	handler          http.Handler
@@ -124,24 +130,26 @@ func (c *sessionSocket) WriteMessage(messageType int, data []byte) error {
 }
 
 type sessionSummary struct {
-	Name            string                    `json:"name"`
-	DisplayName     string                    `json:"displayName"`
-	Namespace       string                    `json:"namespace"`
-	UID             string                    `json:"uid,omitempty"`
-	Provider        string                    `json:"provider"`
-	Model           string                    `json:"model,omitempty"`
-	Phase           kelos.SessionPhase        `json:"phase,omitempty"`
-	Active          *bool                     `json:"active,omitempty"`
-	WaitingForInput bool                      `json:"waitingForInput,omitempty"`
-	CreatedAt       *metav1.Time              `json:"createdAt,omitempty"`
-	LastActivityAt  *metav1.Time              `json:"lastActivityAt,omitempty"`
-	Message         string                    `json:"message,omitempty"`
-	Branch          string                    `json:"branch,omitempty"`
-	PullRequest     *kelos.SessionPullRequest `json:"pullRequest,omitempty"`
-	Section         string                    `json:"section,omitempty"`
-	Resetting       bool                      `json:"resetting,omitempty"`
-	UserSuspended   bool                      `json:"userSuspended,omitempty"`
-	IdleSuspended   bool                      `json:"idleSuspended,omitempty"`
+	Name               string                     `json:"name"`
+	DisplayName        string                     `json:"displayName"`
+	Namespace          string                     `json:"namespace"`
+	UID                string                     `json:"uid,omitempty"`
+	Provider           string                     `json:"provider"`
+	Model              string                     `json:"model,omitempty"`
+	Phase              kelos.SessionPhase         `json:"phase,omitempty"`
+	Active             *bool                      `json:"active,omitempty"`
+	WaitingForInput    bool                       `json:"waitingForInput,omitempty"`
+	CreatedAt          *metav1.Time               `json:"createdAt,omitempty"`
+	LastActivityAt     *metav1.Time               `json:"lastActivityAt,omitempty"`
+	LastNotification   *kelos.SessionNotification `json:"lastNotification,omitempty"`
+	ReadNotificationID string                     `json:"readNotificationId,omitempty"`
+	Message            string                     `json:"message,omitempty"`
+	Branch             string                     `json:"branch,omitempty"`
+	PullRequest        *kelos.SessionPullRequest  `json:"pullRequest,omitempty"`
+	Section            string                     `json:"section,omitempty"`
+	Resetting          bool                       `json:"resetting,omitempty"`
+	UserSuspended      bool                       `json:"userSuspended,omitempty"`
+	IdleSuspended      bool                       `json:"idleSuspended,omitempty"`
 }
 
 type sessionOptions struct {
@@ -248,6 +256,7 @@ type consoleResourceDetail struct {
 	Name      string `json:"name"`
 	Namespace string `json:"namespace"`
 	YAML      string `json:"yaml"`
+	Suspended bool   `json:"suspended,omitempty"`
 }
 
 var consoleResourceDefinitions = []consoleResourceDefinition{
@@ -265,8 +274,8 @@ var consoleResourceDefinitions = []consoleResourceDefinition{
 
 // New validates config and creates the HTTP handler.
 func New(config Config) (*Server, error) {
-	if strings.TrimSpace(config.Token) == "" {
-		return nil, errors.New("static authentication token must not be empty")
+	if err := validateAuth(config); err != nil {
+		return nil, err
 	}
 	defaultNamespace := strings.TrimSpace(config.DefaultNamespace)
 	if defaultNamespace == "" {
@@ -275,6 +284,9 @@ func New(config Config) (*Server, error) {
 	if config.Client == nil || config.Clientset == nil || config.RESTConfig == nil {
 		return nil, errors.New("Kubernetes clients and REST config are required")
 	}
+	if config.HTTPClient == nil {
+		return nil, errors.New("HTTP client is required")
+	}
 	attachmentClient, err := sessionattachment.New(config.RESTConfig)
 	if err != nil {
 		return nil, err
@@ -282,11 +294,13 @@ func New(config Config) (*Server, error) {
 	digest := hmac.New(sha256.New, []byte(config.Token))
 	_, _ = digest.Write([]byte("kelos-console-cookie-v1"))
 	server := &Server{
+		authMode:         config.AuthMode,
 		token:            []byte(config.Token),
 		cookieValue:      base64.RawURLEncoding.EncodeToString(digest.Sum(nil)),
 		client:           config.Client,
 		clientset:        config.Clientset,
 		restConfig:       config.RESTConfig,
+		httpClient:       config.HTTPClient,
 		defaultNamespace: defaultNamespace,
 		secureCookie:     config.SecureCookie,
 		attachments:      attachmentClient,
@@ -297,6 +311,17 @@ func New(config Config) (*Server, error) {
 				return request.Header.Get("Origin") == "" || sameOrigin(request)
 			},
 		},
+	}
+	if config.ProxyAuth != nil {
+		proxyAuth := *config.ProxyAuth
+		origin, _ := url.Parse(proxyAuth.ExternalURL)
+		origin.Host = strings.ToLower(origin.Host)
+		if origin.Port() == "443" {
+			origin.Host = strings.TrimSuffix(origin.Host, ":443")
+		}
+		proxyAuth.ExternalURL = origin.String()
+		server.proxyAuth = &proxyAuth
+		server.upgrader.CheckOrigin = func(request *http.Request) bool { return request.Header.Get("Origin") == proxyAuth.ExternalURL }
 	}
 	server.bridge = server.bridgeExec
 	server.terminalExecutor = remotecommand.NewSPDYExecutor
@@ -317,6 +342,12 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/login", s.login)
 	mux.HandleFunc("GET /login", s.loginPage)
 	mux.HandleFunc("GET /public/", s.publicAsset)
+	mux.HandleFunc("GET /manifest.webmanifest", func(writer http.ResponseWriter, request *http.Request) {
+		serveEmbedded(writer, "web/manifest.webmanifest", "application/manifest+json")
+	})
+	mux.Handle("GET /notifications.js", s.requireAuth(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		serveEmbedded(writer, "web/notifications.js", "text/javascript; charset=utf-8")
+	})))
 	mux.Handle("/api/", s.requireAuth(http.HandlerFunc(s.api)))
 	mux.Handle("/assets/", s.requireAuth(http.HandlerFunc(s.asset)))
 	mux.Handle("/", s.requireAuth(http.HandlerFunc(s.index)))
@@ -334,6 +365,10 @@ func securityHeaders(next http.Handler) http.Handler {
 }
 
 func (s *Server) login(writer http.ResponseWriter, request *http.Request) {
+	if s.proxyAuth != nil {
+		writeError(writer, http.StatusNotFound, "static login is disabled")
+		return
+	}
 	var payload struct {
 		Token string `json:"token"`
 	}
@@ -377,6 +412,9 @@ func (s *Server) authenticated(request *http.Request) bool {
 }
 
 func (s *Server) requireAuth(next http.Handler) http.Handler {
+	if s.proxyAuth != nil {
+		return s.requireProxyAuth(next)
+	}
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if s.authenticated(request) {
 			next.ServeHTTP(writer, request)
@@ -393,7 +431,17 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 func (s *Server) api(writer http.ResponseWriter, request *http.Request) {
 	path := strings.TrimPrefix(request.URL.Path, "/api/")
 	if path == "config" && request.Method == http.MethodGet {
-		writeJSON(writer, http.StatusOK, map[string]string{"defaultNamespace": s.defaultNamespace})
+		config := map[string]string{"defaultNamespace": s.defaultNamespace}
+		if s.proxyAuth != nil {
+			identity := request.Context().Value(principalKey{}).(principal)
+			config["username"] = identity.username
+			config["authMode"] = s.authMode
+		}
+		writeJSON(writer, http.StatusOK, config)
+		return
+	}
+	if path == "namespaces" && request.Method == http.MethodGet {
+		s.listNamespaces(writer, request)
 		return
 	}
 	if path == "options" && request.Method == http.MethodGet {
@@ -401,6 +449,10 @@ func (s *Server) api(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 	if path == "logout" && request.Method == http.MethodPost {
+		if s.proxyAuth != nil {
+			writeJSON(writer, http.StatusOK, map[string]string{"logoutURL": "/oauth2/sign_out?rd=/oauth2/sign_in"})
+			return
+		}
 		http.SetCookie(writer, &http.Cookie{Name: authCookieName, Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteStrictMode})
 		writeJSON(writer, http.StatusOK, map[string]bool{"authenticated": false})
 		return
@@ -422,6 +474,10 @@ func (s *Server) api(writer http.ResponseWriter, request *http.Request) {
 	}
 
 	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if parts[0] == "admin" {
+		s.admin(writer, request, parts[1:])
+		return
+	}
 	if len(parts) == 1 && parts[0] == "resources" && request.Method == http.MethodGet {
 		s.listConsoleResources(writer, request)
 		return
@@ -432,6 +488,14 @@ func (s *Server) api(writer http.ResponseWriter, request *http.Request) {
 	}
 	if len(parts) == 5 && parts[0] == "resources" && parts[1] == "tasks" && parts[4] == "logs" && request.Method == http.MethodGet {
 		s.getTaskLogs(writer, request, parts[2], parts[3])
+		return
+	}
+	if len(parts) == 5 && parts[0] == "resources" && parts[1] == "taskspawners" && parts[4] == "run" && request.Method == http.MethodPost {
+		s.runTaskSpawner(writer, request, parts[2], parts[3])
+		return
+	}
+	if len(parts) == 5 && parts[0] == "resources" && parts[1] == "taskspawners" && request.Method == http.MethodPost && (parts[4] == "suspend" || parts[4] == "resume") {
+		s.setTaskSpawnerSuspended(writer, request, parts[2], parts[3], parts[4] == "suspend")
 		return
 	}
 	if len(parts) < 3 || parts[0] != "sessions" {
@@ -467,6 +531,10 @@ func (s *Server) api(writer http.ResponseWriter, request *http.Request) {
 		s.resumeSession(writer, request, namespace, name)
 		return
 	}
+	if len(parts) == 4 && parts[3] == "read" && request.Method == http.MethodPost {
+		s.readSessionCompletion(writer, request, namespace, name)
+		return
+	}
 	if len(parts) == 4 && parts[3] == "section" && request.Method == http.MethodPatch {
 		s.updateSessionSection(writer, request, namespace, name)
 		return
@@ -491,10 +559,28 @@ func (s *Server) api(writer http.ResponseWriter, request *http.Request) {
 
 func (s *Server) listConsoleResources(writer http.ResponseWriter, request *http.Request) {
 	namespace := s.requestNamespace(request)
+	allowedKinds := make(map[string]bool, len(consoleResourceDefinitions))
+	for _, definition := range consoleResourceDefinitions {
+		allowed, err := s.allowed(request, access("list", definition.Resource, namespace, ""))
+		if err != nil {
+			writeError(writer, http.StatusServiceUnavailable, "authorization service unavailable")
+			return
+		}
+		if allowed {
+			allowedKinds[definition.Resource] = true
+		}
+	}
+	if len(allowedKinds) == 0 {
+		writeError(writer, http.StatusForbidden, "access denied")
+		return
+	}
 	groups := make([]consoleResourceGroup, 0, 4)
 	groupIndexes := make(map[string]int)
 	allObjects := make([]consoleResourceObject, 0)
 	for _, definition := range consoleResourceDefinitions {
+		if !allowedKinds[definition.Resource] {
+			continue
+		}
 		list := definition.NewList()
 		if err := s.client.List(request.Context(), list, client.InNamespace(namespace)); err != nil {
 			writeError(writer, http.StatusInternalServerError, fmt.Sprintf("listing %s: %v", definition.Label, err))
@@ -528,6 +614,13 @@ func (s *Server) listConsoleResources(writer http.ResponseWriter, request *http.
 		writeError(writer, http.StatusInternalServerError, fmt.Sprintf("relating resources: %v", err))
 		return
 	}
+	visibleRelationships := relationships[:0]
+	for _, relationship := range relationships {
+		if allowedKinds[relationship.Source.Resource] && allowedKinds[relationship.Target.Resource] {
+			visibleRelationships = append(visibleRelationships, relationship)
+		}
+	}
+	relationships = visibleRelationships
 	writeJSON(writer, http.StatusOK, map[string]any{"namespace": namespace, "groups": groups, "relationships": relationships})
 }
 
@@ -748,6 +841,9 @@ func consoleResourceCondition(content map[string]any) string {
 }
 
 func (s *Server) getConsoleResource(writer http.ResponseWriter, request *http.Request, resource, namespace, name string) {
+	if !s.requireAccess(writer, request, access("get", resource, namespace, name)) {
+		return
+	}
 	definition, ok := consoleResourceDefinitionFor(resource)
 	if !ok {
 		writeError(writer, http.StatusNotFound, "not found")
@@ -758,6 +854,11 @@ func (s *Server) getConsoleResource(writer http.ResponseWriter, request *http.Re
 		writeKubernetesError(writer, fmt.Sprintf("getting %s %q", definition.Kind, name), err)
 		return
 	}
+	writeConsoleResourceDetail(writer, definition, object)
+}
+
+func writeConsoleResourceDetail(writer http.ResponseWriter, definition consoleResourceDefinition, object client.Object) {
+	name := object.GetName()
 	content, err := runtime.DefaultUnstructuredConverter.ToUnstructured(object)
 	if err != nil {
 		writeError(writer, http.StatusInternalServerError, fmt.Sprintf("converting %s %q: %v", definition.Kind, name, err))
@@ -771,16 +872,23 @@ func (s *Server) getConsoleResource(writer http.ResponseWriter, request *http.Re
 		writeError(writer, http.StatusInternalServerError, fmt.Sprintf("marshaling %s %q: %v", definition.Kind, name, err))
 		return
 	}
-	writeJSON(writer, http.StatusOK, consoleResourceDetail{
+	detail := consoleResourceDetail{
 		Resource:  definition.Resource,
 		Kind:      definition.Kind,
 		Name:      name,
-		Namespace: namespace,
+		Namespace: object.GetNamespace(),
 		YAML:      string(data),
-	})
+	}
+	if spawner, ok := object.(*kelos.TaskSpawner); ok {
+		detail.Suspended = spawner.Spec.Suspend != nil && *spawner.Spec.Suspend
+	}
+	writeJSON(writer, http.StatusOK, detail)
 }
 
 func (s *Server) getTaskLogs(writer http.ResponseWriter, request *http.Request, namespace, name string) {
+	if !s.requireAccess(writer, request, access("get", "tasks", namespace, name), access("get", "tasks/logs", namespace, name)) {
+		return
+	}
 	var task kelos.Task
 	if err := s.client.Get(request.Context(), client.ObjectKey{Namespace: namespace, Name: name}, &task); err != nil {
 		writeKubernetesError(writer, fmt.Sprintf("getting Task %q", name), err)
@@ -982,8 +1090,12 @@ func consoleResourceDefinitionForKind(kind string) (consoleResourceDefinition, b
 }
 
 func (s *Server) listSessions(writer http.ResponseWriter, request *http.Request) {
+	namespace := s.requestNamespace(request)
+	if !s.requireAccess(writer, request, access("list", "sessions", namespace, "")) {
+		return
+	}
 	var list kelos.SessionList
-	if err := s.client.List(request.Context(), &list, client.InNamespace(s.requestNamespace(request))); err != nil {
+	if err := s.client.List(request.Context(), &list, client.InNamespace(namespace)); err != nil {
 		writeError(writer, http.StatusInternalServerError, fmt.Sprintf("listing Sessions: %v", err))
 		return
 	}
@@ -997,13 +1109,16 @@ func (s *Server) listSessions(writer http.ResponseWriter, request *http.Request)
 	})
 	items := make([]sessionSummary, 0, len(list.Items))
 	for i := range list.Items {
-		items = append(items, summarize(&list.Items[i]))
+		items = append(items, summarizeForUser(request, &list.Items[i]))
 	}
 	writeJSON(writer, http.StatusOK, items)
 }
 
 func (s *Server) listSessionOptions(writer http.ResponseWriter, request *http.Request) {
 	namespace := s.requestNamespace(request)
+	if !s.requireAccess(writer, request, access("list", "sessions", namespace, ""), access("list", "workspaces", namespace, ""), access("list", "agentconfigs", namespace, "")) {
+		return
+	}
 	var sessions kelos.SessionList
 	if err := s.client.List(request.Context(), &sessions, client.InNamespace(namespace)); err != nil {
 		writeError(writer, http.StatusInternalServerError, fmt.Sprintf("listing Sessions for form options: %v", err))
@@ -1030,6 +1145,9 @@ func (s *Server) listSessionOptions(writer http.ResponseWriter, request *http.Re
 }
 
 func (s *Server) getSessionSource(writer http.ResponseWriter, request *http.Request, namespace, name string) {
+	if !s.requireAccess(writer, request, access("get", "sessions", namespace, name)) {
+		return
+	}
 	var session kelos.Session
 	if err := s.client.Get(request.Context(), client.ObjectKey{Namespace: namespace, Name: name}, &session); err != nil {
 		writeKubernetesError(writer, fmt.Sprintf("getting source Session %q", name), err)
@@ -1137,6 +1255,9 @@ func (s *Server) createSession(writer http.ResponseWriter, request *http.Request
 	if section != "" {
 		session.Annotations = map[string]string{sessionSectionAnnotation: section}
 	}
+	if !s.requireAccess(writer, request, access("create", "sessions", session.Namespace, "")) {
+		return
+	}
 	if err := s.client.Create(request.Context(), session); err != nil {
 		status := http.StatusInternalServerError
 		if apierrors.IsAlreadyExists(err) || apierrors.IsInvalid(err) {
@@ -1145,7 +1266,7 @@ func (s *Server) createSession(writer http.ResponseWriter, request *http.Request
 		writeError(writer, status, fmt.Sprintf("creating Session %q: %v", payload.Name, err))
 		return
 	}
-	writeJSON(writer, http.StatusCreated, summarize(session))
+	writeJSON(writer, http.StatusCreated, summarizeForUser(request, session))
 }
 
 func (s *Server) applySession(writer http.ResponseWriter, request *http.Request) {
@@ -1170,6 +1291,10 @@ func (s *Server) applySession(writer http.ResponseWriter, request *http.Request)
 	}
 	if session.Namespace != namespace {
 		writeError(writer, http.StatusForbidden, fmt.Sprintf("namespace %q is not active", session.Namespace))
+		return
+	}
+
+	if !s.requireAccess(writer, request, access("get", "sessions", namespace, session.Name), access("patch", "sessions", namespace, session.Name), access("create", "sessions", namespace, "")) {
 		return
 	}
 
@@ -1204,10 +1329,13 @@ func (s *Server) applySession(writer http.ResponseWriter, request *http.Request)
 		writeKubernetesError(writer, fmt.Sprintf("getting applied Session %q", session.Name), err)
 		return
 	}
-	writeJSON(writer, http.StatusOK, summarize(&applied))
+	writeJSON(writer, http.StatusOK, summarizeForUser(request, &applied))
 }
 
 func (s *Server) deleteSession(writer http.ResponseWriter, request *http.Request, namespace, name string) {
+	if !s.requireAccess(writer, request, access("delete", "sessions", namespace, name)) {
+		return
+	}
 	session := &kelos.Session{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name}}
 	if err := s.client.Delete(request.Context(), session); err != nil {
 		writeKubernetesError(writer, fmt.Sprintf("deleting Session %q", name), err)
@@ -1217,6 +1345,9 @@ func (s *Server) deleteSession(writer http.ResponseWriter, request *http.Request
 }
 
 func (s *Server) resetSession(writer http.ResponseWriter, request *http.Request, namespace, name string) {
+	if !s.requireAccess(writer, request, access("get", "sessions", namespace, name), access("create", "sessions/reset", namespace, name)) {
+		return
+	}
 	session, _, err := sessionreset.Request(
 		request.Context(),
 		s.client,
@@ -1236,17 +1367,20 @@ func (s *Server) resetSession(writer http.ResponseWriter, request *http.Request,
 		writeError(writer, status, err.Error())
 		return
 	}
-	writeJSON(writer, http.StatusAccepted, summarize(session))
+	writeJSON(writer, http.StatusAccepted, summarizeForUser(request, session))
 }
 
 func (s *Server) suspendSession(writer http.ResponseWriter, request *http.Request, namespace, name string) {
+	if !s.requireAccess(writer, request, access("get", "sessions", namespace, name), access("create", "sessions/suspend", namespace, name)) {
+		return
+	}
 	var session kelos.Session
 	if err := s.client.Get(request.Context(), client.ObjectKey{Namespace: namespace, Name: name}, &session); err != nil {
 		writeKubernetesError(writer, fmt.Sprintf("getting Session %q to suspend", name), err)
 		return
 	}
 	if session.Spec.Suspend != nil && *session.Spec.Suspend {
-		writeJSON(writer, http.StatusAccepted, summarize(&session))
+		writeJSON(writer, http.StatusAccepted, summarizeForUser(request, &session))
 		return
 	}
 
@@ -1272,10 +1406,13 @@ func (s *Server) suspendSession(writer http.ResponseWriter, request *http.Reques
 		writeError(writer, status, fmt.Sprintf("suspending Session %q: %v", name, err))
 		return
 	}
-	writeJSON(writer, http.StatusAccepted, summarize(&session))
+	writeJSON(writer, http.StatusAccepted, summarizeForUser(request, &session))
 }
 
 func (s *Server) resumeSession(writer http.ResponseWriter, request *http.Request, namespace, name string) {
+	if !s.requireAccess(writer, request, access("get", "sessions", namespace, name), access("create", "sessions/resume", namespace, name)) {
+		return
+	}
 	session, _, err := sessionsuspend.RequestResume(
 		request.Context(),
 		s.client,
@@ -1336,10 +1473,13 @@ func (s *Server) resumeSession(writer http.ResponseWriter, request *http.Request
 			return
 		}
 	}
-	writeJSON(writer, http.StatusAccepted, summarize(session))
+	writeJSON(writer, http.StatusAccepted, summarizeForUser(request, session))
 }
 
 func (s *Server) updateSessionSection(writer http.ResponseWriter, request *http.Request, namespace, name string) {
+	if !s.requireAccess(writer, request, access("get", "sessions", namespace, name), access("patch", "sessions", namespace, name)) {
+		return
+	}
 	var payload updateSessionSectionRequest
 	if err := decodeJSON(request.Body, &payload); err != nil {
 		writeError(writer, http.StatusBadRequest, err.Error())
@@ -1384,7 +1524,7 @@ func (s *Server) updateSessionSection(writer http.ResponseWriter, request *http.
 		writeError(writer, status, fmt.Sprintf("updating section for Session %q: %v", name, err))
 		return
 	}
-	writeJSON(writer, http.StatusOK, summarize(&session))
+	writeJSON(writer, http.StatusOK, summarizeForUser(request, &session))
 }
 
 func normalizeSessionSection(value string) (string, error) {
@@ -1401,6 +1541,9 @@ func normalizeSessionSection(value string) (string, error) {
 }
 
 func (s *Server) updateSessionDisplayName(writer http.ResponseWriter, request *http.Request, namespace, name string) {
+	if !s.requireAccess(writer, request, access("get", "sessions", namespace, name), access("patch", "sessions", namespace, name)) {
+		return
+	}
 	var payload updateSessionDisplayNameRequest
 	if err := decodeJSON(request.Body, &payload); err != nil {
 		writeError(writer, http.StatusBadRequest, err.Error())
@@ -1445,7 +1588,7 @@ func (s *Server) updateSessionDisplayName(writer http.ResponseWriter, request *h
 		writeError(writer, status, fmt.Sprintf("updating display name for Session %q: %v", name, err))
 		return
 	}
-	writeJSON(writer, http.StatusOK, summarize(&session))
+	writeJSON(writer, http.StatusOK, summarizeForUser(request, &session))
 }
 
 func normalizeSessionDisplayName(value string) (string, error) {
@@ -1463,21 +1606,22 @@ func normalizeSessionDisplayName(value string) (string, error) {
 
 func summarize(session *kelos.Session) sessionSummary {
 	summary := sessionSummary{
-		Name:           session.Name,
-		DisplayName:    sessionDisplayName(session),
-		Namespace:      session.Namespace,
-		UID:            string(session.UID),
-		Provider:       session.Spec.Worker.Type,
-		Model:          session.Status.Model,
-		Phase:          session.Status.Phase,
-		LastActivityAt: session.Status.LastActivityTime,
-		Message:        session.Status.Message,
-		Branch:         session.Status.Branch,
-		PullRequest:    session.Status.PullRequest,
-		Section:        session.Annotations[sessionSectionAnnotation],
-		Resetting:      session.Annotations[sessionreset.RequestAnnotation] != "",
-		UserSuspended:  session.Spec.Suspend != nil && *session.Spec.Suspend,
-		IdleSuspended:  sessionsuspend.IsIdlePolicySuspended(session),
+		Name:             session.Name,
+		DisplayName:      sessionDisplayName(session),
+		Namespace:        session.Namespace,
+		UID:              string(session.UID),
+		Provider:         session.Spec.Worker.Type,
+		Model:            session.Status.Model,
+		Phase:            session.Status.Phase,
+		LastActivityAt:   session.Status.LastActivityTime,
+		LastNotification: session.Status.LastNotification,
+		Message:          session.Status.Message,
+		Branch:           session.Status.Branch,
+		PullRequest:      session.Status.PullRequest,
+		Section:          session.Annotations[sessionSectionAnnotation],
+		Resetting:        session.Annotations[sessionreset.RequestAnnotation] != "",
+		UserSuspended:    session.Spec.Suspend != nil && *session.Spec.Suspend,
+		IdleSuspended:    sessionsuspend.IsIdlePolicySuspended(session),
 	}
 	if !session.CreationTimestamp.IsZero() {
 		createdAt := session.CreationTimestamp
@@ -1518,6 +1662,9 @@ func sessionActivityTime(session *kelos.Session) time.Time {
 }
 
 func (s *Server) uploadSessionAttachment(writer http.ResponseWriter, request *http.Request, namespace, name string) {
+	if !s.requireAccess(writer, request, access("get", "sessions", namespace, name), access("create", "sessions/attachments", namespace, name)) {
+		return
+	}
 	if err := http.NewResponseController(writer).SetReadDeadline(time.Now().Add(attachmentUploadTimeout)); err != nil {
 		writeError(writer, http.StatusInternalServerError, fmt.Sprintf("setting upload deadline for Session %q: %v", name, err))
 		return
@@ -1559,6 +1706,9 @@ func (s *Server) uploadSessionAttachment(writer http.ResponseWriter, request *ht
 }
 
 func (s *Server) downloadSessionAttachment(writer http.ResponseWriter, request *http.Request, namespace, name, id string) {
+	if !s.requireAccess(writer, request, access("get", "sessions", namespace, name), access("get", "sessions/attachments", namespace, name)) {
+		return
+	}
 	session, ok := s.readySession(writer, request, namespace, name)
 	if !ok {
 		return
@@ -1616,6 +1766,9 @@ func (s *Server) readySession(writer http.ResponseWriter, request *http.Request,
 }
 
 func (s *Server) connectSession(writer http.ResponseWriter, request *http.Request, namespace, name string) {
+	if !s.requireAccess(writer, request, access("get", "sessions", namespace, name), access("create", "sessions/connect", namespace, name)) {
+		return
+	}
 	var session kelos.Session
 	if err := s.client.Get(request.Context(), client.ObjectKey{Namespace: namespace, Name: name}, &session); err != nil {
 		writeKubernetesError(writer, fmt.Sprintf("getting Session %q", name), err)
@@ -1768,10 +1921,17 @@ func sameOrigin(request *http.Request) bool {
 }
 
 func decodeJSON(reader io.Reader, target any) error {
-	decoder := json.NewDecoder(io.LimitReader(reader, requestBodyLimit))
+	decoder := json.NewDecoder(http.MaxBytesReader(nil, io.NopCloser(reader), requestBodyLimit))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
 		return fmt.Errorf("invalid JSON request: %w", err)
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err != nil {
+			return fmt.Errorf("invalid JSON request: %w", err)
+		}
+		return errors.New("invalid JSON request: expected a single JSON value")
 	}
 	return nil
 }
@@ -1861,6 +2021,10 @@ func (s *Server) index(writer http.ResponseWriter, request *http.Request) {
 }
 
 func (s *Server) loginPage(writer http.ResponseWriter, request *http.Request) {
+	if s.proxyAuth != nil {
+		http.Redirect(writer, request, "/", http.StatusFound)
+		return
+	}
 	if s.authenticated(request) {
 		http.Redirect(writer, request, "/", http.StatusFound)
 		return

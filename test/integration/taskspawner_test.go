@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -2639,7 +2640,7 @@ var _ = Describe("TaskSpawner Controller", func() {
 			}
 		}
 
-		It("Should accept an unscoped pullRequestAuthor rule and reject invalid ones", func() {
+		It("Should accept unscoped author and reviewer rules and reject invalid ones", func() {
 			By("Creating a namespace and workspace")
 			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "test-taskspawner-exclude-filters"}}
 			Expect(k8sClient.Create(ctx, ns)).Should(Succeed())
@@ -2667,6 +2668,44 @@ var _ = Describe("TaskSpawner Controller", func() {
 			Expect(stored.Spec.When.GitHubWebhook.ExcludeFilters).To(HaveLen(1))
 			Expect(stored.Spec.When.GitHubWebhook.ExcludeFilters[0].PullRequestAuthor).To(Equal("dependabot[bot]"))
 			Expect(stored.Spec.When.GitHubWebhook.ExcludeFilters[0].Event).To(BeEmpty())
+
+			By("Accepting requestedReviewer in filters and unscoped exclusions")
+			reviewer := newSpawner(ns.Name, "requested-reviewer-valid", &kelos.GitHubWebhook{
+				Events: []string{"pull_request"},
+				Filters: []kelos.GitHubWebhookFilter{{
+					Event:             "pull_request",
+					Action:            "review_requested",
+					RequestedReviewer: "gunju-kim",
+				}},
+				ExcludeFilters: []kelos.GitHubWebhookFilter{{RequestedReviewer: "reviewer-bot"}},
+			})
+			Expect(k8sClient.Create(ctx, reviewer)).Should(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: reviewer.Name, Namespace: ns.Name}, stored)).Should(Succeed())
+			Expect(stored.Spec.When.GitHubWebhook.Filters).To(Equal(reviewer.Spec.When.GitHubWebhook.Filters))
+			Expect(stored.Spec.When.GitHubWebhook.ExcludeFilters).To(Equal(reviewer.Spec.When.GitHubWebhook.ExcludeFilters))
+
+			By("Enforcing the requestedReviewer length bound in filters and exclusions")
+			for _, exclusion := range []bool{false, true} {
+				webhook := &kelos.GitHubWebhook{Events: []string{"pull_request"}}
+				filter := kelos.GitHubWebhookFilter{RequestedReviewer: strings.Repeat("a", kelos.GitHubWebhookFilterRequestedReviewerMaxLength)}
+				if exclusion {
+					webhook.ExcludeFilters = []kelos.GitHubWebhookFilter{filter}
+				} else {
+					filter.Event = "pull_request"
+					webhook.Filters = []kelos.GitHubWebhookFilter{filter}
+				}
+				bounded := newSpawner(ns.Name, fmt.Sprintf("requested-reviewer-length-%t", exclusion), webhook)
+				Expect(k8sClient.Create(ctx, bounded)).Should(Succeed())
+				if exclusion {
+					bounded.Spec.When.GitHubWebhook.ExcludeFilters[0].RequestedReviewer += "a"
+				} else {
+					bounded.Spec.When.GitHubWebhook.Filters[0].RequestedReviewer += "a"
+				}
+				err := k8sClient.Update(ctx, bounded)
+				Expect(err).To(HaveOccurred())
+				Expect(apierrors.IsInvalid(err)).To(BeTrue(), "%v", err)
+				Expect(err.Error()).To(ContainSubstring("requestedReviewer: Too long"))
+			}
 
 			By("Rejecting an accepting filter that omits event")
 			noEvent := newSpawner(ns.Name, "exclude-filters-no-event", &kelos.GitHubWebhook{

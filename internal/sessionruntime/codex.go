@@ -85,23 +85,22 @@ type CodexProvider struct {
 	commandOutputs map[string]*boundedToolOutput
 
 	activeMu          sync.Mutex
-	activeSink        EventSink
-	turnDone          chan codexTurnResult
+	eventSink         EventSink
 	activeTurn        string
 	activeReady       chan struct{}
 	interactionKind   codexInteractionKind
 	interactionCtx    context.Context
 	interactionCancel context.CancelFunc
-	turnMu            sync.Mutex
 	goalCommandMu     sync.Mutex
 	goalMu            sync.Mutex
 	goal              *Goal
 
-	statusMu    sync.Mutex
-	model       string
-	effort      string
-	usage       *RuntimeUsage
-	weeklyLimit *RuntimeRateLimit
+	statusMu      sync.Mutex
+	loopSkillPath string
+	model         string
+	effort        string
+	usage         *RuntimeUsage
+	weeklyLimit   *RuntimeRateLimit
 
 	threadID string
 	done     chan struct{}
@@ -130,13 +129,14 @@ func NewCodexProvider(ctx context.Context, config ProviderConfig) (*CodexProvide
 	}
 
 	provider := &CodexProvider{
-		config:  config,
-		ctx:     providerCtx,
-		cancel:  cancel,
-		cmd:     command,
-		stdin:   stdin,
-		pending: map[string]chan codexResponse{},
-		done:    make(chan struct{}),
+		config:    config,
+		eventSink: config.EventSink,
+		ctx:       providerCtx,
+		cancel:    cancel,
+		cmd:       command,
+		stdin:     stdin,
+		pending:   map[string]chan codexResponse{},
+		done:      make(chan struct{}),
 	}
 	go provider.readLoop(stdout)
 
@@ -161,6 +161,10 @@ func NewCodexProvider(ctx context.Context, config ProviderConfig) (*CodexProvide
 		provider.Close()
 		return nil, err
 	}
+	if err := provider.loadLoopSkill(initCtx); err != nil {
+		provider.Close()
+		return nil, err
+	}
 	if err := provider.loadGoal(initCtx); err != nil {
 		provider.Close()
 		return nil, err
@@ -175,6 +179,38 @@ func NewCodexProvider(ctx context.Context, config ProviderConfig) (*CodexProvide
 	}
 	rateLimitCancel()
 	return provider, nil
+}
+
+func (p *CodexProvider) loadLoopSkill(ctx context.Context) error {
+	result, err := p.request(ctx, "skills/list", map[string]any{"cwds": []string{p.config.WorkingDir}, "forceReload": true})
+	if err != nil {
+		return fmt.Errorf("discovering Codex loop skill: %w", err)
+	}
+	var response struct {
+		Data []struct {
+			Skills []struct {
+				Name    string `json:"name"`
+				Path    string `json:"path"`
+				Enabled bool   `json:"enabled"`
+			} `json:"skills"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(result, &response); err != nil {
+		return fmt.Errorf("decoding Codex skills: %w", err)
+	}
+	path := ""
+	for _, entry := range response.Data {
+		for _, skill := range entry.Skills {
+			if skill.Name == "loop" && skill.Enabled && skill.Path != "" {
+				path = skill.Path
+				break
+			}
+		}
+	}
+	p.statusMu.Lock()
+	p.loopSkillPath = path
+	p.statusMu.Unlock()
+	return nil
 }
 
 func (p *CodexProvider) loadGoal(ctx context.Context) error {
@@ -210,7 +246,9 @@ func (p *CodexProvider) openThread(ctx context.Context) error {
 			if id == "" {
 				return fmt.Errorf("resuming Codex thread %q: response did not include a thread ID", threadID)
 			}
+			p.activeMu.Lock()
 			p.threadID = id
+			p.activeMu.Unlock()
 			p.statusMu.Lock()
 			p.model = codexThreadModel(result)
 			p.effort = codexThreadEffort(result)
@@ -229,7 +267,9 @@ func (p *CodexProvider) startThread(ctx context.Context, statePath string) error
 	if err != nil {
 		return fmt.Errorf("starting Codex thread: %w", err)
 	}
+	p.activeMu.Lock()
 	p.threadID = codexThreadID(result)
+	p.activeMu.Unlock()
 	if p.threadID == "" {
 		return errors.New("starting Codex thread: response did not include a thread ID")
 	}
@@ -306,12 +346,29 @@ func codexTurnID(result json.RawMessage) string {
 	return response.Turn.ID
 }
 
-// RunTurn starts one Codex turn and waits for its completion notification.
-func (p *CodexProvider) RunTurn(ctx context.Context, input TurnInput, sink EventSink) error {
-	return p.runInteraction(ctx, sink, codexInteractionMessage, func() (bool, error) {
+// StartTurn submits one Codex turn to the session event stream.
+func (p *CodexProvider) StartTurn(ctx context.Context, input TurnInput) error {
+	return p.startTurn(ctx, codexTurnInputItems(input))
+}
+
+// StartLoop invokes the enabled loop skill through Codex's native skill input.
+func (p *CodexProvider) StartLoop(ctx context.Context, text string) error {
+	p.statusMu.Lock()
+	path := p.loopSkillPath
+	p.statusMu.Unlock()
+	if path == "" {
+		return errors.New("Codex has no enabled loop skill")
+	}
+	input := codexTurnInputItems(TurnInput{Text: "$loop" + strings.TrimPrefix(text, "/loop")})
+	input = append(input, map[string]any{"type": "skill", "name": "loop", "path": path})
+	return p.startTurn(ctx, input)
+}
+
+func (p *CodexProvider) startTurn(ctx context.Context, input []map[string]any) error {
+	return p.startInteraction(ctx, codexInteractionMessage, func(ready chan struct{}) (bool, error) {
 		params := map[string]any{
 			"threadId": p.threadID,
-			"input":    codexTurnInputItems(input),
+			"input":    input,
 		}
 		if p.config.Model != "" {
 			params["model"] = p.config.Model
@@ -327,7 +384,7 @@ func (p *CodexProvider) RunTurn(ctx context.Context, input TurnInput, sink Event
 		if turnID == "" {
 			return false, errors.New("starting Codex turn: response did not include a turn ID")
 		}
-		p.setActiveTurn(turnID)
+		p.setActiveTurn(turnID, ready)
 		return true, nil
 	})
 }
@@ -351,8 +408,11 @@ func (p *CodexProvider) recordShellCommand(ctx context.Context, record shellComm
 	return nil
 }
 
-func (p *CodexProvider) RunGoal(ctx context.Context, command goalCommand, sink EventSink) error {
-	return p.runInteraction(ctx, sink, codexInteractionGoal, func() (bool, error) {
+func (p *CodexProvider) StartGoal(ctx context.Context, command goalCommand) error {
+	p.activeMu.Lock()
+	sink := p.eventSink
+	p.activeMu.Unlock()
+	return p.startInteraction(ctx, codexInteractionGoal, func(chan struct{}) (bool, error) {
 		if err := p.applyGoalCommand(ctx, command, sink); err != nil {
 			return false, err
 		}
@@ -373,71 +433,68 @@ func (p *CodexProvider) ActiveGoal() *Goal {
 	return cloneGoal(p.goal)
 }
 
-func (p *CodexProvider) runInteraction(ctx context.Context, sink EventSink, kind codexInteractionKind, start func() (bool, error)) error {
-	p.turnMu.Lock()
-	defer p.turnMu.Unlock()
-
-	done := make(chan codexTurnResult, 1)
-	ready := make(chan struct{})
-	interactionCtx, interactionCancel := context.WithCancel(ctx)
+func (p *CodexProvider) SetEventSink(sink EventSink) {
 	p.activeMu.Lock()
-	p.activeSink = sink
-	p.turnDone = done
+	p.eventSink = sink
+	p.activeMu.Unlock()
+}
+
+func (p *CodexProvider) startInteraction(ctx context.Context, kind codexInteractionKind, start func(chan struct{}) (bool, error)) error {
+	p.activeMu.Lock()
+	ready := make(chan struct{})
 	p.activeReady = ready
 	p.interactionKind = kind
-	p.interactionCtx = interactionCtx
-	p.interactionCancel = interactionCancel
+	p.interactionCtx, p.interactionCancel = context.WithCancel(ctx)
 	if p.activeTurn != "" {
-		close(ready)
+		close(p.activeReady)
 	}
+	sink := p.eventSink
 	p.activeMu.Unlock()
-	p.emitRuntimeStatus(sink)
-	defer func() {
-		interactionCancel()
-		p.activeMu.Lock()
+	if sink != nil {
+		p.emitRuntimeStatus(sink)
+	}
+	running, err := start(ready)
+	if err != nil {
+		p.completeInteraction(ready, codexTurnResult{status: "failed", error: err.Error()})
+	} else if !running {
+		p.completeInteraction(ready, codexTurnResult{status: "completed"})
+	}
+	return err
+}
+
+func (p *CodexProvider) completeInteraction(ready chan struct{}, result codexTurnResult) {
+	p.activeMu.Lock()
+	if p.activeReady != ready || p.interactionKind == "" {
+		p.activeMu.Unlock()
+		return
+	}
+	sink := p.eventSink
+	p.activeTurn = ""
+	p.interactionKind = ""
+	if ready != nil {
 		select {
 		case <-ready:
 		default:
 			close(ready)
 		}
-		p.activeSink = nil
-		p.turnDone = nil
-		p.activeTurn = ""
-		p.activeReady = nil
-		p.interactionKind = ""
-		p.interactionCtx = nil
-		p.interactionCancel = nil
-		p.activeMu.Unlock()
-	}()
-
-	wait, err := start()
-	if err != nil || !wait {
-		return err
 	}
-	select {
-	case result := <-done:
-		if result.status == "interrupted" {
-			return ErrTurnInterrupted
-		}
-		if result.status == "failed" {
-			if result.error == "" {
-				result.error = "Codex turn " + result.status
-			}
-			return errors.New(result.error)
-		}
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-p.done:
-		if p.readErr != nil {
-			return p.readErr
-		}
-		return errors.New("Codex app-server stopped")
+	p.activeReady = nil
+	if p.interactionCancel != nil {
+		p.interactionCancel()
+	}
+	p.interactionCtx, p.interactionCancel = nil, nil
+	p.activeMu.Unlock()
+	if sink != nil {
+		sink.Emit(Event{Type: EventTurnCompleted, Status: result.status, Text: result.error})
 	}
 }
 
-func (p *CodexProvider) setActiveTurn(turnID string) {
+func (p *CodexProvider) setActiveTurn(turnID string, ready chan struct{}) {
 	p.activeMu.Lock()
+	defer p.activeMu.Unlock()
+	if p.interactionKind == "" || (ready != nil && p.activeReady != ready) {
+		return
+	}
 	p.activeTurn = turnID
 	if p.activeReady != nil {
 		select {
@@ -446,7 +503,6 @@ func (p *CodexProvider) setActiveTurn(turnID string) {
 			close(p.activeReady)
 		}
 	}
-	p.activeMu.Unlock()
 }
 
 func codexTurnInputItems(input TurnInput) []map[string]any {
@@ -627,7 +683,7 @@ func (p *CodexProvider) Interrupt(ctx context.Context) error {
 	turnID := p.activeTurn
 	ready := p.activeReady
 	kind := p.interactionKind
-	sink := p.activeSink
+	sink := p.eventSink
 	p.activeMu.Unlock()
 	if kind == "" || ready == nil {
 		return ErrNoActiveTurn
@@ -777,13 +833,38 @@ func (p *CodexProvider) readLoop(reader io.Reader) {
 }
 
 func (p *CodexProvider) handleNotification(method string, params json.RawMessage) {
+	var identity struct {
+		ThreadID string `json:"threadId"`
+	}
+	_ = json.Unmarshal(params, &identity)
 	p.activeMu.Lock()
-	sink := p.activeSink
-	done := p.turnDone
+	threadID := p.threadID
+	p.activeMu.Unlock()
+	if identity.ThreadID != "" && threadID != "" && identity.ThreadID != threadID {
+		return
+	}
+	p.activeMu.Lock()
+	sink := p.eventSink
 	kind := p.interactionKind
+	ready := p.activeReady
 	p.activeMu.Unlock()
 
 	switch method {
+	case "skills/changed":
+		go func() {
+			ctx, cancel := context.WithTimeout(p.ctx, 30*time.Second)
+			defer cancel()
+			if err := p.loadLoopSkill(ctx); err != nil {
+				if sink != nil {
+					sink.Emit(Event{Type: EventError, Text: err.Error()})
+				}
+				return
+			}
+			if sink != nil {
+				p.emitRuntimeStatus(sink)
+			}
+		}()
+		return
 	case "thread/goal/updated":
 		goal, err := decodeCodexGoal(params)
 		if err == nil && goal != nil {
@@ -824,13 +905,24 @@ func (p *CodexProvider) handleNotification(method string, params json.RawMessage
 	}
 	if method == "turn/started" {
 		if turnID := codexNotificationTurnID(params); turnID != "" {
-			p.setActiveTurn(turnID)
+			p.activeMu.Lock()
+			if p.interactionKind == "" {
+				p.interactionKind = codexInteractionMessage
+				p.activeReady = make(chan struct{})
+				p.interactionCtx, p.interactionCancel = context.WithCancel(p.ctx)
+			}
+			p.activeMu.Unlock()
+			p.setActiveTurn(turnID, nil)
+			if sink != nil {
+				sink.Emit(Event{Type: EventTurnStarted, Status: "running"})
+			}
 		}
 		return
 	}
 	if method == "turn/completed" {
 		var value struct {
 			Turn struct {
+				ID     string          `json:"id"`
 				Status string          `json:"status"`
 				Error  json.RawMessage `json:"error"`
 			} `json:"turn"`
@@ -840,14 +932,18 @@ func (p *CodexProvider) handleNotification(method string, params json.RawMessage
 			if len(value.Turn.Error) > 0 && string(value.Turn.Error) != "null" {
 				result.error = string(value.Turn.Error)
 			}
+			if result.status == "failed" && result.error == "" {
+				result.error = "Codex turn failed"
+			}
 			p.activeMu.Lock()
+			if value.Turn.ID != "" && p.activeTurn != "" && value.Turn.ID != p.activeTurn {
+				p.activeMu.Unlock()
+				return
+			}
 			p.activeTurn = ""
 			p.activeMu.Unlock()
-			if done != nil && (result.status == "failed" || result.status == "interrupted" || kind != codexInteractionGoal || !p.goalIsActive()) {
-				select {
-				case done <- result:
-				default:
-				}
+			if result.status == "failed" || result.status == "interrupted" || kind != codexInteractionGoal || !p.goalIsActive() {
+				p.completeInteraction(ready, result)
 			}
 		}
 		p.clearCodexCommandOutputs()
@@ -904,17 +1000,14 @@ func (p *CodexProvider) finishInteractionIfGoalStopped() {
 		return
 	}
 	p.activeMu.Lock()
-	done := p.turnDone
 	turnID := p.activeTurn
 	kind := p.interactionKind
+	ready := p.activeReady
 	p.activeMu.Unlock()
-	if done == nil || turnID != "" || kind != codexInteractionGoal {
+	if turnID != "" || kind != codexInteractionGoal {
 		return
 	}
-	select {
-	case done <- codexTurnResult{status: "completed"}:
-	default:
-	}
+	p.completeInteraction(ready, codexTurnResult{status: "completed"})
 }
 
 func (p *CodexProvider) emitRuntimeStatus(sink EventSink) {
@@ -927,7 +1020,10 @@ func (p *CodexProvider) emitRuntimeStatus(sink EventSink) {
 func (p *CodexProvider) runtimeStatusSnapshot() RuntimeStatus {
 	p.statusMu.Lock()
 	defer p.statusMu.Unlock()
-	status := RuntimeStatus{}
+	status := RuntimeStatus{Commands: []string{"shell", "goal"}}
+	if p.loopSkillPath != "" {
+		status.Commands = append(status.Commands, "loop")
+	}
 	status.Model = p.model
 	status.Effort = p.effort
 	if status.Effort == "" {
@@ -1215,7 +1311,7 @@ func (p *CodexProvider) handleCodexInputRequest(id json.RawMessage, params json.
 	}
 
 	p.activeMu.Lock()
-	sink := p.activeSink
+	sink := p.eventSink
 	interactionCtx := p.interactionCtx
 	p.activeMu.Unlock()
 	if interactionCtx == nil {
@@ -1251,7 +1347,7 @@ func (p *CodexProvider) rejectUnsupportedRequest(id json.RawMessage, method stri
 
 func (p *CodexProvider) emitUnsupportedRequest(method string) {
 	p.activeMu.Lock()
-	sink := p.activeSink
+	sink := p.eventSink
 	p.activeMu.Unlock()
 	if sink != nil {
 		sink.Emit(Event{
@@ -1282,6 +1378,10 @@ func (p *CodexProvider) writeCodexError(id json.RawMessage, code int, message st
 // Done closes when Codex app-server can no longer serve turns.
 func (p *CodexProvider) Done() <-chan struct{} {
 	return p.done
+}
+
+func (p *CodexProvider) providerError() error {
+	return p.readErr
 }
 
 // Close stops Codex app-server.

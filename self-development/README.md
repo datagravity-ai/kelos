@@ -14,9 +14,10 @@ for the sibling
 [`kelos-dev/open-actions`](https://github.com/kelos-dev/open-actions)
 repository.
 
-[`cs`](cs) creates persistent interactive Codex environments for developing
-Kelos with the same Workspace, credentials, model, effort, and Git identity as
-the `kelos-workers` SessionSpawner.
+[`cs`](cs) creates persistent interactive Claude Code environments using `opus`
+and the `CLAUDE_CODE_OAUTH_TOKEN` key in the shared `kelos-credentials` Secret.
+It shares the Workspace, effort, and Git identity with the `kelos-workers`
+SessionSpawner, which uses GPT-6.1 Sol through Codex.
 
 ## How It Works
 
@@ -54,20 +55,18 @@ discovery jobs.
 
 | Spawner | Trigger | Agent | Description |
 |---|---|---|---|
-| **kelos-workers** | Webhook: issue comment `/kelos pick-up` | Codex | Creates a durable Session with the open issue URL and a dedicated issue branch |
-| **kelos-planner** | Webhook: issue comment `/kelos plan` | Codex | Investigates an issue and posts a structured implementation plan — advisory only, no code changes |
-| **kelos-reviewer** | Webhook: PR comment `/kelos review` | Codex | Reviews PRs on demand — analyzes code, checks conventions, and updates a sticky review comment |
-| **kelos-claude-reviewer** | Webhook: PR comment `/kelos claude-review` | Claude Fable | Runs an additional code review path with Claude Code and updates a Claude-specific sticky review comment |
-| **kelos-api-reviewer** | Webhook: issue/PR comment `/kelos api-review` | Codex | Reviews Kubernetes API design on issues or PRs — naming, compatibility, CRD validation |
-| **kelos-claude-api-reviewer** | Webhook: issue/PR comment `/kelos claude-api-review` | Claude Fable | Runs an additional Kubernetes API design review path with Claude Code and updates Claude-specific sticky PR comments |
-| **kelos-pr-responder** | Webhook: PR comment/review `/kelos pick-up` | Codex | Creates a durable Session with the open PR URL on its existing branch |
-| **kelos-triage** | Webhook: issue opened/labeled/reopened (`needs-actor`) | Codex | Classifies issues by kind/priority, detects duplicates, and recommends an actor |
-| **kelos-fake-user** | Cron (daily 09:00 UTC) | Codex | Tests DX as a new user and maintains one unassigned issue slot for the highest-impact problem found |
-| **kelos-fake-strategist** | Cron (every 12 hours) | Codex | Explores new use cases, integrations, and API ideas while maintaining one unassigned strategic issue slot |
-| **kelos-config-update** | Cron (daily 18:00 UTC) | Codex | Reviews recent PR feedback and creates or updates unassigned configuration PRs accordingly |
-| **kelos-self-update** | Cron (daily 06:00 UTC) | Codex | Reviews prompts, configs, and workflow files while maintaining one unassigned improvement issue slot |
-| **kelos-image-update** | Cron (daily 03:00 UTC) | Codex | Checks for newer agent image versions and creates or updates unassigned PRs for them |
-| **kelos-squash-commits** | Webhook: PR comment `/kelos squash-commits` | Codex | Rebases and squashes PR branch commits into a single clean commit |
+| **kelos-workers** | Webhook: issue comment `/kelos pick-up` | GPT-6.1 Sol | Creates a durable Session with the open issue URL and a dedicated issue branch |
+| **kelos-planner** | Webhook: issue comment `/kelos plan` | Claude Opus | Investigates an issue and posts a structured implementation plan — advisory only, no code changes |
+| **kelos-reviewer** | Webhook: PR comment `/kelos review` | Claude Opus | Reviews PRs on demand — analyzes code, checks conventions, and updates a sticky review comment |
+| **kelos-api-reviewer** | Webhook: issue/PR comment `/kelos api-review` | Claude Opus | Reviews Kubernetes API design on issues or PRs — naming, compatibility, CRD validation |
+| **kelos-pr-responder** | Webhook: PR comment/review `/kelos pick-up` | GPT-6.1 Sol | Creates a durable Session with the open PR URL on its existing branch |
+| **kelos-triage** | Webhook: issue opened/labeled/reopened (`needs-actor`) | Claude Opus | Classifies issues by kind/priority, detects duplicates, and recommends an actor |
+| **kelos-fake-user** | Cron (daily 09:00 UTC) | Claude Sonnet | Tests DX as a new user and maintains one unassigned issue slot for the highest-impact problem found |
+| **kelos-fake-strategist** | Cron (every 12 hours) | Claude Opus | Explores new use cases, integrations, and API ideas while maintaining one unassigned strategic issue slot |
+| **kelos-config-update** | Cron (daily 18:00 UTC) | Claude Opus | Reviews recent PR feedback and creates or updates unassigned configuration PRs accordingly |
+| **kelos-self-update** | Cron (daily 06:00 UTC) | Claude Opus | Reviews prompts, configs, and workflow files while maintaining one unassigned improvement issue slot |
+| **kelos-image-update** | Cron (daily 03:00 UTC) | Claude Sonnet | Checks for newer agent image versions and creates or updates unassigned PRs for them |
+| **kelos-squash-commits** | Webhook: PR comment `/kelos squash-commits` | Claude Sonnet | Rebases and squashes PR branch commits into a single clean commit |
 
 ### kelos-workers.yaml
 
@@ -79,7 +78,7 @@ terminal clients after the initial turn.
 | | |
 |---|---|
 | **Trigger** | GitHub `issue_comment` webhook with an exact `/kelos pick-up` command from `gjkim42` on an open issue |
-| **Agent** | Codex |
+| **Agent** | GPT-6.1 Sol via Codex |
 | **Storage** | 10 GiB persistent volume per created Session |
 
 **Key features:**
@@ -102,7 +101,7 @@ Reacts to `/kelos plan` comments on open issues. Investigates the issue, inspect
 | | |
 |---|---|
 | **Trigger** | GitHub `issue_comment` webhook with `/kelos plan` |
-| **Agent** | Codex |
+| **Agent** | Claude Opus via Claude Code |
 | **Concurrency** | 2 |
 
 **Key features:**
@@ -128,11 +127,10 @@ posts `/kelos review`.
 | | |
 |---|---|
 | **Trigger** | GitHub PR comment webhook with `/kelos review` from a maintainer or `kelos-bot[bot]` |
-| **Agent** | Codex |
+| **Agent** | Claude Opus via Claude Code |
 | **Concurrency** | 3 |
 
 **Key features:**
-- Uses the `review-all` skill to reconcile two independent reviews of the same diff
 - Reads the full diff and surrounding context to understand changes
 - Checks correctness, tests, project conventions, security, and code quality
 - Reviews test adequacy without rerunning local validation
@@ -149,31 +147,6 @@ posts `/kelos review`.
 kubectl apply -f self-development/kelos-reviewer.yaml
 ```
 
-### kelos-claude-reviewer.yaml
-
-Runs a Claude Fable review when a maintainer posts `/kelos claude-review`,
-using the Claude Code runner. It uses a separate trigger from the Codex
-reviewer.
-
-| | |
-|---|---|
-| **Trigger** | GitHub PR comment webhook with `/kelos claude-review` from a maintainer or `kelos-bot[bot]` |
-| **Agent** | Claude Fable via Claude Code |
-| **Concurrency** | 3 |
-
-**Key features:**
-
-- Uses the same code review checklist and structured sticky comment output as `kelos-reviewer`
-- Creates or updates a single Claude-specific sticky PR comment with the structured review result
-- Provides an independent model-family review without replacing the Codex reviewer
-- Read-only agent — does not push code or modify files
-
-**Deploy:**
-
-```bash
-kubectl apply -f self-development/kelos-claude-reviewer.yaml
-```
-
 ### kelos-api-reviewer.yaml
 
 Reviews issues and pull requests for Kubernetes API design conventions,
@@ -183,7 +156,7 @@ compatibility, and best practices when a maintainer or `kelos-bot[bot]` posts
 | | |
 |---|---|
 | **Trigger** | GitHub issue/PR comment webhook with `/kelos api-review` from a maintainer or `kelos-bot[bot]` |
-| **Agent** | Codex |
+| **Agent** | Claude Opus via Claude Code |
 | **Concurrency** | 3 |
 
 **Key features:**
@@ -206,34 +179,6 @@ compatibility, and best practices when a maintainer or `kelos-bot[bot]` posts
 kubectl apply -f self-development/kelos-api-reviewer.yaml
 ```
 
-### kelos-claude-api-reviewer.yaml
-
-Runs a Claude Fable API design review when a maintainer posts
-`/kelos claude-api-review`, using the Claude Code runner. It uses a separate
-trigger from the Codex API reviewer.
-
-| | |
-|---|---|
-| **Trigger** | GitHub issue/PR comment webhook with `/kelos claude-api-review` from a maintainer or `kelos-bot[bot]` |
-| **Agent** | Claude Fable via Claude Code |
-| **Concurrency** | 3 |
-
-**Key features:**
-
-- Uses the `api-review` skill for API design analysis and verdicts
-- Uses the same Kubernetes API design checklist and structured output as `kelos-api-reviewer`
-- Works on both issues and pull requests
-- Creates or updates a Claude-specific sticky PR comment for pull requests
-- Posts a structured API design comment for issues
-- Provides an independent model-family review without replacing the Codex API reviewer
-- Read-only agent — does not push code or modify files
-
-**Deploy:**
-
-```bash
-kubectl apply -f self-development/kelos-claude-api-reviewer.yaml
-```
-
 ### kelos-pr-responder.yaml
 
 Creates a durable Session when the maintainer posts an exact `/kelos pick-up`
@@ -243,7 +188,7 @@ PR URL and asks the agent to find the best way to address it.
 | | |
 |---|---|
 | **Trigger** | GitHub PR comment or review webhook with an exact `/kelos pick-up` command from `gjkim42` on an open PR; review events also exclude drafts |
-| **Agent** | Codex |
+| **Agent** | GPT-6.1 Sol via Codex |
 | **Storage** | 10 GiB persistent volume per created Session |
 
 **Key features:**
@@ -265,7 +210,7 @@ Picks up open GitHub issues labeled `needs-actor` and performs automated triage.
 | | |
 |---|---|
 | **Trigger** | GitHub issue opened/labeled/reopened webhooks with `needs-actor` |
-| **Agent** | Codex |
+| **Agent** | Claude Opus via Claude Code |
 | **Concurrency** | 8 |
 
 **For each issue, the agent:**
@@ -290,7 +235,7 @@ Runs daily to test the developer experience as if you were a new user.
 | | |
 |---|---|
 | **Trigger** | Cron `0 9 * * *` (daily at 09:00 UTC) |
-| **Agent** | Codex |
+| **Agent** | Claude Sonnet via Claude Code |
 | **Concurrency** | 1 |
 
 Each run picks one focus area:
@@ -314,7 +259,7 @@ Runs every 12 hours to strategically explore new ways to use and improve Kelos.
 | | |
 |---|---|
 | **Trigger** | Cron `0 */12 * * *` (every 12 hours) |
-| **Agent** | Codex |
+| **Agent** | Claude Opus via Claude Code |
 | **Concurrency** | 1 |
 
 Each run picks one focus area:
@@ -338,7 +283,7 @@ Runs daily to update agent configuration based on patterns found in PR reviews.
 | | |
 |---|---|
 | **Trigger** | Cron `0 18 * * *` (daily at 18:00 UTC) |
-| **Agent** | Codex |
+| **Agent** | Claude Opus via Claude Code |
 | **Concurrency** | 1 |
 
 Reviews recent PRs and their review comments to identify recurring feedback patterns, then updates agent configuration accordingly:
@@ -360,7 +305,7 @@ Runs daily to review and update the self-development workflow files themselves.
 | | |
 |---|---|
 | **Trigger** | Cron `0 6 * * *` (daily at 06:00 UTC) |
-| **Agent** | Codex |
+| **Agent** | Claude Opus via Claude Code |
 | **Concurrency** | 1 |
 
 Each run picks one focus area:
@@ -385,7 +330,7 @@ Runs daily to check for newer versions of coding agent images and creates PRs to
 | | |
 |---|---|
 | **Trigger** | Cron `0 3 * * *` (daily at 03:00 UTC) |
-| **Agent** | Codex |
+| **Agent** | Claude Sonnet via Claude Code |
 | **Concurrency** | 1 |
 
 Checks the following coding agents for updates:
@@ -410,7 +355,7 @@ Rebases and squashes PR branch commits into a single clean commit when a maintai
 | | |
 |---|---|
 | **Trigger** | GitHub PR comment webhook with `/kelos squash-commits` |
-| **Agent** | Codex |
+| **Agent** | Claude Sonnet via Claude Code |
 | **Concurrency** | 1 |
 
 **Key features:**
@@ -428,8 +373,8 @@ kubectl apply -f self-development/kelos-squash-commits.yaml
 
 ## Interactive Development Session
 
-`cs NAME` creates a persistent Codex Session with the same Workspace,
-credentials, model, effort, Git identity, and `base-agent` AgentConfig as
+`cs NAME` creates a persistent Claude Code Session using `opus` with the same
+Workspace, credentials Secret, effort, Git identity, and `base-agent` AgentConfig as
 `kelos-workers`. It does not use the worker's resource requests and limits,
 allowing namespace resource defaults to apply.
 
@@ -559,29 +504,23 @@ retrigger it with a fresh comment or relabel after deployment.
 
 ### 5. Agent Credentials Secret
 
-Create a secret with your agent credentials. Most checked-in spawners use
-Codex OAuth, and the Claude reviewer spawners use Claude Code with OAuth from
-the same Secret:
+All spawners share the `kelos-credentials` Secret and use OAuth. Workers and
+PR responders use Codex; other agents use Claude Code. Run `codex login`
+locally, then create or update the Secret with both credentials:
 
 ```bash
 kubectl create secret generic kelos-credentials \
-  --from-file=CODEX_AUTH_JSON=$HOME/.codex/auth.json \
-  --from-literal=CLAUDE_CODE_OAUTH_TOKEN=<your-claude-code-oauth-token>
-kubectl label secret kelos-credentials kelos.dev/codex-oauth-refresh=true
+  --from-literal=CLAUDE_CODE_OAUTH_TOKEN=<your-claude-code-oauth-token> \
+  --from-file=CODEX_AUTH_JSON="$HOME/.codex/auth.json" \
+  --dry-run=client -o yaml | kubectl apply -f -
+kubectl label secret kelos-credentials kelos.dev/codex-oauth-refresh=true --overwrite
 ```
 
-Labeling the OAuth Secret opts it into controller-managed Codex OAuth refresh.
-Kelos creates one CronJob per labeled Secret with a non-empty `CODEX_AUTH_JSON`
-key, skips unlabeled Secrets and API-key credentials, and preserves other keys
-such as `CLAUDE_CODE_OAUTH_TOKEN`.
+The label enables scheduled refresh of `CODEX_AUTH_JSON`; the shared Claude
+credential is preserved.
 
-For API-key auth, change the task template credential type to `api-key` and
-create the secret without the OAuth refresh label:
-
-```bash
-kubectl create secret generic kelos-credentials \
-  --from-literal=CODEX_API_KEY=<your-openai-api-key>
-```
+For API-key auth, change each agent's worker credential type to `api-key` and
+use `CODEX_API_KEY` for Codex or `ANTHROPIC_API_KEY` for Claude Code.
 
 ## Customizing for Your Repository
 
@@ -657,17 +596,18 @@ To adapt these examples for your own repository:
    - Retrigger an existing issue or PR with a fresh comment or relabel after deployment
    - Duplicate a filter if you need to allow multiple specific GitHub usernames
 
-5. **Adjust the Codex model and effort:**
+5. **Adjust the model and effort:**
    ```yaml
    spec:
      taskTemplate:
        worker:
-         model: gpt-6-astra
+         model: opus
          effort: xhigh
    ```
 
-   The checked-in spawners use `gpt-6-astra` for high-capability tasks and
-   `gpt-5.6-luna` for lower-cost routine tasks.
+   Workers and PR responders use `gpt-6.1-sol` through Codex. The other
+   spawners use Claude Code with `opus` for high-capability tasks and `sonnet`
+   for lower-cost routine tasks.
    They set `effort` by role: `xhigh` for complex planning, coding, strategy,
    review, PR update, and configuration update workflows; `high` for triage;
    and `medium` for routine image, fake-user, and squash workflows.
