@@ -573,6 +573,11 @@ func (h *SlackHandler) createTask(ctx context.Context, spawner *kelos.TaskSpawne
 		requester = msg.ReactionUserID
 	}
 	task.Annotations[reporting.AnnotationSlackUserID] = requester
+	if slackCfg := spawner.Spec.When.Slack; slackCfg != nil {
+		if reply := reactionReply(msg.Reaction, slackCfg.Triggers); reply != "" {
+			task.Annotations[reporting.AnnotationSlackReply] = string(reply)
+		}
+	}
 
 	// Only enable Slack reporting label and thread_ts for real message
 	// timestamps. Slash commands have no thread to reply to, so skip the

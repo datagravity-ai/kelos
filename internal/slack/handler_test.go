@@ -849,6 +849,7 @@ func TestHandleReactionAdded(t *testing.T) {
 		replies    string
 		wantPrompt string
 		wantThread string
+		wantReply  string
 		wantNoAPI  bool
 	}{
 		{
@@ -859,6 +860,19 @@ func TestHandleReactionAdded(t *testing.T) {
 			wantPrompt: "SlackReaction :gear: by UREACTOR on C1/2222222222.222222 thread=" +
 				" url=https://example.slack.com/archives/C1/p2222222222222222\nAcme went live today",
 			wantThread: "2222222222.222222",
+		},
+		{
+			name: "the matched trigger's reply is recorded on the task",
+			slackCfg: &kelos.Slack{Triggers: []kelos.SlackTrigger{
+				{Reaction: &kelos.SlackReactionTrigger{Name: "eyes"}},
+				{Reaction: &kelos.SlackReactionTrigger{Name: "gear", Reply: kelos.SlackReactionReplyOnOutput}},
+			}},
+			event:   gearEvent,
+			history: topLevelHistory,
+			wantPrompt: "SlackReaction :gear: by UREACTOR on C1/2222222222.222222 thread=" +
+				" url=https://example.slack.com/archives/C1/p2222222222222222\nAcme went live today",
+			wantThread: "2222222222.222222",
+			wantReply:  "OnOutput",
 		},
 		{
 			name:     "skin-tone variant matches its base name",
@@ -1039,6 +1053,9 @@ func TestHandleReactionAdded(t *testing.T) {
 			}
 			if got := task.Annotations[reporting.AnnotationSlackThreadTS]; got != tt.wantThread {
 				t.Errorf("Slack thread annotation = %q, want %q", got, tt.wantThread)
+			}
+			if got := task.Annotations[reporting.AnnotationSlackReply]; got != tt.wantReply {
+				t.Errorf("Slack reply annotation = %q, want %q", got, tt.wantReply)
 			}
 		})
 	}

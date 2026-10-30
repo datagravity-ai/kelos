@@ -7926,6 +7926,20 @@ spec:
                                   minLength: 1
                                   pattern: ^[^:\sA-Z]+$
                                   type: string
+                                reply:
+                                  description: |-
+                                    Reply controls the thread replies Kelos posts for a Task this reaction
+                                    starts. Always, the default, posts "Working on your request..." when
+                                    the Task starts, updates it with progress, and replaces it with the
+                                    result. OnOutput posts nothing while the Task runs and, when it
+                                    succeeds, posts only a response that has a letter or digit in it or a
+                                    pull request link. An agent that decides the reaction is not for it
+                                    then leaves the thread untouched by ending with no response. A failed
+                                    Task is reported the same under both. SessionSpawners ignore this field.
+                                  enum:
+                                  - Always
+                                  - OnOutput
+                                  type: string
                               required:
                               - name
                               type: object

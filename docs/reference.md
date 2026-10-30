@@ -1150,6 +1150,7 @@ to receive refreshed credentials during long-running work.
 | `spec.when.slack.triggers[].mentionOptional` | When `true`, fire on pattern match alone without requiring a bot @-mention | No |
 | `spec.when.slack.triggers[].reaction` | Fire when someone adds an emoji reaction to a message, instead of on a posted message. Cannot be combined with `pattern` or `mentionOptional`. `channels` and `excludeFilters` apply as they do to messages, and `excludePatterns` is matched against the reacted-to message's text, or for a bot message with section or context blocks, against those blocks' text. `botMessagePolicy` does not apply: reactions added by other bots fire the trigger, and only reactions the bot adds itself are ignored. Reactions on anything other than a message are ignored. Each message and emoji creates at most one Task per spawner while that Task exists, so the same emoji added by a second person does not create another (with `taskTemplate.nameTemplate` set, the rendered name decides instead). Stored only in `v1alpha2`; a client that writes the spawner through `v1alpha1` sees the triggers list without its reaction triggers and preserves them in an annotation, so stripping that annotation drops them. Through `v1alpha1`, reaction triggers cannot be removed: they are restored on every write while the annotation is present, even when the client writes empty `triggers`. Requires the Slack app setup described under [Slack reactions](#slack-reactions) | No |
 | `spec.when.slack.triggers[].reaction.name` | The emoji's canonical Slack name, lowercase and without colons (e.g. `gear`, or `+1` rather than its alias `thumbsup`). Slack reports reactions by canonical name, so an alias passes validation but never fires. A skin-tone variant matches its base name. Max 100 characters | Yes (when using `reaction`) |
+| `spec.when.slack.triggers[].reaction.reply` | Which thread replies Kelos posts for a Task this reaction starts. `Always` (default) posts "Working on your request..." when the Task starts, updates it with progress, and replaces it with the result. `OnOutput` posts nothing while the Task runs and, when it succeeds, posts only a response with a letter or digit in it, or a pull request link, so an agent that decides the reaction is not for it leaves the thread untouched by ending with no response. A failed Task is reported the same under both. Ignored by SessionSpawners | No |
 | `spec.when.slack.excludePatterns` | RE2 regex patterns that reject messages when any pattern matches (OR semantics); leading `<@USER_ID>` mentions are stripped before matching; for a reaction trigger, matched against the reacted-to message's text, or the text of a bot message's section and context blocks; does not apply to slash commands | No |
 | `spec.when.webhook.source` | Short identifier for the generic webhook source (lowercase alphanumeric with optional hyphens). On the per-source server it determines the URL path (`/webhook/<source>`); that endpoint is unauthenticated (see [#1040](https://github.com/kelos-dev/kelos/issues/1040)). Set `gatewayRef` to route through a [WebhookGateway](#webhookgateway) | Yes (when using webhook) |
 | `spec.when.webhook.fieldMapping` | Map of template variable name → JSONPath expression evaluated against the request body. Each key becomes a top-level template variable. Lowercase `id`, `title`, `body`, `url` are also exposed as `{{.ID}}`, `{{.Title}}`, `{{.Body}}`, `{{.URL}}`. The `id` key is required (used for delivery deduplication and Task naming) | Yes (when using webhook) |
@@ -1330,6 +1331,14 @@ the channel history, or from the thread when the message is a thread reply. If
 it cannot read the message, it creates no Task and logs the error. The Task
 reports into the thread of the reacted-to message, and its
 `kelos.dev/slack-user-id` annotation names the person who reacted.
+
+A reaction spawner usually fires on reactions that are not meant for it: every
+spawner listening for an emoji in a channel starts on every use of that emoji,
+and its agent has to decide whether the message is its own. Set
+`reply: OnOutput` on the trigger so those runs leave no trace: Kelos posts no
+"Working on your request..." while the Task runs, and nothing when it succeeds
+with an empty response (or one with no letter or digit, such as `...`). A
+response, a pull request link or a failure is still posted.
 
 The Slack app needs two changes before reactions arrive: subscribe to the
 `reaction_added` bot event, and grant the `reactions:read` bot scope. Reading the

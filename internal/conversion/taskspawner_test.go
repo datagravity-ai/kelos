@@ -496,7 +496,7 @@ func TestTaskSpawnerConvert_SlackReactionTriggersRoundTrip(t *testing.T) {
 					Triggers: []v1alpha2.SlackTrigger{
 						{Reaction: &v1alpha2.SlackReactionTrigger{Name: "gear"}},
 						{Pattern: "deploy"},
-						{Reaction: &v1alpha2.SlackReactionTrigger{Name: "+1"}},
+						{Reaction: &v1alpha2.SlackReactionTrigger{Name: "+1", Reply: v1alpha2.SlackReactionReplyOnOutput}},
 					},
 				},
 			},
@@ -510,7 +510,7 @@ func TestTaskSpawnerConvert_SlackReactionTriggersRoundTrip(t *testing.T) {
 	if got := down.Spec.When.Slack.Triggers; len(got) != 1 || got[0].Pattern != "deploy" {
 		t.Errorf("v1alpha1 triggers = %#v, want only the deploy pattern trigger", got)
 	}
-	if raw := down.Annotations[preservedSlackReactionTriggersAnnotation]; raw != `[{"name":"gear"},{"name":"+1"}]` {
+	if raw := down.Annotations[preservedSlackReactionTriggersAnnotation]; raw != `[{"name":"gear"},{"name":"+1","reply":"OnOutput"}]` {
 		t.Errorf("preservation annotation = %q, want the reaction blocks JSON", raw)
 	}
 
@@ -518,7 +518,7 @@ func TestTaskSpawnerConvert_SlackReactionTriggersRoundTrip(t *testing.T) {
 	if err := taskSpawnerToHub(context.Background(), down, up); err != nil {
 		t.Fatalf("taskSpawnerToHub() error = %v", err)
 	}
-	want := []v1alpha2.SlackTrigger{{Pattern: "deploy"}, {Reaction: &v1alpha2.SlackReactionTrigger{Name: "gear"}}, {Reaction: &v1alpha2.SlackReactionTrigger{Name: "+1"}}}
+	want := []v1alpha2.SlackTrigger{{Pattern: "deploy"}, {Reaction: &v1alpha2.SlackReactionTrigger{Name: "gear"}}, {Reaction: &v1alpha2.SlackReactionTrigger{Name: "+1", Reply: v1alpha2.SlackReactionReplyOnOutput}}}
 	if got := up.Spec.When.Slack.Triggers; !reflect.DeepEqual(got, want) {
 		t.Errorf("restored triggers = %#v, want %#v", got, want)
 	}
@@ -570,6 +570,7 @@ func TestTaskSpawnerToHub_InvalidSlackReactionTriggersAnnotationIgnored(t *testi
 		{name: "name with whitespace", raw: `[{"name":"gear box"}]`},
 		{name: "name with uppercase", raw: `[{"name":"Gear"}]`},
 		{name: "empty name", raw: `[{"name":""}]`},
+		{name: "reply outside its enum", raw: `[{"name":"gear","reply":"Never"}]`},
 		{name: "missing name", raw: `[{}]`},
 		{name: "name longer than maxLength", raw: `[{"name":"` + strings.Repeat("a", v1alpha2.SlackReactionMaxLength+1) + `"}]`},
 		{name: "a bare name list rather than reaction blocks", raw: `["gear"]`},

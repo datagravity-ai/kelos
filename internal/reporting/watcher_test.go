@@ -2,6 +2,7 @@ package reporting
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1550,6 +1551,96 @@ func TestSlackTaskReporter_PostsNewReplyOnPhaseChange(t *testing.T) {
 		t.Errorf("text = %q, want %q", posted[0].msg.Text, wantMsgs[0].Text)
 	}
 
+}
+
+func TestSlackTaskReporter_ReplyOnOutput(t *testing.T) {
+	encode := func(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
+
+	tests := []struct {
+		name      string
+		phase     kelos.TaskPhase
+		results   map[string]string
+		wantPost  bool
+		wantPhase string
+	}{
+		{name: "pending posts no accepted reply", phase: kelos.TaskPhasePending},
+		{name: "running posts no accepted or progress reply", phase: kelos.TaskPhaseRunning},
+		{name: "succeeded with no response posts nothing", phase: kelos.TaskPhaseSucceeded, wantPhase: "succeeded"},
+		{
+			name:      "succeeded with a punctuation-only response posts nothing",
+			phase:     kelos.TaskPhaseSucceeded,
+			results:   map[string]string{"response": encode(" ...\n")},
+			wantPhase: "succeeded",
+		},
+		{
+			name:      "succeeded with a response posts it",
+			phase:     kelos.TaskPhaseSucceeded,
+			results:   map[string]string{"response": encode("Created INF-1")},
+			wantPost:  true,
+			wantPhase: "succeeded",
+		},
+		{
+			name:      "succeeded with a pull request posts it",
+			phase:     kelos.TaskPhaseSucceeded,
+			results:   map[string]string{"pr": "https://github.com/org/repo/pull/42"},
+			wantPost:  true,
+			wantPhase: "succeeded",
+		},
+		{name: "failed posts the failure", phase: kelos.TaskPhaseFailed, wantPost: true, wantPhase: "failed"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			task := &kelos.Task{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-task",
+					Namespace: "default",
+					Annotations: map[string]string{
+						AnnotationSlackReporting: "enabled",
+						AnnotationSlackChannel:   "C123ABC",
+						AnnotationSlackThreadTS:  "1234567890.123456",
+						AnnotationSlackReply:     string(kelos.SlackReactionReplyOnOutput),
+					},
+				},
+				Spec: kelos.TaskSpec{
+					Type:   "claude-code",
+					Prompt: "test",
+					Credentials: &kelos.Credentials{
+						Type:      kelos.CredentialTypeOAuth,
+						SecretRef: &kelos.SecretReference{Name: "creds"},
+					},
+				},
+				Status: kelos.TaskStatus{Phase: tt.phase, PodName: "pod", Results: tt.results},
+			}
+
+			cl := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(task).Build()
+
+			var posted int
+			reporter := &fakeSlackReporter{
+				postFn: func(ctx context.Context, channel, threadTS string, msg SlackMessage) (string, error) {
+					posted++
+					return "1234567890.999999", nil
+				},
+			}
+			progress := &fakeProgressReader{text: "Reading the message"}
+			tr := &SlackTaskReporter{Client: cl, Reporter: reporter, ProgressReader: progress}
+
+			if err := tr.ReportTaskStatus(context.Background(), task); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got := posted > 0; got != tt.wantPost {
+				t.Errorf("posted %d replies, want a post: %v", posted, tt.wantPost)
+			}
+
+			var updated kelos.Task
+			if err := cl.Get(context.Background(), client.ObjectKeyFromObject(task), &updated); err != nil {
+				t.Fatalf("getting updated task: %v", err)
+			}
+			if got := updated.Annotations[AnnotationSlackReportPhase]; got != tt.wantPhase {
+				t.Errorf("report phase = %q, want %q", got, tt.wantPhase)
+			}
+		})
+	}
 }
 
 func TestSlackTaskReporter_SkipPaths(t *testing.T) {

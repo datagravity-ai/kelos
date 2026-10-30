@@ -95,6 +95,11 @@ const (
 	// reported to Slack, preventing duplicate API calls on re-list.
 	AnnotationSlackReportPhase = "kelos.dev/slack-report-phase"
 
+	// AnnotationSlackReply records the Reply of the reaction trigger that
+	// started the Task. OnOutput suppresses the accepted and progress replies
+	// and a succeeded reply with no content.
+	AnnotationSlackReply = "kelos.dev/slack-reply"
+
 	// LabelSlackReporting is applied to Tasks created from Slack so that
 	// the reporting and activity loops can list only relevant Tasks.
 	LabelSlackReporting = "kelos.dev/slack-reporting"
@@ -565,6 +570,17 @@ func (tr *SlackTaskReporter) ReportTaskStatus(ctx context.Context, task *kelos.T
 			return tr.updateProgress(ctx, task)
 		}
 		return nil
+	}
+
+	if annotations[AnnotationSlackReply] == string(kelos.SlackReactionReplyOnOutput) {
+		// Nothing is posted while the Task runs, so the accepted phase is
+		// never recorded and the progress and activity loops never start.
+		if desiredPhase == "accepted" {
+			return nil
+		}
+		if desiredPhase == "succeeded" && !hasSlackOutput(task.Status.Results) {
+			return tr.persistSlackReportingState(ctx, task, desiredPhase)
+		}
 	}
 
 	msgs := FormatSlackTransitionMessage(desiredPhase, task.Name, task.Status.Message, task.Status.Results)

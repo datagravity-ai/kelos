@@ -834,7 +834,30 @@ type SlackReactionTrigger struct {
 	// +kubebuilder:validation:MaxLength=100
 	// +kubebuilder:validation:Pattern=`^[^:\sA-Z]+$`
 	Name string `json:"name"`
+
+	// Reply controls the thread replies Kelos posts for a Task this reaction
+	// starts. Always, the default, posts "Working on your request..." when
+	// the Task starts, updates it with progress, and replaces it with the
+	// result. OnOutput posts nothing while the Task runs and, when it
+	// succeeds, posts only a response that has a letter or digit in it or a
+	// pull request link. An agent that decides the reaction is not for it
+	// then leaves the thread untouched by ending with no response. A failed
+	// Task is reported the same under both. SessionSpawners ignore this field.
+	// +optional
+	// +kubebuilder:validation:Enum=Always;OnOutput
+	Reply SlackReactionReply `json:"reply,omitempty"`
 }
+
+// SlackReactionReply controls the thread replies for a reaction-started Task.
+type SlackReactionReply string
+
+const (
+	// SlackReactionReplyAlways posts the accepted, progress and result replies.
+	SlackReactionReplyAlways SlackReactionReply = "Always"
+	// SlackReactionReplyOnOutput posts only a result that carries content, and
+	// a failure.
+	SlackReactionReplyOnOutput SlackReactionReply = "OnOutput"
+)
 
 // BotMessagePolicy controls whether bot-originated messages can trigger a spawner.
 type BotMessagePolicy string

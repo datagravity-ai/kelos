@@ -5,7 +5,9 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/slack-go/slack"
@@ -22,6 +24,19 @@ func decodeResponse(encoded string) string {
 		return encoded
 	}
 	return string(decoded)
+}
+
+// hasSlackOutput reports whether a succeeded Task's results carry anything
+// worth a reply: a pull request link, or a response with a letter or digit in
+// it. A response of only punctuation and space, such as "..." from an agent
+// told to say nothing, counts as none.
+func hasSlackOutput(results map[string]string) bool {
+	if results["pr"] != "" {
+		return true
+	}
+	return strings.IndexFunc(decodeResponse(results["response"]), func(r rune) bool {
+		return unicode.IsLetter(r) || unicode.IsDigit(r)
+	}) != -1
 }
 
 // SlackMessage holds the components of a rich Slack message.

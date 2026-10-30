@@ -615,7 +615,8 @@ func restorePreservedSlackReactionTriggers(annotations map[string]string, slack 
 
 // validSlackReactionTriggers reports whether restored annotation data satisfies
 // every constraint declared on v1alpha2 Slack.Triggers[].Reaction: each name
-// set, bounded, and matching the pattern, and the triggers list, with the
+// set, bounded, and matching the pattern, each reply empty or one of its enum
+// values, and the triggers list, with the
 // existing triggers, within its maxItems. Data that fails any of these is
 // ignored entirely rather than partially applied, so conversion can never
 // produce a hub object that a v1alpha2 write would have rejected.
@@ -628,6 +629,11 @@ func validSlackReactionTriggers(reactions []v1alpha2.SlackReactionTrigger, exist
 			return false
 		}
 		if !slackReactionPattern.MatchString(reaction.Name) {
+			return false
+		}
+		switch reaction.Reply {
+		case "", v1alpha2.SlackReactionReplyAlways, v1alpha2.SlackReactionReplyOnOutput:
+		default:
 			return false
 		}
 	}

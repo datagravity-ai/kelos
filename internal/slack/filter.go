@@ -188,6 +188,20 @@ func matchesReaction(reaction string, triggers []kelos.SlackTrigger) bool {
 	})
 }
 
+// reactionReply returns the Reply of the first reaction trigger that lists
+// reaction, or "" when none does.
+func reactionReply(reaction string, triggers []kelos.SlackTrigger) kelos.SlackReactionReply {
+	if reaction == "" {
+		return ""
+	}
+	for _, t := range triggers {
+		if t.Reaction != nil && t.Reaction.Name == reaction {
+			return t.Reaction.Reply
+		}
+	}
+	return ""
+}
+
 // reactionOnly reports whether every trigger is a reaction trigger, in which
 // case the spawner fires on reactions only.
 func reactionOnly(triggers []kelos.SlackTrigger) bool {
