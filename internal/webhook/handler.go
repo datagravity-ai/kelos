@@ -67,6 +67,11 @@ type WebhookHandler struct {
 
 	githubTokenResolver func(context.Context) (string, error)
 
+	// genericToken returns the bearer token a generic source requires, and
+	// whether one is configured. A nil lookup, or a source with none
+	// configured, accepts deliveries without authentication.
+	genericToken func(source string) (string, bool)
+
 	// gatewayName is the WebhookGateway this handler serves (gateway mode only).
 	// When set, created Tasks are stamped with it so the reporting reconciler can
 	// resolve per-gateway GitHub credentials and API base URL. Empty in --source
@@ -79,6 +84,9 @@ type WebhookHandlerOptions struct {
 	Secret              []byte
 	GitHubAPIBaseURL    string
 	GitHubTokenResolver func(context.Context) (string, error)
+	// GenericToken looks up the bearer token a generic source requires. It is
+	// used only by the generic source.
+	GenericToken func(source string) (string, bool)
 }
 
 // DeliveryCache tracks processed webhook deliveries for idempotency.
@@ -163,6 +171,7 @@ func NewWebhookHandler(ctx context.Context, client client.Client, source Webhook
 		deliveryCache:       NewDeliveryCache(ctx),
 		githubAPIBaseURL:    options.GitHubAPIBaseURL,
 		githubTokenResolver: options.GitHubTokenResolver,
+		genericToken:        options.GenericToken,
 	}, nil
 }
 
@@ -245,6 +254,23 @@ func (h *WebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		eventType = sourceName
+
+		// Authenticate before the delivery cache is touched, so an
+		// unauthenticated request cannot mark a real delivery ID as seen.
+		if h.genericToken != nil {
+			if token, configured := h.genericToken(sourceName); configured {
+				if token == "" {
+					log.Error(fmt.Errorf("token for source %s is empty", sourceName), "Generic webhook token is misconfigured", "env", GenericTokenEnvName(sourceName))
+					http.Error(w, "Service unavailable", http.StatusServiceUnavailable)
+					return
+				}
+				if err := ValidateBearerToken(r.Header.Get("Authorization"), []byte(token)); err != nil {
+					log.Info("Generic webhook token validation failed", "source", sourceName, "error", err.Error())
+					http.Error(w, "Unauthorized", http.StatusUnauthorized)
+					return
+				}
+			}
+		}
 
 		// Single API list call provides matching spawners, avoiding a
 		// redundant list in processWebhook.

@@ -372,14 +372,14 @@ webhookServer:
 
 The webhook URL is `https://your-webhook-domain/webhook/<source>` (e.g., `/webhook/sentry`).
 
+**Bearer token.** To require a token for a source, set `<SOURCE>_WEBHOOK_TOKEN` on the generic webhook server: the source name upper-cased, with `-` replaced by `_` (`ALERTMANAGER_WEBHOOK_TOKEN` for `/webhook/alertmanager`). Put it in the Secret named by `webhookServer.sources.generic.secretName`, which the chart mounts as environment variables. The server then rejects a request to that source with `401` unless it carries `Authorization: Bearer <token>`, before any TaskSpawner is matched. A variable set to an empty value rejects every request to the source with `503`. Request signatures (HMAC) are not validated for generic sources.
+
 > [!WARNING]
-> **The generic webhook endpoint is currently unauthenticated.** The handler does not validate request signatures, so any client that can reach `/webhook/<source>` and matches a registered TaskSpawner can trigger Task creation. Until per-source HMAC validation is implemented (tracked in [#1040](https://github.com/kelos-dev/kelos/issues/1040)), restrict access at the network layer:
+> **A generic source with no token is unauthenticated.** Any client that can reach `/webhook/<source>` and matches a registered TaskSpawner can trigger Task creation. Set a token, or restrict access at the network layer:
 >
 > - Use a `NetworkPolicy` to limit ingress to known sender CIDRs.
 > - Front the endpoint with an Ingress / Gateway that enforces IP allowlisting or mTLS.
 > - Avoid exposing the webhook Service as `LoadBalancer` on a public network unless ingress is otherwise restricted.
->
-> The `webhookServer.sources.generic.secretName` Helm value is reserved for future HMAC validation; it currently mounts env vars that no code reads.
 
 **Configuration:**
 
