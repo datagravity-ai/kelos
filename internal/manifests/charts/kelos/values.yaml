@@ -122,9 +122,10 @@ webhookServer:
     generic:
       enabled: false
       replicas: 1
-      # Reserved for future per-source HMAC validation. The generic endpoint
-      # is currently unauthenticated; when set, these env vars are mounted but
-      # no code reads them.
+      # Secret mounted as environment variables. A key named
+      # <SOURCE>_WEBHOOK_TOKEN (e.g. ALERTMANAGER_WEBHOOK_TOKEN) requires
+      # "Authorization: Bearer <token>" on /webhook/<source>. Sources with no
+      # token are unauthenticated.
       secretName: ""
       service:
         # Service type for the webhook endpoint.

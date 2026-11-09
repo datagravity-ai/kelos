@@ -16,8 +16,8 @@ the stack trace and opens a PR with a fix.
 1. **Webhook server**: deploy `kelos-webhook-server` with the generic source enabled
 2. **Sender configuration**: a Sentry (or other system's) webhook integration
    pointed at `/webhook/sentry`
-3. **Network restrictions**: the generic endpoint is currently
-   unauthenticated — see [Webhook Security](#webhook-security)
+3. **Authentication**: a bearer token or network restrictions — see
+   [Webhook Security](#webhook-security)
 
 ## Setup
 
@@ -40,10 +40,9 @@ Point the upstream system at `https://your-webhook-domain/webhook/sentry`.
 
 For Sentry: Settings → Integrations → Custom Webhook, with the URL above.
 
-> The endpoint does not currently validate signatures, so the webhook
-> integration's secret/signing settings have no effect on Kelos. Restrict
-> access at the network layer instead — see
-> [Webhook Security](#webhook-security).
+> Kelos does not validate request signatures, so the webhook integration's
+> signing settings have no effect on it. To authenticate the sender, have it
+> send a bearer token — see [Webhook Security](#webhook-security).
 
 ### 3. Deploy the TaskSpawner
 
@@ -158,14 +157,18 @@ regex), so the Task is created.
 
 ## Webhook Security
 
-> [!WARNING]
-> **The generic webhook endpoint is currently unauthenticated.** The
-> handler accepts any POST that targets `/webhook/<source>` and matches a
-> registered TaskSpawner — request signatures are not validated. Per-source
-> HMAC validation is tracked in
-> [#1040](https://github.com/kelos-dev/kelos/issues/1040).
+To require a token for this source, add a `SENTRY_WEBHOOK_TOKEN` key to the
+Secret named by `webhookServer.sources.generic.secretName`. The server then
+rejects a request to `/webhook/sentry` with `401` unless it carries
+`Authorization: Bearer <token>`. The sender has to be able to send that
+header; request signatures (HMAC) are not validated.
 
-Until that lands, restrict access at the network layer:
+> [!WARNING]
+> **A generic source with no token is unauthenticated.** The handler
+> accepts any POST that targets `/webhook/<source>` and matches a registered
+> TaskSpawner.
+
+Without a token, restrict access at the network layer:
 
 - Use a `NetworkPolicy` to allow ingress only from known sender CIDRs
   (Sentry publishes its egress IP ranges).
@@ -173,10 +176,6 @@ Until that lands, restrict access at the network layer:
   or mTLS.
 - Keep the webhook Service on a private network and avoid `LoadBalancer`
   exposure on the public internet unless ingress is otherwise restricted.
-
-The Helm chart's `webhookServer.sources.generic.secretName` field is
-reserved for future HMAC validation; it currently mounts env vars that
-no code reads.
 
 ## Troubleshooting
 

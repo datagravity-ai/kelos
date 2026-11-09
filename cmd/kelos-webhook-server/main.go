@@ -186,7 +186,12 @@ func main() {
 		mux.Handle("/webhook/", gatewayHandler)
 	} else {
 		var webhookSecret []byte
-		if webhookSource != webhook.GenericSource {
+		var genericToken func(string) (string, bool)
+		if webhookSource == webhook.GenericSource {
+			genericToken = func(source string) (string, bool) {
+				return os.LookupEnv(webhook.GenericTokenEnvName(source))
+			}
+		} else {
 			webhookSecret = []byte(os.Getenv("WEBHOOK_SECRET"))
 		}
 		handler, err := webhook.NewWebhookHandler(
@@ -197,6 +202,7 @@ func main() {
 				Secret:              webhookSecret,
 				GitHubAPIBaseURL:    githubAPIBaseURL,
 				GitHubTokenResolver: tokenResolver,
+				GenericToken:        genericToken,
 			},
 			ctrl.Log.WithName("webhook").WithValues("source", source),
 		)

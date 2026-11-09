@@ -3,6 +3,7 @@ package webhook
 import (
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
 	"strings"
@@ -44,5 +45,28 @@ func validateHMACSignature(payload []byte, expectedSig string, secret []byte) er
 		return fmt.Errorf("signature verification failed")
 	}
 
+	return nil
+}
+
+// GenericTokenEnvName returns the environment variable that holds the bearer
+// token for a generic webhook source: the source name upper-cased, with "-"
+// replaced by "_", followed by "_WEBHOOK_TOKEN".
+func GenericTokenEnvName(source string) string {
+	return strings.ToUpper(strings.ReplaceAll(source, "-", "_")) + "_WEBHOOK_TOKEN"
+}
+
+// ValidateBearerToken checks an Authorization header of the form
+// "Bearer <token>" against the expected token in constant time.
+func ValidateBearerToken(authorization string, token []byte) error {
+	if len(token) == 0 {
+		return fmt.Errorf("no token configured")
+	}
+	scheme, credential, found := strings.Cut(authorization, " ")
+	if !found || !strings.EqualFold(scheme, "Bearer") {
+		return fmt.Errorf("missing bearer token")
+	}
+	if subtle.ConstantTimeCompare([]byte(credential), token) != 1 {
+		return fmt.Errorf("bearer token mismatch")
+	}
 	return nil
 }

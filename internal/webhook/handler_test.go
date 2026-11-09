@@ -2574,3 +2574,114 @@ func TestServeHTTP_DistinctPRsCreateSeparateTasks(t *testing.T) {
 		t.Fatalf("Expected 2 tasks for 2 distinct PRs, got %d", len(taskList.Items))
 	}
 }
+
+const genericAlertPayload = `{"groupKey":"{}:{alertname=\"HighLatency\"}","status":"firing"}`
+
+func newGenericTokenTestHandler(t *testing.T, tokens map[string]string) *WebhookHandler {
+	t.Helper()
+	spawner := &kelos.TaskSpawner{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "alert-handler",
+			Namespace: "default",
+			UID:       "alert-uid-123",
+		},
+		Spec: kelos.TaskSpawnerSpec{
+			When: kelos.When{
+				GenericWebhook: &kelos.GenericWebhook{
+					Source:       "alertmanager",
+					FieldMapping: map[string]string{"id": "$.groupKey"},
+				},
+			},
+			TaskTemplate: kelos.TaskTemplate{
+				Type:           "claude-code",
+				Credentials:    &kelos.Credentials{Type: "api-key"},
+				PromptTemplate: "Triage {{.ID}}",
+			},
+		},
+	}
+	handler := newGenericTestHandler(t, spawner)
+	handler.genericToken = func(source string) (string, bool) {
+		token, ok := tokens[source]
+		return token, ok
+	}
+	return handler
+}
+
+func postGenericAlert(handler *WebhookHandler, authorization string) int {
+	req := httptest.NewRequest(http.MethodPost, "/webhook/alertmanager", bytes.NewReader([]byte(genericAlertPayload)))
+	if authorization != "" {
+		req.Header.Set("Authorization", authorization)
+	}
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	return rr.Code
+}
+
+func countTasks(t *testing.T, handler *WebhookHandler) int {
+	t.Helper()
+	var taskList kelos.TaskList
+	if err := handler.client.List(context.Background(), &taskList); err != nil {
+		t.Fatal(err)
+	}
+	return len(taskList.Items)
+}
+
+func TestGenericServeHTTP_TokenCreatesTaskWithMatchingBearer(t *testing.T) {
+	handler := newGenericTokenTestHandler(t, map[string]string{"alertmanager": "s3cret"})
+
+	if code := postGenericAlert(handler, "Bearer s3cret"); code != http.StatusOK {
+		t.Fatalf("Expected %d, got %d", http.StatusOK, code)
+	}
+	if got := countTasks(t, handler); got != 1 {
+		t.Fatalf("Expected 1 task, got %d", got)
+	}
+}
+
+func TestGenericServeHTTP_TokenRejectsMissingOrWrongBearer(t *testing.T) {
+	for _, authorization := range []string{"", "Bearer wrong", "Basic s3cret"} {
+		handler := newGenericTokenTestHandler(t, map[string]string{"alertmanager": "s3cret"})
+
+		if code := postGenericAlert(handler, authorization); code != http.StatusUnauthorized {
+			t.Errorf("Authorization %q: expected %d, got %d", authorization, http.StatusUnauthorized, code)
+		}
+		if got := countTasks(t, handler); got != 0 {
+			t.Errorf("Authorization %q: expected no task, got %d", authorization, got)
+		}
+	}
+}
+
+func TestGenericServeHTTP_RejectedDeliveryDoesNotSuppressTheRealOne(t *testing.T) {
+	handler := newGenericTokenTestHandler(t, map[string]string{"alertmanager": "s3cret"})
+
+	if code := postGenericAlert(handler, "Bearer wrong"); code != http.StatusUnauthorized {
+		t.Fatalf("Expected %d for the forged delivery, got %d", http.StatusUnauthorized, code)
+	}
+	if code := postGenericAlert(handler, "Bearer s3cret"); code != http.StatusOK {
+		t.Fatalf("Expected %d for the real delivery, got %d", http.StatusOK, code)
+	}
+	if got := countTasks(t, handler); got != 1 {
+		t.Fatalf("Expected the real delivery to create 1 task, got %d", got)
+	}
+}
+
+func TestGenericServeHTTP_SourceWithoutTokenAcceptsUnauthenticated(t *testing.T) {
+	handler := newGenericTokenTestHandler(t, map[string]string{"other-source": "s3cret"})
+
+	if code := postGenericAlert(handler, ""); code != http.StatusOK {
+		t.Fatalf("Expected %d, got %d", http.StatusOK, code)
+	}
+	if got := countTasks(t, handler); got != 1 {
+		t.Fatalf("Expected 1 task, got %d", got)
+	}
+}
+
+func TestGenericServeHTTP_EmptyConfiguredTokenFailsClosed(t *testing.T) {
+	handler := newGenericTokenTestHandler(t, map[string]string{"alertmanager": ""})
+
+	if code := postGenericAlert(handler, "Bearer "); code != http.StatusServiceUnavailable {
+		t.Fatalf("Expected %d, got %d", http.StatusServiceUnavailable, code)
+	}
+	if got := countTasks(t, handler); got != 0 {
+		t.Fatalf("Expected no task, got %d", got)
+	}
+}
