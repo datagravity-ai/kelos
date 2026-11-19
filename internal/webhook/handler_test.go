@@ -45,18 +45,23 @@ func (c sessionSpawnerNoMatchClient) List(ctx context.Context, list client.Objec
 }
 
 // newGenericTestHandler creates a WebhookHandler for generic webhooks backed by a fake client.
-func newGenericTestHandler(t *testing.T, objs ...client.Object) *WebhookHandler {
+func newGenericFakeClient(t *testing.T, objs ...client.Object) client.Client {
 	t.Helper()
 	scheme := runtime.NewScheme()
 	if err := kelos.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
-
-	fakeClient := fake.NewClientBuilder().
+	return fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(objs...).
 		WithStatusSubresource(&kelos.TaskSpawner{}, &kelos.SessionSpawner{}).
 		Build()
+}
+
+func newGenericTestHandler(t *testing.T, objs ...client.Object) *WebhookHandler {
+	t.Helper()
+
+	fakeClient := newGenericFakeClient(t, objs...)
 
 	tb, err := taskbuilder.NewTaskBuilder(fakeClient)
 	if err != nil {
@@ -2572,5 +2577,149 @@ func TestServeHTTP_DistinctPRsCreateSeparateTasks(t *testing.T) {
 	}
 	if len(taskList.Items) != 2 {
 		t.Fatalf("Expected 2 tasks for 2 distinct PRs, got %d", len(taskList.Items))
+	}
+}
+
+const genericAlertPayload = `{"groupKey":"{}:{alertname=\"HighLatency\"}","status":"firing"}`
+
+func alertmanagerTestSpawner() *kelos.TaskSpawner {
+	return &kelos.TaskSpawner{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "alert-handler",
+			Namespace: "default",
+			UID:       "alert-uid-123",
+		},
+		Spec: kelos.TaskSpawnerSpec{
+			When: kelos.When{
+				GenericWebhook: &kelos.GenericWebhook{
+					Source:       "alertmanager",
+					FieldMapping: map[string]string{"id": "$.groupKey"},
+				},
+			},
+			TaskTemplate: kelos.TaskTemplate{
+				Type:           "claude-code",
+				Credentials:    &kelos.Credentials{Type: "api-key"},
+				PromptTemplate: "Triage {{.ID}}",
+			},
+		},
+	}
+}
+
+func newGenericTokenTestHandler(t *testing.T, tokens map[string]string) *WebhookHandler {
+	t.Helper()
+	handler := newGenericTestHandler(t, alertmanagerTestSpawner())
+	handler.genericToken = func(source string) (string, bool) {
+		token, ok := tokens[source]
+		return token, ok
+	}
+	return handler
+}
+
+func postGenericAlert(handler *WebhookHandler, authorization string) int {
+	req := httptest.NewRequest(http.MethodPost, "/webhook/alertmanager", bytes.NewReader([]byte(genericAlertPayload)))
+	if authorization != "" {
+		req.Header.Set("Authorization", authorization)
+	}
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	return rr.Code
+}
+
+func countTasks(t *testing.T, handler *WebhookHandler) int {
+	t.Helper()
+	var taskList kelos.TaskList
+	if err := handler.client.List(context.Background(), &taskList); err != nil {
+		t.Fatal(err)
+	}
+	return len(taskList.Items)
+}
+
+func TestGenericServeHTTP_TokenCreatesTaskWithMatchingBearer(t *testing.T) {
+	handler := newGenericTokenTestHandler(t, map[string]string{"alertmanager": "s3cret"})
+
+	if code := postGenericAlert(handler, "Bearer s3cret"); code != http.StatusOK {
+		t.Fatalf("Expected %d, got %d", http.StatusOK, code)
+	}
+	if got := countTasks(t, handler); got != 1 {
+		t.Fatalf("Expected 1 task, got %d", got)
+	}
+}
+
+func TestGenericServeHTTP_TokenRejectsMissingOrWrongBearer(t *testing.T) {
+	for _, authorization := range []string{"", "Bearer wrong", "Basic s3cret"} {
+		handler := newGenericTokenTestHandler(t, map[string]string{"alertmanager": "s3cret"})
+
+		if code := postGenericAlert(handler, authorization); code != http.StatusUnauthorized {
+			t.Errorf("Authorization %q: expected %d, got %d", authorization, http.StatusUnauthorized, code)
+		}
+		if got := countTasks(t, handler); got != 0 {
+			t.Errorf("Authorization %q: expected no task, got %d", authorization, got)
+		}
+	}
+}
+
+func TestGenericServeHTTP_RejectedDeliveryDoesNotSuppressTheRealOne(t *testing.T) {
+	handler := newGenericTokenTestHandler(t, map[string]string{"alertmanager": "s3cret"})
+
+	if code := postGenericAlert(handler, "Bearer wrong"); code != http.StatusUnauthorized {
+		t.Fatalf("Expected %d for the forged delivery, got %d", http.StatusUnauthorized, code)
+	}
+	if code := postGenericAlert(handler, "Bearer s3cret"); code != http.StatusOK {
+		t.Fatalf("Expected %d for the real delivery, got %d", http.StatusOK, code)
+	}
+	if got := countTasks(t, handler); got != 1 {
+		t.Fatalf("Expected the real delivery to create 1 task, got %d", got)
+	}
+}
+
+func TestGenericServeHTTP_SourceWithoutTokenAcceptsUnauthenticated(t *testing.T) {
+	handler := newGenericTokenTestHandler(t, map[string]string{"other-source": "s3cret"})
+
+	if code := postGenericAlert(handler, ""); code != http.StatusOK {
+		t.Fatalf("Expected %d, got %d", http.StatusOK, code)
+	}
+	if got := countTasks(t, handler); got != 1 {
+		t.Fatalf("Expected 1 task, got %d", got)
+	}
+}
+
+func TestGenericServeHTTP_EmptyConfiguredTokenFailsClosed(t *testing.T) {
+	handler := newGenericTokenTestHandler(t, map[string]string{"alertmanager": ""})
+
+	if code := postGenericAlert(handler, "Bearer "); code != http.StatusServiceUnavailable {
+		t.Fatalf("Expected %d, got %d", http.StatusServiceUnavailable, code)
+	}
+	if got := countTasks(t, handler); got != 0 {
+		t.Fatalf("Expected no task, got %d", got)
+	}
+}
+
+func TestNewWebhookHandler_GenericTokenFromEnvironment(t *testing.T) {
+	t.Setenv("ALERTMANAGER_WEBHOOK_TOKEN", "s3cret")
+
+	handler, err := NewWebhookHandler(
+		context.Background(),
+		newGenericFakeClient(t, alertmanagerTestSpawner()),
+		GenericSource,
+		WebhookHandlerOptions{GenericToken: LookupGenericToken},
+		logr.Discard(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, authorization := range []string{"", "Bearer wrong"} {
+		if code := postGenericAlert(handler, authorization); code != http.StatusUnauthorized {
+			t.Errorf("Authorization %q: expected %d, got %d", authorization, http.StatusUnauthorized, code)
+		}
+	}
+	if got := countTasks(t, handler); got != 0 {
+		t.Fatalf("Expected no task before a valid token, got %d", got)
+	}
+	if code := postGenericAlert(handler, "Bearer s3cret"); code != http.StatusOK {
+		t.Fatalf("Expected %d, got %d", http.StatusOK, code)
+	}
+	if got := countTasks(t, handler); got != 1 {
+		t.Fatalf("Expected 1 task, got %d", got)
 	}
 }

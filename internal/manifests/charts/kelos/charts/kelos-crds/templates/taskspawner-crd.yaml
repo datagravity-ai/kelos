@@ -7973,7 +7973,9 @@ spec:
                       GenericWebhook triggers task spawning from arbitrary HTTP POST payloads.
                       Any system that can send an HTTP POST with a JSON body can trigger
                       tasks through this source. The URL path is /webhook/<source>.
-                      The endpoint is currently unauthenticated; restrict access at the network layer.
+                      A source with <SOURCE>_WEBHOOK_TOKEN set on the webhook server requires
+                      "Authorization: Bearer <token>"; a source with no token is
+                      unauthenticated, so restrict access at the network layer.
                     properties:
                       fieldMapping:
                         additionalProperties:
