@@ -48,7 +48,9 @@ type When struct {
 	// GenericWebhook triggers task spawning from arbitrary HTTP POST payloads.
 	// Any system that can send an HTTP POST with a JSON body can trigger
 	// tasks through this source. The URL path is /webhook/<source>.
-	// The endpoint is currently unauthenticated; restrict access at the network layer.
+	// A source with <SOURCE>_WEBHOOK_TOKEN set on the webhook server requires
+	// "Authorization: Bearer <token>"; a source with no token is
+	// unauthenticated, so restrict access at the network layer.
 	// +optional
 	GenericWebhook *GenericWebhook `json:"webhook,omitempty"`
 
@@ -549,8 +551,9 @@ type LinearWebhookFilter struct {
 // GenericWebhook configures webhook-driven task spawning from arbitrary HTTP
 // POST payloads with JSON bodies. Any system that can send an HTTP POST can
 // trigger tasks through this source. The URL path is /webhook/<source>.
-// The endpoint is currently unauthenticated; per-source HMAC validation is
-// not implemented.
+// A source with <SOURCE>_WEBHOOK_TOKEN set on the webhook server requires
+// "Authorization: Bearer <token>"; a source with no token is
+// unauthenticated. Request signatures (HMAC) are not validated.
 // +kubebuilder:validation:XValidation:rule="'id' in self.fieldMapping",message="fieldMapping must include an 'id' key for deduplication and task naming"
 type GenericWebhook struct {
 	// Source is a short identifier for this webhook source (e.g., "notion",

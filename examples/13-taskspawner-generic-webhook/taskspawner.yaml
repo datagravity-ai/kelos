@@ -5,9 +5,8 @@ metadata:
   namespace: default
 spec:
   # Respond to arbitrary HTTP POST events delivered to /webhook/sentry.
-  # NOTE: the generic webhook endpoint does not currently validate
-  # request signatures — restrict ingress at the network layer. See
-  # https://github.com/kelos-dev/kelos/issues/1040.
+  # NOTE: /webhook/sentry is unauthenticated unless the webhook server has
+  # SENTRY_WEBHOOK_TOKEN set. See the README's Webhook Security section.
   when:
     webhook:
       # Short identifier — determines the URL path (/webhook/<source>).
